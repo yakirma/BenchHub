@@ -1,0 +1,2321 @@
+{% extends "base.html" %}
+
+{% block title %}{{ leaderboard.name }} - Leaderboard{% endblock %}
+
+{% block content %}
+<style>
+    /* Tag Input Styles */
+    .tag-input-wrapper {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        display: flex;
+        flex-wrap: wrap;
+        padding: 0.25rem;
+        align-items: center;
+        flex-grow: 1;
+        max-width: 500px;
+        min-height: 38px;
+        position: relative;
+    }
+
+    .tag-input-wrapper.disabled {
+        background-color: var(--bs-secondary-bg);
+        cursor: not-allowed;
+    }
+
+    .tag-chip {
+        background-color: #0d6efd;
+        color: white;
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.4rem;
+        margin: 0.1rem;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .tag-chip .remove-tag {
+        margin-left: 0.3rem;
+        cursor: pointer;
+        font-weight: bold;
+    }
+
+    .tag-input {
+        border: none;
+        outline: none;
+        flex-grow: 1;
+        background: transparent;
+        padding: 0.1rem 0.2rem;
+        min-width: 60px;
+    }
+
+    .suggestions-list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+        display: none;
+    }
+
+    .suggestions-list li {
+        padding: 0.5rem;
+        cursor: pointer;
+    }
+
+    .suggestions-list li:hover,
+    .suggestions-list li.active {
+        background-color: #0d6efd;
+        color: white;
+    }
+
+    .clear-all-tags {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: pointer;
+        color: #6c757d;
+        font-size: 1.2rem;
+        display: none;
+        /* Hidden by default */
+        z-index: 10;
+        line-height: 1;
+    }
+
+    .clear-all-tags:hover {
+        color: #dc3545;
+    }
+
+    /* Draggable Column Styles */
+    #leaderboard-table th[draggable] {
+        cursor: move;
+        user-select: none;
+    }
+
+    #leaderboard-table th.dragging {
+        opacity: 0.5;
+        border: 2px dashed #0d6efd;
+    }
+
+    #leaderboard-table th.drag-over {
+        border-left: 3px solid #0d6efd;
+    }
+
+    .tag-input-wrapper {
+        padding-right: 30px;
+        /* Make room for X */
+    }
+
+    /* Sticky Top Horizontal Scrollbar */
+    .page-container {
+        overflow-x: visible !important;
+    }
+
+    .content-wrapper {
+        min-width: 0 !important;
+    }
+
+    .top-scrollbar-container {
+        overflow-x: auto;
+        overflow-y: hidden;
+        width: 100%;
+        position: sticky;
+        top: 60px;
+        /* Slightly below navbar (56px) for visibility */
+        z-index: 1020;
+        /* Above Bootstrap navbar (1030) - wait, navbar is usually 1030. Let's adjust z-index if needed. */
+        /* Comparison uses 1050. Let's stick with that. */
+        /* Comparison uses 1050. Let's stick with that. */
+        z-index: 1050;
+        background: var(--bs-tertiary-bg);
+        /* Light grey background for the bar itself */
+        border-bottom: 2px solid #0d6efd;
+        /* Prominent blue line */
+        display: none;
+        height: 18px;
+        /* Standard scrollbar height */
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar {
+        height: 12px;
+        display: block !important;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-thumb {
+        background-color: #0d6efd !important;
+        border-radius: 6px;
+        border: 2px solid #e9ecef;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-track {
+        background: #e9ecef !important;
+        display: block !important;
+    }
+
+    .top-scrollbar-content {
+        height: 1px;
+    }
+</style>
+
+{% macro get_color(value, metric_name, metrics_ranges, metric_directions) %}
+{% if value is none or value is string or not metrics_ranges.get(metric_name) or metrics_ranges[metric_name].min ==
+metrics_ranges[metric_name].max %}
+background-color: transparent;
+{% else %}
+{% set min_val = metrics_ranges[metric_name].min %}
+{% set max_val = metrics_ranges[metric_name].max %}
+{% set range_val = max_val - min_val %}
+{% if range_val == 0 %}
+background-color: #d1e7dd; color: #000; /* A light green for single value */
+{% else %}
+{% set normalized_value = (value - min_val) / range_val %}
+{% if metric_directions.get(metric_name) == 'lower_is_better' %}
+{% set normalized_value = 1.0 - normalized_value %}
+{% endif %}
+{% set lightness = 95 - (normalized_value * 45) %}
+background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
+{% endif %}
+{% endif %}
+{% endmacro %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h1>{{ leaderboard.name }}</h1>
+        <p class="lead d-flex align-items-center">
+            Using dataset: <a href="{{ url_for('dataset_view', dataset_id=leaderboard.dataset.id) }}"
+                class="btn btn-sm btn-outline-primary ms-2">{{
+                leaderboard.dataset.name }}</a>
+        </p>
+    </div>
+    <div class="d-flex align-items-center">
+        <a href="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}"
+            class="btn btn-outline-primary">Settings</a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">View Options</h5>
+        <div class="controls">
+            <form method="get" action="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
+                id="leaderboard-filter-form">
+                <!-- Keep existing sort params if present -->
+                <input type="hidden" name="sort_metric" value="{{ sort_metric }}">
+                <input type="hidden" name="sort_order" value="{{ sort_order }}">
+                <input type="hidden" name="show_archived" value="{{ show_archived }}">
+
+                <!-- Row 1: Submission Tag Filters -->
+                <div class="mb-3 p-2 bg-body-tertiary border rounded">
+                    <strong>Submission Tag Filters:</strong>
+                    <div class="d-flex align-items-center mt-2 flex-wrap">
+                        <!-- Include Types -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-include-tags"
+                                    name="enable_include" value="true" {% if enable_include %}checked{% endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_include %}disabled{% endif %}"
+                                id="include-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="include-tags-input"
+                                    placeholder="Include submission tags..." {% if not enable_include %}disabled{% endif
+                                    %} autocomplete="off">
+                                <ul class="suggestions-list" id="include-suggestions"></ul>
+                                <input type="hidden" name="include_tags" id="include-tags-hidden"
+                                    value="{{ include_tags|join(',') }}">
+                            </div>
+                        </div>
+
+                        <!-- Exclude Types -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-exclude-tags"
+                                    name="enable_exclude" value="true" {% if enable_exclude %}checked{% endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_exclude %}disabled{% endif %}"
+                                id="exclude-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="exclude-tags-input"
+                                    placeholder="Exclude submission tags..." {% if not enable_exclude %}disabled{% endif
+                                    %} autocomplete="off">
+                                <ul class="suggestions-list" id="exclude-suggestions"></ul>
+                                <input type="hidden" name="exclude_tags" id="exclude-tags-hidden"
+                                    value="{{ exclude_tags|join(',') }}">
+                            </div>
+                        </div>
+
+                        <!-- Prefix Types -->
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-prefix-tags"
+                                    name="enable_prefix" value="true" {% if enable_prefix %}checked{% endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_prefix %}disabled{% endif %}"
+                                id="prefix-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="prefix-tags-input"
+                                    placeholder="Prefix submission tags..." {% if not enable_prefix %}disabled{% endif
+                                    %} autocomplete="off">
+                                <ul class="suggestions-list" id="prefix-suggestions"></ul>
+                                <input type="hidden" name="prefix_tags" id="prefix-tags-hidden"
+                                    value="{{ prefix_tags|join(',') }}">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-2" style="max-width: 400px;">
+                        <input type="text" name="search_query" id="submission-search-query" class="form-control"
+                            placeholder="Search by submission name..." value="{{ search_query or '' }}">
+                    </div>
+                    <div class="mt-2">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="remember-submission-filters"
+                                style="cursor: pointer;">
+                            <label class="form-check-label" for="remember-submission-filters"
+                                style="cursor: pointer; font-size: 0.9em; color: #666;">
+                                Remember submission filters
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Row 2: Sample Filters -->
+                <div class="mb-3 p-2 bg-body-tertiary border rounded">
+                    <strong>Sample Filters (for metrics calculation):</strong>
+                    <div class="d-flex align-items-center mt-2 flex-wrap">
+                        <!-- Include Sample Tags -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-sample-include-tags"
+                                    name="enable_sample_include" value="true" {% if enable_sample_include %}checked{%
+                                    endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_sample_include %}disabled{% endif %}"
+                                id="sample-include-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="sample-include-tags-input"
+                                    placeholder="Include sample tags..." {% if not enable_sample_include %}disabled{%
+                                    endif %} autocomplete="off">
+                                <ul class="suggestions-list" id="sample-include-suggestions"></ul>
+                                <input type="hidden" name="sample_include_tags" id="sample-include-tags-hidden"
+                                    value="{{ sample_include_tags|join(',') }}">
+                            </div>
+                        </div>
+
+                        <!-- Exclude Sample Tags -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-sample-exclude-tags"
+                                    name="enable_sample_exclude" value="true" {% if enable_sample_exclude %}checked{%
+                                    endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_sample_exclude %}disabled{% endif %}"
+                                id="sample-exclude-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="sample-exclude-tags-input"
+                                    placeholder="Exclude sample tags..." {% if not enable_sample_exclude %}disabled{%
+                                    endif %} autocomplete="off">
+                                <ul class="suggestions-list" id="sample-exclude-suggestions"></ul>
+                                <input type="hidden" name="sample_exclude_tags" id="sample-exclude-tags-hidden"
+                                    value="{{ sample_exclude_tags|join(',') }}">
+                            </div>
+                        </div>
+
+                        <!-- Prefix Sample Tags -->
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-sample-prefix-tags"
+                                    name="enable_sample_prefix" value="true" {% if enable_sample_prefix %}checked{%
+                                    endif %}>
+                            </div>
+                            <div class="tag-input-wrapper {% if not enable_sample_prefix %}disabled{% endif %}"
+                                id="sample-prefix-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="sample-prefix-tags-input"
+                                    placeholder="Prefix sample tags..." {% if not enable_sample_prefix %}disabled{%
+                                    endif %} autocomplete="off">
+                                <ul class="suggestions-list" id="sample-prefix-suggestions"></ul>
+                                <input type="hidden" name="sample_prefix_tags" id="sample-prefix-tags-hidden"
+                                    value="{{ sample_prefix_tags|join(',') }}">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-2" style="max-width: 400px;">
+                        <input type="text" name="sample_search_query" id="sample-search-query" class="form-control"
+                            placeholder="Search by sample name..." value="{{ sample_search_query or '' }}">
+                    </div>
+                    <div class="mt-2">
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" id="remember-sample-filters"
+                                style="cursor: pointer;">
+                            <label class="form-check-label" for="remember-sample-filters"
+                                style="cursor: pointer; font-size: 0.9em; color: #666;">
+                                Remember sample filters
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+            </form>
+
+            <!-- Column Visibility Controls -->
+            <div class="d-flex align-items-center ms-3 mt-2">
+                <label class="form-check-label fw-bold me-3">Display Columns:</label>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="checkbox" id="select_all_lb_cols"
+                        onclick="handleSelectAllLBCols(this)">
+                    <label class="form-check-label" for="select_all_lb_cols"><strong>All</strong></label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="name" id="lb_col_name"
+                        onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_name">Name</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="tags" id="lb_col_tags"
+                        onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_tags">Tags</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="date_uploaded"
+                        id="lb_col_date_uploaded" onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_date_uploaded">Date Uploaded</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="git_info"
+                        id="lb_col_git_info" onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_git_info">Git Info</label>
+                </div>
+                {% for metric in selected_metrics %}
+                {% set metric_config = None %}
+                {% for lm in leaderboard.leaderboard_metrics %}
+                {% if (lm.target_name if lm.target_name else lm.global_metric.name) == metric %}
+                {% set metric_config = lm %}
+                {% endif %}
+                {% endfor %}
+                {% set display_label = metric %}
+                {% if metric_config %}
+                {% set display_label = metric_config.target_name or metric_config.global_metric.label or
+                metric_config.global_metric.name %}
+                {% endif %}
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="metric_{{ metric }}"
+                        id="lb_col_metric_{{ metric }}" onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_metric_{{ metric }}">{{ display_label }}</label>
+                </div>
+                {% endfor %}
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="status" id="lb_col_status"
+                        onchange="updateLBColumnVisibility()">
+                    <label class="form-check-label" for="lb_col_status">Status</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Table Card with Sticky Scrollbar -->
+<div class="card page-container">
+    <div class="card-body content-wrapper">
+        <div class="top-scrollbar-container" id="top-scroll-container">
+            <div class="top-scrollbar-content" id="top-scroll-content"></div>
+        </div>
+        <form action="{{ url_for('batch_action') }}" method="post" id="batch-form">
+            <input type="hidden" name="leaderboard_id" value="{{ leaderboard.id }}">
+            <!-- Filter params to preserve after redirect -->
+            <input type="hidden" name="search_query" value="{{ search_query or '' }}">
+            <input type="hidden" name="show_archived" value="{{ 'true' if show_archived else 'false' }}">
+            <input type="hidden" name="enable_include" value="{{ 'true' if enable_include else 'false' }}">
+            <input type="hidden" name="enable_exclude" value="{{ 'true' if enable_exclude else 'false' }}">
+            <input type="hidden" name="enable_prefix" value="{{ 'true' if enable_prefix else 'false' }}">
+            <input type="hidden" name="include_tags" value="{{ include_tags|join(',') }}">
+            <input type="hidden" name="exclude_tags" value="{{ exclude_tags|join(',') }}">
+            <input type="hidden" name="prefix_tags" value="{{ prefix_tags|join(',') }}">
+            <input type="hidden" name="sort_metric" value="{{ sort_metric }}">
+            <input type="hidden" name="sort_order" value="{{ sort_order }}">
+
+            <!-- Sample Filters for batch action -->
+            <input type="hidden" name="sample_search_query" value="{{ sample_search_query or '' }}">
+            <input type="hidden" name="enable_sample_include"
+                value="{{ 'true' if enable_sample_include else 'false' }}">
+            <input type="hidden" name="enable_sample_exclude"
+                value="{{ 'true' if enable_sample_exclude else 'false' }}">
+            <input type="hidden" name="enable_sample_prefix" value="{{ 'true' if enable_sample_prefix else 'false' }}">
+            <input type="hidden" name="sample_include_tags" value="{{ sample_include_tags|join(',') }}">
+            <input type="hidden" name="sample_exclude_tags" value="{{ sample_exclude_tags|join(',') }}">
+            <input type="hidden" name="sample_prefix_tags" value="{{ sample_prefix_tags|join(',') }}">
+            <input type="hidden" name="sample_include_tags" value="{{ sample_include_tags|join(',') }}">
+            <input type="hidden" name="sample_exclude_tags" value="{{ sample_exclude_tags|join(',') }}">
+            <input type="hidden" name="sample_prefix_tags" value="{{ sample_prefix_tags|join(',') }}">
+
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <button type="submit" name="action" value="compare" class="btn btn-primary">Compare
+                        Selected</button>
+                    <button type="button" class="btn btn-warning" onclick="recalculateAsync()">Recalculate
+                        Selected</button>
+                    <button type="button" class="btn btn-success" data-bs-toggle="modal"
+                        data-bs-target="#add-tags-modal">Add Tags to Selected</button>
+                    <button type="submit" name="action" value="archive" class="btn btn-secondary">Archive
+                        Selected</button>
+                    <button type="submit" name="action" value="unarchive" class="btn btn-info">Unarchive
+                        Selected</button>
+                    <button type="submit" name="action" value="delete" class="btn btn-danger"
+                        onclick="return confirm('Are you sure you want to permanently delete the selected submissions?');">Delete
+                        Selected</button>
+                    <!-- Download Selected Button -->
+                    <!-- Download Selected Dropdown -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-dark dropdown-toggle" data-bs-toggle="dropdown"
+                            aria-expanded="false">
+                            Download Selected
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li><button class="dropdown-item" type="submit"
+                                    formaction="{{ url_for('download_submissions_bulk', leaderboard_id=leaderboard.id) }}">Source
+                                    Zips</button></li>
+                            <li><button class="dropdown-item" type="submit"
+                                    formaction="{{ url_for('download_submissions_metrics_bulk', leaderboard_id=leaderboard.id) }}">Aggregated
+                                    Metrics
+                                    (CSV)</button></li>
+                            <li><button class="dropdown-item" type="submit"
+                                    formaction="{{ url_for('download_submissions_sample_metrics_bulk', leaderboard_id=leaderboard.id) }}">Per-Sample
+                                    Metrics
+                                    (CSV)</button></li>
+                            <li><button class="dropdown-item" type="submit"
+                                    formaction="{{ url_for('download_submissions_full_bulk', leaderboard_id=leaderboard.id) }}">Source
+                                    + Metrics</button></li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="show_archived_switch"
+                        onchange="const inp = document.getElementById('leaderboard-filter-form').querySelector('input[name=\'show_archived\']'); if(inp) { inp.value = this.checked; updateURLParams(); }"
+                        {% if show_archived %}checked{% endif %}>
+                    <label class="form-check-label" for="show_archived_switch">Show Archived</label>
+                </div>
+            </div>
+
+            <div class="table-responsive" id="table-container">
+                <table class="table table-hover align-middle" id="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th scope="col" style="width: 30px;"></th> <!-- Dropdown Column -->
+                            <th scope="col" style="width: 5%;"><input class="form-check-input" type="checkbox"
+                                    id="select_all"></th>
+                            <th scope="col" style="width: {{ global_settings.name_width }};" data-lb-column="name"
+                                draggable="true">Name</th>
+                            <th scope="col" style="width: {{ global_settings.tags_width }};" data-lb-column="tags"
+                                draggable="true">Tags</th>
+                            <th scope="col" style="width: {{ global_settings.config_width }};"
+                                data-lb-column="date_uploaded" draggable="true">Date
+                                Uploaded</th>
+                            <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="git_info"
+                                draggable="true">Git Info</th>
+                            <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="status"
+                                draggable="true">Status</th>
+                            {% for metric in selected_metrics %}
+                            {% set metric_config = None %}
+                            {% for lm in leaderboard.leaderboard_metrics %}
+                            {% if (lm.target_name if lm.target_name else lm.global_metric.name) == metric %}
+                            {% set metric_config = lm %}
+                            {% endif %}
+                            {% endfor %}
+                            {% set display_label = metric %}
+                            {% if metric_config %}
+                            {% set display_label = metric_config.target_name or metric_config.global_metric.label or
+                            metric_config.global_metric.name %}
+                            {% endif %}
+                            <th scope="col" style="width: {{ global_settings.scalar_width }}; cursor: pointer;"
+                                data-lb-column="metric_{{ metric }}" draggable="true"
+                                onclick="changeSort('{{ metric }}')">
+                                {{ display_label }}
+                                {% if metric_agg_info and metric_agg_info.get(metric) %}
+                                <small class="text-muted d-block fw-normal" style="font-size: 0.7em">{{
+                                    metric_agg_info[metric] }}</small>
+                                {% endif %}
+                                {% if sort_metric == metric %}
+                                <i class="fas fa-sort-{{ sort_order == 'asc' and 'up' or 'down' }}"></i>
+                                {% endif %}
+                            </th>
+                            {% endfor %}
+                            <th scope="col" style="width: 10%;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for submission in submissions %}
+                        <tr class="{{ 'table-secondary text-muted' if submission.is_archived }}"
+                            data-submission-id="{{ submission.id }}"
+                            data-last-filter="{{ submission.last_sample_filter or '{}' }}">
+                            <td>
+                                <div class="row-resize-handle"></div>
+                                <div class="dropdown">
+                                    <button class="btn btn-sm btn-link text-primary text-decoration-none p-0"
+                                        type="button" id="actionsDropdown{{ submission.id }}" data-bs-toggle="dropdown"
+                                        aria-expanded="false" style="font-size: 1.2rem; line-height: 1;">
+                                        ⋮
+                                    </button>
+                                    <ul class="dropdown-menu" aria-labelledby="actionsDropdown{{ submission.id }}">
+                                        <li>
+                                            <a class="dropdown-item"
+                                                href="{{ url_for('download_submission', submission_id=submission.id) }}">
+                                                <i class="bi bi-download me-2"></i>Download ZIP
+                                            </a>
+                                        </li>
+                                        <li>
+                                            <a class="dropdown-item"
+                                                href="{{ url_for('download_submission_metrics', submission_id=submission.id) }}">
+                                                <i class="bi bi-file-earmark-spreadsheet me-2"></i>Download Aggregated
+                                                Metrics
+                                            </a>
+                                        </li>
+                                        <li>
+                                            <a class="dropdown-item"
+                                                href="{{ url_for('download_sample_metrics_csv', submission_id=submission.id) }}">
+                                                <i class="bi bi-file-earmark-spreadsheet me-2"></i>Download Per-Sample
+                                                Metrics
+                                            </a>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </td>
+                            <td><input class="form-check-input submission-checkbox" type="checkbox"
+                                    name="submission_ids" value="{{ submission.id }}"></td>
+                            <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}">
+                                <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    {{ submission.name }}
+                                </div>
+                            </td>
+                            <td data-lb-column="tags" style="max-width: 200px;"
+                                title="{% for tag in submission.tags %}{{ tag.name }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                                <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    {% for tag in submission.tags %}
+                                    <span class="badge bg-info text-dark">{{ tag.name }}</span>
+                                    {% endfor %}
+                                </div>
+                            </td>
+                            <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
+                            </td>
+                            <td data-lb-column="git_info" style="max-width: 200px;"
+                                title="{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or 'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}">
+                                <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    <small>{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or
+                                        'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}</small>
+                                </div>
+                            </td>
+                            <td data-lb-column="status">
+                                <span id="status-{{ submission.id }}"
+                                    class="badge {{ 'bg-success' if submission.processing_status == 'Processed' else 'bg-warning' }}">
+                                    {{ submission.processing_status }}
+                                </span>
+                            </td>
+                            {% for metric in selected_metrics %}
+                            {% if metric in AVAILABLE_METRICS %}
+                            {% set value = submission[metric] %}
+                            {% else %}
+                            {% set value = dynamic_values.get(submission.id, {}).get(metric) %}
+                            {% endif %}
+                            <td id="metric-{{ submission.id }}-{{ metric }}" data-lb-column="metric_{{ metric }}"
+                                style="{{ get_color(value, metric, metrics_ranges, metric_directions) }}">
+                                {% if value is string %}
+                                <a href="data:text/plain;charset=utf-8,{{ value }}"
+                                    download="trace_{{ metric }}_{{ submission.id }}.txt"
+                                    class="badge bg-danger text-decoration-none" title="Download Error Trace">Error</a>
+                                {% elif value is not none %}
+                                {{ "%.4f"|format(value) }}
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            {% endfor %}
+                            <td>
+                                <div class="btn-group" role="group">
+                                    <button type="button" class="btn btn-sm btn-outline-warning"
+                                        id="recalc-btn-{{ submission.id }}"
+                                        onclick="recalculateAsync([{{ submission.id }}])"
+                                        title="Recalculate Metrics">↻</button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger"
+                                        onclick="deleteSingleSubmission({{ submission.id }})">×</button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Tags Modal -->
+<div class="modal fade" id="add-tags-modal" tabindex="-1" aria-labelledby="addTagsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addTagsModalLabel">Add Tags to Selected Submissions</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Enter tags, separated by commas. Start typing to see existing tags.</p>
+                <div class="position-relative">
+                    <input type="text" class="form-control" id="tags-input" name="tags" autocomplete="off">
+                    <div id="autocomplete-list" class="list-group position-absolute w-100" style="z-index: 1050;"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="save-tags-btn">Save Tags</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-body">
+        <h5 class="card-title">Upload New Submission</h5>
+        <form action="{{ url_for('upload_submission', leaderboard_id=leaderboard.id) }}" method="post"
+            enctype="multipart/form-data">
+            <div class="mb-3">
+                <label for="submission_name" class="form-label">Submission Name(s)</label>
+                <input type="text" class="form-control" id="submission_name" name="submission_name"
+                    placeholder="Auto-filled or comma-separated for multiple">
+                <div class="form-text">
+                    You can upload multiple .zip files at once. <br>
+                    <strong>New:</strong> You can also upload a single "bulk" .zip file containing multiple submission
+                    .zip files inside.
+                </div>
+            </div>
+            <div class="mb-3">
+                <label for="submission_zip" class="form-label">Submission ZIP file(s)</label>
+                <input type="file" class="form-control" id="submission_zip" name="submission_zip" accept=".zip" multiple
+                    required>
+            </div>
+            <button type="submit" class="btn btn-primary">Upload Submission</button>
+        </form>
+    </div>
+</div>
+
+<!-- Hidden Deletion Form -->
+<form id="single-delete-form" method="post" style="display:none;"></form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const GLOBAL_LEADERBOARD_ID = {{ leaderboard.id }};
+    const LEADERBOARD_ID = GLOBAL_LEADERBOARD_ID;
+
+    // Current metrics ranges and directions for live coloring
+    let metricsRanges = {{ metrics_ranges | tojson | safe }};
+    let metricDirections = {{ metric_directions | tojson | safe }};
+
+    /**
+     * JavaScript implementation of the get_color Jinja macro
+     */
+    function getColorJS(value, metricName) {
+        if (value === null || typeof value === 'string' || !metricsRanges[metricName]) {
+            return 'background-color: transparent;';
+        }
+
+        const range = metricsRanges[metricName];
+        if (range.min === range.max) {
+            return 'background-color: #d1e7dd; color: #000;'; // Light green for single value
+        }
+
+        let normalizedValue = (value - range.min) / (range.max - range.min);
+
+        // Reverse if lower is better
+        if (metricDirections[metricName] === 'lower_is_better') {
+            normalizedValue = 1.0 - normalizedValue;
+        }
+
+        // Clamp just in case
+        normalizedValue = Math.max(0, Math.min(1, normalizedValue));
+
+        const lightness = 95 - (normalizedValue * 45);
+        return `background-color: hsl(120, 70%, ${Math.round(lightness)}%); color: #000;`;
+    }
+    // --- Debounce Helper ---
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    // --- Sticky Top Horizontal Scrollbar Synchronization ---
+    function setupStickyScrollbar() {
+        const topScrollContainer = document.getElementById('top-scroll-container');
+        const topScrollContent = document.getElementById('top-scroll-content');
+        const tableContainer = document.getElementById('table-container');
+        const table = document.getElementById('leaderboard-table');
+
+        if (!topScrollContainer || !tableContainer || !table) return;
+
+        // Sync scrollers
+        let isSyncingTop = false;
+        let isSyncingTable = false;
+
+        topScrollContainer.onscroll = function () {
+            if (!isSyncingTop) {
+                isSyncingTable = true;
+                tableContainer.scrollLeft = topScrollContainer.scrollLeft;
+            }
+            isSyncingTop = false;
+        };
+
+        tableContainer.onscroll = function () {
+            if (!isSyncingTable) {
+                isSyncingTop = true;
+                topScrollContainer.scrollLeft = tableContainer.scrollLeft;
+            }
+            isSyncingTable = false;
+        };
+
+        // Resize observer to match width and show/hide
+        const ro = new ResizeObserver(entries => {
+            const tableWidth = table.scrollWidth;
+            const containerWidth = tableContainer.clientWidth;
+            topScrollContent.style.width = tableWidth + 'px';
+
+            // Show if table is significantly wider than container
+            if (tableWidth > containerWidth + 2) {
+                topScrollContainer.style.setProperty('display', 'block', 'important');
+            } else {
+                topScrollContainer.style.setProperty('display', 'none', 'important');
+            }
+        });
+
+        ro.observe(table);
+        ro.observe(tableContainer);
+    }
+
+    // Call on load
+    document.addEventListener('DOMContentLoaded', function () {
+        setupStickyScrollbar();
+    });
+
+    function deleteSingleSubmission(submissionId) {
+        confirmAction('Are you sure you want to permanently delete this submission?', () => {
+            const form = document.getElementById('single-delete-form');
+            form.action = `/delete_submission/${submissionId}`;
+            form.submit();
+        });
+    }
+
+    // This function is used by the batch actions form to copy filter parameters
+    // from the main filter form into hidden inputs before submitting.
+    function copyFilterParamsToForm(form) {
+        const filterForm = document.getElementById('leaderboard-filter-form');
+        const paramsToCopy = [
+            'sort_metric', 'sort_order',
+            'search_query', 'show_archived',
+            'include_tags', 'exclude_tags', 'prefix_tags',
+            'sample_search_query',
+            'enable_sample_include', 'enable_sample_exclude', 'enable_sample_prefix',
+            'sample_include_tags', 'sample_exclude_tags', 'sample_prefix_tags'
+        ];
+
+        // Clear previous hidden inputs if any (except submission_ids which are checkboxes)
+        Array.from(form.querySelectorAll('input[type="hidden"]')).forEach(inp => {
+            if (inp.name !== 'submission_ids' && inp.name !== 'action' && inp.name !== 'leaderboard_id') inp.remove();
+        });
+
+        paramsToCopy.forEach(name => {
+            let val = '';
+            if (name === 'include_tags') val = window.includeTagsCtrl.getTags().join(',');
+            else if (name === 'exclude_tags') val = window.excludeTagsCtrl.getTags().join(',');
+            else if (name === 'prefix_tags') val = window.prefixTagsCtrl.getTags().join(',');
+            else if (name === 'sample_include_tags') val = window.sampleIncludeTagsCtrl.getTags().join(',');
+            else if (name === 'sample_exclude_tags') val = window.sampleExcludeTagsCtrl.getTags().join(',');
+            else if (name === 'sample_prefix_tags') val = window.samplePrefixTagsCtrl.getTags().join(',');
+            else if (name.startsWith('enable_')) {
+                const cb = document.getElementById(name.replace('enable_', 'enable-').replace('_include', '-include-tags').replace('_exclude', '-exclude-tags').replace('_prefix', '-prefix-tags'));
+                if (cb) val = cb.checked ? 'true' : 'false';
+            }
+            else if (name === 'search_query') {
+                const el = document.getElementById('submission-search-query');
+                if (el) val = el.value;
+            }
+            else if (name === 'sample_search_query') {
+                const el = document.getElementById('sample-search-query');
+                if (el) val = el.value;
+            }
+            else if (name === 'show_archived') {
+                const el = document.getElementById('show_archived_switch');
+                if (el) val = el.checked ? 'true' : 'false';
+            }
+            else if (filterForm) {
+                const inp = filterForm.querySelector(`input[name="${name}"]`);
+                if (inp) val = inp.value;
+            }
+
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = name;
+            input.value = val;
+            form.appendChild(input);
+        });
+    }
+
+    const batchForm = document.getElementById('batch-form');
+    if (batchForm) {
+        batchForm.addEventListener('submit', function () {
+            copyFilterParamsToForm(this);
+        });
+    }
+
+    document.getElementById('select_all').addEventListener('change', function (e) {
+        var checkboxes = document.querySelectorAll('.submission-checkbox');
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = e.target.checked;
+        });
+    });
+
+    document.getElementById('save-tags-btn').addEventListener('click', function () {
+        const tags = document.getElementById('tags-input').value;
+        const hiddenTagsInput = document.createElement('input');
+        hiddenTagsInput.type = 'hidden';
+        hiddenTagsInput.name = 'tags';
+        hiddenTagsInput.value = tags;
+
+        const hiddenActionInput = document.createElement('input');
+        hiddenActionInput.type = 'hidden';
+        hiddenActionInput.name = 'action';
+        hiddenActionInput.value = 'add_tags';
+
+        const form = document.getElementById('batch-form');
+        form.appendChild(hiddenTagsInput);
+        form.appendChild(hiddenActionInput);
+        form.submit();
+    });
+
+    document.getElementById('submission_zip').addEventListener('change', function (e) {
+        var submissionNameInput = document.getElementById('submission_name');
+        if (submissionNameInput.value === '') {
+            var fileNames = Array.from(e.target.files).map(file => file.name.replace(/\.zip$/, ''));
+            submissionNameInput.value = fileNames.join(', ');
+        }
+    });
+
+    // --- Autocomplete for Add Tags Modal ---
+    const tagsInput = document.getElementById('tags-input');
+    const modalAutocompleteList = document.getElementById('autocomplete-list');
+    const allAvailableTags = {{ all_tags| map(attribute = 'name') | list | tojson }};
+    const allAvailablePrefixes = [...new Set(allAvailableTags.map(t => t.split(/[=:-]/)[0]).filter(Boolean))];
+
+    tagsInput.addEventListener('keyup', function () {
+        const value = this.value;
+        const currentTags = value.split(',').map(t => t.trim());
+        const currentTag = currentTags.pop() || '';
+
+        modalAutocompleteList.innerHTML = '';
+        if (!currentTag) return;
+
+        const filteredTags = allAvailableTags.filter(tag => tag.toLowerCase().startsWith(currentTag.toLowerCase()) && !currentTags.includes(tag));
+
+        filteredTags.forEach(tag => {
+            const item = document.createElement('a');
+            item.href = '#';
+            item.className = 'list-group-item list-group-item-action';
+            item.textContent = tag;
+            item.addEventListener('click', function (e) {
+                e.preventDefault();
+                const newValue = [...currentTags, tag, ''].join(', ');
+                tagsInput.value = newValue;
+                modalAutocompleteList.innerHTML = '';
+                tagsInput.focus();
+            });
+            modalAutocompleteList.appendChild(item);
+        });
+    });
+
+    // Hide autocomplete when clicking outside
+    document.addEventListener('click', function (e) {
+        if (e.target !== tagsInput) {
+            modalAutocompleteList.innerHTML = '';
+        }
+    });
+
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    function setupTagInput(wrapperId, inputId, suggestionsId, checkboxId, sourceList, filterType = 'submission') {
+        const wrapper = document.getElementById(wrapperId);
+        const input = document.getElementById(inputId);
+        const suggestionsList = document.getElementById(suggestionsId);
+        const checkbox = checkboxId ? document.getElementById(checkboxId) : null;
+
+        if (!wrapper || !input || !suggestionsList) {
+            console.warn("Tag input elements not found for", wrapperId);
+            return {
+                getTags: () => [],
+                addTag: () => { },
+                setTags: () => { },
+                clearTags: () => { },
+                setDisabled: () => { }
+            };
+        }
+
+        const chipsContainer = wrapper.querySelector('.chips-container');
+        let tags = [];
+
+        // Add Clear Button
+        let clearBtn = wrapper.querySelector('.clear-all-tags');
+        if (!clearBtn) {
+            clearBtn = document.createElement('span');
+            clearBtn.className = 'clear-all-tags';
+            clearBtn.innerHTML = '&times;';
+            wrapper.appendChild(clearBtn);
+
+            clearBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent wrapper focus
+                tags = [];
+                input.value = '';
+                renderChips();
+                input.focus();
+            });
+        }
+
+        let currentFocus = -1;
+
+        function renderChips(silent = false) {
+            chipsContainer.innerHTML = '';
+            tags.forEach((tag, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'tag-chip';
+                chip.innerHTML = `${tag} <span class="remove-tag" data-index="${index}">&times;</span>`;
+                chipsContainer.appendChild(chip);
+            });
+            // Update Clear Button Visibility
+            if (tags.length > 0 || input.value.trim().length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                clearBtn.style.display = 'none';
+            }
+
+            if (!silent && typeof applyFilters === 'function') applyFilters(filterType); // Auto-update
+        }
+
+        chipsContainer.addEventListener('click', (e) => {
+            if (e.target.classList.contains('remove-tag')) {
+                const index = parseInt(e.target.dataset.index, 10);
+                tags.splice(index, 1);
+                renderChips();
+            } else if (e.target.classList.contains('tag-chip')) {
+                // Edit Tag Logic
+                const index = parseInt(e.target.querySelector('.remove-tag').dataset.index, 10);
+                const tag = tags[index];
+                tags.splice(index, 1);
+                renderChips(true);
+                input.value = tag;
+                input.focus();
+            }
+        });
+
+        function addTag(tag) {
+            tag = tag.trim(); // Preserve case
+            if (tag && !tags.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                tags.push(tag);
+                renderChips();
+            }
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) {
+                        e.preventDefault();
+                        items[currentFocus].click();
+                        return;
+                    }
+                }
+                const val = input.value.trim();
+                if (val) {
+                    e.preventDefault();
+                    const parts = val.split(/[ ,]+/);
+                    parts.forEach(part => {
+                        if (part && !tags.some(t => t.toLowerCase() === part.toLowerCase())) {
+                            tags.push(part);
+                        }
+                    });
+                    input.value = ''; // Clear input on manual entry
+                    renderChips();
+                }
+            } else if (e.key === 'Backspace' && !input.value && tags.length > 0) {
+                tags.pop();
+                renderChips();
+            } else if (e.key === 'Tab') {
+                e.preventDefault(); // Prevent focus loss
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) items[currentFocus].click();
+                } else if (suggestionsList.style.display === 'block' && suggestionsList.firstChild) {
+                    suggestionsList.firstChild.click();
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentFocus++;
+                addActive(suggestionsList.querySelectorAll('li'));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentFocus--;
+                addActive(suggestionsList.querySelectorAll('li'));
+            }
+        });
+
+        function addActive(x) {
+            if (!x) return false;
+            removeActive(x);
+            if (currentFocus >= x.length) currentFocus = 0;
+            if (currentFocus < 0) currentFocus = (x.length - 1);
+            x[currentFocus].classList.add("active");
+            x[currentFocus].scrollIntoView({ block: "nearest" });
+        }
+        function removeActive(x) {
+            for (var i = 0; i < x.length; i++) {
+                x[i].classList.remove("active");
+            }
+        }
+
+        function updateSuggestions() {
+            currentFocus = -1;
+            const val = input.value.trim().toLowerCase();
+            suggestionsList.innerHTML = '';
+
+            // Show suggestions if value exists OR if input is focused (show all/top)
+            let matches = [];
+            if (val) {
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => t.toLowerCase().includes(val) && !tags.includes(t));
+                }
+            } else {
+                // Show all (or top 10) if no input but focused
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => !tags.includes(t));
+                }
+            }
+
+            if (matches.length > 0) {
+                matches.slice(0, 10).forEach(match => {
+                    const li = document.createElement('li');
+                    li.textContent = match;
+                    li.addEventListener('click', () => {
+                        addTag(match);
+                        input.value = ''; // Clear input on selection
+                        suggestionsList.style.display = 'none';
+                        input.focus();
+                        renderChips(); // Explicitly re-render clear button state
+                    });
+                    suggestionsList.appendChild(li);
+                });
+                suggestionsList.style.display = 'block';
+            } else {
+                suggestionsList.style.display = 'none';
+            }
+
+            // Clear button logic
+            if (val || tags.length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                if (tags.length === 0) clearBtn.style.display = 'none';
+            }
+        }
+
+        input.addEventListener('input', updateSuggestions);
+        input.addEventListener('focus', updateSuggestions);
+        input.addEventListener('click', updateSuggestions); // Show on click even if focused
+
+        document.addEventListener('click', (e) => {
+            if (!wrapper.contains(e.target)) {
+                suggestionsList.style.display = 'none';
+            }
+        });
+
+        if (checkbox) {
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    wrapper.classList.remove('disabled');
+                    input.disabled = false;
+                } else {
+                    wrapper.classList.add('disabled');
+                    input.disabled = true;
+                }
+                if (typeof applyFilters === 'function') applyFilters(filterType);
+            });
+        }
+
+        return {
+            getTags: () => (checkbox ? checkbox.checked : true) ? tags : [],
+            addTag: (t) => addTag(t),
+            setTags: (tArray) => {
+                tags = tArray;
+                renderChips(true); // Silent update
+            },
+            clearTags: () => { tags = []; renderChips(); },
+            setDisabled: (disabled) => {
+                if (checkbox) {
+                    checkbox.checked = !disabled;
+                    if (checkbox.checked) {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    } else {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    }
+                } else {
+                    if (disabled) {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    } else {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    }
+                }
+            }
+        };
+    }
+
+    // Sample Filter Tags Data
+    const allSampleTags = {{ all_sample_tag_names | tojson if all_sample_tag_names else '[]' }};
+    const allSamplePrefixes = {{ all_sample_prefixes | tojson if all_sample_prefixes else '[]' }};
+
+    window.includeTagsCtrl = setupTagInput('include-tags-wrapper', 'include-tags-input', 'include-suggestions', 'enable-include-tags', allAvailableTags, 'submission');
+    window.excludeTagsCtrl = setupTagInput('exclude-tags-wrapper', 'exclude-tags-input', 'exclude-suggestions', 'enable-exclude-tags', allAvailableTags, 'submission');
+    window.prefixTagsCtrl = setupTagInput('prefix-tags-wrapper', 'prefix-tags-input', 'prefix-suggestions', 'enable-prefix-tags', allAvailablePrefixes, 'submission');
+
+    window.sampleIncludeTagsCtrl = setupTagInput('sample-include-tags-wrapper', 'sample-include-tags-input', 'sample-include-suggestions', 'enable-sample-include-tags', allSampleTags, 'sample');
+    window.sampleExcludeTagsCtrl = setupTagInput('sample-exclude-tags-wrapper', 'sample-exclude-tags-input', 'sample-exclude-suggestions', 'enable-sample-exclude-tags', allSampleTags, 'sample');
+    window.samplePrefixTagsCtrl = setupTagInput('sample-prefix-tags-wrapper', 'sample-prefix-tags-input', 'sample-prefix-suggestions', 'enable-sample-prefix-tags', allSamplePrefixes, 'sample');
+
+
+    function applyFilters(type) {
+        if (type === 'sample') {
+            debounceSampleFilter();
+        } else {
+            debounceSubmissionFilter();
+        }
+    }
+
+    // Original reload-based filter for active submission filtering (Search/Tags)
+    // We keep this for submission filters as they might be complex (search) or we chose to keep simple.
+    // If we wanted full async, we'd need JS filtering for submission rows too. 
+    // For now, let's keep submission changes as reloads (consistent with current state), 
+    // and make SAMPLE changes async (as requested).
+    const debounceSubmissionFilter = debounce(() => {
+        updateURLParams(true);
+    }, 500);
+
+    // Async filter for Sample changes (Metrics update without reload)
+    const debounceSampleFilter = debounce(() => {
+        // 1. Update URL without reload
+        updateURLParams(false);
+        // 2. Trigger Async Recalculation for ALL submissions currently in the table
+        const allIds = Array.from(document.querySelectorAll('tr[data-submission-id]'))
+            .map(row => row.dataset.submissionId);
+        recalculateAsync(allIds, true);
+    }, 1000); // Slightly longer debounce for async text input? 500 is fine.
+
+    function changeSort(metric) {
+        const form = document.getElementById('leaderboard-filter-form');
+        if (!form) return;
+
+        let metricInput = form.querySelector('input[name="sort_metric"]');
+        let orderInput = form.querySelector('input[name="sort_order"]');
+
+        if (metricInput.value === metric) {
+            orderInput.value = orderInput.value === 'asc' ? 'desc' : 'asc';
+        } else {
+            metricInput.value = metric;
+            orderInput.value = 'asc';
+        }
+
+        saveSortPreference(metricInput.value, orderInput.value); // Persist sort independently
+        saveSubmissionFilters(); // Persist other filters if enabled
+        updateURLParams(true);
+    }
+
+    function updateURLParams(doSubmit = true) {
+        const form = document.getElementById('leaderboard-filter-form');
+        if (!form) return;
+
+        const setHidden = (name, val) => {
+            let inp = form.querySelector(`input[name="${name}"]`);
+            if (!inp) {
+                inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = name;
+                form.appendChild(inp);
+            }
+            inp.value = val;
+        };
+
+        // Gather all values
+        setHidden('include_tags', window.includeTagsCtrl.getTags().join(','));
+        setHidden('exclude_tags', window.excludeTagsCtrl.getTags().join(','));
+        setHidden('enable_include', document.getElementById('enable-include-tags').checked);
+        setHidden('enable_exclude', document.getElementById('enable-exclude-tags').checked);
+        setHidden('enable_prefix', document.getElementById('enable-prefix-tags').checked);
+
+        setHidden('sample_include_tags', window.sampleIncludeTagsCtrl.getTags().join(','));
+        setHidden('sample_exclude_tags', window.sampleExcludeTagsCtrl.getTags().join(','));
+        setHidden('sample_prefix_tags', window.samplePrefixTagsCtrl.getTags().join(','));
+        setHidden('enable_sample_include', document.getElementById('enable-sample-include-tags').checked);
+        setHidden('enable_sample_exclude', document.getElementById('enable-sample-exclude-tags').checked);
+        setHidden('enable_sample_prefix', document.getElementById('enable-sample-prefix-tags').checked);
+
+        if (doSubmit) {
+            form.submit();
+        } else {
+            // Update URL bar without reloading
+            const formData = new FormData(form);
+            const params = new URLSearchParams(formData);
+            // Search query inputs might not be in FormData if they are not inside the form?
+            // The form has hidden inputs, but verify search query.
+            // Search inputs are usually outside or explicitly handled.
+            // Let's ensure search queries are in hidden inputs (updateURLParams calls setHidden only for tags)
+            // Wait, updateURLParams logic for search query was MISSING in previous setHidden calls!
+            // It relied on the fact that search inputs might be IN the form or handled?
+            // Actually, lines 194-200 showed the form. Search inputs need `name` attribute to be submitted.
+            // If they are outside, we need to copy them.
+
+            const samSearch = document.getElementById('sample-search-query');
+            if (samSearch) params.set('sample_search_query', samSearch.value);
+
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            window.history.pushState({ path: newUrl }, '', newUrl);
+        }
+    }
+
+    // --- Async Recalculation Logic ---
+    let pollingInterval = null;
+
+    function recalculateAsync(submissionIds, silent = false) {
+        if (!submissionIds) {
+            // Get selected IDs from checkboxes
+            submissionIds = Array.from(document.querySelectorAll('.submission-checkbox:checked'))
+                .map(cb => cb.value);
+        }
+
+        if (submissionIds.length === 0) {
+            if (!silent) alert('Please select at least one submission to recalculate.');
+            return;
+        }
+
+        const leaderboardId = GLOBAL_LEADERBOARD_ID;
+
+        // 2. Gather Sample Filters
+        const sampleFilters = {
+            search: document.getElementById('sample-search-query').value,
+            include: {
+                enabled: document.getElementById('enable-sample-include-tags').checked,
+                tags: window.sampleIncludeTagsCtrl.getTags()
+            },
+            exclude: {
+                enabled: document.getElementById('enable-sample-exclude-tags').checked,
+                tags: window.sampleExcludeTagsCtrl.getTags()
+            },
+            prefix: {
+                enabled: document.getElementById('enable-sample-prefix-tags').checked,
+                tags: window.samplePrefixTagsCtrl.getTags()
+            }
+        };
+
+        // 3. Update UI to show "Pending/Calculating..." 
+        // We can show a global spinner or update status columns. 
+        // For now, let's update status text slightly or add a loading indicator.
+        submissionIds.forEach(id => {
+            // Optional: Add opacity to rows to indicate stale data?
+            // document.querySelector(`tr[data-submission-id="${id}"]`).style.opacity = '0.5';
+            // Or update the Recalculate button to a spinner
+            const btn = document.getElementById(`recalc-btn-${id}`);
+            if (btn) btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        });
+
+        // 4. Send Request
+        fetch(`/api/leaderboard/${leaderboardId}/recalculate_async`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                submission_ids: submissionIds,
+                sample_filters: sampleFilters
+            })
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    if (pollingInterval) clearInterval(pollingInterval);
+                    pollingInterval = setInterval(() => pollMetrics(leaderboardId, submissionIds), 2000);
+                } else {
+                    console.error("Recalculation start failed", data);
+                }
+            })
+            .catch(err => console.error("Error triggering recalculation:", err));
+    }
+
+    function pollMetrics(leaderboardId, submissionIds) {
+        fetch(`/api/leaderboard/${leaderboardId}/metrics_status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ submission_ids: submissionIds })
+        })
+            .then(res => res.json())
+            .then(data => {
+                // Handle new API format: { 'submissions': {subId: data, ...}, 'ranges': {metric: {min, max}, ...}, 'directions': {...} }
+                const submissionsData = data.submissions || data;
+                if (data.ranges) metricsRanges = data.ranges;
+                if (data.directions) metricDirections = data.directions;
+
+                let allFinished = true;
+                let anyProcessed = false;
+
+                Object.keys(submissionsData).forEach(subId => {
+                    const subData = submissionsData[subId];
+                    if (subData.status !== 'Processed' && !subData.status.startsWith('Error')) {
+                        allFinished = false;
+                    } else if (subData.status === 'Processed') {
+                        anyProcessed = true;
+                    }
+
+                    // Update Status Badge
+                    const statusBadge = document.getElementById(`status-${subId}`);
+                    if (statusBadge) {
+                        statusBadge.innerText = subData.status;
+                        statusBadge.className = 'badge ' + (subData.status === 'Processed' ? 'bg-success' : 'bg-warning');
+                    }
+
+                    if (subData.status === 'Processed' && subData.metrics_formatted) {
+                        // Update Metric Cells for this submission
+                        Object.entries(subData.metrics_formatted).forEach(([metricName, valFormatted]) => {
+                            const cell = document.getElementById(`metric-${subId}-${metricName}`);
+                            if (cell) {
+                                // Update text
+                                cell.innerHTML = valFormatted;
+
+                                // Update color based on new ranges
+                                const rawVal = subData.metrics ? subData.metrics[metricName] : null;
+                                // If rawVal is missing, try parsing formatted val
+                                const valToColor = (rawVal !== undefined && rawVal !== null) ? rawVal : parseFloat(valFormatted);
+
+                                const colorStyle = getColorJS(valToColor, metricName);
+                                cell.setAttribute('style', colorStyle);
+
+                                // Reset transition for next updates
+                                cell.style.transition = 'background-color 0.5s';
+                            }
+                        });
+
+                        // Restore Recalculate Button
+                        const btn = document.getElementById(`recalc-btn-${subId}`);
+                        if (btn) btn.innerHTML = '↻';
+                    }
+                });
+
+                // If ranges were updated, we might need to refresh colors for ALL rows
+                // to keep the heatmap consistent
+                if (anyProcessed && data.ranges) {
+                    document.querySelectorAll('td[id^="metric-"]').forEach(cell => {
+                        const parts = cell.id.split('-');
+                        const sId = parts[1];
+                        const mName = parts.slice(2).join('-');
+
+                        // If this submission was NOT among the currently updated ones, refresh it too
+                        if (!submissionsData[sId]) {
+                            const val = parseFloat(cell.innerText);
+                            if (!isNaN(val)) {
+                                cell.setAttribute('style', getColorJS(val, mName));
+                            }
+                        }
+                    });
+                }
+
+                if (allFinished) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                }
+            })
+            .catch(err => {
+                console.error("Polling error:", err);
+                if (pollingInterval) {
+                    clearInterval(pollingInterval);
+                    pollingInterval = null;
+                }
+            });
+    }
+
+    function loadStateFromURL() {
+        // ... (keep existing logic but use URLSearchParams) ...
+        // Note: simplified replacement, will retain logic below in this block but just update function references.
+        const params = new URLSearchParams(window.location.search);
+
+        // Restore Search Queries
+        const subSearch = document.getElementById('submission-search-query');
+        const samSearch = document.getElementById('sample-search-query');
+        if (subSearch && params.has('search_query')) subSearch.value = params.get('search_query');
+        if (samSearch && params.has('sample_search_query')) samSearch.value = params.get('sample_search_query');
+
+        const loadCtrl = (ctrl, tagParam, enableParam) => {
+            const tags = params.get(tagParam) ? params.get(tagParam).split(',') : [];
+            const enabled = params.get(enableParam) === 'true';
+            if (enabled) {
+                ctrl.setDisabled(false);
+                ctrl.setTags(tags);
+            }
+        };
+
+        loadCtrl(window.includeTagsCtrl, 'include_tags', 'enable_include');
+        loadCtrl(window.excludeTagsCtrl, 'exclude_tags', 'enable_exclude');
+        loadCtrl(window.prefixTagsCtrl, 'prefix_tags', 'enable_prefix');
+
+        loadCtrl(window.sampleIncludeTagsCtrl, 'sample_include_tags', 'enable_sample_include');
+        loadCtrl(window.sampleExcludeTagsCtrl, 'sample_exclude_tags', 'enable_sample_exclude');
+        loadCtrl(window.samplePrefixTagsCtrl, 'sample_prefix_tags', 'enable_sample_prefix');
+    }
+
+    loadStateFromURL();
+
+    const subSearch = document.getElementById('submission-search-query');
+    const samSearch = document.getElementById('sample-search-query');
+
+    if (subSearch) subSearch.addEventListener('input', () => applyFilters('submission'));
+    if (samSearch) samSearch.addEventListener('input', () => applyFilters('sample'));
+
+    // ==================== FILTER PERSISTENCE LOGIC ====================
+    const STORAGE_KEY_PREFIX = 'leaderboard_filters_{{ leaderboard.id }}_';
+
+    // Get all filter elements
+    const submissionFilters = {
+        searchQuery: document.getElementById('submission-search-query'),
+        includeEnabled: document.getElementById('enable-include-tags'),
+        excludeEnabled: document.getElementById('enable-exclude-tags'),
+        prefixEnabled: document.getElementById('enable-prefix-tags'),
+        includeTags: window.includeTagsCtrl,
+        excludeTags: window.excludeTagsCtrl,
+        prefixTags: window.prefixTagsCtrl,
+        showArchived: document.getElementById('show-archived')
+    };
+
+    const sampleFilters = {
+        searchQuery: document.getElementById('sample-search-query'),
+        includeEnabled: document.getElementById('enable-sample-include-tags'),
+        excludeEnabled: document.getElementById('enable-sample-exclude-tags'),
+        prefixEnabled: document.getElementById('enable-sample-prefix-tags'),
+        includeTags: window.sampleIncludeTagsCtrl,
+        excludeTags: window.sampleExcludeTagsCtrl,
+        prefixTags: window.samplePrefixTagsCtrl
+    };
+
+    const rememberSubmissionCheckbox = document.getElementById('remember-submission-filters');
+    const rememberSampleCheckbox = document.getElementById('remember-sample-filters');
+
+    // Save filters to localStorage
+    function saveSubmissionFilters() {
+        if (!rememberSubmissionCheckbox.checked) return;
+
+        const filters = {
+            searchQuery: submissionFilters.searchQuery?.value || '',
+            includeEnabled: submissionFilters.includeEnabled?.checked || false,
+            excludeEnabled: submissionFilters.excludeEnabled?.checked || false,
+            prefixEnabled: submissionFilters.prefixEnabled?.checked || false,
+            includeTags: submissionFilters.includeTags?.getTags() || [],
+            excludeTags: submissionFilters.excludeTags?.getTags() || [],
+            prefixTags: submissionFilters.prefixTags?.getTags() || [],
+            showArchived: submissionFilters.showArchived?.checked || false
+        };
+
+        localStorage.setItem(STORAGE_KEY_PREFIX + 'submission', JSON.stringify(filters));
+    }
+
+    function saveSampleFilters() {
+        if (!rememberSampleCheckbox.checked) return;
+
+        const filters = {
+            searchQuery: sampleFilters.searchQuery?.value || '',
+            includeEnabled: sampleFilters.includeEnabled?.checked || false,
+            excludeEnabled: sampleFilters.excludeEnabled?.checked || false,
+            prefixEnabled: sampleFilters.prefixEnabled?.checked || false,
+            includeTags: sampleFilters.includeTags?.getTags() || [],
+            excludeTags: sampleFilters.excludeTags?.getTags() || [],
+            prefixTags: sampleFilters.prefixTags?.getTags() || []
+        };
+
+        localStorage.setItem(STORAGE_KEY_PREFIX + 'sample', JSON.stringify(filters));
+    }
+
+    // Load filters from localStorage
+    function loadSubmissionFilters() {
+        const savedRemember = localStorage.getItem(STORAGE_KEY_PREFIX + 'submission_remember');
+        if (savedRemember === 'true' && rememberSubmissionCheckbox) {
+            rememberSubmissionCheckbox.checked = true;
+
+            const savedFiltersObj = localStorage.getItem(STORAGE_KEY_PREFIX + 'submission');
+            if (savedFiltersObj) {
+                try {
+                    const filters = JSON.parse(savedFiltersObj);
+
+                    if (submissionFilters.searchQuery) submissionFilters.searchQuery.value = filters.searchQuery || '';
+                    if (submissionFilters.showArchived) submissionFilters.showArchived.checked = filters.showArchived || false;
+
+                    if (filters.includeEnabled && submissionFilters.includeEnabled) {
+                        submissionFilters.includeEnabled.checked = true;
+                        submissionFilters.includeTags?.setDisabled(false);
+                        submissionFilters.includeTags?.setTags(filters.includeTags || []);
+                    }
+
+                    if (filters.excludeEnabled && submissionFilters.excludeEnabled) {
+                        submissionFilters.excludeEnabled.checked = true;
+                        submissionFilters.excludeTags?.setDisabled(false);
+                        submissionFilters.excludeTags?.setTags(filters.excludeTags || []);
+                    }
+
+                    if (filters.prefixEnabled && submissionFilters.prefixEnabled) {
+                        submissionFilters.prefixEnabled.checked = true;
+                        submissionFilters.prefixTags?.setDisabled(false);
+                        submissionFilters.prefixTags?.setTags(filters.prefixTags || []);
+                    }
+                } catch (e) {
+                    console.error('Error loading submission filters:', e);
+                }
+            }
+        }
+    }
+
+    // --- Dedicated Sort Persistence ---
+    const SORT_STORAGE_KEY = 'lb_' + LEADERBOARD_ID + '_sort';
+
+    function saveSortPreference(metric, order) {
+        localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ metric, order }));
+    }
+
+    function loadSortPreference() {
+        const saved = localStorage.getItem(SORT_STORAGE_KEY);
+        if (saved) {
+            try {
+                const { metric, order } = JSON.parse(saved);
+                const params = new URLSearchParams(window.location.search);
+                // Only apply if not already in URL
+                if (!params.has('sort_metric') && metric) {
+                    const form = document.getElementById('leaderboard-filter-form');
+                    const metricInput = form.querySelector('input[name="sort_metric"]');
+                    const orderInput = form.querySelector('input[name="sort_order"]');
+                    if (metricInput) metricInput.value = metric;
+                    if (orderInput) orderInput.value = order || 'asc';
+                    return true;
+                }
+            } catch (e) {
+                console.error('Error loading sort preference:', e);
+            }
+        }
+        return false;
+    }
+
+    function loadSampleFilters() {
+        const savedRemember = localStorage.getItem(STORAGE_KEY_PREFIX + 'sample_remember');
+        if (savedRemember === 'true' && rememberSampleCheckbox) {
+            rememberSampleCheckbox.checked = true;
+
+            const savedFilters = localStorage.getItem(STORAGE_KEY_PREFIX + 'sample');
+            if (savedFilters) {
+                try {
+                    const filters = JSON.parse(savedFilters);
+
+                    if (sampleFilters.searchQuery) sampleFilters.searchQuery.value = filters.searchQuery || '';
+
+                    if (filters.includeEnabled && sampleFilters.includeEnabled) {
+                        sampleFilters.includeEnabled.checked = true;
+                        sampleFilters.includeTags?.setDisabled(false);
+                        sampleFilters.includeTags?.setTags(filters.includeTags || []);
+                    }
+
+                    if (filters.excludeEnabled && sampleFilters.excludeEnabled) {
+                        sampleFilters.excludeEnabled.checked = true;
+                        sampleFilters.excludeTags?.setDisabled(false);
+                        sampleFilters.excludeTags?.setTags(filters.excludeTags || []);
+                    }
+
+                    if (filters.prefixEnabled && sampleFilters.prefixEnabled) {
+                        sampleFilters.prefixEnabled.checked = true;
+                        sampleFilters.prefixTags?.setDisabled(false);
+                        sampleFilters.prefixTags?.setTags(filters.prefixTags || []);
+                    }
+                } catch (e) {
+                    console.error('Error loading sample filters:', e);
+                }
+            }
+        }
+    }
+
+    // Event listeners for checkbox changes
+    if (rememberSubmissionCheckbox) {
+        rememberSubmissionCheckbox.addEventListener('change', function () {
+            localStorage.setItem(STORAGE_KEY_PREFIX + 'submission_remember', this.checked);
+            if (this.checked) {
+                saveSubmissionFilters();
+            } else {
+                localStorage.removeItem(STORAGE_KEY_PREFIX + 'submission');
+            }
+        });
+    }
+
+    if (rememberSampleCheckbox) {
+        rememberSampleCheckbox.addEventListener('change', function () {
+            localStorage.setItem(STORAGE_KEY_PREFIX + 'sample_remember', this.checked);
+            if (this.checked) {
+                saveSampleFilters();
+            } else {
+                localStorage.removeItem(STORAGE_KEY_PREFIX + 'sample');
+            }
+        });
+    }
+
+    // Save filters when they change (only if remember is enabled)
+    if (submissionFilters.searchQuery) {
+        submissionFilters.searchQuery.addEventListener('input', saveSubmissionFilters);
+    }
+    if (submissionFilters.showArchived) {
+        submissionFilters.showArchived.addEventListener('change', saveSubmissionFilters);
+    }
+    if (sampleFilters.searchQuery) {
+        sampleFilters.searchQuery.addEventListener('input', saveSampleFilters);
+    }
+
+    // Save when tag controls change
+    ['includeEnabled', 'excludeEnabled', 'prefixEnabled'].forEach(key => {
+        if (submissionFilters[key]) {
+            submissionFilters[key].addEventListener('change', saveSubmissionFilters);
+        }
+        if (sampleFilters[key]) {
+            sampleFilters[key].addEventListener('change', saveSampleFilters);
+        }
+    });
+
+    // Load filters on page load
+    loadSubmissionFilters();
+    if (loadSortPreference()) {
+        console.log("Restored sort from localStorage, reloading...");
+        updateURLParams(true);
+    }
+    loadSampleFilters();
+
+    // --- Smart Auto-Recalculation Logic ---
+
+    function getCurrentSampleFilters() {
+        return {
+            search: document.getElementById('sample-search-query').value,
+            include: {
+                enabled: document.getElementById('enable-sample-include-tags').checked,
+                tags: window.sampleIncludeTagsCtrl.getTags()
+            },
+            exclude: {
+                enabled: document.getElementById('enable-sample-exclude-tags').checked,
+                tags: window.sampleExcludeTagsCtrl.getTags()
+            },
+            prefix: {
+                enabled: document.getElementById('enable-sample-prefix-tags').checked,
+                tags: window.samplePrefixTagsCtrl.getTags()
+            }
+        };
+    }
+
+    function isObjectsEqual(a, b) {
+        if (a === b) return true;
+        if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
+
+        const keysA = Object.keys(a);
+        const keysB = Object.keys(b);
+        if (keysA.length !== keysB.length) return false;
+
+        for (let key of keysA) {
+            if (!keysB.includes(key)) return false;
+            if (!isObjectsEqual(a[key], b[key])) return false;
+        }
+        return true;
+    }
+
+    // Auto-recalculate if sample filters are active on page load
+    // This ensures metrics are up-to-date with the current sample filter selection
+    setTimeout(() => {
+        const currentFilters = getCurrentSampleFilters();
+        const hasSampleFilters = (
+            (currentFilters.include.enabled && currentFilters.include.tags.length > 0) ||
+            (currentFilters.exclude.enabled && currentFilters.exclude.tags.length > 0) ||
+            (currentFilters.prefix.enabled && currentFilters.prefix.tags.length > 0) ||
+            (currentFilters.search && currentFilters.search.trim() !== '')
+        );
+
+        if (hasSampleFilters) {
+            console.log('Sample filters detected on page load - checking for stale metrics...');
+
+            // Get all submission rows
+            const rows = document.querySelectorAll('tr[data-submission-id]');
+            const staleIds = [];
+
+            rows.forEach(row => {
+                const subId = row.dataset.submissionId;
+                const lastFilterJson = row.dataset.lastFilter;
+
+                let lastFilter = {};
+                try {
+                    lastFilter = JSON.parse(lastFilterJson);
+                } catch (e) {
+                    // If parse fails (or empty string/None), treat as empty object.
+                    // But if we have current filters, mismatch is guaranteed unless current is also empty (which logic above prevents)
+                }
+
+                // Check for equality
+                if (!isObjectsEqual(currentFilters, lastFilter)) {
+                    staleIds.push(subId);
+                }
+            });
+
+            if (staleIds.length > 0) {
+                console.log(`Triggering recalculation for ${staleIds.length} stale submissions.`);
+                recalculateAsync(staleIds, true); // Silent recalculation
+            } else {
+                console.log('All visible submissions are up-to-date with current filters.');
+            }
+        }
+    }, 500); // Small delay to ensure all components are initialized
+
+    // --- Column Visibility Logic ---
+    // Build default columns list dynamically including all metrics
+    const metricsList = {{ selected_metrics | tojson }};
+    const BASE_COLUMNS = ['name', 'tags', 'date_uploaded', 'git_info'];
+    const METRIC_COLUMNS = metricsList.map(m => 'metric_' + m);
+    const DEFAULT_COLUMNS = [...BASE_COLUMNS, ...METRIC_COLUMNS, 'status'];
+
+    function updateLBColumnVisibility() {
+        const checkboxes = document.querySelectorAll('.lb-column-checkbox');
+        const visibleColumns = [];
+
+        checkboxes.forEach(cb => {
+            if (cb.checked) {
+                visibleColumns.push(cb.value);
+            }
+        });
+
+        // Save to localStorage
+        saveColumnPreferences('leaderboard', LEADERBOARD_ID, visibleColumns);
+
+        // Apply visibility
+        applyColumnVisibility(visibleColumns);
+
+        // Update "All" checkbox
+        const allCheckbox = document.getElementById('select_all_lb_cols');
+        if (allCheckbox) {
+            allCheckbox.checked = visibleColumns.length === DEFAULT_COLUMNS.length;
+        }
+    }
+
+    function applyColumnVisibility(visibleColumns) {
+        // Show/hide headers
+        const headers = document.querySelectorAll('th[data-lb-column]');
+        headers.forEach(th => {
+            const col = th.dataset.lbColumn;
+            th.style.display = visibleColumns.includes(col) ? '' : 'none';
+        });
+
+        // Show/hide cells
+        const cells = document.querySelectorAll('td[data-lb-column]');
+        cells.forEach(td => {
+            const col = td.dataset.lbColumn;
+            td.style.display = visibleColumns.includes(col) ? '' : 'none';
+        });
+    }
+
+    function handleSelectAllLBCols(checkbox) {
+        const checkboxes = document.querySelectorAll('.lb-column-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = checkbox.checked;
+        });
+        updateLBColumnVisibility();
+    }
+
+    // Load and apply saved preferences on page load
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedColumns = loadColumnPreferences('leaderboard', LEADERBOARD_ID, DEFAULT_COLUMNS);
+
+        // Set checkboxes
+        const checkboxes = document.querySelectorAll('.lb-column-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = savedColumns.includes(cb.value);
+        });
+
+        // Apply visibility
+        applyColumnVisibility(savedColumns);
+
+        // Update "All" checkbox
+        const allCheckbox = document.getElementById('select_all_lb_cols');
+        if (allCheckbox) {
+            allCheckbox.checked = savedColumns.length === DEFAULT_COLUMNS.length;
+        }
+    });
+
+    // ==================== RESIZABLE COLUMNS ====================
+    // Column resize functionality with localStorage persistence
+
+    const STORAGE_KEY = `lb_${LEADERBOARD_ID}_column_widths`;
+
+    let isResizing = false;
+    let currentColumn = null;
+    let startX = 0;
+    let startWidth = 0;
+
+    // Add CSS for resize handles
+    const style = document.createElement('style');
+    style.textContent = `
+            #leaderboard-table thead th {
+                position: relative !important;
+            }
+            .resize-handle {
+                position: absolute;
+                right: 0;
+                top: 0;
+                bottom: 0;
+                width: 8px;
+                cursor: col-resize;
+                user-select: none;
+                z-index: 10;
+            }
+            .resize-handle:hover {
+                background-color: rgba(0, 123, 255, 0.2);
+            }
+            .resize-handle:active {
+                background-color: rgba(0, 123, 255, 0.4);
+            }
+        `;
+    document.head.appendChild(style);
+
+    // Add CSS for row resize handles
+    const rowStyle = document.createElement('style');
+    rowStyle.textContent = `
+        :root {
+            --lb-row-height: auto;
+        }
+        #leaderboard-table tbody tr {
+            height: var(--lb-row-height);
+        }
+        #leaderboard-table tbody td {
+            position: relative;
+        }
+        .row-resize-handle {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 5px;
+            cursor: row-resize;
+            user-select: none;
+            z-index: 10;
+        }
+        .row-resize-handle:hover {
+            background-color: rgba(0, 123, 255, 0.2);
+        }
+        .row-resize-handle:active {
+            background-color: rgba(0, 123, 255, 0.4);
+        }
+    `;
+    document.head.appendChild(rowStyle);
+
+    // Add resize handles to table headers
+    function addResizeHandles() {
+        const headers = document.querySelectorAll('#leaderboard-table thead th[data-lb-column]');
+
+        headers.forEach(th => {
+            // Create resize handle
+            const handle = document.createElement('div');
+            handle.className = 'resize-handle';
+            handle.title = 'Drag to resize column';
+
+            // Add event listeners
+            handle.addEventListener('mousedown', initResize);
+
+            th.appendChild(handle);
+        });
+    }
+
+    // Initialize resize on mousedown
+    function initResize(e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        currentColumn = e.target.parentElement;
+        isResizing = true;
+        startX = e.pageX;
+        startWidth = currentColumn.offsetWidth;
+
+        document.addEventListener('mousemove', doResize);
+        document.addEventListener('mouseup', stopResize);
+
+        // Prevent text selection during resize
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+    }
+
+    // Perform resize on mousemove
+    function doResize(e) {
+        if (!isResizing) return;
+
+        const diff = e.pageX - startX;
+        const newWidth = Math.max(50, startWidth + diff); // Min width 50px
+
+        currentColumn.style.width = newWidth + 'px';
+        currentColumn.style.minWidth = newWidth + 'px';
+        currentColumn.style.maxWidth = newWidth + 'px';
+
+        // Also update all cells in this column
+        const columnName = currentColumn.dataset.lbColumn;
+        if (columnName) {
+            const cells = document.querySelectorAll(`td[data-lb-column="${columnName}"]`);
+            cells.forEach(cell => {
+                cell.style.width = newWidth + 'px';
+                cell.style.minWidth = newWidth + 'px';
+                cell.style.maxWidth = newWidth + 'px';
+            });
+        }
+    }
+
+    // Stop resize on mouseup
+    function stopResize(e) {
+        if (!isResizing) return;
+
+        isResizing = false;
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+
+        document.removeEventListener('mousemove', doResize);
+        document.removeEventListener('mouseup', stopResize);
+
+        // Save column widths to localStorage
+        saveColumnWidths();
+    }
+
+    // Save all column widths to localStorage
+    function saveColumnWidths() {
+        const headers = document.querySelectorAll('#leaderboard-table thead th[data-lb-column]');
+        const widths = {};
+
+        headers.forEach(th => {
+            const columnName = th.dataset.lbColumn;
+            if (columnName) {
+                widths[columnName] = th.style.width || th.offsetWidth + 'px';
+            }
+        });
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(widths));
+        console.log('Saved column widths:', widths);
+    }
+
+    // Load and apply saved column widths from localStorage
+    function loadColumnWidths() {
+        const saved = localStorage.getItem(STORAGE_KEY);
+
+        // If we have leaderboard-specific drag-stored widths, use them
+        if (saved) {
+            try {
+                const widths = JSON.parse(saved);
+                console.log('Loading leaderboard-specific column widths:', widths);
+
+                Object.entries(widths).forEach(([columnName, width]) => {
+                    applyColumnWidth(columnName, width);
+                });
+                return; // Exit early - we have custom widths
+            } catch (e) {
+                console.error('Failed to load saved column widths:', e);
+            }
+        }
+
+        // No custom widths found - fall back to global settings
+        console.log('No custom column widths found, using global settings');
+        // Set column widths based on settings
+        const scalarWidth = {{ global_settings.scalar_width | default (120) | tojson
+    }};
+    const imageWidth = {{ global_settings.image_width | default (200) | tojson }};
+
+    // Apply global settings to metric columns (they're scalar values)
+    const metricHeaders = document.querySelectorAll('#leaderboard-table thead th[data-lb-column^="metric_"]');
+    metricHeaders.forEach(header => {
+        const columnName = header.dataset.lbColumn;
+        if (scalarWidth) {
+            applyColumnWidth(columnName, scalarWidth + 'px');
+        }
+    });
+    }
+
+    // Apply a given width to a column
+    function applyColumnWidth(columnName, width) {
+        // Update header
+        const header = document.querySelector(`#leaderboard-table thead th[data-lb-column="${columnName}"]`);
+        if (header) {
+            header.style.width = width;
+            header.style.minWidth = width;
+            header.style.maxWidth = width;
+        }
+
+        // Update cells
+        const cells = document.querySelectorAll(`td[data-lb-column="${columnName}"]`);
+        cells.forEach(cell => {
+            cell.style.width = width;
+            cell.style.minWidth = width;
+            cell.style.maxWidth = width;
+        });
+    }
+
+    // Initialize on DOM ready
+    const initResizeFeature = () => {
+        addResizeHandles();
+        loadColumnWidths();
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initResizeFeature);
+    } else {
+        initResizeFeature();
+    }
+
+    // ==================== DRAGGABLE COLUMNS ====================
+    // Drag-and-drop column reordering with localStorage persistence
+
+    const ORDER_STORAGE_KEY = `lb_${LEADERBOARD_ID}_column_order`;
+    let draggedColumn = null;
+    let draggedIndex = null;
+
+    function initDraggableColumns() {
+        const headers = document.querySelectorAll('#leaderboard-table thead th[draggable="true"]');
+
+        headers.forEach(header => {
+            header.addEventListener('dragstart', handleDragStart);
+            header.addEventListener('dragover', handleDragOver);
+            header.addEventListener('dragleave', handleDragLeave);
+            header.addEventListener('drop', handleDrop);
+            header.addEventListener('dragend', handleDragEnd);
+        });
+
+        // Load and apply saved column order
+        loadColumnOrder();
+    }
+
+    function handleDragStart(e) {
+        draggedColumn = e.currentTarget;
+        draggedIndex = Array.from(draggedColumn.parentNode.children).indexOf(draggedColumn);
+
+        draggedColumn.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', draggedColumn.innerHTML);
+    }
+
+    function handleDragOver(e) {
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+
+        e.dataTransfer.dropEffect = 'move';
+
+        const target = e.currentTarget;
+        if (target !== draggedColumn && target.hasAttribute('draggable')) {
+            target.classList.add('drag-over');
+        }
+
+        return false;
+    }
+
+    function handleDragLeave(e) {
+        e.currentTarget.classList.remove('drag-over');
+    }
+
+    function handleDrop(e) {
+        if (e.stopPropagation) {
+            e.stopPropagation();
+        }
+
+        const targetColumn = e.currentTarget;
+        targetColumn.classList.remove('drag-over');
+
+        if (draggedColumn !== targetColumn && targetColumn.hasAttribute('draggable')) {
+            const targetIndex = Array.from(targetColumn.parentNode.children).indexOf(targetColumn);
+            reorderColumns(draggedIndex, targetIndex);
+            saveColumnOrder();
+        }
+
+        return false;
+    }
+
+    function handleDragEnd(e) {
+        e.currentTarget.classList.remove('dragging');
+
+        // Remove drag-over class from all headers
+        const headers = document.querySelectorAll('#leaderboard-table thead th');
+        headers.forEach(header => {
+            header.classList.remove('drag-over');
+        });
+    }
+
+    function reorderColumns(fromIndex, toIndex) {
+        const table = document.getElementById('leaderboard-table');
+        const headerRow = table.querySelector('thead tr');
+        const bodyRows = table.querySelectorAll('tbody tr');
+
+        // Reorder header
+        const headers = Array.from(headerRow.children);
+        const movedHeader = headers[fromIndex];
+
+        if (fromIndex < toIndex) {
+            headerRow.insertBefore(movedHeader, headers[toIndex].nextSibling);
+        } else {
+            headerRow.insertBefore(movedHeader, headers[toIndex]);
+        }
+
+        // Reorder cells in each body row
+        bodyRows.forEach(row => {
+            const cells = Array.from(row.children);
+            const movedCell = cells[fromIndex];
+
+            if (fromIndex < toIndex) {
+                row.insertBefore(movedCell, cells[toIndex].nextSibling);
+            } else {
+                row.insertBefore(movedCell, cells[toIndex]);
+            }
+        });
+    }
+
+    function saveColumnOrder() {
+        const headers = document.querySelectorAll('#leaderboard-table thead th');
+        const order = Array.from(headers).map((header, index) => ({
+            index: index,
+            column: header.dataset.lbColumn || `col-${index}`
+        }));
+
+        localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order));
+        console.log('Saved column order:', order);
+    }
+
+    function loadColumnOrder() {
+        const saved = localStorage.getItem(ORDER_STORAGE_KEY);
+        if (!saved) return;
+
+        try {
+            const order = JSON.parse(saved);
+            console.log('Loading column order:', order);
+
+            // Apply the saved order by rearranging columns
+            const table = document.getElementById('leaderboard-table');
+            const headerRow = table.querySelector('thead tr');
+            const headers = Array.from(headerRow.children);
+
+            // Create a map of current positions
+            const currentPositions = {};
+            headers.forEach((header, index) => {
+                const colName = header.dataset.lbColumn || `col-${index}`;
+                currentPositions[colName] = index;
+            });
+
+            // Apply the order
+            order.forEach((item, targetIndex) => {
+                const currentIndex = currentPositions[item.column];
+                if (currentIndex !== undefined && currentIndex !== targetIndex) {
+                    reorderColumns(currentIndex, targetIndex);
+
+                    // Update position tracking
+                    const movedCol = item.column;
+                    for (let col in currentPositions) {
+                        const pos = currentPositions[col];
+                        if (currentIndex < targetIndex) {
+                            if (pos > currentIndex && pos <= targetIndex) {
+                                currentPositions[col]--;
+                            }
+                        } else {
+                            if (pos >= targetIndex && pos < currentIndex) {
+                                currentPositions[col]++;
+                            }
+                        }
+                    }
+                    currentPositions[movedCol] = targetIndex;
+                }
+            });
+        } catch (e) {
+            console.error('Failed to load column order:', e);
+        }
+    }
+
+    // Initialize draggable columns on DOM ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initDraggableColumns);
+    } else {
+        initDraggableColumns();
+    }
+
+    // ==================== RESIZABLE ROWS ====================
+    const ROW_HEIGHT_KEY = `lb_${LEADERBOARD_ID}_row_height`;
+    let isResizingRow = false;
+    let startY = 0;
+    let startHeight = 0;
+    let sampleRow = null;
+
+    function initRowResize() {
+        // Add listeners to handles
+        document.querySelectorAll('.row-resize-handle').forEach(handle => {
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                isResizingRow = true;
+                startY = e.pageY;
+                // Use the row of the handle as a reference, though change is global
+                sampleRow = e.target.closest('tr');
+                startHeight = sampleRow.offsetHeight;
+
+                document.body.style.cursor = 'row-resize';
+                document.body.style.userSelect = 'none';
+
+                document.addEventListener('mousemove', doRowResize);
+                document.addEventListener('mouseup', stopRowResize);
+            });
+        });
+
+        // Load saved height
+        const savedHeight = localStorage.getItem(ROW_HEIGHT_KEY);
+        if (savedHeight) {
+            document.documentElement.style.setProperty('--lb-row-height', savedHeight);
+        }
+    }
+
+    function doRowResize(e) {
+        if (!isResizingRow) return;
+        const diff = e.pageY - startY;
+        const newHeight = Math.max(30, startHeight + diff); // Min 30px
+        document.documentElement.style.setProperty('--lb-row-height', newHeight + 'px');
+    }
+
+    function stopRowResize(e) {
+        if (!isResizingRow) return;
+        isResizingRow = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+
+        document.removeEventListener('mousemove', doRowResize);
+        document.removeEventListener('mouseup', stopRowResize);
+
+        // Persist
+        const finalHeight = getComputedStyle(document.documentElement).getPropertyValue('--lb-row-height');
+        localStorage.setItem(ROW_HEIGHT_KEY, finalHeight);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initRowResize);
+    } else {
+        initRowResize();
+    }
+
+</script>
+{% endblock %}

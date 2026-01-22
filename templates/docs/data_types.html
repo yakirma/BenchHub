@@ -1,0 +1,88 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Supported Data Types</h1>
+<p class="lead">Understanding how Bench-Hub recognizes and parses your data.</p>
+<hr>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <p>Bench-Hub is designed to be flexible. It automatically detects the type of data in your
+            <strong>Datasets</strong> and <strong>Submissions</strong> based on file extensions and folder naming
+            conventions.</p>
+
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle me-2"></i> <strong>Note:</strong> Files are indexed when you upload a ZIP. You
+            can view recognized fields in the "Dataset View" or "Submission View".
+        </div>
+
+        <h3 class="mt-4">Recognition Rules</h3>
+        <table class="table table-bordered table-hover">
+            <thead class="table-light">
+                <tr>
+                    <th style="width: 15%">Type</th>
+                    <th style="width: 35%">Recognition Rule</th>
+                    <th>Usage & details</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Image</strong></td>
+                    <td>Extensions: <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>, <code>.bmp</code>,
+                        <code>.tiff</code></td>
+                    <td>
+                        <p class="mb-1">Detected as an image path.</p>
+                        <small class="text-muted">Used in <strong>Visualizations</strong> (converted to PIL
+                            Image).</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Scalar</strong></td>
+                    <td>Extension: <code>.txt</code><br>(content must be a single number)</td>
+                    <td>
+                        <p class="mb-1">Parsed as a python <code>float</code>.</p>
+                        <small class="text-muted">Used in <strong>Metrics</strong> or as simple values in the Comparison
+                            table.</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>JSON</strong></td>
+                    <td>Extension: <code>.json</code></td>
+                    <td>
+                        <p class="mb-1">Parsed as a python <code>dict</code>.</p>
+                        <small class="text-muted">Useful for complex data structures or configurations.</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Histogram</strong></td>
+                    <td><code>.npz</code> file inside a folder starting with <code>hist_</code> (or named
+                        <code>raw_histogram</code>)</td>
+                    <td>
+                        <p class="mb-1">Parsed as numpy arrays (<code>bins</code>, <code>counts</code>).</p>
+                        <small class="text-muted">Used for <strong>Entropy</strong> calculations and Histogram
+                            plots.</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td><strong>Depth Map</strong></td>
+                    <td><code>.npz</code> file inside `raw_` folder, named <code>sample_WxH.npz</code></td>
+                    <td>
+                        <p class="mb-1">Specific to Depth Benchmarking.</p>
+                        <small class="text-muted">Contains raw depth arrays.</small>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3 class="mt-5">Using Data in Metrics</h3>
+        <p>Once detected, these files become "Arguments" you can map in the Leaderboard Settings.</p>
+        <ul>
+            <li><strong>Scalars</strong> are passed directly as numbers.</li>
+            <li><strong>Images</strong> are passed as file paths (use <code>PIL.Image.open()</code>).</li>
+            <li><strong>JSON</strong> is passed as a dictionary.</li>
+            <li><strong>Arrays (Histogram/Depth)</strong> need custom loading usually, but Histograms are pre-processed
+                into dictionaries for some legacy metrics.</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

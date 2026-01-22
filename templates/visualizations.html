@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+
+{% block title %}Visualizations{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1>Visualizations</h1>
+    <!-- Add new visualization button trigger modal -->
+    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addVizModal">
+        + Create New Visualization
+    </button>
+</div>
+
+<!-- List of Global Visualizations -->
+<div class="row">
+    {% for viz in visualizations %}
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">{{ viz.name }}</h5>
+                {% if viz.is_aggregated %}
+                <span class="badge bg-info text-dark">Aggregated</span>
+                {% else %}
+                <span class="badge bg-secondary">Per-Sample</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if viz.description %}
+                <p class="card-text text-muted">{{ viz.description }}</p>
+                {% endif %}
+                <h6>Python Code:</h6>
+                <pre class="bg-body-tertiary p-2 rounded border"
+                    style="max-height: 200px; overflow-y: auto;"><code class="language-python">{{ viz.python_code }}</code></pre>
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+                <button class="btn btn-sm btn-outline-info me-2 update-from-file-btn" data-id="{{ viz.id }}"
+                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}"
+                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}"
+                    data-code="{{ viz.python_code }}">
+                    <i class="bi bi-upload"></i> Update from File
+                </button>
+                <a href="{{ url_for('download_visualization', project_name=project_name, viz_id=viz.id) }}"
+                    class="btn btn-sm btn-outline-success me-2">
+                    <i class="bi bi-download"></i> Download
+                </a>
+                <button class="btn btn-sm btn-outline-secondary me-2 duplicate-viz-btn" data-id="{{ viz.id }}"
+                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}" data-code="{{ viz.python_code }}"
+                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}">
+                    <i class="bi bi-copy"></i> Duplicate
+                </button>
+                <button class="btn btn-sm btn-outline-primary me-2 edit-viz-btn" data-id="{{ viz.id }}"
+                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}" data-code="{{ viz.python_code }}"
+                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}">
+                    <i class="bi bi-pencil"></i> Edit
+                </button>
+                <form action="{{ url_for('delete_visualization', project_name=project_name, viz_id=viz.id) }}"
+                    method="post"
+                    onsubmit="return confirm('Are you sure? This will remove the visualization from ALL leaderboards using it.');">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i>
+                        Delete</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="alert alert-info">No global visualizations defined yet. Create one to get started!</div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal fade" id="addVizModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="vizModalLabel">Create New Visualization</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="vizForm" action="{{ url_for('create_visualization', project_name=project_name) }}"
+                    method="post" enctype="multipart/form-data">
+                    <input type="hidden" id="viz-id" name="viz_id">
+
+                    <div class="mb-3">
+                        <label for="viz-name" class="form-label">Visualization Name (ID)</label>
+                        <input type="text" class="form-control" id="viz-name" name="name"
+                            placeholder="e.g. pick_distribution_plot" required>
+                        <div class="form-text">Unique identifier used in code/database. Snake_case recommended.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="viz-desc" class="form-label">Description</label>
+                        <textarea class="form-control" id="viz-desc" name="description" rows="2"></textarea>
+                    </div>
+
+                    <div class="mb-3 border rounded p-3 bg-body-tertiary">
+                        <label for="viz-file" class="form-label fw-bold"><i class="bi bi-file-earmark-arrow-up"></i>
+                            Load Implementation from File (Optional)</label>
+                        <div class="input-group">
+                            <input type="file" class="form-control" id="viz-file" name="visualization_file"
+                                accept=".txt,.py,.zip">
+                            <button class="btn btn-outline-secondary" type="button" id="load-file-btn">
+                                <i class="bi bi-arrow-up-circle"></i> Load
+                            </button>
+                        </div>
+                        <div class="form-text">Choose a file, then click <strong>Load</strong> to populate the code
+                            implementation below. ZIP files are processed on save.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="viz-code" class="form-label">Python Implementation</label>
+                        <div class="form-text mb-2">
+                            Write a Python function that generates your visualization. Must return a
+                            <strong>PIL.Image</strong> object.
+                            <br>Example: <code>def viz_func(samples): return create_plot_image(samples)</code>
+                        </div>
+                        <textarea class="form-control font-monospace" id="viz-code" name="python_code" rows="10"
+                            required>from PIL import Image
+
+def my_visualization(samples):
+    # Your code here
+    # Must return PIL.Image object
+    img = Image.new('RGB', (640, 480), color='white')
+    return img</textarea>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="viz-aggregated" name="is_aggregated">
+                        <label class="form-check-label" for="viz-aggregated"><strong>Aggregated Visualization</strong>
+                            (Single image for all samples)</label>
+                        <div class="form-text">
+                            If checked, your function will receive <strong>all filtered samples</strong> at once and
+                            return one image.
+                            Otherwise, it runs per sample and returns an image for each.
+                        </div>
+                    </div>
+
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="viz-accepts-agg"
+                            name="accepts_aggregated_inputs">
+                        <label class="form-check-label" for="viz-accepts-agg"><strong>Accepts Aggregated
+                                Inputs</strong></label>
+                        <div class="form-text">
+                            Check this if this visualization can accept <strong>Aggregated Metrics</strong>
+                            as inputs. This affects the available options in the mapping dropdowns.
+                        </div>
+                    </div>
+
+                    <div class="text-end">
+                        <button type="submit" class="btn btn-primary" id="save-btn">Create Visualization</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const modalEl = document.getElementById('addVizModal');
+    let modal = null;
+    let isQuickUpdate = false;
+
+    function prepareVizForm(data) {
+        if (data.id) {
+            document.getElementById('vizModalLabel').innerText = 'Edit Visualization: ' + data.name;
+            document.getElementById('vizForm').action = "{{ url_for('edit_visualization', project_name=project_name, viz_id=0) }}".replace('0', data.id);
+            document.getElementById('save-btn').innerText = 'Save Changes';
+        } else {
+            document.getElementById('vizModalLabel').innerText = 'Create New Visualization';
+            document.getElementById('vizForm').action = "{{ url_for('create_visualization', project_name=project_name) }}";
+            document.getElementById('save-btn').innerText = 'Create Visualization';
+        }
+
+        document.getElementById('viz-id').value = data.id || '';
+        document.getElementById('viz-name').value = data.name || '';
+        document.getElementById('viz-desc').value = data.desc || '';
+        document.getElementById('viz-code').value = data.code || `from PIL import Image
+
+def my_visualization(samples):
+    # Your code here
+    # Must return PIL.Image object
+    img = Image.new('RGB', (640, 480), color='white')
+    return img`;
+        document.getElementById('viz-aggregated').checked = !!data.isAgg;
+        document.getElementById('viz-accepts-agg').checked = !!data.acceptsAgg;
+    }
+
+    function openModalForEdit(data) {
+        isQuickUpdate = false;
+        prepareVizForm(data);
+
+        if (!modal) {
+            if (typeof bootstrap !== 'undefined') {
+                modal = new bootstrap.Modal(modalEl);
+            }
+        }
+        modal.show();
+    }
+
+    // Handle Edit
+    document.querySelectorAll('.edit-viz-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            openModalForEdit({
+                id: this.dataset.id,
+                name: this.dataset.name,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+        });
+    });
+
+    // Handle Update from File (Quick Update)
+    document.querySelectorAll('.update-from-file-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            isQuickUpdate = true;
+            prepareVizForm({
+                id: this.dataset.id,
+                name: this.dataset.name,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+            // Automatically trigger file picker
+            document.getElementById('viz-file').value = ''; // Reset to ensure change event fires
+            document.getElementById('viz-file').click();
+        });
+    });
+
+    // Handle Duplicate button
+    document.querySelectorAll('.duplicate-viz-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const baseName = this.dataset.name;
+            const existingNames = Array.from(document.querySelectorAll('.card-header h5')).map(el => el.innerText.trim());
+
+            let newName = baseName + "_1";
+            let counter = 1;
+            while (existingNames.includes(newName)) {
+                counter++;
+                newName = baseName + "_" + counter;
+            }
+
+            // Open modal in "create" mode but with pre-filled data
+            openModalForEdit({
+                id: '', // Empty ID for creation
+                name: newName,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+
+            // Adjust modal label and button for "Duplicate" (which is essentially creation)
+            document.getElementById('vizModalLabel').innerText = 'Duplicate Visualization: ' + baseName;
+            document.getElementById('save-btn').innerText = 'Create Duplicate';
+        });
+    });
+
+    // Handle File Reader logic for the modal
+    document.getElementById('viz-file').addEventListener('change', function (e) {
+        if (e.target.files.length === 0) return;
+        const file = e.target.files[0];
+
+        // Auto-suggest name if we're creating a new visualization
+        const nameInput = document.getElementById('viz-name');
+        if (!nameInput.value) {
+            const suggestedName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+            nameInput.value = suggestedName;
+        }
+
+        // If this is a quick update, submit the form immediately
+        if (isQuickUpdate) {
+            console.log("Quick update detected, submitting form...");
+            document.getElementById('vizForm').submit();
+        }
+    });
+
+    document.getElementById('load-file-btn').addEventListener('click', function () {
+        const fileInput = document.getElementById('viz-file');
+        if (fileInput.files.length === 0) {
+            alert("Please select a file first.");
+            return;
+        }
+
+        const file = fileInput.files[0];
+        console.log("Loading file implementation:", file.name, file.type, file.size);
+
+        // Increased compatibility check for zip
+        const isZip = file.name.toLowerCase().slice(-4) === '.zip' ||
+            file.type === 'application/zip' ||
+            file.type === 'application/x-zip-compressed' ||
+            file.type === 'application/octet-stream' && file.name.toLowerCase().slice(-4) === '.zip';
+
+        if (isZip) {
+            console.log("Zip file detected, skipping client-side preview.");
+            document.getElementById('viz-code').value = "# Implementation will be loaded from ZIP file on save.\n# Choose a different file to preview or edit code here.";
+            return;
+        }
+
+        if (typeof FileReader === 'undefined') {
+            console.warn("FileReader not supported in this browser.");
+            alert("FileReader not supported in this browser. However, the server will still process your file when you save.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            console.log("File read successfully, updating implementation field.");
+            document.getElementById('viz-code').value = event.target.result;
+        };
+        reader.onerror = function (err) {
+            console.error("FileReader error:", err);
+            alert("Error reading file implementation locally. The server will still try to process it on save.");
+        };
+        reader.readAsText(file);
+    });
+
+
+    // Reset form on modal close
+    modalEl.addEventListener('hidden.bs.modal', function () {
+        document.getElementById('vizForm').reset();
+        document.getElementById('viz-id').value = '';
+        isQuickUpdate = false;
+        document.getElementById('vizModalLabel').innerText = 'Create New Visualization';
+        document.getElementById('vizForm').action = "{{ url_for('create_visualization', project_name=project_name) }}";
+        document.getElementById('save-btn').innerText = 'Create Visualization';
+    });
+</script>
+{% endblock %}

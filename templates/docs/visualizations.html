@@ -1,0 +1,85 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Creating Visualizations</h1>
+<p class="lead">Generate custom plots and images to visualize performance.</p>
+<hr>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <h3>Overview</h3>
+        <p>Visualizations are Python functions that return a <strong>PIL Image</strong>. These images are displayed in
+            the Comparison View UI.</p>
+
+        <h4>Available Libraries</h4>
+        <ul>
+            <li><code>PIL</code> (Pillow) - <code>Image</code>, <code>ImageDraw</code></li>
+            <li><code>matplotlib.pyplot</code> (as <code>plt</code>)</li>
+            <li><code>numpy</code> (as <code>np</code>)</li>
+            <li><code>io</code> - <code>BytesIO</code></li>
+        </ul>
+
+        <h3 class="mt-5">Examples</h3>
+
+        <div class="card mb-4">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0">Drawing with PIL</h5>
+            </div>
+            <div class="card-body">
+                <p>Fast and simple drawing (rectangles, text, etc.).</p>
+                <pre><code class="language-python">def draw_box(value):
+    from PIL import Image, ImageDraw
+    
+    # Create a new image
+    img = Image.new('RGB', (100, 50), color='white')
+    d = ImageDraw.Draw(img)
+    
+    # Draw text
+    d.text((10, 10), f"Val: {value}", fill='black')
+    
+    return img</code></pre>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">Plotting with Matplotlib</h5>
+            </div>
+            <div class="card-body">
+                <p>Powerful plotting for graphs, histograms, etc. Note the boilerplate to convert the plot to a PIL
+                    Image.</p>
+                <pre><code class="language-python">def plot_histogram(values):
+    from PIL import Image
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.hist(values, bins=20)
+    ax.set_title("Distribution")
+    
+    # Save to buffer
+    buf = BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig) # IMPORTANT: Close the figure to free memory
+    
+    # Convert to PIL
+    img = Image.open(buf).convert("RGB")
+    return img</code></pre>
+            </div>
+        </div>
+
+        <h3 class="mt-5">Aggregated Visualizations</h3>
+        <p>Just like metrics, visualizations can be <strong>Aggregated</strong>. This is perfect for creating:
+        <ul>
+            <li>Overall Error Distribution Histograms</li>
+            <li>Precision-Recall Curves</li>
+            <li>Scatter Plots (e.g., Error vs. Distance)</li>
+        </ul>
+        <p>Simply mark the visualization as "Aggregated" when creating it in the Global Library, and your function will
+            receive lists of values instead of single items.</p>
+
+    </div>
+</div>
+{% endblock %}

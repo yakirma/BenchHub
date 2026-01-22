@@ -1,0 +1,333 @@
+{% extends "base.html" %}
+
+{% block title %}Metrics{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1>Metrics</h1>
+    <!-- Add new metric button trigger modal -->
+    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addMetricModal">
+        + Create New Metric
+    </button>
+</div>
+
+<!-- List of Global Metrics -->
+<div class="row">
+    {% for metric in metrics %}
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">{{ metric.name }}</h5>
+                {% if metric.is_aggregated %}
+                <span class="badge bg-info text-dark">Aggregated</span>
+                {% else %}
+                <span class="badge bg-secondary">Per-Sample</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if metric.description %}
+                <p class="card-text text-muted">{{ metric.description }}</p>
+                {% endif %}
+                <h6>Python Code:</h6>
+                <pre class="bg-body-tertiary p-2 rounded border"
+                    style="max-height: 200px; overflow-y: auto;"><code class="language-python">{{ metric.python_code }}</code></pre>
+            </div>
+            <div class="card-footer d-flex justify-content-end">
+                <button class="btn btn-sm btn-outline-info me-2 update-from-file-btn" data-id="{{ metric.id }}"
+                    data-name="{{ metric.name }}" data-desc="{{ metric.description }}"
+                    data-aggregated="{{ 'true' if metric.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if metric.accepts_aggregated_inputs else 'false' }}"
+                    data-code="{{ metric.python_code }}">
+                    <i class="bi bi-upload"></i> Update from File
+                </button>
+                <a href="{{ url_for('download_metric', metric_id=metric.id) }}"
+                    class="btn btn-sm btn-outline-success me-2">
+                    <i class="bi bi-download"></i> Download
+                </a>
+                <button class="btn btn-sm btn-outline-secondary me-2 duplicate-metric-btn" data-id="{{ metric.id }}"
+                    data-name="{{ metric.name }}" data-desc="{{ metric.description }}"
+                    data-code="{{ metric.python_code }}"
+                    data-aggregated="{{ 'true' if metric.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if metric.accepts_aggregated_inputs else 'false' }}">
+                    <i class="bi bi-copy"></i> Duplicate
+                </button>
+                <button class="btn btn-sm btn-outline-primary me-2 edit-metric-btn" data-id="{{ metric.id }}"
+                    data-name="{{ metric.name }}" data-desc="{{ metric.description }}"
+                    data-code="{{ metric.python_code }}"
+                    data-aggregated="{{ 'true' if metric.is_aggregated else 'false' }}"
+                    data-accepts-agg="{{ 'true' if metric.accepts_aggregated_inputs else 'false' }}">
+                    <i class="bi bi-pencil"></i> Edit
+                </button>
+                <form action="{{ url_for('delete_global_metric', metric_id=metric.id) }}" method="post"
+                    onsubmit="return confirm('Are you sure? This will remove the metric from ALL leaderboards using it.');">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i>
+                        Delete</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="alert alert-info">No global metrics defined yet. Create one to get started!</div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal fade" id="addMetricModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="metricModalLabel">Create New Metric</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="metricForm" action="{{ url_for('create_global_metric') }}" method="post"
+                    enctype="multipart/form-data">
+                    <input type="hidden" id="metric-id" name="metric_id">
+
+                    <div class="mb-3">
+                        <label for="metric-name" class="form-label">Metric Name (ID)</label>
+                        <input type="text" class="form-control" id="metric-name" name="name"
+                            placeholder="e.g. my_precision_score" required>
+                        <div class="form-text">Unique identifier used in code/database. Snake_case recommended.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="metric-desc" class="form-label">Description</label>
+                        <textarea class="form-control" id="metric-desc" name="description" rows="2"></textarea>
+                    </div>
+
+                    <div class="mb-3 border rounded p-3 bg-body-tertiary">
+                        <label for="metric-file" class="form-label fw-bold"><i class="bi bi-file-earmark-arrow-up"></i>
+                            Load Implementation from File (Optional)</label>
+                        <div class="input-group">
+                            <input type="file" class="form-control" id="metric-file" name="metric_file"
+                                accept=".txt,.py,.zip">
+                            <button class="btn btn-outline-secondary" type="button" id="load-file-btn">
+                                <i class="bi bi-arrow-up-circle"></i> Load
+                            </button>
+                        </div>
+                        <div class="form-text">Choose a file, then click <strong>Load</strong> to populate the code
+                            implementation below. ZIP files are processed on save.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="metric-code" class="form-label">Python Implementation</label>
+                        <div class="form-text mb-2">
+                            Write a Python function that calculates your metric. The function name affects how it's
+                            called, but the arguments are key.
+                            <br>Example: <code>def score(gt, prediction): return abs(gt - prediction)</code>
+                        </div>
+                        <textarea class="form-control font-monospace" id="metric-code" name="python_code" rows="10"
+                            required>def my_metric(arg1, arg2):
+    # Your code here
+    return 0.0</textarea>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="metric-aggregated" name="is_aggregated">
+                        <label class="form-check-label" for="metric-aggregated"><strong>Aggregated Metric</strong>
+                            (Calculated once per submission list)</label>
+                        <div class="form-text">
+                            If checked, your function will receive <strong>lists</strong> of values for all samples
+                            (e.g. <code>gt=[1,2], pred=[1,3]</code>).
+                            Otherwise, it runs per sample (e.g. <code>gt=1, pred=1</code>) and result is averaged.
+                        </div>
+                    </div>
+
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="metric-accepts-agg"
+                            name="accepts_aggregated_inputs">
+                        <label class="form-check-label" for="metric-accepts-agg"><strong>Accepts Aggregated
+                                Inputs</strong></label>
+                        <div class="form-text">
+                            Check this if this metric (e.g., F1 Score) takes other <strong>Aggregated Metrics</strong>
+                            as inputs (e.g., Precision, Recall).
+                            This affects the available options in the mapping dropdowns.
+                        </div>
+                    </div>
+
+                    <div class="text-end">
+                        <button type="submit" class="btn btn-primary" id="save-btn">Create Metric</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const modalEl = document.getElementById('addMetricModal');
+    let modal = null;
+    let isQuickUpdate = false;
+
+    function prepareMetricForm(data) {
+        if (data.id) {
+            document.getElementById('metricModalLabel').innerText = 'Edit Metric: ' + data.name;
+            document.getElementById('metricForm').action = "{{ url_for('edit_global_metric', metric_id=0) }}".replace('0', data.id);
+            document.getElementById('save-btn').innerText = 'Save Changes';
+        } else {
+            document.getElementById('metricModalLabel').innerText = 'Create New Metric';
+            document.getElementById('metricForm').action = "{{ url_for('create_global_metric') }}";
+            document.getElementById('save-btn').innerText = 'Create Metric';
+        }
+
+        document.getElementById('metric-id').value = data.id || '';
+        document.getElementById('metric-name').value = data.name || '';
+        document.getElementById('metric-desc').value = data.desc || '';
+        document.getElementById('metric-code').value = data.code || `def my_metric(arg1, arg2):
+    # Your code here
+    return 0.0`;
+        document.getElementById('metric-aggregated').checked = !!data.isAgg;
+        document.getElementById('metric-accepts-agg').checked = !!data.acceptsAgg;
+    }
+
+    function openModalForEdit(data) {
+        isQuickUpdate = false;
+        prepareMetricForm(data);
+
+        if (!modal) {
+            if (typeof bootstrap !== 'undefined') {
+                modal = new bootstrap.Modal(modalEl);
+            }
+        }
+        modal.show();
+    }
+
+    // Handle Edit
+    document.querySelectorAll('.edit-metric-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            openModalForEdit({
+                id: this.dataset.id,
+                name: this.dataset.name,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+        });
+    });
+
+    // Handle Update from File (Quick Update)
+    document.querySelectorAll('.update-from-file-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            isQuickUpdate = true;
+            prepareMetricForm({
+                id: this.dataset.id,
+                name: this.dataset.name,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+            // Automatically trigger file picker
+            document.getElementById('metric-file').value = ''; // Reset to ensure change event fires
+            document.getElementById('metric-file').click();
+        });
+    });
+
+    // Handle Duplicate button
+    document.querySelectorAll('.duplicate-metric-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const baseName = this.dataset.name;
+            const existingNames = Array.from(document.querySelectorAll('.card-header h5')).map(el => el.innerText.trim());
+
+            let newName = baseName + "_1";
+            let counter = 1;
+            while (existingNames.includes(newName)) {
+                counter++;
+                newName = baseName + "_" + counter;
+            }
+
+            // Open modal in "create" mode but with pre-filled data
+            openModalForEdit({
+                id: '', // Empty ID for creation
+                name: newName,
+                desc: this.dataset.desc,
+                code: this.dataset.code,
+                isAgg: this.dataset.aggregated === 'true',
+                acceptsAgg: this.dataset.acceptsAgg === 'true'
+            });
+
+            // Adjust modal label and button for "Duplicate" (which is essentially creation)
+            document.getElementById('metricModalLabel').innerText = 'Duplicate Metric: ' + baseName;
+            document.getElementById('save-btn').innerText = 'Create Duplicate';
+        });
+    });
+
+    // Handle File Reader logic for the modal
+    document.getElementById('metric-file').addEventListener('change', function (e) {
+        if (e.target.files.length === 0) return;
+        const file = e.target.files[0];
+
+        // Auto-suggest name if we're creating a new metric
+        const nameInput = document.getElementById('metric-name');
+        if (!nameInput.value) {
+            const suggestedName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_]/g, "_").toLowerCase();
+            nameInput.value = suggestedName;
+        }
+
+        // If this is a quick update, submit the form immediately
+        if (isQuickUpdate) {
+            console.log("Quick update detected, submitting form...");
+            document.getElementById('metricForm').submit();
+        }
+    });
+
+    document.getElementById('load-file-btn').addEventListener('click', function () {
+        const fileInput = document.getElementById('metric-file');
+        if (fileInput.files.length === 0) {
+            alert("Please select a file first.");
+            return;
+        }
+
+        const file = fileInput.files[0];
+        console.log("Loading file implementation:", file.name, file.type, file.size);
+
+        // Increased compatibility check for zip
+        const isZip = file.name.toLowerCase().slice(-4) === '.zip' ||
+            file.type === 'application/zip' ||
+            file.type === 'application/x-zip-compressed' ||
+            file.type === 'application/octet-stream' && file.name.toLowerCase().slice(-4) === '.zip';
+
+        if (isZip) {
+            console.log("Zip file detected, skipping client-side preview.");
+            document.getElementById('metric-code').value = "# Implementation will be loaded from ZIP file on save.\n# Choose a different file to preview or edit code here.";
+            return;
+        }
+
+        if (typeof FileReader === 'undefined') {
+            console.warn("FileReader not supported in this browser.");
+            alert("FileReader not supported in this browser. However, the server will still process your file when you save.");
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            console.log("File read successfully, updating implementation field.");
+            document.getElementById('metric-code').value = event.target.result;
+        };
+        reader.onerror = function (err) {
+            console.error("FileReader error:", err);
+            alert("Error reading file implementation locally. The server will still try to process it on save.");
+        };
+        reader.readAsText(file);
+    });
+
+
+    // Reset form on modal close
+    modalEl.addEventListener('hidden.bs.modal', function () {
+        document.getElementById('metricForm').reset();
+        document.getElementById('metric-id').value = '';
+        isQuickUpdate = false;
+        document.getElementById('metricModalLabel').innerText = 'Create New Metric';
+        document.getElementById('metricForm').action = "{{ url_for('create_global_metric') }}";
+        document.getElementById('save-btn').innerText = 'Create Metric';
+    });
+</script>
+{% endblock %}

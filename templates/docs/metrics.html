@@ -1,0 +1,88 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Writing Custom Metrics</h1>
+<p class="lead">Define how your submissions are evaluated using Python code.</p>
+<hr>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <h3>Overview</h3>
+        <p>Bench-Hub allows you to define metrics using Python. These snippets are executed safely to compute scores for
+            your data.</p>
+
+        <h4>Available Libraries</h4>
+        <p>The environment comes pre-loaded with standard scientific libraries:</p>
+        <ul>
+            <li><code>numpy</code> (as <code>np</code>)</li>
+            <li><code>math</code></li>
+            <li><code>json</code></li>
+        </ul>
+
+        <h3 class="mt-5">Metric Types</h3>
+
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">1. Per-Sample Metrics</h5>
+            </div>
+            <div class="card-body">
+                <p>These metrics calculate a score for <strong>each individual sample</strong> (e.g., L1 error for a
+                    single image).</p>
+                <h6>Signature</h6>
+                <pre>def metric_name(arg1, arg2, ...):
+    # Process inputs
+    return float_value</pre>
+
+                <h6>Example: L1 Error</h6>
+                <pre><code class="language-python">def L1(pred, gt):
+    import numpy as np
+    # Bench-Hub passes inputs as parsed values if possible, 
+    # but robust code handles lists/arrays just in case.
+    if isinstance(pred, (float, int)):
+        pred = np.array([pred])
+    if isinstance(gt, (float, int)):
+        gt = np.array([gt])
+        
+    return np.linalg.norm(pred - gt, ord=1)</code></pre>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">2. Aggregated Metrics</h5>
+            </div>
+            <div class="card-body">
+                <p>These metrics calculate a single score for the <strong>entire dataset</strong> (e.g., F1 Score, Total
+                    Accuracy). They receive lists of values.</p>
+                <h6>Signature</h6>
+                <pre>def metric_name(arg1_list, arg2_list, ...):
+    # Inputs are lists of all samples
+    return float_value</pre>
+
+                <h6>Example: Precision</h6>
+                <pre><code class="language-python">def precision(tp_list, fp_list):
+    # Filter out None values (failed samples)
+    tps = [x for x in tp_list if x is not None]
+    fps = [x for x in fp_list if x is not None]
+    
+    total_tp = sum(tps)
+    total_fp = sum(fps)
+    
+    if total_tp + total_fp == 0:
+        return 0.0
+    return total_tp / (total_tp + total_fp)</code></pre>
+            </div>
+        </div>
+
+        <h3 class="mt-5">Best Practices</h3>
+        <ul>
+            <li><strong>Handle Nones:</strong> Inputs might be <code>None</code> if a sample failed to load or a
+                dependency is missing. Always check for validity.</li>
+            <li><strong>Return simple types:</strong> Return python <code>float</code> or <code>int</code>. Numpy
+                scalars should be cast (<code>float(val)</code>).</li>
+            <li><strong>Dependencies:</strong> You can input the result of <em>other</em> metrics! Just map the argument
+                to "Per-Sample Metric" in the leaderboard settings.</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

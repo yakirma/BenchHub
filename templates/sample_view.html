@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sample: {{ sample.name }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>Sample: {{ sample.name }} (Dataset: {{ sample.dataset.name }})</h1>
+
+    <h2>Ground Truth Peak</h2>
+    <p>{{ sample.ground_truth_peak.peak_value }} ms</p>
+
+    <h2>Signal Shape</h2>
+    <p>{{ sample.signal_shape.shape_name }}</p>
+
+    <h2>Configuration</h2>
+    <pre>{{ config_data | tojson(indent=2) }}</pre>
+
+    <h2>Histogram</h2>
+    <canvas id="histogramChart"></canvas>
+
+    <script>
+        var bins = {{ bins | tojson }};
+        var counts = {{ counts | tojson }};
+
+        var ctx = document.getElementById('histogramChart').getContext('2d');
+        var histogramChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: bins.map(String), // Convert bins to string labels
+                datasets: [{
+                    label: 'Counts',
+                    data: counts,
+                    backgroundColor: 'rgba(75, 192, 192, 0.6)',
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                scales: {
+                    x: {
+                        type: 'category', // Use 'category' for discrete bins
+                        title: {
+                            display: true,
+                            text: 'Bins (ms)'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Counts'
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+
+    <br>
+    <a href="{{ url_for('dataset_view', dataset_id=sample.dataset.id) }}">Back to Dataset</a> | 
+    <a href="{{ url_for('index') }}">Back to Home</a>
+</body>
+</html>

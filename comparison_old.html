@@ -1,0 +1,2124 @@
+{% extends "base.html" %}
+
+{% block title %}Comparison - {% if submissions %}{{ submissions[0].leaderboard.name }}{% else %}Error{% endif %}{%
+endblock %}
+
+{% block content %}
+<style>
+    /* Add specific styles for draggable columns */
+    #comparison-table th[draggable] {
+        cursor: move;
+    }
+
+    #comparison-table th.dragging {
+        opacity: 0.5;
+        border: 2px dashed #0d6efd;
+    }
+
+    #comparison-table th.drag-over {
+        border-bottom: 3px solid #0d6efd;
+    }
+
+    .hist-chart-container {
+        cursor: pointer;
+        width: 300px;
+        height: 100px;
+    }
+
+    .sample-metrics-chart-container {
+        width: 300px;
+        height: 100px;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+
+    .sample-metrics-chart-container canvas {
+        min-width: 300px;
+    }
+
+    .chart-container {
+        position: relative;
+        height: 300px;
+        width: 100%;
+    }
+
+    /* Plotly Tooltip Fix */
+    .js-plotly-plot .plotly .hoverlayer {
+        z-index: 100000 !important;
+    }
+
+    /* Stretch images to fill container */
+    .clickable-vis {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    /* Resizable table columns */
+    #comparison-table {
+        table-layout: fixed;
+        width: auto;
+        min-width: 100%;
+    }
+
+    #comparison-table th {
+        position: relative;
+        user-select: none;
+    }
+
+    #comparison-table th .resizer {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 5px;
+        cursor: col-resize;
+        user-select: none;
+        height: 100%;
+    }
+
+    #comparison-table th .resizer:hover {
+        background-color: #0d6efd;
+    }
+
+
+    /* Tag Input Styles */
+    .tag-input-wrapper {
+        border: 1px solid #ced4da;
+        border-radius: 0.25rem;
+        background-color: #fff;
+        display: flex;
+        flex-wrap: wrap;
+        padding: 0.25rem;
+        align-items: center;
+        width: 300px;
+        min-height: 38px;
+        position: relative;
+    }
+
+    .tag-input-wrapper.disabled {
+        background-color: #e9ecef;
+        cursor: not-allowed;
+    }
+
+    .tag-chip {
+        background-color: #0d6efd;
+        color: white;
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.4rem;
+        margin: 0.1rem;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .tag-chip .remove-tag {
+        margin-left: 0.3rem;
+        cursor: pointer;
+        font-weight: bold;
+    }
+
+    .tag-input {
+        border: none;
+        outline: none;
+        flex-grow: 1;
+        background: transparent;
+        padding: 0.1rem 0.2rem;
+        min-width: 60px;
+    }
+
+    .suggestions-list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        border: 1px solid #ced4da;
+        border-radius: 0.25rem;
+        background-color: #fff;
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+        display: none;
+    }
+
+    .suggestions-list li {
+        padding: 0.5rem;
+        cursor: pointer;
+    }
+
+    .suggestions-list li:hover,
+    .suggestions-list li.active {
+        background-color: #0d6efd;
+        color: white;
+    }
+
+    .clear-all-tags {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: pointer;
+        color: #6c757d;
+        font-size: 1.2rem;
+        display: none;
+        /* Hidden by default */
+        z-index: 10;
+        line-height: 1;
+    }
+
+    /* Sticky Top Horizontal Scrollbar */
+    .page-container {
+        overflow-x: visible !important;
+    }
+
+    .content-wrapper {
+        min-width: 0 !important;
+    }
+
+    .top-scrollbar-container {
+        overflow-x: auto;
+        overflow-y: hidden;
+        width: 100%;
+        position: sticky;
+        top: 60px;
+        /* Slightly below navbar (56px) for visibility */
+        z-index: 1050;
+        /* Above Bootstrap navbar (1030) */
+        background: #e9ecef;
+        /* Light grey background for the bar itself */
+        border-bottom: 2px solid #0d6efd;
+        /* Prominent blue line */
+        display: none;
+        height: 18px;
+        /* Standard scrollbar height */
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar {
+        height: 12px;
+        display: block !important;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-thumb {
+        background-color: #0d6efd !important;
+        border-radius: 6px;
+        border: 2px solid #e9ecef;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-track {
+        background: #e9ecef !important;
+        display: block !important;
+    }
+
+    .top-scrollbar-content {
+        height: 1px;
+    }
+
+    .clear-all-tags:hover {
+        color: #dc3545;
+    }
+</style>
+
+
+<!--.tag-input-wrapper {-->
+<!--padding-right: 30px;-->
+<!--/* Make room for X */-->
+<!--}-->
+<!--</style>-->
+
+{% if submissions %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h1>Submission Comparison</h1>
+        <p class="lead mb-0">
+            Comparing {{ submissions|length }} submissions from leaderboard:
+            <strong><a href="{{ url_for('leaderboard_view', leaderboard_id=submissions[0].leaderboard.id) }}">{{
+                    submissions[0].leaderboard.name }}</a></strong>
+        </p>
+        <p class="text-muted">
+            Underlying Dataset:
+            <strong><a href="{{ url_for('dataset_view', dataset_id=submissions[0].leaderboard.dataset.id) }}">{{
+                    submissions[0].leaderboard.dataset.name }}</a></strong>
+        </p>
+    </div>
+    <a href="{{ url_for('leaderboard_view', leaderboard_id=submissions[0].leaderboard.id) }}"
+        class="btn btn-secondary">Back to Leaderboard</a>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">Overall Metrics Comparison</h5>
+        <div class="chart-container">
+            <canvas id="overallMetricsChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<hr>
+
+<h2>Detailed Sample-by-Sample Comparison</h2>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">View Options</h5>
+        <div class="controls">
+            <form method="get" action="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id) }}">
+                <!-- Row 1: Tag Filters -->
+                <div class="mb-3 p-2 bg-light border rounded">
+                    <strong>Tag Filters:</strong>
+                    <div class="d-flex align-items-center mt-2 flex-wrap">
+                        <!-- Include Types -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-include-tags">
+                            </div>
+                            <div class="tag-input-wrapper disabled" id="include-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="include-tags-input"
+                                    placeholder="Include tags..." disabled autocomplete="off">
+                                <ul class="suggestions-list" id="include-suggestions"></ul>
+                            </div>
+                        </div>
+
+                        <!-- Exclude Types -->
+                        <div class="d-flex align-items-center me-3 mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-exclude-tags">
+                            </div>
+                            <div class="tag-input-wrapper disabled" id="exclude-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="exclude-tags-input"
+                                    placeholder="Exclude tags..." disabled autocomplete="off">
+                                <ul class="suggestions-list" id="exclude-suggestions"></ul>
+                            </div>
+                        </div>
+
+                        <!-- Prefix Types -->
+                        <div class="d-flex align-items-center mb-2">
+                            <div class="form-check me-2">
+                                <input class="form-check-input" type="checkbox" id="enable-prefix-tags">
+                            </div>
+                            <div class="tag-input-wrapper disabled" id="prefix-tags-wrapper">
+                                <div class="chips-container d-flex flex-wrap"></div>
+                                <input type="text" class="tag-input" id="prefix-tags-input" placeholder="Prefix tags..."
+                                    disabled autocomplete="off">
+                                <ul class="suggestions-list" id="prefix-suggestions"></ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Row 2: Search and Pagination Controls -->
+                <div class="d-flex align-items-center">
+                    <input type="text" name="search_query" class="form-control me-2"
+                        placeholder="Search by sample name..." value="{{ search_query or '' }}"
+                        style="max-width: 300px;">
+                    <select name="per_page" onchange="saveScrollAndSubmit(this.form)" class="form-select me-2"
+                        style="width: auto;">
+                        {% for option in per_page_options %}
+                        <option value="{{ option }}" {% if option==current_per_page %}selected{% endif %}>{{ option }}
+                            per
+                            page</option>
+                        {% endfor %}
+                    </select>
+
+                    <label for="sort_by_select" class="form-label ms-3 me-2 mb-0">Sort by:</label>
+                    <select id="sort_by_select" name="sort_by" onchange="saveScrollAndSubmit(this.form)"
+                        class="form-select form-select-sm me-2" style="width: auto;">
+                        <optgroup label="General">
+                            <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
+                            <option value="hist_entropy" {% if sort_by=='hist_entropy' %}selected{% endif %}>GT Hist
+                                Entropy</option>
+                            {% for field_name in all_custom_fields %}
+                            {% if all_field_types.get(field_name) in ['scalar', 'metric'] and field_name in
+                            dataset_custom_fields %}
+                            <option value="{{ field_name }}" {% if sort_by==field_name %}selected{% endif %}>GT {{
+                                field_name|capitalize }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </optgroup>
+                        {% for sub in submissions %}
+                        <optgroup label="{{ sub.name }}">
+                            <option value="peak:{{ sub.id }}" {% if sort_by=='peak:' ~ sub.id %}selected{% endif %}>Peak
+                            </option>
+                            {% for m in selected_metrics %}
+                            <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
+                                {{ m|upper }}</option>
+                            {% endfor %}
+                            {% for m in active_metrics %}
+                            <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
+                                {{ sample_metric_options[m] }}</option>
+                            {% endfor %}
+                            {% for field_name in all_custom_fields %}
+                            {% if all_field_types.get(field_name) in ['scalar', 'metric'] and field_name in
+                            submission_custom_fields.get(sub.id, []) %}
+                            <option value="{{ field_name }}:{{ sub.id }}" {% if sort_by==field_name ~ ':' ~ sub.id
+                                %}selected{% endif %}>
+                                {{ field_name|capitalize }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </optgroup>
+                        {% endfor %}
+                    </select>
+
+                    <select name="sort_order" onchange="saveScrollAndSubmit(this.form)"
+                        class="form-select form-select-sm me-2" style="width: auto;">
+                        <option value="asc" {% if sort_order=='asc' %}selected{% endif %}>Low to High</option>
+                        <option value="desc" {% if sort_order=='desc' %}selected{% endif %}>High to Low</option>
+                    </select>
+
+
+                </div>
+            </form>
+            <form method="post"
+                action="{{ url_for('update_comparison_display_columns', leaderboard_id=submissions[0].leaderboard.id) }}"
+                class="d-flex align-items-center ms-3">
+                <label class="form-check-label fw-bold me-3">Display Columns:</label>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="checkbox" id="select_all_comparison_cols"
+                        onclick="handleSelectAllClick(this)">
+                    <label class="form-check-label" for="select_all_comparison_cols"><strong>All</strong></label>
+                </div>
+                {% for key, option in comparison_display_options.items() %}
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="checkbox" name="comparison_display_columns" value="{{ key }}"
+                        id="comp_col_{{ key }}" {% if key in selected_comparison_display_columns %}checked{% endif %}
+                        onchange="saveScrollAndSubmit(this.form)">
+                    <label class="form-check-label" for="comp_col_{{ key }}">{{ option.label }}</label>
+                </div>
+                {% endfor %}
+            </form>
+
+            {% if sample_metric_options %}
+            <form method="post"
+                action="{{ url_for('update_leaderboard_metrics', leaderboard_id=submissions[0].leaderboard.id) }}"
+                class="d-flex align-items-center ms-3">
+                <strong class="me-3">Add Metric:</strong>
+                {% for key, label in sample_metric_options.items() %}
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="checkbox" name="metrics" value="{{ key }}" id="met_{{ key }}"
+                        {% if key in active_metrics %}checked{% endif %} onchange="saveScrollAndSubmit(this.form)">
+                    <label class="form-check-label" for="met_{{ key }}">{{ label }}</label>
+                </div>
+                {% endfor %}
+            </form>
+            {% endif %}
+
+        </div>
+    </div>
+</div>
+
+<div class="d-flex justify-content-end mb-3">
+    <nav>
+        <ul class="pagination justify-content-end mb-0">
+            <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
+                    onclick="saveScrollPos()"
+                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order) }}">«
+                    First</a></li>
+            <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
+                    onclick="saveScrollPos()"
+                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order) }}">‹
+                    Previous</a></li>
+            <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
+                    paginated_samples.pages }}</span></li>
+            <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
+                    onclick="saveScrollPos()"
+                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order) }}">Next
+                    ›</a></li>
+            <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
+                    onclick="saveScrollPos()"
+                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order) }}">Last
+                    »</a></li>
+        </ul>
+    </nav>
+</div>
+
+<div class="page-container">
+    <div class="content-wrapper">
+        <!-- Submission Legend -->
+        <div class="mb-3 p-2 bg-light border rounded">
+            <strong>Submissions:</strong>
+            {% for sub in submissions %}
+            <span class="badge bg-primary me-2">Sub{{ loop.index }}</span> {{ sub.name }}{% if not loop.last %}, {%
+            endif %}
+            {% endfor %}
+        </div>
+
+        <div class="top-scrollbar-container" id="top-scroll-container">
+            <div class="top-scrollbar-content" id="top-scroll-content"></div>
+        </div>
+        <div class="table-responsive" id="table-container">
+            <table class="table table-bordered align-middle" id="comparison-table"
+                style="width: max-content; table-layout: fixed;">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 50px;">Options<div class="resizer"></div>
+                        </th>
+
+                        {% for col_key in selected_comparison_display_columns %}
+                        {% if col_key == 'pred_histogram' or col_key == 'per_sample_metrics'
+                        or col_key == 'submission_tags' or col_key.startswith('histogram_') %}
+                        {# Per-Submission Columns #}
+                        {% for sub in submissions %}
+                        <th draggable="true"
+                            style="width: {{ comparison_display_options[col_key].default_width }}; min-width: {{ comparison_display_options[col_key].default_width }}; overflow: hidden; text-overflow: ellipsis;">
+                            {% if col_key == 'per_sample_metrics' %}
+                            {% if active_metrics|length == 1 %}
+                            Sub{{ loop.index }} ({{ sample_metric_options[active_metrics[0]] }})
+                            {% else %}
+                            Sub{{ loop.index }} (Metrics)
+                            {% endif %}
+                            {% else %}
+                            Sub{{ loop.index }} ({{ comparison_display_options[col_key].label }})
+                            {% endif %}<div class="resizer"></div>
+                        </th>
+                        {% endfor %}
+
+                        {% elif col_key in all_custom_fields %}
+                        {# Complex Custom Field Columns (GT + Subs) for both images and scalars #}
+                        {% set label = comparison_display_options[col_key].label or col_key %}
+                        {% if col_key in dataset_custom_fields %}
+                        <th scope="col" class="resizable"
+                            style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }};">
+                            GT ({{ label }})<div class="resizer"></div>
+                        </th>
+                        {% endif %}
+                        {% for sub in submissions %}
+                        {% if col_key in submission_custom_fields.get(sub.id, []) %}
+                        <th scope="col" class="resizable"
+                            style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }};">
+                            Sub{{ loop.index }} ({{ label }})
+                            <div class="resizer"></div>
+                        </th>
+                        {% endif %}
+                        {% endfor %}
+
+
+                        {% else %}
+                        {# Single Columns (Sample Name, GT, Tags) #}
+                        <th draggable="true"
+                            style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }}; overflow: hidden; text-overflow: ellipsis;">
+                            {{
+                            comparison_display_options[col_key].label }}<div class="resizer"></div>
+                        </th>
+                        {% endif %}
+                        {% endfor %}
+
+                        {# Metric columns removed as requested #}
+
+
+
+                        {# Removed separate loops for custom_metrics and custom_image_fields #}
+                    </tr>
+
+                </thead>
+                <tbody>
+                    {% for data in comparison_data %}
+                    {# Calculate all tags for this row #}
+                    {% set row_tags = [] %}
+                    {% for pred in data.predictions %}
+                    {% if pred.tags %}
+                    {% for t in pred.tags %}
+                    {% if t not in row_tags %}{% set _ = row_tags.append(t) %}{% endif %}
+                    {% endfor %}
+                    {% endif %}
+                    {% endfor %}
+                    {% if data.dataset_tags %}
+                    {% for t in data.dataset_tags %}
+                    {% if t not in row_tags %}{% set _ = row_tags.append(t) %}{% endif %}
+                    {% endfor %}
+                    {% endif %}
+
+
+                    <tr class="sample-row" data-all-tags="{{ row_tags|join(',')|lower }}">
+                        <td>
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                                    data-bs-toggle="dropdown" aria-expanded="false">
+                                    <i class="bi bi-three-dots-vertical"></i>
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li>
+                                        <a class="dropdown-item"
+                                            href="{{ url_for('download_sample', sample_id=data.sample_id, submission_id=submissions|map(attribute='id')|list) }}">
+                                            <i class="bi bi-download me-2"></i>Download Sample
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
+                        </td>
+
+                        {% for col_key in selected_comparison_display_columns %}
+                        {% if col_key == 'sample_name' %}
+                        <td>{{ data.sample_name }}</td>
+                        {% elif col_key == 'per_sample_metrics' %}
+                        {% for sub in submissions %}
+                        <td>
+                            <div class="sample-metrics-chart-container">
+                                <canvas id="sample-metrics-chart-{{ data.sample_id }}-{{ sub.id }}"></canvas>
+                            </div>
+                        </td>
+                        {% endfor %}
+                        {% elif col_key == 'gt_config' %}
+                        <td>
+                            <div class="json-display">
+                                <pre>{{ data.ground_truth.config | tojson(indent=2) }}</pre>
+                            </div>
+                        </td>
+                        {% elif col_key == 'gt_metrics' %}
+                        <td>
+                            <div class="metric-chart-container" data-chart-type="gt-metric"
+                                data-sample-id="{{ data.sample_id }}">
+                                <canvas id="gt-metrics-chart-{{ data.sample_id }}"></canvas>
+                            </div>
+                        </td>
+                        {% elif col_key == 'gt_histogram' %}
+                        <td>
+                            <div class="hist-chart-container" data-chart-type="gt" data-sample-id="{{ data.sample_id }}"
+                                data-hist-field="histogram_data">
+                                <canvas id="gt-chart-{{ data.sample_id }}"></canvas>
+                            </div>
+                        </td>
+                        {% elif col_key == 'pred_peak' %}
+                        {% for pred in data.predictions %}
+                        <td>{{ "%.2f"|format(pred.peak) if pred.peak is not none else 'N/A' }}</td>
+                        {% endfor %}
+                        {% elif col_key == 'submission_tags' %}
+                        {% for pred in data.predictions %}
+                        <td>
+                            {% if pred.tags %}
+                            {% for tag in pred.tags %}
+                            <span class="badge bg-info text-dark">{{ tag }}</span>
+                            {% endfor %}
+                            {% endif %}
+                        </td>
+                        {% endfor %}
+                        {% elif col_key == 'dataset_tags' %}
+                        <td>
+                            {% if data.dataset_tags %}
+                            {% for tag in data.dataset_tags %}
+                            <span class="badge bg-secondary">{{ tag }}</span>
+                            {% endfor %}
+                            {% endif %}
+                        </td>
+                        {% elif col_key == 'pred_histogram' %}
+                        {% for pred in data.predictions %}
+                        <td>
+                            <div class="hist-chart-container" data-chart-type="pred"
+                                data-sample-id="{{ data.sample_id }}" data-sub-id="{{ pred.sub_id }}"
+                                data-hist-field="histogram_raw_histogram">
+                                <canvas id="pred-chart-{{ pred.sub_id }}-{{ data.sample_id }}"></canvas>
+                            </div>
+                        </td>
+                        {% endfor %}
+
+                        {# Metric columns removed as requested #}
+
+                        {% endif %}
+
+                        {% if col_key in all_custom_fields %}
+                        <!-- GT custom field -->
+                        {% if col_key in dataset_custom_fields %}
+                        <td style="width: 300px; min-width: 300px;">
+                            {% if data.custom_fields.get(col_key) and
+                            data.custom_fields[col_key].gt_field_id %}
+                            <div class="text-center">
+                                <img src="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}"
+                                    class="border rounded shadow-sm clickable-vis"
+                                    style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
+                                    data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    data-vis-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}"
+                                    data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].gt_field_id) }}"
+                                    data-group-id="gt-{{ col_key }}"
+                                    data-vis-type="{{ comparison_display_options[col_key].type }}" alt="{{ col_key }}">
+                            </div>
+                            {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_scalar_value is
+                            not none %}
+                            <div class="text-center fw-bold">
+                                {{ "%.4f"|format(data.custom_fields[col_key].gt_scalar_value) }}
+                            </div>
+                            {% endif %}
+                        </td>
+                        {% endif %}
+
+
+                        <!-- Submission custom fields -->
+                        {% for pred in data.predictions %}
+                        {% if col_key in submission_custom_fields.get(pred.sub_id, []) %}
+                        <td
+                            style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }};">
+                            {% if data.custom_fields.get(col_key) and
+                            data.custom_fields[col_key].submissions.get(pred.sub_id) %}
+                            <div class="text-center">
+                                <img src="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
+                                    class="border rounded shadow-sm clickable-vis"
+                                    style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
+                                    data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    data-vis-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
+                                    data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
+                                    data-group-id="sub-{{ pred.sub_id }}-{{ col_key }}"
+                                    data-vis-type="{{ comparison_display_options[col_key].type }}" alt="{{ col_key }}">
+                            </div>
+                            {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].sub_scalars and
+                            data.custom_fields[col_key].sub_scalars.get(pred.sub_id) is not none %}
+                            <div class="text-center fw-bold">
+                                {{ "%.4f"|format(data.custom_fields[col_key].sub_scalars[pred.sub_id]) }}
+                            </div>
+                            {% else %}
+                            <span class="text-muted">N/A</span>
+                            {% endif %}
+                        </td>
+                        {% endif %}
+                        {% endfor %}
+
+                        {% endif %}
+
+                        {% if col_key.startswith('histogram_') %}
+                        {% for pred in data.predictions %}
+                        <td>
+                            <div class="hist-chart-container" data-chart-type="pred"
+                                data-sample-id="{{ data.sample_id }}" data-sub-id="{{ pred.sub_id }}"
+                                data-hist-field="{{ col_key }}">
+                                <canvas
+                                    id="{{ col_key | replace('_', '-') }}-{{ pred.sub_id }}-{{ data.sample_id }}"></canvas>
+                            </div>
+                        </td>
+                        {% endfor %}
+
+                        {% endif %}
+                        {% endfor %}
+
+
+                        {# Standard Metrics and Visualizations Loops (Kept separate as they are not unified into column
+                        options key yet) #}
+
+                        {% set custom_image_cols = 0 %}
+                        {# Custom image col counting still needed for colspan? Or simpler: #}
+                        {% set total_cols = 1 + selected_comparison_display_columns|length %}
+                        {# Note: total_cols calculation is hard with dynamic nested columns. Table fallback won't be
+                        perfect but acceptable #}
+
+                        {% else %}
+                    <tr>
+                        <td colspan="{{ total_cols }}" class="text-center text-muted py-4">
+                            No samples found matching your search/filters.
+                        </td>
+                    </tr>
+
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Structure -->
+<div class="modal fade" id="chart-modal" tabindex="-1" aria-labelledby="chartModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="chartModalLabel">Histogram Detail</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="modal-chart-container" style="height: 70vh;">
+                    <canvas id="modal-chart"></canvas>
+                </div>
+                <!-- Pan Slider Removed -->
+                <!-- Gallery Footer -->
+                <div id="chart-gallery-footer" class="gallery-footer-container"></div>
+            </div>
+            <div class="modal-footer justify-content-between">
+                <div class="d-flex align-items-center">
+                    <input type="number" class="form-control form-control-sm" id="zoom-start" placeholder="Start Bin"
+                        style="width: 100px;">
+                    <span class="mx-2">-</span>
+                    <input type="number" class="form-control form-control-sm" id="zoom-end" placeholder="End Bin"
+                        style="width: 100px;">
+                    <button type="button" id="apply-zoom-btn" class="btn btn-success btn-sm ms-2">Apply</button>
+                </div>
+                <div>
+                    <button type="button" id="reset-zoom-btn" class="btn btn-secondary">Reset Zoom</button>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="alert alert-warning">No submissions selected for comparison. Please go back to the leaderboard and select at
+    least one.</div>
+{% endif %}
+
+<!-- Visualization Modal -->
+<div class="modal fade" id="vis-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Visualization Detail</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center" style="position: relative;">
+                <div id="modal-content-wrapper"
+                    style="width: 100%; height: 100%; min-height: 500px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+                    <div id="modal-error-container" style="display: none; width: 100%;"></div>
+                    <img id="modal-vis-img" src="" class="img-fluid" style="display: none;">
+                    <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
+                    <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
+                        style="display: none;">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <!-- Gallery Footer -->
+                <div id="vis-gallery-footer" class="gallery-footer-container"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+    window.saveScrollAndSubmit = function (form) {
+        try {
+            sessionStorage.setItem('scrollPos_' + window.location.pathname, window.scrollY);
+        } catch (e) {
+            console.error('SessionStorage error:', e);
+        }
+        form.submit();
+    };
+
+    window.saveScrollPos = function () {
+        try {
+            sessionStorage.setItem('scrollPos_' + window.location.pathname, window.scrollY);
+        } catch (e) {
+            console.error('SessionStorage error:', e);
+        }
+    };
+
+    // Toggle Checkboxes Logic (Global)
+    window.handleSelectAllClick = function (selectAll) {
+        const checkboxes = document.querySelectorAll('input[name="comparison_display_columns"]');
+
+        // Use the actual checkbox state after the click to determine action
+        // If the checkbox is now checked, select all. If unchecked, deselect all.
+        const shouldSelectAll = selectAll.checked;
+
+        checkboxes.forEach(cb => cb.checked = shouldSelectAll);
+        saveScrollAndSubmit(checkboxes[0].form);
+    };
+
+    window.updateSelectAllState = function () {
+        const selectAll = document.getElementById('select_all_comparison_cols');
+        if (!selectAll) return;
+        const checkboxes = document.querySelectorAll('input[name="comparison_display_columns"]');
+        const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+
+        if (checkedCount === 0) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        } else if (checkedCount === checkboxes.length) {
+            selectAll.checked = true;
+            selectAll.indeterminate = false;
+        } else {
+            selectAll.checked = false;
+            selectAll.indeterminate = true;
+        }
+    };
+
+    // --- Sticky Top Scrollbar Synchronization ---
+    function setupStickyScrollbar() {
+        const topScrollContainer = document.getElementById('top-scroll-container');
+        const topScrollContent = document.getElementById('top-scroll-content');
+        const tableContainer = document.getElementById('table-container');
+        const table = document.getElementById('comparison-table');
+
+        if (!topScrollContainer || !tableContainer || !table) return;
+
+        // Sync scrollers
+        let isSyncingTop = false;
+        let isSyncingTable = false;
+
+        topScrollContainer.onscroll = function () {
+            if (!isSyncingTop) {
+                isSyncingTable = true;
+                tableContainer.scrollLeft = topScrollContainer.scrollLeft;
+            }
+            isSyncingTop = false;
+        };
+
+        tableContainer.onscroll = function () {
+            if (!isSyncingTable) {
+                isSyncingTop = true;
+                topScrollContainer.scrollLeft = tableContainer.scrollLeft;
+            }
+            isSyncingTable = false;
+        };
+
+        // Resize observer to match width and show/hide
+        const ro = new ResizeObserver(entries => {
+            const tableWidth = table.scrollWidth;
+            const containerWidth = tableContainer.clientWidth;
+            topScrollContent.style.width = tableWidth + 'px';
+
+            // Show if table is significantly wider than container
+            if (tableWidth > containerWidth + 2) {
+                topScrollContainer.style.setProperty('display', 'block', 'important');
+            } else {
+                topScrollContainer.style.setProperty('display', 'none', 'important');
+            }
+        });
+
+        ro.observe(table);
+        ro.observe(tableContainer);
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        setupStickyScrollbar();
+        // Restore Scroll Position
+        try {
+            const key = 'scrollPos_' + window.location.pathname;
+            const storedPos = sessionStorage.getItem(key);
+            if (storedPos) {
+                window.scrollTo(0, parseInt(storedPos));
+                sessionStorage.removeItem(key);
+            }
+        } catch (e) { console.error(e); }
+
+        // Initialize Select All State
+        updateSelectAllState();
+
+        // Column Resizing Logic
+        const table = document.getElementById('comparison-table');
+        if (table) {
+            const resizers = table.querySelectorAll('.resizer');
+            resizers.forEach((resizer, index) => {
+                let startX, startWidth, startTableWidth;
+
+                resizer.addEventListener('mousedown', function (e) {
+                    const th = resizer.parentElement;
+                    startX = e.pageX;
+                    startWidth = th.offsetWidth;
+                    startTableWidth = table.offsetWidth;
+
+                    document.addEventListener('mousemove', resize);
+                    document.addEventListener('mouseup', stopResize);
+                    e.preventDefault();
+                });
+
+                function resize(e) {
+                    const th = resizer.parentElement;
+                    const diff = e.pageX - startX;
+                    const width = startWidth + diff;
+                    th.style.width = width + 'px';
+                    table.style.width = (startTableWidth + diff) + 'px';
+                }
+
+                function stopResize() {
+                    document.removeEventListener('mousemove', resize);
+                    document.removeEventListener('mouseup', stopResize);
+                }
+            });
+        }
+
+        // Visualization Modal Logic
+        const visModal = document.getElementById('vis-modal');
+        if (visModal) {
+            visModal.addEventListener('show.bs.modal', function (event) {
+                var triggerElement = event.relatedTarget;
+                updateVisGallery(triggerElement);
+                updateVisModalContent(triggerElement);
+            });
+        }
+
+        window.updateVisModalContent = function (triggerElement) {
+            const visModal = document.getElementById('vis-modal');
+            var visUrl = triggerElement.getAttribute('data-vis-url');
+            var visType = triggerElement.getAttribute('data-vis-type');
+            var apiUrl = triggerElement.getAttribute('data-api-url'); // Get API URL
+
+            const modalImg = visModal.querySelector('#modal-vis-img');
+            const modalPlotly = visModal.querySelector('#modal-plotly-div');
+            const loadingSpinner = visModal.querySelector('#modal-loading-spinner');
+            const errorContainer = visModal.querySelector('#modal-error-container');
+
+            console.log("DEBUG vis-modal elements:", { modalImg, modalPlotly, loadingSpinner, errorContainer });
+
+            // Reset state
+            if (modalImg) modalImg.style.display = 'none';
+            if (modalPlotly) {
+                modalPlotly.style.display = 'none';
+                modalPlotly.innerHTML = ''; // Clear previous plot
+            }
+            if (loadingSpinner) loadingSpinner.style.display = 'none';
+            if (errorContainer) {
+                errorContainer.style.display = 'none';
+                errorContainer.innerHTML = '';
+            }
+
+            if (visType === 'depth') {
+                // Interactive Depth Map
+                if (loadingSpinner) loadingSpinner.style.display = 'block';
+
+                // Use apiUrl if available, otherwise fall back to visUrl (unlikely to work for JSON but safe fallback)
+                fetch(apiUrl || visUrl)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (loadingSpinner) loadingSpinner.style.display = 'none';
+                        if (modalPlotly) modalPlotly.style.display = 'block';
+
+                        const plotData = [{
+                            z: data.data,
+                            type: 'heatmap',
+                            colorscale: 'turbo',
+                            hoverongaps: false,
+                            hovertemplate: 'X: %{x}<br>Y: %{y}<br>Depth: %{z}<extra></extra>'
+                        }];
+
+                        const layout = {
+                            title: 'Interactive Depth Map',
+                            autosize: true,
+                            margin: { l: 50, r: 50, b: 50, t: 50 },
+                            xaxis: { title: 'X' },
+                            yaxis: { title: 'Y', scaleanchor: 'x' }
+                        };
+
+                        Plotly.newPlot('modal-plotly-div', plotData, layout, { responsive: true });
+                    })
+                    .catch(error => {
+                        console.error('Error loading depth map data:', error);
+                        if (loadingSpinner) loadingSpinner.style.display = 'none';
+                        if (errorContainer) {
+                            errorContainer.style.display = 'block';
+                            errorContainer.innerHTML = `
+                                    <div class="alert alert-danger" role="alert">
+                                        Error loading interactive depth map: ${error.message}
+                                    </div>
+                                `;
+                        }
+                    });
+            } else {
+                // Static Image
+                if (modalImg) {
+                    modalImg.style.display = 'block';
+                    modalImg.src = visUrl;
+                }
+                if (modalPlotly) modalPlotly.style.display = 'none';
+                if (loadingSpinner) loadingSpinner.style.display = 'none';
+            }
+        };
+
+
+        const hasSubmissions = {{ (submissions | length > 0) | tojson
+    }};
+    if (!hasSubmissions) return;
+
+    const chartColors = [
+        'rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)',
+        'rgba(75, 192, 192, 0.7)', 'rgba(153, 102, 255, 0.7)', 'rgba(255, 159, 64, 0.7)'
+    ];
+
+    const submissions = {{ submissions_json | tojson if submissions_json else '[]' }};
+    const selectedMetrics = {{ selected_metrics| tojson }} || [];
+    const activeMetrics = {{ active_metrics | tojson }};
+    const customMetrics = {{ custom_metrics | tojson if custom_metrics else '[]' }};
+    const sampleMetricOptions = {{ sample_metric_options | tojson }};
+
+    // Combine selected metrics with custom metrics for chart display
+    const allMetricsForChart = [...activeMetrics, ...customMetrics];
+    console.log('DEBUG comparison.html:', { activeMetrics, customMetrics, allMetricsForChart, sampleMetricOptions });
+
+    // Overall Metrics Chart
+    if (selectedMetrics && selectedMetrics.length > 0 && submissions && submissions.length > 0) {
+        new Chart(document.getElementById('overallMetricsChart').getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: submissions.map(s => s.name),
+                datasets: [
+                    {% for metric in selected_metrics %}
+                    {
+                label: '{{ sample_metric_options.get(metric, metric.upper()) }}',
+                data: submissions.map(s => s['{{ metric }}']),
+                backgroundColor: chartColors[{{ loop.index0 }} % chartColors.length],
+    borderWidth: 1
+                    },
+    {% endfor %}
+                ]
+            },
+    options: {
+        plugins: { tooltip: { enabled: true } },
+        scales: {
+            y: { beginAtZero: true, type: 'linear', title: { display: true, text: 'Metric Value' } },
+            x: { display: false }
+        }
+    }
+            });
+        }
+
+    // Detailed charts
+    const comparisonData = {{ comparison_data| tojson }} || [];
+    const chartMetricsData = {{ chart_metrics_data| tojson }} || [];
+    const selectedComparisonDisplayColumns = {{ selected_comparison_display_columns | tojson }} || [];
+
+    const histTooltipCallbacks = {
+        title: function (context) {
+            return `Bin: ${context[0].parsed.x.toFixed(2)} `;
+        },
+        label: function (context) {
+            return `Counts: ${context.parsed.y.toLocaleString()} `;
+        }
+    };
+
+
+
+    // Options for Inline Bar Charts (matching dataset_view)
+    const inlineBarOptions = {
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false
+    };
+
+    // Options for Modal Bar Charts (with axes)
+    const modalBarOptions = {
+        plugins: {
+            legend: { display: false },
+            tooltip: { enabled: true, callbacks: histTooltipCallbacks },
+            zoom: {
+                limits: { x: { minRange: 10 } },
+                pan: { enabled: true, mode: 'x' },
+                zoom: { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'x' }
+            }
+        },
+        scales: {
+            x: { display: true, title: { display: true, text: 'Bins' } },
+            y: { display: true, beginAtZero: true, title: { display: true, text: 'Counts' } }
+        },
+        responsive: true,
+        maintainAspectRatio: false
+    };
+
+    comparisonData.forEach((sampleData, sampleIndex) => {
+        if (selectedComparisonDisplayColumns.includes('gt_histogram')) {
+            const gtCanvas = document.getElementById(`gt-chart-${sampleData.sample_id}`);
+            if (gtCanvas) {
+                new Chart(gtCanvas.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: sampleData.ground_truth.bins.map(String),
+                        datasets: [{
+                            data: sampleData.ground_truth.counts,
+                            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                            borderWidth: 0,
+                            barPercentage: 1.0,
+                            categoryPercentage: 1.0
+                        }]
+                    },
+                    options: inlineBarOptions
+                });
+            }
+        }
+
+        // Dynamic Histogram Charts
+        selectedComparisonDisplayColumns.forEach(col => {
+            if (col.startsWith('histogram_')) {
+                sampleData.predictions.forEach((predData) => {
+                    // Check if this prediction has data for this specific histogram type
+                    // The backend stores it as predData[col]
+                    const histData = predData[col];
+                    if (histData && histData.bins && histData.counts) {
+                        // Construct the canvas ID dynamically to match what the template generates
+                        // Warning: Template needs to conform to this ID structure!
+                        // ID format: histogram-{col}-{sub_id}-{sample_id}
+                        const canvasId = `${col.replace(/_/g, '-')}-${predData.sub_id}-${sampleData.sample_id}`;
+                        const canvas = document.getElementById(canvasId);
+
+                        // Fallback/Legacy: If col is still 'pred_histogram' (legacy mapping), match old ID
+                        // Not needed if we switched completely, but good for safety?
+                        // Let's stick to the new ID assumption. I need to update the HTML generation too if I change this JS.
+                        // Wait, I haven't updated the HTML rendering loop in the template yet! 
+                        // I need to ensure the HTML *iterates* the columns and creates canvases with these IDs.
+
+
+                        if (canvas) {
+                            new Chart(canvas.getContext('2d'), {
+                                type: 'bar',
+                                data: {
+                                    labels: histData.bins.map(String),
+                                    datasets: [{
+                                        data: histData.counts,
+                                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                                        borderWidth: 0,
+                                        barPercentage: 1.0,
+                                        categoryPercentage: 1.0
+                                    }]
+                                },
+                                options: inlineBarOptions
+                            });
+                        }
+                    }
+                });
+            }
+        });
+
+        // Loop for GT Metrics Chart
+        if (selectedComparisonDisplayColumns.includes('gt_metrics')) {
+            console.log('Rendering gt_metrics chart for sample:', sampleData.sample_name);
+            const sampleMetricData = chartMetricsData[sampleIndex];
+            const gtCanvasId = `gt-metrics-chart-${sampleData.sample_id}`;
+            const gtCanvas = document.getElementById(gtCanvasId);
+
+            if (gtCanvas && sampleMetricData && sampleMetricData.metrics['Ground Truth']) {
+                const gtData = sampleMetricData.metrics['Ground Truth'];
+                const datasets = [];
+
+                allMetricsForChart.forEach((m, mIndex) => {
+                    const val = gtData[m];
+                    if (val !== undefined) {
+                        const label = sampleMetricOptions[m] || m.replace(/_/g, ' ').toUpperCase();
+                        datasets.push({
+                            label: label,
+                            data: [val],
+                            backgroundColor: chartColors[mIndex % chartColors.length],
+                            borderWidth: 0
+                        });
+                    }
+                });
+
+                // If we found any GT metrics
+                if (datasets.length > 0) {
+                    new Chart(gtCanvas.getContext('2d'), {
+                        type: 'bar',
+                        data: {
+                            labels: [''], // Single category
+                            datasets: datasets
+                        },
+                        options: {
+                            plugins: {
+                                title: { display: false },
+                                legend: { display: false, labels: { boxWidth: 10 } },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function (context) {
+                                            let val = context.raw;
+                                            if (val === 1e-9) val = 0;
+                                            return `${context.dataset.label}: ${val.toExponential(2)} `;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    type: 'logarithmic',
+                                    display: true,
+                                    title: { display: true, text: 'Entropy' },
+                                    ticks: {
+                                        callback: function (value, index, values) {
+                                            return Number(value.toString());
+                                        }
+                                    }
+                                },
+                                x: { display: false }
+                            },
+                            maintainAspectRatio: false,
+                            responsive: true,
+                            // Metadata for Zoom Modal
+                            _meta: {
+                                sampleId: sampleData.sample_id,
+                                sampleName: sampleData.sample_name,
+                                subName: 'Ground Truth',
+                                allDatasets: datasets
+                            }
+                        }
+                    });
+
+                    // Attach click handler for Zoom
+                    gtCanvas.style.cursor = 'pointer';
+                    gtCanvas.onclick = function () {
+                        // The chart instance is created above but not stored in a variable we can access inside this closure easily
+                        // properly if we don't return it.
+                        // However, Chart.getChart(gtCanvas) works reliably.
+                        const chart = Chart.getChart(gtCanvas);
+                        if (chart && chart.options._meta) {
+                            openMetricZoomModal(chart.options._meta);
+                        }
+                    };
+
+                }
+            }
+        }
+
+        if (selectedComparisonDisplayColumns.includes('per_sample_metrics')) {
+            console.log('Rendering per_sample_metrics chart for sample:', sampleData.sample_name);
+            const sampleMetricData = chartMetricsData[sampleIndex];
+
+            submissions.forEach((sub, subIndex) => {
+                const canvasId = `sample-metrics-chart-${sampleData.sample_id}-${sub.id}`;
+                const sampleMetricCanvas = document.getElementById(canvasId);
+
+                if (sampleMetricCanvas && sampleMetricData && sampleMetricData.metrics[sub.name]) {
+                    // Prepare data: One dataset per metric to allow Legend to handle labels
+                    const datasets = [];
+
+                    allMetricsForChart.forEach((m, mIndex) => {
+                        let val = null;
+                        const pred = sampleData.predictions.find(p => p.sub_id === sub.id);
+                        if (pred && pred[m.toLowerCase()] !== undefined) {
+                            val = pred[m.toLowerCase()];
+                        } else if (sampleMetricData.metrics[sub.name] && sampleMetricData.metrics[sub.name][m] !== undefined) {
+                            val = sampleMetricData.metrics[sub.name][m];
+                        }
+
+                        const label = sampleMetricOptions[m] || m;
+
+                        if (val !== null && val !== undefined) {
+                            datasets.push({
+                                label: label,
+                                data: [val], // Single point at x=0
+                                backgroundColor: chartColors[mIndex % chartColors.length],
+                                borderColor: 'transparent',
+                                borderWidth: 0
+                            });
+                        }
+                    });
+
+                    // Add a dummy dataset for "..." if we have too many
+                    if (datasets.length > 5) {
+                        datasets.push({
+                            label: '...',
+                            data: [],
+                            backgroundColor: 'transparent',
+                            borderColor: 'transparent',
+                            isTruncationIndicator: true
+                        });
+                    }
+
+                    const chartConfig = {
+                        type: 'bar',
+                        data: {
+                            labels: [''], // Single category on X axis
+                            datasets: datasets
+                        },
+                        options: {
+                            plugins: {
+                                title: { display: false },
+                                legend: {
+                                    display: true,
+                                    position: 'top',
+                                    labels: {
+                                        boxWidth: 10,
+                                        filter: function (item, chart) {
+                                            if (item.text === '...') return true;
+                                            return item.datasetIndex < 5;
+                                        }
+                                    }
+                                },
+                                tooltip: { enabled: true }
+                            },
+                            scales: {
+                                x: { display: false },
+                                y: {
+                                    display: true,
+                                    type: 'linear',
+                                    beginAtZero: true,
+                                    title: { display: false }
+                                }
+                            },
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            // Store metadata for the modal
+                            _meta: {
+                                sampleId: sampleData.sample_id,
+                                subId: sub.id,
+                                sampleName: sampleData.sample_name,
+                                subName: sub.name,
+                                allDatasets: datasets
+                            }
+                        }
+                    };
+
+                    new Chart(sampleMetricCanvas.getContext('2d'), chartConfig);
+
+                    // Attach click handler immediately
+                    sampleMetricCanvas.style.cursor = 'pointer';
+                    sampleMetricCanvas.onclick = function () {
+                        updateMetricGallery(chartConfig.options._meta);
+                        openMetricZoomModal(chartConfig.options._meta);
+                    };
+                }
+            });
+        }
+    });
+
+    // --- Modal Chart Logic ---
+    const chartModal = new bootstrap.Modal(document.getElementById('chart-modal'));
+    const modalChartCanvas = document.getElementById('modal-chart');
+    let modalChart = null;
+
+    const createInteractiveChart = (title, labels, data) => {
+        if (modalChart) modalChart.destroy();
+        document.getElementById('chartModalLabel').textContent = title;
+        modalChart = new Chart(modalChartCanvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                    borderWidth: 0,
+                    barPercentage: 1.0,
+                    categoryPercentage: 1.0
+                }]
+            },
+            options: modalBarOptions
+        });
+        // chartModal.show(); // Removed auto-show to support gallery update
+    };
+
+    window.updateHistModalContent = function (container) {
+        const chartType = container.dataset.chartType;
+        const sampleId = parseInt(container.dataset.sampleId, 10);
+        const subId = parseInt(container.dataset.subId, 10);
+        const histField = container.dataset.histField;
+
+        const sample = comparisonData.find(d => d.sample_id === sampleId);
+        if (!sample) return;
+
+        let labels, counts, title;
+        if (chartType === 'gt') {
+            labels = sample.ground_truth.bins.map(String);
+            counts = sample.ground_truth.counts;
+            title = `Ground Truth: ${sample.sample_name} `;
+        } else {
+            const pred = sample.predictions.find(p => p.sub_id === subId);
+            const sub = submissions.find(s => s.id === subId);
+            if (!pred || !sub) return;
+
+            // Handle both dynamic histograms and legacy bins/counts
+            let histData = null;
+            if (histField && pred[histField]) {
+                histData = pred[histField];
+            } else {
+                // Fallback to top-level bins/counts for legacy compatibility
+                histData = { bins: pred.bins, counts: pred.counts };
+            }
+
+            if (!histData || !histData.bins) {
+                console.error("No histogram data found for field:", histField);
+                return;
+            }
+
+            labels = histData.bins.map(String);
+            counts = histData.counts;
+            const fieldLabel = (histField || 'Histogram').replace('histogram_', '').replace(/_/g, ' ').toUpperCase();
+            title = `${fieldLabel}: ${sub.name} - Sample: ${sample.sample_name}`;
+        }
+        createInteractiveChart(title, labels, counts);
+    };
+
+    document.querySelectorAll('.hist-chart-container').forEach(container => {
+        container.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            updateHistGallery(el);
+            updateHistModalContent(el);
+            chartModal.show(); // Explicitly show modal on click
+        });
+    });
+
+    document.getElementById('reset-zoom-btn').addEventListener('click', () => {
+        if (modalChart) modalChart.resetZoom();
+        // Pan slider removed
+        // document.getElementById('zoom-pan-slider').value = 0;
+        // document.getElementById('zoom-pan-slider').disabled = true;
+    });
+
+    // Slider event listener removed
+
+    document.getElementById('apply-zoom-btn').addEventListener('click', () => {
+        if (modalChart) {
+            const start = parseFloat(document.getElementById('zoom-start').value);
+            const end = parseFloat(document.getElementById('zoom-end').value);
+
+            if (!isNaN(start) && !isNaN(end) && start < end) {
+                modalChart.zoomScale('x', { min: start, max: end });
+                modalChart.update();
+            } else {
+                alert("Please enter a valid start and end range.");
+            }
+        }
+    });
+
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    const allAvailableTags = {{ all_sample_tag_names | tojson if all_sample_tag_names else '[]' }};
+    const allAvailablePrefixes = {{ all_sample_prefixes | tojson if all_sample_prefixes else '[]' }};
+
+    function setupTagInput(wrapperId, inputId, suggestionsId, checkboxId, sourceList) {
+        const wrapper = document.getElementById(wrapperId);
+        const input = document.getElementById(inputId);
+        const suggestionsList = document.getElementById(suggestionsId);
+        const checkbox = checkboxId ? document.getElementById(checkboxId) : null;
+
+        if (!wrapper || !input || !suggestionsList) {
+            console.warn("Tag input elements not found for", wrapperId);
+            return {
+                getTags: () => [],
+                addTag: () => { },
+                setTags: () => { },
+                clearTags: () => { },
+                setDisabled: () => { }
+            };
+        }
+
+        const chipsContainer = wrapper.querySelector('.chips-container');
+        let tags = [];
+
+        // Add Clear Button
+        let clearBtn = wrapper.querySelector('.clear-all-tags');
+        if (!clearBtn) {
+            clearBtn = document.createElement('span');
+            clearBtn.className = 'clear-all-tags';
+            clearBtn.innerHTML = '&times;';
+            wrapper.appendChild(clearBtn);
+
+            clearBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent wrapper focus
+                tags = [];
+                input.value = '';
+                renderChips();
+                input.focus();
+            });
+        }
+
+        let currentFocus = -1;
+
+        function renderChips(silent = false) {
+            chipsContainer.innerHTML = '';
+            tags.forEach((tag, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'tag-chip';
+                chip.innerHTML = `${tag} <span class="remove-tag" data-index="${index}">&times;</span>`;
+                chipsContainer.appendChild(chip);
+            });
+            // Update Clear Button Visibility
+            if (tags.length > 0 || input.value.trim().length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                clearBtn.style.display = 'none';
+            }
+
+            if (!silent && typeof applyFilters === 'function') applyFilters(); // Auto-update
+        }
+
+        chipsContainer.addEventListener('click', (e) => {
+            if (e.target.classList.contains('remove-tag')) {
+                const index = parseInt(e.target.dataset.index, 10);
+                tags.splice(index, 1);
+                renderChips();
+            } else if (e.target.classList.contains('tag-chip')) {
+                // Edit Tag Logic
+                const index = parseInt(e.target.querySelector('.remove-tag').dataset.index, 10);
+                const tag = tags[index];
+                tags.splice(index, 1);
+                renderChips(true);
+                input.value = tag;
+                input.focus();
+            }
+        });
+
+        function addTag(tag) {
+            tag = tag.trim(); // Preserve case
+            if (tag && !tags.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                tags.push(tag);
+                renderChips();
+            }
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) {
+                        e.preventDefault();
+                        items[currentFocus].click();
+                        return;
+                    }
+                }
+                const val = input.value.trim();
+                if (val) {
+                    e.preventDefault();
+                    // Split by comma or space
+                    const parts = val.split(/[ ,]+/);
+                    parts.forEach(part => {
+                        if (part && !tags.some(t => t.toLowerCase() === part.toLowerCase())) {
+                            tags.push(part);
+                        }
+                    });
+                    input.value = ''; // Clear input on manual entry
+                    renderChips();
+                }
+            } else if (e.key === 'Backspace' && !input.value && tags.length > 0) {
+                tags.pop();
+                renderChips();
+            } else if (e.key === 'Tab') {
+                e.preventDefault(); // Prevent focus loss
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) items[currentFocus].click();
+                } else if (suggestionsList.style.display === 'block' && suggestionsList.firstChild) {
+                    suggestionsList.firstChild.click();
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentFocus++;
+                addActive(suggestionsList.querySelectorAll('li'));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentFocus--;
+                addActive(suggestionsList.querySelectorAll('li'));
+            }
+        });
+
+        function addActive(x) {
+            if (!x) return false;
+            removeActive(x);
+            if (currentFocus >= x.length) currentFocus = 0;
+            if (currentFocus < 0) currentFocus = (x.length - 1);
+            x[currentFocus].classList.add("active");
+            x[currentFocus].scrollIntoView({ block: "nearest" });
+        }
+        function removeActive(x) {
+            for (var i = 0; i < x.length; i++) {
+                x[i].classList.remove("active");
+            }
+        }
+
+        function updateSuggestions() {
+            currentFocus = -1;
+            const val = input.value.trim().toLowerCase();
+            suggestionsList.innerHTML = '';
+
+            // Show suggestions if value exists OR if input is focused (show all/top)
+            let matches = [];
+            if (val) {
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => t.toLowerCase().includes(val) && !tags.includes(t));
+                }
+            } else {
+                // Show all (or top 10) if no input but focused
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => !tags.includes(t));
+                }
+            }
+
+            if (matches.length > 0) {
+                matches.slice(0, 10).forEach(match => {
+                    const li = document.createElement('li');
+                    li.textContent = match;
+                    li.addEventListener('click', () => {
+                        addTag(match);
+                        input.value = ''; // Clear input on selection
+                        suggestionsList.style.display = 'none';
+                        input.focus();
+                    });
+                    suggestionsList.appendChild(li);
+                });
+                suggestionsList.style.display = 'block';
+            } else {
+                suggestionsList.style.display = 'none';
+            }
+
+            // Clear button logic
+            if (val || tags.length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                if (tags.length === 0) clearBtn.style.display = 'none';
+            }
+        }
+
+        input.addEventListener('input', updateSuggestions);
+        input.addEventListener('focus', updateSuggestions);
+        input.addEventListener('click', updateSuggestions);
+
+        document.addEventListener('click', (e) => {
+            if (!wrapper.contains(e.target)) {
+                suggestionsList.style.display = 'none';
+            }
+        });
+
+        if (checkbox) {
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    wrapper.classList.remove('disabled');
+                    input.disabled = false;
+                } else {
+                    wrapper.classList.add('disabled');
+                    input.disabled = true;
+                }
+                if (typeof applyFilters === 'function') applyFilters();
+            });
+        }
+
+        return {
+            getTags: () => (checkbox ? checkbox.checked : true) ? tags : [],
+            addTag: (t) => addTag(t),
+            setTags: (tArray) => {
+                tags = tArray;
+                renderChips(true); // Silent update
+            },
+            clearTags: () => { tags = []; renderChips(); },
+            setDisabled: (disabled) => {
+                if (checkbox) {
+                    checkbox.checked = !disabled;
+                    if (checkbox.checked) {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    } else {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    }
+                } else {
+                    if (disabled) {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    } else {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    }
+                }
+            }
+        };
+    }
+
+    window.includeTagsCtrl = setupTagInput('include-tags-wrapper', 'include-tags-input', 'include-suggestions', 'enable-include-tags', allAvailableTags);
+
+
+
+
+
+    window.excludeTagsCtrl = setupTagInput('exclude-tags-wrapper', 'exclude-tags-input', 'exclude-suggestions', 'enable-exclude-tags', allAvailableTags);
+    window.prefixTagsCtrl = setupTagInput('prefix-tags-wrapper', 'prefix-tags-input', 'prefix-suggestions', 'enable-prefix-tags', allAvailablePrefixes);
+
+    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix) {
+        const url = new URL(window.location);
+        if (include.length) url.searchParams.set('include_tags', include.join(',')); else url.searchParams.delete('include_tags');
+        if (exclude.length) url.searchParams.set('exclude_tags', exclude.join(',')); else url.searchParams.delete('exclude_tags');
+        if (prefix.length) url.searchParams.set('prefix_tags', prefix.join(',')); else url.searchParams.delete('prefix_tags');
+
+        url.searchParams.set('enable_include', enableInclude);
+        url.searchParams.set('enable_exclude', enableExclude);
+        url.searchParams.set('enable_prefix', enablePrefix);
+
+        // Reset to page 1 on filter change to allow seeing results?
+        // User behavior: if I am on page 10 and add a filter, page 10 might be empty.
+        // It is safer to reset page to 1 if filters changed.
+        // But loadStateFromURL shouldn't reset page.
+        // Let's check if parameters actually changed compared to current URL.
+        const currentUrl = new URL(window.location);
+        // Compare relevant params
+        const paramsChanged = ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix']
+            .some(key => url.searchParams.get(key) !== currentUrl.searchParams.get(key));
+
+        if (paramsChanged) {
+            // If filters changed, reset to page 1 for safety
+            url.searchParams.set('page', 1);
+            window.location.href = url.toString();
+        } else {
+            // Just replace state for cosmetic or if no change (startup)
+            // window.history.replaceState({}, '', url); 
+            // Actually if no change, do nothing.
+        }
+
+        // Patch Pagination Links, etc. (Visual update locally)
+        document.querySelectorAll('.page-link').forEach(link => {
+            try {
+                const linkUrl = new URL(link.href, window.location.origin);
+                // Copy params to link
+                ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix'].forEach(key => {
+                    const val = url.searchParams.get(key);
+                    if (val !== null) linkUrl.searchParams.set(key, val); else linkUrl.searchParams.delete(key);
+                });
+                link.href = linkUrl.toString();
+            } catch (e) { }
+        });
+
+        // Sync Hidden Inputs for Search Form (if exists)
+        // Find the form containing the per_page input or search_query
+        // Note: per_page is a select, so we use [name="per_page"] to match both input/select
+        let form = document.querySelector('[name="per_page"]')?.closest('form');
+        if (!form) form = document.querySelector('form[action*="comparison"]'); // Fallback looser match
+
+        if (form) {
+            const setHidden = (name, val) => {
+                let inp = form.querySelector(`input[name = "${name}"]`);
+                if (!inp) {
+                    inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = name;
+                    form.appendChild(inp);
+                }
+                inp.value = val;
+            };
+            setHidden('include_tags', include.join(','));
+            setHidden('exclude_tags', exclude.join(','));
+            setHidden('prefix_tags', prefix.join(','));
+            setHidden('enable_include', enableInclude);
+            setHidden('enable_exclude', enableExclude);
+            setHidden('enable_prefix', enablePrefix);
+        }
+    }
+
+    function loadStateFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        const include = params.get('include_tags') ? params.get('include_tags').split(',') : [];
+        const exclude = params.get('exclude_tags') ? params.get('exclude_tags').split(',') : [];
+        const prefix = params.get('prefix_tags') ? params.get('prefix_tags').split(',') : [];
+
+        const enableInclude = params.get('enable_include') === 'true';
+        const enableExclude = params.get('enable_exclude') === 'true';
+        const enablePrefix = params.get('enable_prefix') === 'true';
+
+        if (enableInclude) {
+            window.includeTagsCtrl.setDisabled(false);
+            window.includeTagsCtrl.setTags(include);
+        }
+        if (enableExclude) {
+            window.excludeTagsCtrl.setDisabled(false);
+            window.excludeTagsCtrl.setTags(exclude);
+        }
+        if (enablePrefix) {
+            window.prefixTagsCtrl.setDisabled(false);
+            window.prefixTagsCtrl.setTags(prefix);
+        }
+        // No explicit applyFilters needed as reload just happened or its initial load which is correct.
+        // Actually applyFilters also hides rows? No, we removed hiding.
+        // applyFilters updates hidden links/forms? Yes.
+        // We SHOULD call applyFilters to update links/forms, but ensure it doesn't RELOAD.
+        applyFilters();
+    }
+
+    function applyFilters() {
+        // Server-side filtering: Just update URL to trigger reload.
+        // No client-side hiding needed.
+
+        // Update URL and Links (Trigger Reload if changed)
+        updateURLParams(
+            window.includeTagsCtrl.getTags(),
+            window.excludeTagsCtrl.getTags(),
+            window.prefixTagsCtrl.getTags(),
+            document.getElementById('enable-include-tags').checked,
+            document.getElementById('enable-exclude-tags').checked,
+            document.getElementById('enable-prefix-tags').checked
+        );
+    }
+
+    // Load state on startup
+    loadStateFromURL();
+
+    // --- Draggable Columns Logic with Persistence ---
+    // --- Draggable Columns Logic (Placeholder) ---
+    // Original logic was removed/truncated. Leaving empty block to prevent errors.
+    if (submissions.length > 0) {
+        // ...
+    }
+
+    // --- Re-attach Histogram Listeners (Safety) ---
+    // Move this to the end to ensure it runs even if previous logic had non-fatal errors
+    try {
+        // Check for Bootstrap
+        if (typeof bootstrap === 'undefined') {
+            console.error("Bootstrap 5 is missing! Modals will not work.");
+        }
+
+        const containers = document.querySelectorAll('.hist-chart-container');
+        if (containers.length === 0) {
+            console.log("No histogram containers found to attach listeners to.");
+        }
+
+        containers.forEach(container => {
+            // Directly add listener (idempotent enough for this context, or we could check a data attribute)
+            // To prevent multiple bindings if code reruns, we could use a custom property, but simple Add is fine usually.
+            // But to be super safe against duplicates without cloneNode, we can remove then add?
+            // Element.removeEventListener requires the exact function ref, which we don't have easily here.
+            // However, DOMContentLoaded only fires once properly.
+
+            // We'll trust single execution.
+            container.onclick = function (e) {
+                // Using onclick property overwrites previous handler, avoiding duplicates!
+                const chartType = e.currentTarget.dataset.chartType;
+                const sampleId = parseInt(e.currentTarget.dataset.sampleId, 10);
+                const subId = parseInt(e.currentTarget.dataset.subId, 10);
+
+                const sample = comparisonData.find(d => d.sample_id === sampleId);
+                if (!sample) return;
+
+                let chartData, title;
+                if (chartType === 'gt') {
+                    // Logic for GT
+                    // We need raw bins/counts, not {x,y}
+                    const bins = sample.ground_truth.bins.map(String);
+                    const counts = sample.ground_truth.counts;
+                    title = `Ground Truth: ${sample.sample_name} `;
+                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts);
+                } else {
+                    const pred = sample.predictions.find(p => p.sub_id === subId);
+                    const sub = submissions.find(s => s.id === subId);
+                    if (!pred || !sub) return;
+
+                    const bins = pred.bins.map(String);
+                    const counts = pred.counts;
+                    title = `Prediction: ${sub.name} - Sample: ${sample.sample_name} `;
+                    if (typeof createInteractiveChart === 'function') createInteractiveChart(title, bins, counts);
+                }
+            };
+        });
+        console.log("Histogram listeners attached successfully.");
+    } catch (e) {
+        console.error("Error attaching listeners:", e);
+    }
+
+    // --- Gallery Logic ---
+    const visGallery = new GalleryModalManager('vis-modal', 'vis-gallery-footer', (item, index) => {
+        if (item.element) window.updateVisModalContent(item.element);
+    });
+
+    const histGallery = new GalleryModalManager('chart-modal', 'chart-gallery-footer', (item, index) => {
+        if (item.element) window.updateHistModalContent(item.element); // Now calls global function
+    });
+
+    // Ensure updateHistModalContent is available globally (it was defined in document scope in previous step)
+    // Actually, in previous step I defined it as window.updateHistModalContent. Correct.
+
+    const metricGallery = new GalleryModalManager('zoomModal', 'metric-gallery-footer', (item, index) => {
+        // Metric zoom uses openMetricZoomModal which handles existing modal correctly
+        if (item.element) {
+            const parts = item.element.id.split('-'); // sample-metrics-chart-{sub}-{sample}
+            // We need to pass meta. openMetricZoomModal takes meta.
+            // How do we get meta from canvas element? 
+            // Chart.js attaches it to chart.options._meta
+            const chart = Chart.getChart(item.element);
+            if (chart && chart.options._meta) {
+                openMetricZoomModal(chart.options._meta);
+            }
+        }
+    });
+
+    window.updateVisGallery = function (trigger) {
+        // Row-based grouping: Find all .clickable-vis in the same row
+        const tr = trigger.closest('tr');
+        if (!tr) return;
+
+        const groupItems = Array.from(tr.querySelectorAll('.clickable-vis'));
+
+        const items = groupItems.map(img => {
+            // Label could be the column name (alt)
+            return {
+                id: img.src,
+                label: img.getAttribute('alt') || 'Image',
+                thumbSrc: img.src,
+                element: img
+            };
+        });
+        visGallery.setItems(items);
+        visGallery.setCurrentIndex(groupItems.indexOf(trigger));
+    };
+
+    window.updateHistGallery = function (trigger) {
+        // Row-based grouping: Find all histogram containers in the same row
+        const tr = trigger.closest('tr');
+        if (!tr) return;
+
+        const groupItems = Array.from(tr.querySelectorAll('.hist-chart-container'));
+        const items = groupItems.map((container) => {
+            // Label could be chart type
+            return {
+                id: container.dataset.chartType,
+                label: container.dataset.chartType || 'Histogram',
+                thumbSrc: null,
+                element: container
+            };
+        });
+        histGallery.setItems(items);
+        histGallery.setCurrentIndex(groupItems.indexOf(trigger));
+    };
+
+    window.updateMetricGallery = function (currentMeta) {
+        // Row-based grouping: Find all metric canvases in the same row
+        // Accessing the row via the trigger element logic needs to be robust. 
+        // In comparison view, openMetricZoomModal is called from click handler which has access to element?
+        // Actually updateMetricGallery logic in comparison.html relied on `currentMeta`. 
+        // We need to find the specific canvas element in the DOM that corresponds to this meta to find its row.
+        // OR pass the trigger element to this function.
+
+        // Let's modify the call site to pass the element if possible. 
+        // If not, we can find the canvas by ID: `sample - metrics - chart - { subId } - { sampleId }`
+        // In comparison.html, chart IDs are `sample - metrics - chart - { subId } - { sampleId }`.
+
+        const currentId = `sample-metrics-chart-${currentMeta.sampleId}-${currentMeta.subId}`;
+        const currentCanvas = document.getElementById(currentId);
+
+        if (!currentCanvas) return;
+
+        const tr = currentCanvas.closest('tr');
+        if (!tr) return;
+
+        const canvases = Array.from(tr.querySelectorAll('canvas[id^="sample-metrics-chart-"]'));
+
+        const items = canvases.map((canvas) => {
+            return {
+                id: canvas.id,
+                label: 'Metrics', // In comparison, multiple metric charts in one row? Usually one per submission/sample pair.
+                // Wait, Comparison View row is ONE Submission's result for ONE Sample.
+                // So there is only ONE metric chart per row usually.
+                // Unless we have multiple metric columns? 
+                // If there's only one, gallery is trivial (1 item).
+                // But the user asked for "toggling between zoomable objects on the same sample".
+                // If a row has Image 1, Image 2, Histogram, Metric Chart...
+                // Should I be able to toggle from Image -> Histogram?
+                // Current implementation segments by type (VisGallery, HistGallery, MetricGallery).
+                // If there is only 1 metric chart per row, MetricGallery is just 1 item.
+                // If user wants Image -> Metric, that's cross-type. 
+                // I will stick to type-segmentation for now as switching modals is complex. 
+                // If a row has multiple metric charts (e.g. if we split metrics into multiple charts?), then this works.
+                thumbSrc: null,
+                element: canvas
+            };
+        });
+
+        const currentIndex = canvases.findIndex(c => c.id === currentId);
+
+        metricGallery.setItems(items);
+        metricGallery.setCurrentIndex(currentIndex);
+    };
+});
+</script>
+<!-- Zoom Modal -->
+<div id="zoomModal" class="modal"
+    style="display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;overflow:auto;background-color:rgba(0,0,0,0.8);">
+    <div class="modal-content"
+        style="margin:5% auto;padding:20px;background:#fff;max-width:90%;border-radius:8px;position:relative;">
+        <span id="closeZoomModal"
+            style="position:absolute;top:10px;right:20px;font-size:28px;font-weight:bold;cursor:pointer;">&times;</span>
+        <canvas id="zoomChartCanvas"></canvas>
+        <div id="metric-gallery-footer" style="margin-top: 10px;"></div>
+    </div>
+</div>
+<script>
+    // --- Metric Zoom Modal Logic ---
+    const zoomModalElement = document.getElementById('zoomModal');
+    let zoomModalChart = null;
+
+    function openMetricZoomModal(meta) {
+        const modal = document.getElementById('zoomModal');
+        const closeBtn = document.getElementById('closeZoomModal');
+        const canvas = document.getElementById('zoomChartCanvas');
+
+        // Reset canvas size (important for re-rendering)
+        canvas.width = 1000;
+        canvas.height = 600;
+
+        const ctx = canvas.getContext('2d');
+
+        // Check for existing chart instance on the canvas and destroy it
+        const existingChart = Chart.getChart(canvas);
+        if (existingChart) {
+            existingChart.destroy();
+        }
+        // Also ensure global reference is cleared if different
+        if (zoomModalChart && zoomModalChart !== existingChart) {
+            try { zoomModalChart.destroy(); } catch (e) { }
+        }
+        zoomModalChart = null;
+
+        // Filter out the '...' indicator from datasets for the full view
+        // IMPORTANT: Deep clone the datasets to avoid Chart.js internal state conflicts (e.g. _meta) from the other active chart
+        const fullDatasets = meta.allDatasets
+            .filter(d => !d.isTruncationIndicator)
+            .map(d => JSON.parse(JSON.stringify(d)));
+
+        zoomModalChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: [''],
+                datasets: fullDatasets
+            },
+            options: {
+                responsive: false, // We control size via canvas dims
+                plugins: {
+                    title: {
+                        display: true,
+                        text: `Metrics: ${meta.subName} - ${meta.sampleName}`,
+                        font: { size: 18 }
+                    },
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            filter: null // Show ALL labels in modal
+                        }
+                    },
+                    tooltip: { enabled: true }
+                },
+                scales: {
+                    x: { display: false },
+                    y: {
+                        display: true,
+                        beginAtZero: true,
+                        title: { display: true, text: 'Value' }
+                    }
+                }
+            }
+        });
+
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden'; // Hide body scrollbar
+        modal.dispatchEvent(new Event('shown.bs.modal'));
+
+        // Hide sticky scrollbar to prevent z-index overlap
+        const topScroll = document.getElementById('top-scroll-container');
+        if (topScroll) topScroll.style.visibility = 'hidden';
+
+        const cleanup = () => {
+            modal.style.display = 'none';
+            document.body.style.overflow = ''; // Restore body scrollbar
+            if (topScroll) topScroll.style.visibility = '';
+            modal.dispatchEvent(new Event('hidden.bs.modal'));
+
+            if (zoomModalChart) zoomModalChart.destroy();
+            zoomModalChart = null;
+            window.removeEventListener('click', outsideClick);
+        };
+        const outsideClick = (e) => { if (e.target === modal) cleanup(); };
+
+        closeBtn.onclick = cleanup;
+        window.addEventListener('click', outsideClick);
+    }
+
+    function attachPerSampleChartClicks() {
+        const canvases = document.querySelectorAll('.sample-metrics-chart-container canvas');
+        canvases.forEach(c => {
+            const chart = Chart.getChart(c);
+            if (chart && chart.options._meta) {
+                c.style.cursor = 'pointer';
+                c.onclick = function () {
+                    openMetricZoomModal(chart.options._meta);
+                };
+            }
+        });
+    }
+
+
+
+
+</script>
+{% endblock %}

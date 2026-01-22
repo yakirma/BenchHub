@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="{{ global_settings.theme_mode }}">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}dTOF Benchmarking{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.min.css">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23ffc107' class='bi bi-grid-3x3-gap-fill' viewBox='0 0 16 16'><path d='M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V7zM1 12a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-2z'/></svg>">
+
+    <style>
+        body {
+            padding-top: 70px;
+            /* Adjusted for single navbar */
+            /* Adjust body padding to account for fixed navbar */
+            overflow-y: auto;
+        }
+
+        /* Ensure modals always sit above backdrops */
+        .modal {
+            z-index: 1055 !important;
+        }
+
+        .modal-backdrop {
+            z-index: 1050 !important;
+        }
+
+        .navbar-brand .logo {
+            width: 24px;
+            height: 24px;
+            margin-right: 8px;
+            vertical-align: text-bottom;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+        }
+
+        .hist-chart-container {
+            position: relative;
+            height: 120px;
+            width: 100%;
+            cursor: pointer;
+            /* Add pointer cursor to indicate it's clickable */
+        }
+
+        .json-display {
+            max-height: 150px;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            background-color: var(--bs-tertiary-bg);
+            /* Use var for adaptability */
+            border: 1px solid var(--bs-border-color);
+            border-radius: .25rem;
+            padding: .5rem .75rem;
+            font-family: monospace;
+            font-size: 0.875em;
+        }
+
+        .page-container {
+            width: 100%;
+        }
+
+        .content-wrapper {
+            width: 100%;
+        }
+
+        #chart-modal .modal-dialog {
+            max-width: 90%;
+        }
+
+        #modal-chart-container {
+            height: 70vh;
+        }
+
+        /* Footer Styling */
+        footer {
+            margin-top: 3rem;
+            padding: 1.5rem 0;
+            border-top: 1px solid var(--bs-border-color);
+            background-color: var(--bs-body-bg);
+            /* Adapt to theme */
+            color: var(--bs-secondary-text);
+            font-size: 0.9rem;
+        }
+
+        .version-info {
+            font-weight: 500;
+            color: var(--bs-body-text);
+        }
+
+        .project-link:hover {
+            opacity: 0.8;
+            color: var(--bs-primary) !important;
+        }
+
+        /* Gallery Footer Styles */
+        .gallery-footer {
+            overflow-x: auto;
+            white-space: nowrap;
+            padding: 10px;
+            background: var(--bs-tertiary-bg);
+            border-top: 1px solid var(--bs-border-color);
+            display: flex;
+            gap: 10px;
+        }
+
+        .gallery-item {
+            display: inline-block;
+            width: 80px;
+            height: 60px;
+            background: var(--bs-body-bg);
+            border: 2px solid transparent;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: all 0.2s;
+            text-align: center;
+            font-size: 0.7rem;
+            overflow: hidden;
+            position: relative;
+            flex-shrink: 0;
+            border-radius: 4px;
+        }
+
+        .gallery-item:hover {
+            opacity: 1;
+        }
+
+        .gallery-item.active {
+            border-color: #0d6efd;
+            opacity: 1;
+            box-shadow: 0 0 5px rgba(13, 110, 253, 0.5);
+        }
+
+        .gallery-thumb-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .gallery-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bs-secondary-bg);
+            color: var(--bs-secondary-text);
+            font-weight: bold;
+            padding: 2px;
+            word-wrap: break-word;
+            white-space: normal;
+        }
+    </style>
+</head>
+
+<body class="d-flex flex-column min-vh-100">
+    <header class="fixed-top">
+        <!-- Main Navbar -->
+        <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom shadow-sm">
+            <div class="container-fluid">
+                <!-- Brand -->
+                <a class="navbar-brand d-flex align-items-center" href="{{ url_for('list_projects') }}">
+                    <i class="bi bi-grid-3x3-gap-fill me-2 text-warning"></i>
+                    Bench-Hub
+                </a>
+
+                <!-- Global Datasets Link (Left of Divider) -->
+                <a class="ms-3 text-decoration-none {{ 'fw-bold text-primary' if request.endpoint == 'datasets_list' else 'text-body' }}"
+                    href="{{ url_for('datasets_list') }}">
+                    <i class="bi bi-database me-1 text-info"></i> Datasets
+                </a>
+
+                {% if g.current_project %}
+                <div class="vr mx-3 d-none d-lg-block"></div>
+                <!-- Project Name (Clickable to change) -->
+                <!-- Project Switcher Dropdown -->
+                <div class="dropdown">
+                    <a href="#" class="navbar-text fw-bold text-body text-decoration-none dropdown-toggle project-link"
+                        id="projectDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false"
+                        title="Switch Project">
+                        <i class="bi bi-folder2 text-primary me-1"></i>{{ g.current_project.name }}
+                    </a>
+                    <ul class="dropdown-menu shadow" aria-labelledby="projectDropdown">
+                        <li>
+                            <h6 class="dropdown-header">Switch Project</h6>
+                        </li>
+                        {% for proj in all_projects %}
+                        {% if proj.id != g.current_project.id %}
+                        <li>
+                            <a class="dropdown-item" href="{{ url_for('index', project_name=proj.name) }}">
+                                <i class="bi bi-folder2 me-2"></i>{{ proj.name }}
+                            </a>
+                        </li>
+                        {% endif %}
+                        {% endfor %}
+                        <li>
+                            <hr class="dropdown-divider">
+                        </li>
+                        <li>
+                            <a class="dropdown-item text-primary" href="{{ url_for('list_projects') }}">
+                                <i class="bi bi-grid-3x3-gap me-2"></i>View All Projects
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                {% endif %}
+
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbar">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <div class="collapse navbar-collapse" id="mainNavbar">
+                    <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+
+                        <!-- Project Specific Links -->
+                        {% if g.current_project %}
+                        <li class="nav-item ms-lg-3">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'index' }}"
+                                href="{{ url_for('index', project_name=g.current_project.name) }}">
+                                <i class="bi bi-trophy me-1"></i> Leaderboards
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'metrics_view' }}"
+                                href="{{ url_for('metrics_view', project_name=g.current_project.name) }}">
+                                <i class="bi bi-calculator me-1"></i> Metrics
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'visualizations_view' }}"
+                                href="{{ url_for('visualizations_view', project_name=g.current_project.name) }}">
+                                <i class="bi bi-image me-1"></i> Visualizations
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'settings_page' }}"
+                                href="{{ url_for('settings_page', project_name=g.current_project.name) }}">
+                                <i class="bi bi-sliders me-1"></i> Project Settings
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+
+                    <div class="d-flex align-items-center">
+                        <a class="nav-link {{ 'active' if request.endpoint == 'docs' }} me-2"
+                            href="{{ url_for('docs') }}">
+                            <i class="bi bi-book me-1"></i> Docs
+                        </a>
+                        <a href="{{ url_for('app_settings') }}"
+                            class="nav-link text-secondary ms-2 {{ 'active' if request.endpoint == 'app_settings' }}"
+                            title="General Settings">
+                            <i class="bi bi-gear fs-4"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container-fluid mt-4 flex-grow-1"> <!-- Use container-fluid for more width -->
+        <!-- Flash Messages -->
+        {% block flash_messages %}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+        {% endblock %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="text-center py-4 mt-auto">
+        <div class="container">
+            <div class="row align-items-center justify-content-center">
+                <div class="col-md-auto text-center">
+                    <p class="mb-0 text-muted small">
+                        Bench-Hub &copy; {{ now.year if now else '2026' }} |
+                        <span class="version-info fw-bold">v{{ version }}</span> |
+                        <a href="http://gitlab-srv/tof/dtof_benchmarking" target="_blank"
+                            class="link-secondary text-decoration-none" title="Git Repository"><i
+                                class="bi bi-git me-1"></i> Git Repo</a> |
+                        <a href="http://gitlab-srv/tof/dtof_benchmarking/-/boards" target="_blank"
+                            class="link-secondary text-decoration-none"><i class="bi bi-bug me-1"></i> Feature Request /
+                            Report a Bug</a>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <!-- Global Confirmation Modal -->
+    <div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel"
+        aria-hidden="true" style="z-index: 2000;">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmationModalLabel">Confirm Action</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="confirmationModalBody">
+                    Are you sure you want to proceed?
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmationModalConfirmBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals Block -->
+    {% block modals %}{% endblock %}
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+    <script>
+        // Global fix: Ensure body is always scrollable on load
+        document.addEventListener('DOMContentLoaded', function () {
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = 'auto';
+            document.body.style.paddingRight = '0px'; // Remove Bootstrap's scrollbar compensation
+        });
+
+        class ZoomHandler {
+            constructor(imgElement) {
+                this.img = imgElement;
+                this.parent = imgElement.parentElement;
+                this.scale = 1;
+                this.panning = false;
+                this.wasMoved = false;
+                this.pointX = 0;
+                this.pointY = 0;
+                this.startX = 0;
+                this.startY = 0;
+
+                // Ensure parent clips overflow for cleaner zoom
+                this.parent.style.overflow = 'hidden';
+                this.img.style.transformOrigin = '0 0';
+                this.updateCursor();
+                this.img.style.transition = 'transform 0.1s ease-out'; // Smooth zoom
+
+                this.attachListeners();
+                this.reset();
+            }
+
+            attachListeners() {
+                this.img.addEventListener('mousedown', this.onMouseDown.bind(this));
+                this.img.addEventListener('mousemove', this.onMouseMove.bind(this));
+                this.img.addEventListener('mouseup', this.onMouseUp.bind(this));
+                this.img.addEventListener('mouseleave', this.onMouseLeave.bind(this));
+                this.img.addEventListener('wheel', this.onWheel.bind(this));
+            }
+
+            updateCursor() {
+                if (this.panning) {
+                    this.img.style.cursor = 'grabbing';
+                } else {
+                    this.img.style.cursor = this.scale > 1 ? 'zoom-out' : 'zoom-in';
+                }
+            }
+
+            setTransform() {
+                // console.log('DEBUG: ZoomHandler.setTransform', this.scale, this.pointX, this.pointY);
+                this.img.style.transform = `translate(${this.pointX}px, ${this.pointY}px) scale(${this.scale})`;
+            }
+
+            onMouseDown(e) {
+                e.preventDefault();
+                this.startX = e.clientX - this.pointX;
+                this.startY = e.clientY - this.pointY;
+                this.panning = true;
+                this.wasMoved = false;
+                this.img.style.transition = 'none';
+            }
+
+            onMouseUp(e) {
+                this.panning = false;
+                this.img.style.transition = 'transform 0.1s ease-out';
+                if (!this.wasMoved) {
+                    this.toggleZoom(e);
+                }
+                this.updateCursor();
+            }
+
+            onMouseLeave(e) {
+                this.panning = false;
+                this.img.style.transition = 'transform 0.1s ease-out';
+                this.updateCursor();
+            }
+
+            onMouseMove(e) {
+                if (!this.panning) return;
+                e.preventDefault();
+                const dx = e.clientX - (this.startX + this.pointX);
+                const dy = e.clientY - (this.startY + this.pointY);
+                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+                    this.wasMoved = true;
+                    this.img.style.cursor = 'grabbing';
+                }
+                if (this.wasMoved) {
+                    this.pointX = e.clientX - this.startX;
+                    this.pointY = e.clientY - this.startY;
+                    this.setTransform();
+                }
+            }
+
+            toggleZoom(e) {
+                if (this.scale > 1) {
+                    this.reset();
+                } else {
+                    const rect = this.img.getBoundingClientRect();
+                    const offsetX = e.clientX - rect.left;
+                    const offsetY = e.clientY - rect.top;
+                    const targetScale = 2.5;
+                    const ratio = targetScale / this.scale;
+                    this.pointX = this.pointX + offsetX * (1 - ratio);
+                    this.pointY = this.pointY + offsetY * (1 - ratio);
+                    this.scale = targetScale;
+                    this.setTransform();
+                }
+                this.updateCursor();
+            }
+
+            onWheel(e) {
+                e.preventDefault();
+                const rect = this.img.getBoundingClientRect();
+                const offsetX = e.clientX - rect.left;
+                const offsetY = e.clientY - rect.top;
+                const factor = e.deltaY < 0 ? 1.05 : 0.952; // Slower zoom: 5% per scroll instead of 10%
+                let newScale = this.scale * factor;
+
+                if (newScale < 1) {
+                    // If zooming out below 1, reset to default state
+                    this.reset();
+                    return;
+                }
+
+                const ratio = newScale / this.scale;
+                this.pointX = this.pointX + offsetX * (1 - ratio);
+                this.pointY = this.pointY + offsetY * (1 - ratio);
+                this.scale = newScale;
+                this.setTransform();
+                this.updateCursor();
+            }
+
+            reset() {
+                this.scale = 1;
+                this.pointX = 0;
+                this.pointY = 0;
+                this.setTransform();
+                this.updateCursor();
+            }
+
+            getState() {
+                return { scale: this.scale, pointX: this.pointX, pointY: this.pointY };
+            }
+
+            setState(state) {
+                if (!state) return;
+                this.scale = state.scale || 1;
+                this.pointX = state.pointX || 0;
+                this.pointY = state.pointY || 0;
+                this.setTransform();
+                this.updateCursor();
+            }
+        }
+        class GalleryModalManager {
+            constructor(modalId, footerContainerId, onSelectCallback, onNavigateVerticalCallback) {
+                this.modalId = modalId;
+                this.modalElement = document.getElementById(modalId);
+                console.log('DEBUG: GalleryModalManager initialized for', modalId, 'Found Element:', !!this.modalElement); // Log element existence
+                this.footerContainer = document.getElementById(footerContainerId);
+                this.onSelect = onSelectCallback;
+                this.onNavigateVertical = onNavigateVerticalCallback; // New callback
+                this.items = [];
+                this.currentIndex = -1;
+                this._boundKeyHandler = this.handleKeydown.bind(this);
+
+                if (this.modalElement) {
+                    this.modalElement.addEventListener('shown.bs.modal', () => {
+                        console.log('DEBUG: GalleryModalManager shown.bs.modal fired for', this.modalId);
+                        window.addEventListener('keydown', this._boundKeyHandler);
+                    });
+                    this.modalElement.addEventListener('hidden.bs.modal', () => {
+                        console.log('DEBUG: GalleryModalManager hidden.bs.modal fired for', this.modalId);
+                        window.removeEventListener('keydown', this._boundKeyHandler);
+                    });
+                }
+            }
+
+            handleKeydown(e) {
+                console.log('DEBUG: GalleryModalManager handleKeydown', e.key);
+                if (this.items.length <= 0) return; // Allow 1 item if vertical nav is needed?
+                // Don't intercept if user is typing in an input
+                if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+                if (e.key === 'ArrowRight') {
+                    if (this.items.length > 1) this.navigate(1);
+                } else if (e.key === 'ArrowLeft') {
+                    if (this.items.length > 1) this.navigate(-1);
+                } else if (e.key === 'ArrowDown') {
+                    console.log('DEBUG: GalleryModalManager ArrowDown detected');
+                    if (this.onNavigateVertical) {
+                        e.preventDefault();
+                        this.onNavigateVertical(1, this.items[this.currentIndex], this.currentIndex);
+                    } else {
+                        console.log('DEBUG: GalleryModalManager No onNavigateVertical callback');
+                    }
+                } else if (e.key === 'ArrowUp') {
+                    console.log('DEBUG: GalleryModalManager ArrowUp detected');
+                    if (this.onNavigateVertical) {
+                        e.preventDefault();
+                        this.onNavigateVertical(-1, this.items[this.currentIndex], this.currentIndex);
+                    } else {
+                        console.log('DEBUG: GalleryModalManager No onNavigateVertical callback');
+                    }
+                }
+            }
+
+            navigate(direction) {
+                let nextIndex = this.currentIndex + direction;
+                if (nextIndex < 0) nextIndex = this.items.length - 1;
+                if (nextIndex >= this.items.length) nextIndex = 0;
+
+                this.currentIndex = nextIndex;
+                this.updateActiveState();
+                if (this.onSelect) this.onSelect(this.items[this.currentIndex], this.currentIndex);
+            }
+
+            setItems(items) {
+                this.items = items; // [{ id, label, thumbSrc, data, element }]
+                this.render();
+            }
+
+            setCurrentIndex(index) {
+                this.currentIndex = index;
+                this.updateActiveState();
+            }
+
+            render() {
+                if (!this.footerContainer) return;
+                this.footerContainer.innerHTML = '';
+                this.footerContainer.className = 'gallery-footer';
+
+                this.items.forEach((item, index) => {
+                    const div = document.createElement('div');
+                    div.className = 'gallery-item';
+                    div.onclick = () => {
+                        this.currentIndex = index;
+                        this.updateActiveState();
+                        if (this.onSelect) this.onSelect(item, index);
+                    };
+
+                    const contentDiv = document.createElement('div');
+                    contentDiv.style.height = '45px'; // Fixed height for image part
+                    contentDiv.style.display = 'flex';
+                    contentDiv.style.alignItems = 'center';
+                    contentDiv.style.justifyContent = 'center';
+                    contentDiv.style.overflow = 'hidden';
+
+                    if (item.thumbSrc) {
+                        const img = document.createElement('img');
+                        img.src = item.thumbSrc;
+                        img.className = 'gallery-thumb-img';
+                        img.onload = () => { /* ensure loaded */ };
+                        contentDiv.appendChild(img);
+                    } else {
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'gallery-placeholder';
+                        placeholder.innerText = item.label || (index + 1);
+                        contentDiv.appendChild(placeholder);
+                    }
+                    div.appendChild(contentDiv);
+
+                    // Add Label below
+                    const labelDiv = document.createElement('div');
+                    labelDiv.innerText = item.label || `Item ${index + 1}`;
+                    labelDiv.style.fontSize = '0.6rem';
+                    labelDiv.style.overflow = 'hidden';
+                    labelDiv.style.textOverflow = 'ellipsis';
+                    labelDiv.style.whiteSpace = 'nowrap';
+                    labelDiv.style.padding = '0 2px';
+                    div.appendChild(labelDiv);
+
+                    // Tooltip title
+                    div.title = item.label || `Item ${index + 1}`;
+
+                    this.footerContainer.appendChild(div);
+                });
+            }
+
+            updateActiveState() {
+                if (!this.footerContainer) return;
+                const children = this.footerContainer.children;
+                for (let i = 0; i < children.length; i++) {
+                    if (i === this.currentIndex) {
+                        children[i].classList.add('active');
+                        children[i].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                    } else {
+                        children[i].classList.remove('active');
+                    }
+                }
+            }
+        }
+
+        /**
+         * Global helper for confirmation modals.
+         * @param {string} message - The message to display.
+         * @param {function} actionCallback - The callback to execute on confirmation.
+         * @param {string} confirmBtnClass - Optional class for the confirm button (default: btn-danger).
+         */
+        function confirmAction(message, actionCallback, confirmBtnClass = 'btn-danger') {
+            const modalEl = document.getElementById('confirmationModal');
+            const modal = new bootstrap.Modal(modalEl);
+            document.getElementById('confirmationModalBody').innerText = message;
+
+            const confirmBtn = document.getElementById('confirmationModalConfirmBtn');
+            // Reset classes and set the provided one
+            confirmBtn.className = 'btn ' + confirmBtnClass;
+
+            // Remove old listeners by cloning
+            const newConfirmBtn = confirmBtn.cloneNode(true);
+            confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+
+            newConfirmBtn.addEventListener('click', () => {
+                actionCallback();
+                modal.hide();
+            });
+
+            modal.show();
+        }
+
+        /**
+         * Save column visibility preferences to localStorage
+         * @param {string} viewType - Type of view (leaderboard, comparison, dataset)
+         * @param {number} viewId - ID of the specific view instance
+         * @param {Array} columns - Array of visible column keys
+         */
+        function saveColumnPreferences(viewType, viewId, columns) {
+            const key = `bench_hub_columns_${viewType}_${viewId}`;
+            localStorage.setItem(key, JSON.stringify(columns));
+        }
+
+        /**
+         * Load column visibility preferences from localStorage
+         * @param {string} viewType - Type of view (leaderboard, comparison, dataset)
+         * @param {number} viewId - ID of the specific view instance
+         * @param {Array} defaultColumns - Default columns to show if no preference exists
+         * @returns {Array} Array of visible column keys
+         */
+        function loadColumnPreferences(viewType, viewId, defaultColumns) {
+            const key = `bench_hub_columns_${viewType}_${viewId}`;
+            const saved = localStorage.getItem(key);
+            return saved ? JSON.parse(saved) : defaultColumns;
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+
+</html>

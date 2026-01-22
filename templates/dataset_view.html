@@ -1,0 +1,2192 @@
+{% extends "base.html" %}
+
+{% block title %}Dataset: {{ dataset.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h1>Dataset: {{ dataset.name }}</h1>
+        <p class="text-muted mb-0">Uploaded on: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}</p>
+        {% if dataset.git_commit %}
+        <p class="text-muted">
+            <small>{{ dataset.git_branch or 'N/A' }} @ {{ dataset.git_commit[:7] }}: {{ dataset.git_message or 'N/A'
+                }}</small>
+        </p>
+        {% endif %}
+    </div>
+    <div class="d-flex align-items-center">
+        <a href="/api/dataset/{{ dataset.id }}/download" class="btn btn-outline-success">
+            <i class="bi bi-download me-1"></i> Download ZIP
+        </a>
+    </div>
+</div>
+
+{% if dataset.leaderboards %}
+<h5>Leaderboards using this Dataset</h5>
+<ul class="list-inline">
+    {% for lb in dataset.leaderboards %}
+    <li class="list-inline-item">
+        {% if lb.project %}
+        <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+            class="btn btn-sm btn-outline-primary">{{ lb.name }}</a>
+        {% else %}
+        <span class="btn btn-sm btn-outline-secondary disabled" title="Orphaned Leaderboard">{{ lb.name }} (No
+            Project)</span>
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+<hr>
+{% endif %}
+
+<style>
+    /* Sample Metrics Chart Container */
+    .sample-metrics-chart-container {
+        width: 300px;
+        height: 200px;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+
+    /* Plotly Tooltip Fix */
+    .js-plotly-plot .plotly .hoverlayer {
+        z-index: 100000 !important;
+    }
+
+    .sample-metrics-chart-container canvas {
+        min-width: 300px;
+    }
+
+    /* Stretch images to fill container */
+    .clickable-vis {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    /* Tag Input Styles */
+    .tag-input-wrapper {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        display: flex;
+        flex-wrap: wrap;
+        padding: 0.25rem;
+        align-items: center;
+        width: 300px;
+        min-height: 38px;
+        position: relative;
+    }
+
+    .tag-input-wrapper.disabled {
+        background-color: var(--bs-secondary-bg);
+        cursor: not-allowed;
+    }
+
+    .tag-chip {
+        background-color: #0d6efd;
+        color: white;
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.4rem;
+        margin: 0.1rem;
+        font-size: 0.875rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .tag-chip .remove-tag {
+        margin-left: 0.3rem;
+        cursor: pointer;
+        font-weight: bold;
+    }
+
+    .tag-input {
+        border: none;
+        outline: none;
+        flex-grow: 1;
+        background: transparent;
+        padding: 0.1rem 0.2rem;
+        min-width: 60px;
+    }
+
+    .suggestions-list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+        display: none;
+    }
+
+    .suggestions-list li {
+        padding: 0.5rem;
+        cursor: pointer;
+    }
+
+    .suggestions-list li:hover,
+    .suggestions-list li.active {
+        background-color: #0d6efd;
+        color: white;
+    }
+
+    .clear-all-tags {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: pointer;
+        color: #6c757d;
+        font-size: 1.2rem;
+        display: none;
+        /* Hidden by default */
+        z-index: 10;
+        line-height: 1;
+    }
+
+    .clear-all-tags:hover {
+        color: #dc3545;
+    }
+
+    /* Sticky Top Horizontal Scrollbar */
+    .page-container {
+        overflow-x: visible !important;
+    }
+
+    .content-wrapper {
+        min-width: 0 !important;
+    }
+
+    .top-scrollbar-container {
+        overflow-x: auto;
+        overflow-y: hidden;
+        width: 100%;
+        position: sticky;
+        top: 60px;
+        /* Slightly below navbar (56px) for visibility */
+        z-index: 1050;
+        /* Above Bootstrap navbar (1030) */
+        background: var(--bs-tertiary-bg);
+        /* Light grey background for the bar itself */
+        border-bottom: 2px solid #0d6efd;
+        /* Prominent blue line */
+        display: none;
+        height: 18px;
+        /* Standard scrollbar height */
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar {
+        height: 12px;
+        display: block !important;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-thumb {
+        background-color: #0d6efd !important;
+        border-radius: 6px;
+        border: 2px solid #e9ecef;
+    }
+
+    .top-scrollbar-container::-webkit-scrollbar-track {
+        background: #e9ecef !important;
+        display: block !important;
+    }
+
+    .top-scrollbar-content {
+        height: 1px;
+    }
+
+    .tag-input-wrapper {
+        padding-right: 30px;
+        /* Make room for X */
+    }
+
+    .hist-chart-container {
+        width: 300px;
+        height: 200px;
+    }
+
+    /* Resizable table columns */
+    #dataset-table {
+        table-layout: fixed;
+        width: auto;
+        min-width: 100%;
+    }
+
+    #dataset-table th {
+        position: relative;
+        user-select: none;
+    }
+
+    #dataset-table th .resizer {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 5px;
+        cursor: col-resize;
+        user-select: none;
+        height: 100%;
+    }
+
+    #dataset-table th .resizer:hover {
+        background-color: #0d6efd;
+    }
+</style>
+
+<h2>Samples</h2>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">View Options</h5>
+        <form method="post" action="{{ url_for('update_dataset_display_columns', dataset_id=dataset.id) }}"
+            class="d-flex align-items-center">
+            <strong class="me-3">Display Columns:</strong>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" id="select_all_dataset_cols"
+                    onclick="handleDatasetSelectAllClick(this)">
+                <label class="form-check-label" for="select_all_dataset_cols"><strong>All</strong></label>
+            </div>
+            {% for key, option in dataset_display_options.items() %}
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" name="display_columns" value="{{ key }}"
+                    id="col_{{ key }}" {% if key in selected_display_columns %}checked{% endif %}
+                    onchange="saveScrollAndSubmit(this.form)">
+                <label class="form-check-label" for="col_{{ key }}">{{ option.label }}</label>
+            </div>
+            {% endfor %}
+        </form>
+    </div>
+</div>
+
+<div class="mb-3">
+    <form method="get" action="{{ url_for('dataset_view', dataset_id=dataset.id) }}">
+        <!-- Row 1: Tag Filters -->
+        <div class="mb-3 p-2 bg-body-tertiary border rounded">
+            <strong>Tag Filters:</strong>
+            <div class="d-flex align-items-center mt-2 flex-wrap">
+                <!-- Include Types -->
+                <div class="d-flex align-items-center me-3 mb-2">
+                    <div class="form-check me-2">
+                        <input class="form-check-input" type="checkbox" id="enable-include-tags">
+                    </div>
+                    <div class="tag-input-wrapper disabled" id="include-tags-wrapper">
+                        <div class="chips-container d-flex flex-wrap"></div>
+                        <input type="text" class="tag-input" id="include-tags-input" placeholder="Include tags..."
+                            disabled autocomplete="off">
+                        <ul class="suggestions-list" id="include-suggestions"></ul>
+                    </div>
+                </div>
+
+                <!-- Exclude Types -->
+                <div class="d-flex align-items-center me-3 mb-2">
+                    <div class="form-check me-2">
+                        <input class="form-check-input" type="checkbox" id="enable-exclude-tags">
+                    </div>
+                    <div class="tag-input-wrapper disabled" id="exclude-tags-wrapper">
+                        <div class="chips-container d-flex flex-wrap"></div>
+                        <input type="text" class="tag-input" id="exclude-tags-input" placeholder="Exclude tags..."
+                            disabled autocomplete="off">
+                        <ul class="suggestions-list" id="exclude-suggestions"></ul>
+                    </div>
+                </div>
+
+                <!-- Prefix Types -->
+                <div class="d-flex align-items-center mb-2">
+                    <div class="form-check me-2">
+                        <input class="form-check-input" type="checkbox" id="enable-prefix-tags">
+                    </div>
+                    <div class="tag-input-wrapper disabled" id="prefix-tags-wrapper">
+                        <div class="chips-container d-flex flex-wrap"></div>
+                        <input type="text" class="tag-input" id="prefix-tags-input" placeholder="Prefix tags..."
+                            disabled autocomplete="off">
+                        <ul class="suggestions-list" id="prefix-suggestions"></ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: Per Page and Sorting -->
+        <div class="d-flex align-items-center mb-3">
+            <div class="d-flex align-items-center me-4">
+                <select id="per_page_select" name="per_page" onchange="this.form.submit()"
+                    class="form-select form-select-sm" style="width: auto;">
+                    {% for option in per_page_options %}
+                    <option value="{{ option }}" {% if option==current_per_page %}selected{% endif %}>{{ option }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <span class="ms-2 small text-muted">per page</span>
+            </div>
+
+            <div class="d-flex align-items-center">
+                <label for="sort_by_select" class="form-label me-2 mb-0 small text-muted">Sort by:</label>
+                <select id="sort_by_select" name="sort_by" onchange="saveScrollAndSubmit(this.form)"
+                    class="form-select form-select-sm" style="width: auto;">
+                    <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
+                    <!-- Hist entropy removed - use custom fields instead -->
+                    {% for field_name, field_type in custom_field_names %}
+                    {% if field_type == 'scalar' %}
+                    <option value="{{ field_name }}" {% if sort_by==field_name %}selected{% endif %}>{{
+                        field_name|capitalize }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+
+                <select name="sort_order" onchange="saveScrollAndSubmit(this.form)"
+                    class="form-select form-select-sm ms-2" style="width: auto;">
+                    <option value="asc" {% if sort_order=='asc' %}selected{% endif %}>Low to High</option>
+                    <option value="desc" {% if sort_order=='desc' %}selected{% endif %}>High to Low</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Pagination inside form for layout -->
+        <nav aria-label="Page navigation">
+            <ul class="pagination justify-content-end mb-0">
+                <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
+                        onclick="saveScrollPos()"
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=1, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">«
+                        First</a></li>
+                <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
+                        onclick="saveScrollPos()"
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.prev_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">‹
+                        Previous</a></li>
+                <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
+                        paginated_samples.pages }}</span></li>
+                <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
+                        onclick="saveScrollPos()"
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.next_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">Next
+                        ›</a></li>
+                <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
+                        onclick="saveScrollPos()"
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.pages, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">Last
+                        »</a></li>
+            </ul>
+        </nav>
+</div>
+</form>
+
+<form method="post" action="{{ url_for('update_dataset_metrics', dataset_id=dataset.id) }}"
+    class="d-flex align-items-center mb-3 p-2 bg-body-tertiary border rounded">
+    <strong class="me-3">Add Metric:</strong>
+    {% for key, label in sample_metric_options.items() %}
+    <div class="form-check form-check-inline">
+        <input class="form-check-input" type="checkbox" name="metrics" value="{{ key }}" id="met_{{ key }}" {% if key in
+            active_metrics %}checked{% endif %} onchange="saveScrollAndSubmit(this.form)">
+        <label class="form-check-label" for="met_{{ key }}">{{ label }}</label>
+    </div>
+    {% endfor %}
+</form>
+</div>
+
+
+<div class="top-scrollbar-container" id="top-scroll-container">
+    <div class="top-scrollbar-content" id="top-scroll-content"></div>
+</div>
+<div class="table-responsive" id="table-container">
+    <table class="table table-bordered table-hover align-middle" id="dataset-table"
+        style="width: max-content; table-layout: fixed;">
+        <thead>
+            <tr>
+                <th style="width: 50px;">Options</th>
+
+                {% for col_key in selected_display_columns %}
+                <th scope="col" {% set col_width=global_settings.name_width if col_key=='sample_name' else
+                    (global_settings.tags_width if col_key=='tags' else (global_settings.histogram_width if
+                    col_key=='histogram' else (global_settings.config_width if col_key in
+                    ['signal_shape', 'per_source_stats' ] else (global_settings.metric_chart_width if
+                    col_key=='per_sample_metrics' else (global_settings.image_width if
+                    (dataset_display_options[col_key].type in ['image', 'depth' ]) else
+                    global_settings.scalar_width))))) %}
+                    style="width: {{ col_width }}; min-width: {{ col_width }}; overflow: hidden; text-overflow: ellipsis;">
+                    {% if col_key == 'per_sample_metrics' %}
+                    {% if active_metrics|length == 1 %}
+                    GT ({{ sample_metric_options[active_metrics[0]] }})
+                    {% else %}
+                    GT (Metrics)
+                    {% endif %}
+                    {% else %}
+                    {{ dataset_display_options[col_key].label }}
+                    {% endif %}<div class="resizer"></div>
+                </th>
+                {% endfor %}
+                {# Removed separate loops for custom fields, metrics, and visualisations as they should now be in
+                selected_display_columns #}
+            </tr>
+
+        </thead>
+        <tbody>
+            {% for sample in paginated_samples.items %}
+            <tr class="sample-row" data-all-tags="{{ sample.tags|lower if sample.tags else '' }}">
+                <td>
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                            data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-three-dots-vertical"></i>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('download_sample', sample_id=sample.id) }}">
+                                    <i class="bi bi-download me-2"></i>Download Sample
+                                </a>
+                            </li>
+                            <li>
+                                <hr class="dropdown-divider">
+                            </li>
+                            <li>
+                                <a class="dropdown-item add-tags-btn" href="#" data-sample-id="{{ sample.id }}"
+                                    data-sample-name="{{ sample.name }}" data-sample-tags="{{ sample.tags or '' }}">
+                                    <i class="bi bi-tag me-2"></i>Add Tags
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </td>
+
+                {% for col_key in selected_display_columns %}
+                <td>
+                    {% if col_key == 'sample_name' %}
+                    {{ sample.name }}
+                    {% elif col_key == 'signal_shape' %}
+                    {{ sample.signal_shape.shape_name if sample.signal_shape else 'N/A' }}
+                    {% elif col_key == 'tags' %}
+                    {% if sample.tags %}
+                    {% for tag in sample.tags.split(',') %}
+                    <span class="badge bg-secondary text-light">{{ tag.strip() }}</span>
+                    {% endfor %}
+                    {% endif %}
+                    {% elif col_key == 'histogram' %}
+                    <div class="hist-chart-container" data-sample-name="{{ sample.name }}">
+                        <canvas id="chart-{{ sample.id }}"></canvas>
+                    </div>
+                    {% elif col_key == 'per_source_stats' %}
+                    <div class="small" style="max-height: 250px; overflow-y: auto;">
+                        <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th></th> {# Removed GT Label #}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {# GT Metrics - hist_entropy removed #}
+                                {% set gt_metrics_data = [] %}
+                                {% for cf in sample.custom_fields %}
+                                {% if cf.field_type == 'metric' and cf.value_float is not none and cf.submission_id is
+                                none %}
+                                {% set _ = gt_metrics_data.append((cf.name, cf.value_float)) %}
+                                {% endif %}
+                                {% endfor %}
+
+                                {% if gt_metrics_data %}
+                                <tr>
+                                    <td colspan="2" class="fw-bold bg-body-secondary">Metrics</td>
+                                </tr>
+                                {% for m_key, m_val in gt_metrics_data %}
+                                <tr title="{{ m_key }}">
+                                    <td class="text-muted text-truncate" style="max-width: 120px;">{{ m_key }}:</td>
+                                    <td class="fw-medium">{{ "%.4f"|format(m_val) if m_val is number else m_val }}</td>
+                                </tr>
+                                {% endfor %}
+                                {% endif %}
+
+                                {# GT Scalars #}
+                                {% set gt_scalars_data = [] %}
+                                {% for cf in sample.custom_fields %}
+                                {% if cf.field_type == 'scalar' and cf.value_float is not none and cf.submission_id is
+                                none %}
+                                {% set _ = gt_scalars_data.append((cf.name, cf.value_float)) %}
+                                {% endif %}
+                                {% endfor %}
+
+                                {% if gt_scalars_data %}
+                                <tr>
+                                    <td colspan="2" class="fw-bold bg-body-secondary">Scalars</td>
+                                </tr>
+                                {% for m_key, m_val in gt_scalars_data %}
+                                <tr title="{{ m_key }}">
+                                    <td class="text-muted text-truncate" style="max-width: 120px;">{{ m_key }}:</td>
+                                    <td class="fw-medium">{{ "%.4f"|format(m_val) if m_val is number else m_val }}</td>
+                                </tr>
+                                {% endfor %}
+                                {% endif %}
+                            </tbody>
+                        </table>
+
+                        {% if not gt_metrics_data and not gt_scalars_data %}
+                        <div class="text-muted small text-center p-2">No data</div>
+                        {% endif %}
+                    </div>
+                    {% elif col_key == 'per_sample_metrics' %}
+                    <div class="sample-metrics-chart-container">
+                        <canvas id="sample-metrics-chart-{{ sample.id }}"></canvas>
+                    </div>
+                    {% elif col_key in custom_fields_map[sample.id] %}
+                    {% set field_data = custom_fields_map[sample.id][col_key] %}
+                    {% if field_data.type == 'image' or field_data.type == 'depth' %}
+                    <div class="text-center">
+                        <img src="{{ url_for('serve_custom_field_image', field_id=field_data.field_id) }}"
+                            class="border rounded shadow-sm clickable-vis"
+                            style="width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain; cursor: pointer;"
+                            data-bs-toggle="modal" data-bs-target="#custom-field-modal"
+                            data-img-url="{{ url_for('serve_custom_field_image', field_id=field_data.field_id) }}"
+                            data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=field_data.field_id) }}"
+                            data-sample-name="{{ sample.name }}" data-vis-type="{{ field_data.type }}"
+                            alt="{{ col_key }}">
+                    </div>
+                    {% elif field_data.type == 'scalar' %}
+                    <div class="text-center fw-bold">
+                        {{ "%.4f"|format(field_data.value) if field_data.value is not none else 'N/A' }}
+                    </div>
+                    {% elif field_data.type == 'json' %}
+                    <div class="json-display" style="max-height: 200px; overflow-y: auto;">
+                        <pre style="font-size: 0.8rem; margin: 0;"
+                            id="json-preview-{{ sample.id }}-{{ col_key }}">Loading...</pre>
+                    </div>
+                    <script>
+                        // Load JSON content via API
+                        fetch('{{ url_for("serve_custom_field_json", field_id=field_data.field_id) }}')
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('json-preview-{{ sample.id }}-{{ col_key }}').textContent = JSON.stringify(data, null, 2);
+                            })
+                            .catch(err => {
+                                document.getElementById('json-preview-{{ sample.id }}-{{ col_key }}').textContent = 'Error loading JSON';
+                            });
+                    </script>
+                    {% elif field_data.type == 'text' %}
+                    <div class="text-start p-1"
+                        style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; font-size: 0.9em;">
+                        {{ field_data.value }}
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <span class="text-muted">N/A</span>
+                    {% endif %}
+                </td>
+                {% endfor %}
+
+                {% else %}
+            <tr>
+                <td
+                    colspan="{{ selected_display_columns|length + 1 + custom_field_names|length + active_metrics|length }}">
+                    No samples found in this dataset.</td>
+            </tr>
+
+
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Visualization Modal -->
+<div class="modal fade" id="vis-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Visualization Detail <span class="modal-sample-name text-muted ms-2"
+                        style="font-size: 0.9rem;"></span></h5>
+                <div class="btn-group mx-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-prev-sample"
+                        title="Previous Sample (Up Arrow)">
+                        <i class="bi bi-arrow-up"></i> Prev Sample
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-next-sample"
+                        title="Next Sample (Down Arrow)">
+                        Next Sample <i class="bi bi-arrow-down"></i>
+                    </button>
+                </div>
+                <button type="button" class="btn btn-outline-primary btn-sm" id="btn-reset-zoom"
+                    title="Reset Zoom & Pan">
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset
+                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center">
+                <img id="modal-vis-img" src="" class="img-fluid">
+            </div>
+            <div id="vis-gallery-footer" class="gallery-footer-container"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Custom Field Image Modal -->
+<div class="modal fade" id="custom-field-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Custom Field Image <span class="modal-sample-name text-muted ms-2"
+                        style="font-size: 0.9rem;"></span></h5>
+                <div class="btn-group mx-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-prev-custom-sample"
+                        title="Previous Sample (Up Arrow)">
+                        <i class="bi bi-arrow-up"></i> Prev Sample
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-next-custom-sample"
+                        title="Next Sample (Down Arrow)">
+                        Next Sample <i class="bi bi-arrow-down"></i>
+                    </button>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center" style="position: relative;">
+                <div id="modal-content-wrapper"
+                    style="width: 100%; height: 100%; min-height: 500px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+                    <div id="modal-error-container" style="display: none; width: 100%;"></div>
+                    <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
+                    <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
+                    <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
+                        style="display: none;">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+                <div id="custom-field-gallery-footer" class="gallery-footer-container"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+
+<!-- Modal Structure -->
+<div class="modal fade" id="chart-modal" tabindex="-1" aria-labelledby="chartModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="chartModalLabel">Histogram Detail <span
+                        class="modal-sample-name text-muted ms-2" style="font-size: 0.9rem;"></span></h5>
+                <div class="btn-group mx-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-prev-hist-sample"
+                        title="Previous Sample (Up Arrow)">
+                        <i class="bi bi-arrow-up"></i> Prev Sample
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-next-hist-sample"
+                        title="Next Sample (Down Arrow)">
+                        Next Sample <i class="bi bi-arrow-down"></i>
+                    </button>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="modal-chart-container" style="height: 70vh;">
+                    <canvas id="modal-chart"></canvas>
+                </div>
+                <!-- Pan Slider -->
+                <div class="mt-2 px-2">
+                    <label for="zoom-pan-slider" class="form-label small text-muted">Pan (Zoomed View)</label>
+                    <input type="range" class="form-range" id="zoom-pan-slider" min="0" max="100" value="0" disabled>
+                </div>
+                <div id="chart-gallery-footer" class="gallery-footer-container"></div>
+            </div>
+            <div class="modal-footer justify-content-between">
+                <div class="d-flex align-items-center">
+                    <input type="number" class="form-control form-control-sm" id="zoom-start" placeholder="Start Bin"
+                        style="width: 100px;">
+                    <span class="mx-2">-</span>
+                    <input type="number" class="form-control form-control-sm" id="zoom-end" placeholder="End Bin"
+                        style="width: 100px;">
+                    <button type="button" id="apply-zoom-btn" class="btn btn-success btn-sm ms-2">Apply</button>
+                </div>
+                <div>
+                    <button type="button" id="reset-zoom-btn" class="btn btn-secondary">Reset Zoom</button>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- Add Tags Modal -->
+<div class="modal fade" id="add-tags-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form id="add-tags-form" method="POST">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="add-tags-modal-title">Edit Tags</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="add-tags-modal-subtitle" class="text-muted small"></p>
+                    <div class="mb-3">
+                        <label class="form-label">Tags</label>
+                        <div class="tag-input-wrapper" id="modal-tags-wrapper" style="width: 100%;">
+                            <div class="chips-container d-flex flex-wrap"></div>
+                            <input type="text" class="tag-input" id="modal-tags-input" placeholder="Add tags..."
+                                autocomplete="off">
+                            <ul class="suggestions-list" id="modal-tags-suggestions"></ul>
+                        </div>
+                        <input type="hidden" name="tags" id="hidden-modal-tags">
+                        <div class="form-text">Press Enter or comma to add a tag.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Zoom Modal -->
+<div id="zoomModal" class="modal"
+    style="display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;overflow:auto;background-color:rgba(0,0,0,0.8);">
+    <div class="modal-content"
+        style="margin:5% auto;padding:20px;background:#fff;max-width:90%;border-radius:8px;position:relative;">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0">Metrics Detail <span class="modal-sample-name text-muted ms-2"
+                    style="font-size: 0.9rem;"></span></h5>
+            <div class="btn-group mx-auto">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-prev-metric-sample"
+                    title="Previous Sample (Up Arrow)">
+                    <i class="bi bi-arrow-up"></i> Prev Sample
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btn-next-metric-sample"
+                    title="Next Sample (Down Arrow)">
+                    Next Sample <i class="bi bi-arrow-down"></i>
+                </button>
+            </div>
+            <span id="closeZoomModal"
+                style="font-size:28px;font-weight:bold;cursor:pointer;line-height:1;">&times;</span>
+        </div>
+        <canvas id="zoomChartCanvas"></canvas>
+        <div id="metric-gallery-footer" style="margin-top: 10px;"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    console.log('!!! CRITICAL DEBUG: DATASET_VIEW SCRIPT STARTED !!!');
+    // alert('dataset_view script loaded'); 
+    // Alert commented out to avoid annoyance if it works, but user can uncomment if needed.
+    // relying on the console log first.
+    window.saveScrollAndSubmit = function (form) {
+        try {
+            sessionStorage.setItem('scrollPos_' + window.location.pathname, window.scrollY);
+        } catch (e) {
+            console.error('SessionStorage error:', e);
+        }
+        form.submit();
+    };
+
+    window.saveScrollPos = function () {
+        try {
+            sessionStorage.setItem('scrollPos_' + window.location.pathname, window.scrollY);
+        } catch (e) {
+            console.error('SessionStorage error:', e);
+        }
+    };
+
+    // Toggle Checkboxes Logic (Global)
+    window.handleDatasetSelectAllClick = function (selectAll) {
+        const checkboxes = document.querySelectorAll('input[name="display_columns"]');
+
+        // Use the actual checkbox state after the click to determine action
+        // If the checkbox is now checked, select all. If unchecked, deselect all.
+        const shouldSelectAll = selectAll.checked;
+
+        checkboxes.forEach(cb => cb.checked = shouldSelectAll);
+        saveScrollAndSubmit(selectAll.form);
+    };
+
+    window.updateDatasetSelectAllState = function () {
+        const selectAll = document.getElementById('select_all_dataset_cols');
+        if (!selectAll) return;
+        const checkboxes = document.querySelectorAll('input[name="display_columns"]');
+        const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+
+        if (checkedCount === 0) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        } else if (checkedCount === checkboxes.length) {
+            selectAll.checked = true;
+            selectAll.indeterminate = false;
+        } else {
+            selectAll.checked = false;
+            selectAll.indeterminate = true;
+        }
+    };
+
+    // --- Sticky Top Scrollbar Synchronization ---
+    function setupStickyScrollbar() {
+        const topScrollContainer = document.getElementById('top-scroll-container');
+        const topScrollContent = document.getElementById('top-scroll-content');
+        const tableContainer = document.getElementById('table-container');
+        const table = document.getElementById('dataset-table');
+
+        if (!topScrollContainer || !tableContainer || !table) return;
+
+        // Sync scrollers
+        let isSyncingTop = false;
+        let isSyncingTable = false;
+
+        topScrollContainer.onscroll = function () {
+            if (!isSyncingTop) {
+                isSyncingTable = true;
+                tableContainer.scrollLeft = topScrollContainer.scrollLeft;
+            }
+            isSyncingTop = false;
+        };
+
+        tableContainer.onscroll = function () {
+            if (!isSyncingTable) {
+                isSyncingTop = true;
+                topScrollContainer.scrollLeft = tableContainer.scrollLeft;
+            }
+            isSyncingTable = false;
+        };
+
+        // Resize observer to match width and show/hide
+        const ro = new ResizeObserver(entries => {
+            const tableWidth = table.scrollWidth;
+            const containerWidth = tableContainer.clientWidth;
+            topScrollContent.style.width = tableWidth + 'px';
+
+            // Show if table is significantly wider than container
+            if (tableWidth > containerWidth + 2) {
+                topScrollContainer.style.setProperty('display', 'block', 'important');
+            } else {
+                topScrollContainer.style.setProperty('display', 'none', 'important');
+            }
+        });
+
+        ro.observe(table);
+        ro.observe(tableContainer);
+    }
+
+
+    document.addEventListener('DOMContentLoaded', function () {
+        console.log('DEBUG: dataset_view.html DOMContentLoaded fired');
+        setupStickyScrollbar();
+
+        // Restore Scroll Position
+        try {
+            const key = 'scrollPos_' + window.location.pathname;
+            const storedPos = sessionStorage.getItem(key);
+            if (storedPos) {
+                window.scrollTo(0, parseInt(storedPos));
+                sessionStorage.removeItem(key);
+            }
+        } catch (e) { console.error(e); }
+
+        // Initialize Select All State
+        updateDatasetSelectAllState();
+
+
+        // Visualization Modal Logic
+        // Defined globally for access in updateDatasetVisModalContent
+        window.visZoomHandler = null;
+
+        const visModal = document.getElementById('vis-modal');
+        if (visModal) {
+            visModal.addEventListener('show.bs.modal', function (event) {
+                const img = event.relatedTarget;
+                // Reset zoom handler logic is inside updateDatasetVisModalContent wrapper usually, 
+                // but here we want to ensure fresh start on OPEN.
+                // visZoomHandler = null; // Removing this to test if it fixes persistence issues on first load or simple reopen? No, actually, we DO want to reset on FRESH open.
+                // Wait, if I am navigating, I am NOT calling show.bs.modal again?
+                // Correct. Navigate calls updateDatasetVisModalContent directly.
+                // So this only runs when I CLICK to open the modal.
+                // In that case, I DO want to reset zoom.
+                visZoomHandler = null;
+                updateVisGallery(img, visGallery, 'vis-modal');
+                window.updateDatasetVisModalContent(img);
+            });
+
+            // Navigation Button Logic
+            const btnPrev = visModal.querySelector('#btn-prev-sample');
+            const btnNext = visModal.querySelector('#btn-next-sample');
+            const btnResetZoom = visModal.querySelector('#btn-reset-zoom');
+            const triggerNav = (key) => window.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true }));
+
+            if (btnPrev) btnPrev.onclick = () => triggerNav('ArrowUp');
+            if (btnNext) btnNext.onclick = () => triggerNav('ArrowDown');
+            if (btnResetZoom) {
+                btnResetZoom.onclick = () => {
+                    if (window.visZoomHandler) {
+                        window.visZoomHandler.reset();
+                    }
+                };
+            }
+        }
+
+        // Initialize state variables for Vis Modal
+        window.lastVisZoomState = null;
+        window.lastVisModalType = null;
+
+        // Reset state on modal close
+        const visModalEl = document.getElementById('vis-modal');
+        if (visModalEl) {
+            visModalEl.addEventListener('hidden.bs.modal', () => {
+                console.log('DEBUG: vis-modal hidden - Resetting Zoom State');
+                window.lastVisZoomState = null;
+                window.lastVisModalType = null;
+                if (window.visZoomHandler) window.visZoomHandler.reset();
+            });
+        }
+
+        window.updateDatasetVisModalContent = function (img) {
+            console.log('DEBUG: updateDatasetVisModalContent CALLED');
+            const visModal = document.getElementById('vis-modal');
+            const url = img.getAttribute('data-vis-url');
+            const sampleName = img.getAttribute('data-sample-name');
+            const modality = img.getAttribute('alt') || 'Image'; // Use alt as modality identifier
+
+            // Update modal title with sample name
+            const modalTitleSpan = visModal.querySelector('.modal-sample-name');
+            if (modalTitleSpan) {
+                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+            }
+
+            const modalImg = visModal.querySelector('#modal-vis-img');
+
+            // Capture state here explicitly BEFORE changing image content
+            if (window.visZoomHandler) {
+                // Save ONLY if modality matches current
+                // Actually, we save whatever the current state is, labeled with the OLD modality.
+                // The check happens on APPLY.
+                // But wait, we need to know what the OLD modality was.
+                // It should have been stored in window.lastVisModalType from previous call.
+
+                // If we are currently viewing 'Depth', and we switch to 'Confidence',
+                // lastVisModalType is 'Depth'.
+                // The new call comes in with modality='Confidence'.
+
+                // We should capture the state of the *current* view (Depth) in case we switch back to Depth later?
+                // The user requirements say "toggle between subs/GT of same modality".
+                // If I switch Depth -> Confidence, I should NOT apply Depth zoom.
+                // If I switch back Confidence -> Depth, should I restore Depth zoom?
+                // User said "reset when exiting the zoom model".
+                // But switching modalities is not "exiting".
+                // However, "it is not suppose to retain between different types".
+
+                // Simplest interpretation:
+                // 1. Capture current state.
+                // 2. If newModality == oldModality, apply state.
+                // 3. Else, reset state.
+                // 4. Update oldModality = newModality.
+
+                const currentState = window.visZoomHandler.getState();
+                if (window.lastVisModalType) {
+                    window.lastVisZoomState = currentState;
+                }
+            }
+
+            if (modalImg) {
+                modalImg.style.display = 'block'; // Ensure visible immediately
+
+                modalImg.src = url;
+                console.log('DEBUG: updateDatasetVisModalContent - Image src updated to:', url);
+
+                // Re-attach ZoomHandler
+                if (!window.visZoomHandler) {
+                    console.log('DEBUG: updateDatasetVisModalContent - Creating new ZoomHandler');
+                    window.visZoomHandler = new ZoomHandler(modalImg);
+                } else {
+                    console.log('DEBUG: updateDatasetVisModalContent - Reusing ZoomHandler');
+                    window.visZoomHandler.img = modalImg;
+
+                    if (window.lastVisZoomState && window.lastVisModalType === modality) {
+                        console.log('DEBUG: updateDatasetVisModalContent - Applying State (Modality Match:', modality, ')');
+                        window.visZoomHandler.setState(window.lastVisZoomState);
+                    }
+                    else {
+                        console.log('DEBUG: updateDatasetVisModalContent - Resetting Handler (Modality Mismatch or New)');
+                        window.visZoomHandler.reset();
+                    }
+                }
+            }
+            // Update current modality
+            window.lastVisModalType = modality;
+        };
+
+        // Custom Field Image Modal Logic
+        let customFieldZoomHandler = null;
+        const customFieldModal = document.getElementById('custom-field-modal');
+        if (customFieldModal) {
+            customFieldModal.addEventListener('show.bs.modal', function (event) {
+                const button = event.relatedTarget;
+                updateVisGallery(button, customFieldGallery, 'custom-field-modal');
+                window.updateDatasetCustomFieldModalContent(button);
+            });
+
+            const btnPrev = customFieldModal.querySelector('#btn-prev-custom-sample');
+            const btnNext = customFieldModal.querySelector('#btn-next-custom-sample');
+            const triggerNav = (key) => window.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true }));
+
+            if (btnPrev) btnPrev.onclick = () => triggerNav('ArrowUp');
+            if (btnNext) btnNext.onclick = () => triggerNav('ArrowDown');
+        }
+
+        // --- Histogram Modal Button Logic ---
+        const histModal = document.getElementById('chart-modal');
+        if (histModal) {
+            const btnPrev = histModal.querySelector('#btn-prev-hist-sample');
+            const btnNext = histModal.querySelector('#btn-next-hist-sample');
+            const triggerNav = (key) => window.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true }));
+            if (btnPrev) btnPrev.onclick = () => triggerNav('ArrowUp');
+            if (btnNext) btnNext.onclick = () => triggerNav('ArrowDown');
+        }
+
+        // --- Metric Modal Button Logic ---
+        const metricModal = document.getElementById('zoomModal');
+        if (metricModal) {
+            const btnPrev = metricModal.querySelector('#btn-prev-metric-sample');
+            const btnNext = metricModal.querySelector('#btn-next-metric-sample');
+            const triggerNav = (key) => window.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true }));
+            if (btnPrev) btnPrev.onclick = () => triggerNav('ArrowUp');
+            if (btnNext) btnNext.onclick = () => triggerNav('ArrowDown');
+        }
+
+        // ... (updateDatasetCustomFieldModalContent remains mostly same, complex vis maps might need own zoom)
+
+        // ...
+
+        // --- Gallery Logic ---
+        window.visGallery = new GalleryModalManager('vis-modal', 'vis-gallery-footer',
+            (item) => {
+                if (item.element) window.updateDatasetVisModalContent(item.element);
+            },
+            // Vertical Navigation Callback
+            (direction, currentItem, currentIndex) => {
+                console.log('DEBUG: visGallery onNavigateVertical CALLED', direction, currentIndex);
+                if (!currentItem || !currentItem.element) {
+                    console.log('DEBUG: visGallery onNavigateVertical - No current item');
+                    return;
+                }
+
+                // Find current row
+                const currentRow = currentItem.element.closest('tr');
+                if (!currentRow) return;
+
+                let targetRow = currentRow;
+                let attempts = 0;
+                while (attempts < 50) {
+                    if (direction === 1) targetRow = targetRow.nextElementSibling;
+                    else targetRow = targetRow.previousElementSibling;
+
+                    if (!targetRow) break;
+
+                    // Check if has clickable-vis for this modal
+                    if (targetRow.querySelector(`.clickable-vis[data-bs-target="#vis-modal"]`)) {
+                        break;
+                    }
+                    attempts++;
+                }
+
+                if (targetRow) {
+                    const selector = `.clickable-vis[data-bs-target="#vis-modal"]`;
+                    const groupItems = Array.from(targetRow.querySelectorAll(selector));
+
+                    if (groupItems.length > currentIndex) {
+                        const targetItem = groupItems[currentIndex];
+                        console.log('DEBUG: visGallery onNavigateVertical - Found Target', targetItem);
+                        window.updateVisGallery(targetItem, window.visGallery, 'vis-modal');
+                        console.log('DEBUG: visGallery onNavigateVertical - Calling updateDatasetVisModalContent');
+                        window.updateDatasetVisModalContent(targetItem);
+                    } else {
+                        console.log('DEBUG: visGallery onNavigateVertical - Index mismatch');
+                    }
+                } else {
+                    console.log('DEBUG: visGallery onNavigateVertical - No target row found');
+                }
+            }
+        );
+
+        window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
+            (item) => {
+                if (item.element) item.element.click();
+            },
+            // Vertical Navigation Callback
+            (direction, currentItem, currentIndex) => {
+                if (!currentItem || !currentItem.element) return;
+                const currentRow = currentItem.element.closest('tr');
+                if (!currentRow) return;
+
+                let targetRow = currentRow;
+                let attempts = 0;
+                while (attempts < 50) {
+                    if (direction === 1) targetRow = targetRow.nextElementSibling;
+                    else targetRow = targetRow.previousElementSibling;
+                    if (!targetRow) break;
+                    if (targetRow.querySelector(`.clickable-vis[data-bs-target="#custom-field-modal"]`)) break;
+                    attempts++;
+                }
+
+                if (targetRow) {
+                    const selector = `.clickable-vis[data-bs-target="#custom-field-modal"]`;
+                    const groupItems = Array.from(targetRow.querySelectorAll(selector));
+                    if (groupItems.length > currentIndex) {
+                        const targetItem = groupItems[currentIndex];
+                        window.updateVisGallery(targetItem, window.customFieldGallery, 'custom-field-modal');
+                        window.updateDatasetCustomFieldModalContent(targetItem);
+                    }
+                }
+            }
+        );
+
+        window.histGallery = new GalleryModalManager('chart-modal', 'chart-gallery-footer',
+            (item) => {
+                if (item.element) item.element.click();
+            },
+            // Vertical Navigation Callback
+            (direction, currentItem, currentIndex) => {
+                if (!currentItem || !currentItem.element) return;
+                const currentRow = currentItem.element.closest('tr');
+                if (!currentRow) return;
+
+                let targetRow = currentRow;
+                let attempts = 0;
+                while (attempts < 50) {
+                    if (direction === 1) targetRow = targetRow.nextElementSibling;
+                    else targetRow = targetRow.previousElementSibling;
+                    if (!targetRow) break;
+                    if (targetRow.querySelector('.hist-chart-container')) break;
+                    attempts++;
+                }
+
+                if (targetRow) {
+                    const selector = '.hist-chart-container';
+                    const groupItems = Array.from(targetRow.querySelectorAll(selector));
+                    if (groupItems.length > currentIndex) {
+                        const targetItem = groupItems[currentIndex];
+                        window.updateHistGallery(targetItem);
+                        targetItem.click();
+                    }
+                }
+            }
+        );
+
+        window.updateDatasetCustomFieldModalContent = function (button) {
+            const customFieldModal = document.getElementById('custom-field-modal');
+            const imgUrl = button.getAttribute('data-img-url');
+            const visType = button.getAttribute('data-vis-type');
+            const sampleName = button.getAttribute('data-sample-name');
+
+            // Update modal title with sample name
+            const modalTitleSpan = customFieldModal.querySelector('.modal-sample-name');
+            if (modalTitleSpan) {
+                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+            }
+
+            const modalImg = customFieldModal.querySelector('#modal-custom-field-img');
+            const modalPlotly = customFieldModal.querySelector('#modal-plotly-div');
+            const loadingSpinner = customFieldModal.querySelector('#modal-loading-spinner');
+            const errorContainer = customFieldModal.querySelector('#modal-error-container');
+
+            console.log("DEBUG custom-field-modal elements:", { modalImg, modalPlotly, loadingSpinner, errorContainer });
+
+            var apiUrl = button.getAttribute('data-api-url'); // Get API URL
+
+            // Reset state
+            if (modalImg) modalImg.style.display = 'none';
+            if (modalPlotly) {
+                modalPlotly.style.display = 'none';
+                modalPlotly.innerHTML = '';
+            }
+            if (loadingSpinner) loadingSpinner.style.display = 'none';
+            if (errorContainer) {
+                errorContainer.style.display = 'none';
+                errorContainer.innerHTML = '';
+            }
+
+            if (visType === 'depth') {
+                // Interactive Depth Map
+                if (modalImg) modalImg.style.display = 'none';
+                if (modalPlotly) modalPlotly.style.display = 'none';
+                if (loadingSpinner) loadingSpinner.style.display = 'block';
+
+                // Use apiUrl if available, otherwise fall back to imgUrl (unlikely to work for JSON but safe fallback)
+                fetch(apiUrl || imgUrl)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (loadingSpinner) loadingSpinner.style.display = 'none';
+                        if (modalPlotly) modalPlotly.style.display = 'block';
+
+                        const plotData = [{
+                            z: data.data,
+                            type: 'heatmap',
+                            colorscale: 'turbo',
+                            hoverongaps: false,
+                            hovertemplate: 'X: %{x}<br>Y: %{y}<br>Depth: %{z}<extra></extra>'
+                        }];
+
+                        const layout = {
+                            title: 'Interactive Depth Map',
+                            autosize: true,
+                            margin: { l: 50, r: 50, b: 50, t: 50 },
+                            xaxis: { title: 'X' },
+                            yaxis: { title: 'Y', scaleanchor: 'x' }
+                        };
+
+                        Plotly.newPlot('modal-plotly-div', plotData, layout, { responsive: true });
+                    })
+                    .catch(err => {
+                        console.error('Error loading interactive visualization:', err);
+                        if (loadingSpinner) loadingSpinner.style.display = 'none';
+                        if (errorContainer) {
+                            errorContainer.style.display = 'block';
+                            errorContainer.innerHTML = `
+                                    <div class="alert alert-danger" role="alert">
+                                        Error loading interactive depth map: ${err.message}
+                                    </div>
+                                `;
+                        }
+                    });
+            } else {
+                // Standard Image
+                if (modalImg) {
+                    // Persist Zoom State
+                    let savedState = null;
+                    if (customFieldZoomHandler) {
+                        savedState = customFieldZoomHandler.getState();
+                    }
+
+                    modalImg.src = imgUrl;
+                    modalImg.style.display = 'block';
+
+                    // Re-attach ZoomHandler
+                    if (!customFieldZoomHandler) {
+                        customFieldZoomHandler = new ZoomHandler(modalImg);
+                    } else {
+                        if (savedState) customFieldZoomHandler.setState(savedState);
+                        else customFieldZoomHandler.reset();
+                    }
+                }
+            }
+        };
+        // Column Resizing Logic
+        const table = document.getElementById('dataset-table');
+        if (table) {
+            const resizers = table.querySelectorAll('.resizer');
+            resizers.forEach((resizer, index) => {
+                let startX, startWidth, startTableWidth;
+
+                resizer.addEventListener('mousedown', function (e) {
+                    const th = resizer.parentElement;
+                    startX = e.pageX;
+                    startWidth = th.offsetWidth;
+                    startTableWidth = table.offsetWidth;
+
+                    document.addEventListener('mousemove', resize);
+                    document.addEventListener('mouseup', stopResize);
+                    e.preventDefault();
+                });
+
+                function resize(e) {
+                    const th = resizer.parentElement;
+                    const diff = e.pageX - startX;
+                    const width = startWidth + diff;
+                    th.style.width = width + 'px';
+                    table.style.width = (startTableWidth + diff) + 'px';
+                }
+
+                function stopResize() {
+                    document.removeEventListener('mousemove', resize);
+                    document.removeEventListener('mouseup', stopResize);
+                }
+            });
+        }
+        var samplesData = {{ (samples_data_for_charts or[]) | tojson | safe }};
+    if (typeof samplesData === 'string') { try { samplesData = JSON.parse(samplesData); } catch (e) { samplesData = []; } }
+    console.log('DEBUG dataset_view samplesData:', { type: typeof samplesData, isArray: Array.isArray(samplesData), data: samplesData });
+    var selectedDisplayColumns = {{ (selected_display_columns or[]) | tojson | safe }};
+    if (typeof selectedDisplayColumns === 'string') { try { selectedDisplayColumns = JSON.parse(selectedDisplayColumns); } catch (e) { selectedDisplayColumns = []; } }
+    const activeMetrics = {{ (active_metrics or[]) | tojson | safe }};
+    const customScalarMetrics = {{ (custom_scalar_metrics or[]) | tojson | safe }};
+    const sampleMetricOptions = {{ (sample_metric_options or { }) | tojson | safe }};
+    var datasetMetricsData = {{ (dataset_metrics_data or[]) | tojson | safe }};
+    if (typeof datasetMetricsData === 'string') { try { datasetMetricsData = JSON.parse(datasetMetricsData); } catch (e) { datasetMetricsData = []; } }
+    const submissions = []; // Not used in this view but keeping structure safe
+
+    // Combine selected metrics with custom metrics for chart display
+    const allMetricsForChart = [...activeMetrics, ...customScalarMetrics];
+
+
+    // --- Tag Filtering Logic ---
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    // --- Advanced Tag Filtering Logic (Chips UI) ---
+    const allAvailableTags = {{ (all_dataset_tags or[]) | tojson | safe }};
+    const allAvailablePrefixes = [...new Set(allAvailableTags.map(t => t.split(/[=:-]/)[0]).filter(Boolean))];
+
+    function setupTagInput(wrapperId, inputId, suggestionsId, checkboxId, sourceList) {
+        const wrapper = document.getElementById(wrapperId);
+        const input = document.getElementById(inputId);
+        const suggestionsList = document.getElementById(suggestionsId);
+        const checkbox = checkboxId ? document.getElementById(checkboxId) : null;
+
+        if (!wrapper || !input || !suggestionsList) {
+            console.warn("Tag input elements not found for", wrapperId);
+            return {
+                getTags: () => [],
+                addTag: () => { },
+                setTags: () => { },
+                clearTags: () => { },
+                setDisabled: () => { }
+            };
+        }
+
+        const chipsContainer = wrapper.querySelector('.chips-container');
+        let tags = [];
+
+        // Add Clear Button
+        let clearBtn = wrapper.querySelector('.clear-all-tags');
+        if (!clearBtn) {
+            clearBtn = document.createElement('span');
+            clearBtn.className = 'clear-all-tags';
+            clearBtn.innerHTML = '&times;';
+            wrapper.appendChild(clearBtn);
+
+            clearBtn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent wrapper focus
+                tags = [];
+                input.value = '';
+                renderChips();
+                input.focus();
+            });
+        }
+
+        let currentFocus = -1;
+
+        function renderChips(silent = false) {
+            chipsContainer.innerHTML = '';
+            tags.forEach((tag, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'tag-chip';
+                chip.innerHTML = `${tag} <span class="remove-tag" data-index="${index}">&times;</span>`;
+                chipsContainer.appendChild(chip);
+            });
+            // Update Clear Button Visibility
+            if (tags.length > 0 || input.value.trim().length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                clearBtn.style.display = 'none';
+            }
+
+            if (!silent && typeof applyFilters === 'function') applyFilters(); // Auto-update
+        }
+
+        chipsContainer.addEventListener('click', (e) => {
+            if (e.target.classList.contains('remove-tag')) {
+                const index = parseInt(e.target.dataset.index, 10);
+                tags.splice(index, 1);
+                renderChips();
+            } else if (e.target.classList.contains('tag-chip')) {
+                // Edit Tag Logic
+                const index = parseInt(e.target.querySelector('.remove-tag').dataset.index, 10);
+                const tag = tags[index];
+                tags.splice(index, 1);
+                renderChips(true);
+                input.value = tag;
+                input.focus();
+            }
+        });
+
+        function addTag(tag) {
+            tag = tag.trim(); // Preserve case
+            if (tag && !tags.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                tags.push(tag);
+                renderChips();
+            }
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) {
+                        e.preventDefault();
+                        items[currentFocus].click();
+                        return;
+                    }
+                }
+                const val = input.value.trim();
+                if (val) {
+                    e.preventDefault();
+                    // Split by comma or space
+                    const parts = val.split(/[ ,]+/);
+                    parts.forEach(part => {
+                        if (part && !tags.some(t => t.toLowerCase() === part.toLowerCase())) {
+                            tags.push(part);
+                        }
+                    });
+                    input.value = ''; // Clear input on manual entry
+                    renderChips();
+                }
+            } else if (e.key === 'Backspace' && !input.value && tags.length > 0) {
+                tags.pop();
+                renderChips();
+            } else if (e.key === 'Tab') {
+                e.preventDefault(); // Prevent focus loss
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) items[currentFocus].click();
+                } else if (suggestionsList.style.display === 'block' && suggestionsList.firstChild) {
+                    suggestionsList.firstChild.click();
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentFocus++;
+                addActive(suggestionsList.querySelectorAll('li'));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentFocus--;
+                addActive(suggestionsList.querySelectorAll('li'));
+            }
+        });
+
+        function addActive(x) {
+            if (!x) return false;
+            removeActive(x);
+            if (currentFocus >= x.length) currentFocus = 0;
+            if (currentFocus < 0) currentFocus = (x.length - 1);
+            x[currentFocus].classList.add("active");
+            x[currentFocus].scrollIntoView({ block: "nearest" });
+        }
+        function removeActive(x) {
+            for (var i = 0; i < x.length; i++) {
+                x[i].classList.remove("active");
+            }
+        }
+
+        function updateSuggestions() {
+            currentFocus = -1;
+            const val = input.value.trim().toLowerCase();
+            suggestionsList.innerHTML = '';
+
+            // Show suggestions if value exists OR if input is focused (show all/top)
+            let matches = [];
+            if (val) {
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => t.toLowerCase().includes(val) && !tags.includes(t));
+                }
+            } else {
+                // Show all (or top 10) if no input but focused
+                if (sourceList && sourceList.length > 0) {
+                    matches = sourceList.filter(t => !tags.includes(t));
+                }
+            }
+
+            if (matches.length > 0) {
+                matches.slice(0, 10).forEach(match => {
+                    const li = document.createElement('li');
+                    li.textContent = match;
+                    li.addEventListener('click', () => {
+                        addTag(match);
+                        input.value = ''; // Clear input on selection
+                        suggestionsList.style.display = 'none';
+                        input.focus();
+                    });
+                    suggestionsList.appendChild(li);
+                });
+                suggestionsList.style.display = 'block';
+            } else {
+                suggestionsList.style.display = 'none';
+            }
+
+            // Clear button logic
+            if (val || tags.length > 0) {
+                clearBtn.style.display = 'block';
+            } else {
+                if (tags.length === 0) clearBtn.style.display = 'none';
+            }
+        }
+
+        input.addEventListener('input', updateSuggestions);
+        input.addEventListener('focus', updateSuggestions);
+        input.addEventListener('click', updateSuggestions);
+
+        document.addEventListener('click', (e) => {
+            if (!wrapper.contains(e.target)) {
+                suggestionsList.style.display = 'none';
+            }
+        });
+
+        if (checkbox) {
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) {
+                    wrapper.classList.remove('disabled');
+                    input.disabled = false;
+                } else {
+                    wrapper.classList.add('disabled');
+                    input.disabled = true;
+                }
+                if (typeof applyFilters === 'function') applyFilters();
+            });
+        }
+
+        return {
+            getTags: () => (checkbox ? checkbox.checked : true) ? tags : [],
+            addTag: (t) => addTag(t),
+            setTags: (tArray) => {
+                tags = tArray;
+                renderChips(true); // Silent update
+            },
+            clearTags: () => { tags = []; renderChips(); },
+            setDisabled: (disabled) => {
+                if (checkbox) {
+                    checkbox.checked = !disabled;
+                    if (checkbox.checked) {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    } else {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    }
+                } else {
+                    if (disabled) {
+                        wrapper.classList.add('disabled');
+                        input.disabled = true;
+                    } else {
+                        wrapper.classList.remove('disabled');
+                        input.disabled = false;
+                    }
+                }
+            }
+        };
+    }
+
+    window.includeTagsCtrl = setupTagInput('include-tags-wrapper', 'include-tags-input', 'include-suggestions', 'enable-include-tags', allAvailableTags);
+    window.excludeTagsCtrl = setupTagInput('exclude-tags-wrapper', 'exclude-tags-input', 'exclude-suggestions', 'enable-exclude-tags', allAvailableTags);
+    window.prefixTagsCtrl = setupTagInput('prefix-tags-wrapper', 'prefix-tags-input', 'prefix-suggestions', 'enable-prefix-tags', allAvailablePrefixes);
+
+    // Modal Tag Controller
+    const modalTagsCtrl = setupTagInput('modal-tags-wrapper', 'modal-tags-input', 'modal-tags-suggestions', null, allAvailableTags);
+
+    // Add Tags Modal Initialization
+    const addTagsModal = document.getElementById('add-tags-modal');
+    if (addTagsModal) {
+        addTagsModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            if (!button) return; // Triggered programmatically maybe?
+
+            const sampleId = button.getAttribute('data-sample-id');
+            const sampleName = button.getAttribute('data-sample-name');
+            const sampleTags = button.getAttribute('data-sample-tags');
+
+            document.getElementById('add-tags-modal-title').textContent = `Edit Tags: ${sampleName}`;
+            document.getElementById('add-tags-form').action = `/sample/${sampleId}/update_tags`;
+
+            const tagsArray = sampleTags ? sampleTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+            modalTagsCtrl.setTags(tagsArray);
+        });
+
+        document.getElementById('add-tags-form').addEventListener('submit', function (e) {
+            const currentTags = modalTagsCtrl.getTags();
+            document.getElementById('hidden-modal-tags').value = currentTags.join(',');
+        });
+
+        // Delegate click for dynamically rendered buttons if any (though here they are in rows)
+        document.querySelectorAll('.add-tags-btn').forEach(btn => {
+            btn.addEventListener('click', function (e) {
+                e.preventDefault();
+                const myModal = new bootstrap.Modal(addTagsModal);
+                myModal.show(this);
+            });
+        });
+    }
+
+    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix) {
+        const url = new URL(window.location);
+        if (include.length) url.searchParams.set('include_tags', include.join(',')); else url.searchParams.delete('include_tags');
+        if (exclude.length) url.searchParams.set('exclude_tags', exclude.join(',')); else url.searchParams.delete('exclude_tags');
+        if (prefix.length) url.searchParams.set('prefix_tags', prefix.join(',')); else url.searchParams.delete('prefix_tags');
+
+        url.searchParams.set('enable_include', enableInclude);
+        url.searchParams.set('enable_exclude', enableExclude);
+        url.searchParams.set('enable_prefix', enablePrefix);
+
+        const currentUrl = new URL(window.location);
+        const paramsChanged = ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix']
+            .some(key => url.searchParams.get(key) !== currentUrl.searchParams.get(key));
+
+        if (paramsChanged) {
+            url.searchParams.set('page', 1);
+            window.location.href = url.toString();
+        }
+
+        // Patch Pagination Links
+        document.querySelectorAll('.page-link').forEach(link => {
+            try {
+                const linkUrl = new URL(link.href, window.location.origin);
+                // Copy params to link
+                ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix'].forEach(key => {
+                    const val = url.searchParams.get(key);
+                    if (val !== null) linkUrl.searchParams.set(key, val); else linkUrl.searchParams.delete(key);
+                });
+                link.href = linkUrl.toString();
+            } catch (e) { }
+        });
+
+        // Sync Hidden Inputs for Main Form
+        const form = document.querySelector('[name="per_page"]')?.closest('form');
+        if (form) {
+            const setHidden = (name, val) => {
+                let inp = form.querySelector(`input[name="${name}"]`);
+                if (!inp) {
+                    inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = name;
+                    form.appendChild(inp);
+                }
+                inp.value = val;
+            };
+            setHidden('include_tags', include.join(','));
+            setHidden('exclude_tags', exclude.join(','));
+            setHidden('prefix_tags', prefix.join(','));
+            setHidden('enable_include', enableInclude);
+            setHidden('enable_exclude', enableExclude);
+            setHidden('enable_prefix', enablePrefix);
+        }
+    }
+
+
+
+
+
+    function loadStateFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        const include = params.get('include_tags') ? params.get('include_tags').split(',') : [];
+        const exclude = params.get('exclude_tags') ? params.get('exclude_tags').split(',') : [];
+        const prefix = params.get('prefix_tags') ? params.get('prefix_tags').split(',') : [];
+
+        const enableInclude = params.get('enable_include') === 'true';
+        const enableExclude = params.get('enable_exclude') === 'true';
+        const enablePrefix = params.get('enable_prefix') === 'true';
+
+        if (enableInclude) {
+            window.includeTagsCtrl.setDisabled(false);
+            window.includeTagsCtrl.setTags(include);
+        }
+        if (enableExclude) {
+            window.excludeTagsCtrl.setDisabled(false);
+            window.excludeTagsCtrl.setTags(exclude);
+        }
+        if (enablePrefix) {
+            window.prefixTagsCtrl.setDisabled(false);
+            window.prefixTagsCtrl.setTags(prefix);
+        }
+        applyFilters();
+    }
+
+    function applyFilters() {
+        // Server-side filtering: Just update URL to trigger reload.
+        updateURLParams(
+            window.includeTagsCtrl.getTags(),
+            window.excludeTagsCtrl.getTags(),
+            window.prefixTagsCtrl.getTags(),
+            document.getElementById('enable-include-tags').checked,
+            document.getElementById('enable-exclude-tags').checked,
+            document.getElementById('enable-prefix-tags').checked
+        );
+    }
+    // Load state on startup
+    loadStateFromURL();
+
+    if (selectedDisplayColumns && selectedDisplayColumns.includes('per_sample_metrics') && datasetMetricsData) {
+        console.log('Rendering per_sample_metrics charts:', { activeMetrics, customScalarMetrics, allMetricsForChart, datasetMetricsData });
+        datasetMetricsData.forEach(function (sampleMetricData) {
+            const canvasId = `sample-metrics-chart-${sampleMetricData.sample_id}`;
+            const ctx = document.getElementById(canvasId);
+            if (ctx) {
+                // Prepare datasets to be reused in _meta
+                // Prepare datasets to be reused in _meta
+                const chartDataValues = allMetricsForChart.map(m => {
+                    const val = sampleMetricData.metrics['GT'][m];
+                    console.log(`DEBUG: Mapping Metric ${m} for Sample ${sampleMetricData.sample_id}:`, val, 'from obj:', sampleMetricData.metrics['GT']);
+                    return val || 0;
+                });
+
+                const datasets = [{
+                    label: 'GT',
+                    data: chartDataValues,
+                    backgroundColor: 'rgba(105, 105, 105, 0.8)'
+                }];
+
+                const chartLabels = allMetricsForChart.map(m => sampleMetricOptions[m] || m.replace(/_/g, ' ').toUpperCase());
+
+                const chart = new Chart(ctx.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: chartLabels,
+                        datasets: datasets
+                    },
+                    options: {
+                        plugins: { title: { display: false }, legend: { display: false }, tooltip: { enabled: true } },
+                        scales: { y: { display: true, beginAtZero: true } },
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        // Metadata for Zoom Modal
+                        _meta: {
+                            sampleId: sampleMetricData.sample_id,
+                            sampleName: sampleMetricData.sample_name || 'Sample ' + sampleMetricData.sample_id,
+                            subName: 'Ground Truth',
+                            allDatasets: datasets,
+                            labels: chartLabels // Pass labels for modal
+                        }
+                    }
+                });
+
+                // Add click handler for Zoom
+                ctx.style.cursor = 'pointer';
+                ctx.onclick = function () {
+                    updateMetricGallery(chart.options._meta);
+                    openMetricZoomModal(chart.options._meta);
+                };
+            }
+        });
+    }
+
+    if (selectedDisplayColumns && selectedDisplayColumns.includes('histogram') && samplesData) {
+        samplesData.forEach(function (sampleData) {
+            var ctx = document.getElementById('chart-' + sampleData.id);
+            if (ctx) {
+                new Chart(ctx.getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: sampleData.bins.map(String),
+                        datasets: [{
+                            label: 'Counts',
+                            data: sampleData.counts,
+                            backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                            borderWidth: 0,
+                            barPercentage: 1.0,
+                            categoryPercentage: 1.0
+                        }]
+                    },
+                    options: {
+                        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                        scales: { x: { display: false }, y: { display: false, beginAtZero: true } },
+                        animation: false,
+                        responsive: true,
+                        maintainAspectRatio: false
+                    }
+                });
+            }
+        });
+    }
+
+    // --- Histogram Modal Logic ---
+    const chartModalElement = document.getElementById('chart-modal');
+    window.lastHistZoomState = null; // Global zoom state for histograms
+    window.lastHistChartType = null; // Global chart type to check modality
+
+    if (chartModalElement && typeof bootstrap !== 'undefined') {
+        const chartModal = new bootstrap.Modal(chartModalElement);
+        const modalChartCanvas = document.getElementById('modal-chart');
+        let modalChart = null;
+
+        // Reset state on modal close
+        chartModalElement.addEventListener('hidden.bs.modal', () => {
+            console.log('DEBUG: chart-modal hidden - Resetting Zoom State');
+            window.lastHistZoomState = null;
+            window.lastHistChartType = null;
+        });
+
+        const histTooltipCallbacks = {
+            title: function (context) { return `Bin: ${context[0].parsed.x.toFixed(2)}`; },
+            label: function (context) { return `Counts: ${context.parsed.y.toLocaleString()}`; }
+        };
+
+        const createInteractiveChart = (title, labels, data, chartType) => {
+            // Capture previous state if matches
+            if (modalChart) {
+                // If we are switching, check coherence if needed. Or we just trust the loop.
+                // But the KEY is: did the user pan/zoom?
+                // Chart.js stores scale limits in scales.x.min/max
+                const x = modalChart.scales.x;
+                if (window.lastHistChartType && window.lastHistChartType === chartType) {
+                    // Only save if we are continuing same modality
+                    // But actually, we need to save BEFORE destruction, assuming the NEXT one will be same.
+                    // If the next one is different, we discard.
+                    // Simpler: ALWAYS save here, let the Consumer decide whether to use it.
+                    window.lastHistZoomState = { min: x.min, max: x.max };
+                    console.log('DEBUG: createInteractiveChart - Saved State:', window.lastHistZoomState);
+                }
+                modalChart.destroy();
+            }
+
+            document.getElementById('chartModalLabel').textContent = title;
+
+            // Prepare options
+            const opts = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: true, callbacks: histTooltipCallbacks },
+                    zoom: {
+                        limits: { x: { minRange: 10 } },
+                        pan: { enabled: true, mode: 'x', onPan: updatePanSlider },
+                        zoom: { wheel: { enabled: true, speed: 0.1 }, pinch: { enabled: true }, mode: 'x', onZoom: updatePanSlider }
+                    }
+                },
+                scales: {
+                    x: { display: true, title: { display: true, text: 'Bins' } },
+                    y: { title: { display: true, text: 'Counts' } }
+                }
+            };
+
+            // Apply saved state if matches modality
+            if (window.lastHistZoomState && window.lastHistChartType === chartType) {
+                console.log('DEBUG: createInteractiveChart - Restoring State:', window.lastHistZoomState);
+                opts.scales.x.min = window.lastHistZoomState.min;
+                opts.scales.x.max = window.lastHistZoomState.max;
+            } else if (window.lastHistChartType !== chartType) {
+                console.log('DEBUG: createInteractiveChart - Modality Changed/Reset (Prev:', window.lastHistChartType, 'New:', chartType, ')');
+                window.lastHistZoomState = null;
+            }
+
+            window.lastHistChartType = chartType; // Update for next time
+
+            modalChart = new Chart(modalChartCanvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Counts',
+                        data: data,
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderWidth: 0,
+                        barPercentage: 1.0,
+                        categoryPercentage: 1.0
+                    }]
+                },
+                options: opts
+            });
+        };
+        // chartModal.show(); // Removed auto-show
+
+        window.updateDatasetHistModalContent = function (container) {
+            const canvas = container.querySelector('canvas');
+            if (!canvas) return;
+            const parts = canvas.id.split('-'); // id format: chart-{id}
+            const sampleId = parseInt(parts[1], 10);
+
+            const sample = samplesData.find(s => s.id === sampleId);
+            if (!sample) return;
+
+            const sampleName = sample.name;
+            // Update modal title with sample name
+            const chartModal = document.getElementById('chart-modal');
+            const modalTitleSpan = chartModal.querySelector('.modal-sample-name');
+            if (modalTitleSpan) {
+                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+            }
+
+            const labels = sample.bins.map(String);
+            const counts = sample.counts;
+            const title = `Histogram: ${sample.name || ('Sample ' + sample.id)}`;
+            const chartType = container.dataset.chartType || 'histogram'; // Use dataset attribute
+            createInteractiveChart(title, labels, counts, chartType);
+        };
+
+        const updatePanSlider = ({ chart }) => {
+            const slider = document.getElementById('zoom-pan-slider');
+            const totalBins = chart.data.labels.length;
+            const min = chart.scales.x.min;
+            const max = chart.scales.x.max;
+            const currentWidth = max - min;
+
+            // Check if zoomed out (width covers roughly whole range)
+            if (currentWidth >= totalBins - 2) {
+                slider.disabled = true;
+                slider.value = 0;
+                return;
+            }
+
+            slider.disabled = false;
+            const maxStart = (totalBins - 1) - currentWidth;
+            let pct = (min / maxStart) * 100;
+            slider.value = Math.max(0, Math.min(100, pct));
+        };
+
+        document.getElementById('zoom-pan-slider').addEventListener('input', (e) => {
+            if (!modalChart) return;
+            const val = parseFloat(e.target.value);
+            const totalBins = modalChart.data.labels.length;
+            const currentWidth = modalChart.scales.x.max - modalChart.scales.x.min;
+
+            const maxStart = (totalBins - 1) - currentWidth;
+            const newMin = (val / 100) * maxStart;
+            const newMax = newMin + currentWidth;
+
+            modalChart.zoomScale('x', { min: newMin, max: newMax }, 'none');
+        });
+
+        // Reset slider on full reset
+        document.getElementById('reset-zoom-btn').addEventListener('click', () => {
+            if (modalChart) modalChart.resetZoom();
+            document.getElementById('zoom-pan-slider').value = 0;
+            document.getElementById('zoom-pan-slider').disabled = true;
+        });
+
+        document.getElementById('apply-zoom-btn').addEventListener('click', () => {
+            if (modalChart) {
+                const start = parseFloat(document.getElementById('zoom-start').value);
+                const end = parseFloat(document.getElementById('zoom-end').value);
+                if (!isNaN(start) && !isNaN(end) && start < end) {
+                    modalChart.zoomScale('x', { min: start, max: end });
+                    modalChart.update();
+                } else {
+                    alert("Please enter a valid start and end range.");
+                }
+            }
+        });
+
+        // Attach listeners to charts
+        const containers = document.querySelectorAll('.hist-chart-container');
+        containers.forEach(container => {
+            container.style.cursor = 'pointer';
+            container.addEventListener('click', (e) => {
+                const el = e.currentTarget;
+                updateHistGallery(el);
+                window.updateDatasetHistModalContent(el);
+                chartModal.show();
+            });
+        });
+    } else {
+        if (!chartModalElement) console.warn("Modal element not found.");
+        if (typeof bootstrap === 'undefined') console.warn("Bootstrap not loaded.");
+    }
+});
+
+    // --- Metric Zoom Modal Logic ---
+    const zoomModalElement = document.getElementById('zoomModal');
+    let zoomModalChart = null;
+
+    function openMetricZoomModal(meta) {
+        // Update modal title with sample name
+        const zoomModal = document.getElementById('zoomModal');
+        const modalTitleSpan = zoomModal.querySelector('.modal-sample-name');
+        if (modalTitleSpan) {
+            modalTitleSpan.textContent = meta.sampleName ? `(Sample: ${meta.sampleName})` : '';
+        }
+
+        const chartId = `metrics-chart-${meta.sampleId}`;
+        const closeBtn = document.getElementById('closeZoomModal');
+        const canvas = document.getElementById('zoomChartCanvas');
+
+        // Reset canvas size (important for re-rendering)
+        canvas.width = 1000;
+        canvas.height = 600;
+
+        const ctx = canvas.getContext('2d');
+
+        // Check for existing chart instance on the canvas and destroy it
+        const existingChart = Chart.getChart(canvas);
+        if (existingChart) {
+            existingChart.destroy();
+        }
+        // Also ensure global reference is cleared if different
+        if (zoomModalChart && zoomModalChart !== existingChart) {
+            try { zoomModalChart.destroy(); } catch (e) { }
+        }
+        zoomModalChart = null;
+
+        // Filter out the '...' indicator from datasets for the full view
+        // IMPORTANT: Deep clone the datasets to avoid Chart.js internal state conflicts (e.g. _meta) from the other active chart
+        const fullDatasets = meta.allDatasets
+            .filter(d => !d.isTruncationIndicator)
+            .map(d => JSON.parse(JSON.stringify(d)));
+
+        zoomModalChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: meta.labels || [''],
+                datasets: fullDatasets
+            },
+            options: {
+                responsive: false, // We control size via canvas dims
+                plugins: {
+                    title: {
+                        display: true,
+                        text: `Metrics: ${meta.subName} - ${meta.sampleName}`,
+                        font: { size: 18 }
+                    },
+                    legend: {
+                        display: false // Hide legend
+                    },
+                    tooltip: { enabled: true }
+                },
+                scales: {
+                    x: {
+                        display: true,
+                        ticks: {
+                            autoSkip: false,
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    },
+                    y: {
+                        display: true,
+                        beginAtZero: true,
+                        title: { display: true, text: 'Value' }
+                    }
+                }
+            }
+        });
+
+        zoomModal.style.display = 'block';
+        document.body.style.overflow = 'hidden'; // Hide body scrollbar
+        zoomModal.dispatchEvent(new Event('shown.bs.modal'));
+
+        // Hide sticky scrollbar to prevent z-index overlap
+        const topScroll = document.getElementById('top-scroll-container');
+        if (topScroll) topScroll.style.display = 'none';
+
+        // Close logic
+        const cleanup = function () {
+            zoomModal.style.display = 'none';
+            document.body.style.overflow = ''; // Restore body scrollbar
+            if (topScroll) topScroll.style.display = 'block'; // Restore sticky scrollbar
+            if (zoomModalChart) {
+                zoomModalChart.destroy();
+                zoomModalChart = null;
+            }
+            window.removeEventListener('keydown', escClose);
+        };
+
+        const escClose = (e) => { if (e.key === 'Escape') cleanup(); };
+
+        closeBtn.onclick = cleanup;
+        window.onclick = function (event) {
+            if (event.target == zoomModal) {
+                cleanup();
+            }
+        };
+        window.addEventListener('keydown', escClose);
+    }
+
+    // --- Gallery Logic ---
+    // visGallery, customFieldGallery, histGallery are initialized in DOMContentLoaded and attached to window.
+
+    window.metricGallery = new GalleryModalManager('zoomModal', 'metric-gallery-footer',
+        (item) => {
+            if (item.element) {
+                const chart = Chart.getChart(item.element);
+                if (chart && chart.options._meta) {
+                    openMetricZoomModal(chart.options._meta);
+                }
+            }
+        },
+        // Vertical Navigation Callback
+        (direction, currentItem, currentIndex) => {
+            if (!currentItem || !currentItem.element) return;
+            const currentRow = currentItem.element.closest('tr');
+            if (!currentRow) return;
+
+            let targetRow = currentRow;
+            let attempts = 0;
+            while (attempts < 50) {
+                if (direction === 1) targetRow = targetRow.nextElementSibling;
+                else targetRow = targetRow.previousElementSibling;
+                if (!targetRow) break;
+                if (targetRow.querySelector('canvas[id^="sample-metrics-chart-"]')) break;
+                attempts++;
+            }
+
+            if (targetRow) {
+                const selector = 'canvas[id^="sample-metrics-chart-"]';
+                const groupItems = Array.from(targetRow.querySelectorAll(selector));
+                if (groupItems.length > currentIndex) {
+                    const targetItem = groupItems[currentIndex];
+                    const chart = Chart.getChart(targetItem);
+                    if (chart && chart.options._meta) {
+                        window.updateMetricGallery(chart.options._meta);
+                        openMetricZoomModal(chart.options._meta);
+                    }
+                }
+            }
+        }
+    );
+
+    window.updateVisGallery = function (trigger, galleryInstance, modalId) {
+        // Row-based: find closest TR
+        const tr = trigger.closest('tr');
+        if (!tr) return;
+
+        // Find all clickable-vis in this TR that target the specific modal
+        // Note: dataset_view might have custom field images (custom-field-modal) AND standard images (vis-modal)
+        // We probably only want images that target the SAME modal.
+        const selector = `.clickable-vis[data-bs-target="#${modalId}"]`;
+        const groupItems = Array.from(tr.querySelectorAll(selector));
+
+        const items = groupItems.map(img => {
+            // Label: use alt or sample name?
+            // In row-based, the sample name is constant (it's the same row).
+            // What distinguishes the images in the same row? The column name!
+            // So label should be the column name (alt).
+            return {
+                id: img.src,
+                label: img.getAttribute('alt') || 'Image',
+                thumbSrc: img.src,
+                element: img
+            };
+        });
+        galleryInstance.setItems(items);
+        galleryInstance.setCurrentIndex(groupItems.indexOf(trigger));
+    };
+
+    window.updateHistGallery = function (trigger) {
+        const tr = trigger.closest('tr');
+        if (!tr) return;
+
+        const groupItems = Array.from(tr.querySelectorAll('.hist-chart-container'));
+        const items = groupItems.map((container, idx) => {
+            // Label: chart type?
+            return {
+                id: idx,
+                label: container.dataset.chartType || `Chart ${idx}`,
+                thumbSrc: null,
+                element: container
+            };
+        });
+        histGallery.setItems(items);
+        histGallery.setCurrentIndex(groupItems.indexOf(trigger));
+    };
+
+    window.updateMetricGallery = function (currentMeta) {
+        // Metric gallery in dataset view...
+        // In dataset view, we display multiple samples.
+        // If "toggling should be between zoomable objects on the same sample",
+        // does a SINGLE sample row have MULTIPLE metric charts?
+        // Usually dataset view has ONE metric chart per sample row (showing all metrics for that sample).
+        // If so, the gallery has size 1.
+        // However, if the user meant "On the same sample", they might just mean "Restrict navigation to this sample".
+        // If there is only 1 item, so be it.
+        // But maybe they want Image -> Histogram -> Metric?
+        // As decided, I'll stick to type-based for now. 
+        // If there is only 1 metric chart, the gallery will have 1 item.
+
+        const currentId = `sample-metrics-chart-${currentMeta.sampleId}`;
+        const currentCanvas = document.getElementById(currentId);
+        if (!currentCanvas) return;
+
+        const tr = currentCanvas.closest('tr');
+        if (!tr) return;
+
+        const canvases = Array.from(tr.querySelectorAll('canvas[id^="sample-metrics-chart-"]'));
+
+        const items = canvases.map((canvas) => {
+            return {
+                id: canvas.id,
+                label: 'Metrics',
+                thumbSrc: null,
+                element: canvas
+            };
+        });
+
+        const currentIndex = canvases.findIndex(c => c.id === currentId);
+
+        metricGallery.setItems(items);
+        metricGallery.setCurrentIndex(currentIndex);
+    };
+</script>
+{% endblock %}

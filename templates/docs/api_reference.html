@@ -1,0 +1,105 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>API Reference</h1>
+<p class="lead">Programmatically interact with Bench-Hub.</p>
+<hr>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle me-2"></i> <strong>Note:</strong> This API is currently experimental
+            and subject to change.
+        </div>
+
+        <h3 id="projects">Projects</h3>
+
+        <div class="card mb-4">
+            <div class="card-header font-monospace">
+                <span class="badge bg-success me-2">GET</span> /projects
+            </div>
+            <div class="card-body">
+                <p>List all available projects.</p>
+                <h6>Response</h6>
+                <pre><code class="language-json">{
+    "projects": [
+        {"id": 1, "name": "dTOF", "description": "Depth sensing benchmark"},
+        {"id": 2, "name": "Lidar", "description": "..."}
+    ]
+}</code></pre>
+            </div>
+        </div>
+
+        <h3 id="automation">Automation</h3>
+
+        <div class="card mb-4">
+            <div class="card-header font-monospace">
+                <span class="badge bg-warning text-dark me-2">POST</span>
+                /&lt;project_name&gt;/leaderboard/&lt;id&gt;/upload_submission
+            </div>
+            <div class="card-body">
+                <p>Upload a new submission ZIP file to a specific leaderboard.</p>
+
+                <h6>Parameters (Multipart/Form-Data)</h6>
+                <table class="table table-sm table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>submission_zip</code></td>
+                            <td>File</td>
+                            <td>The ZIP file containing your results.</td>
+                        </tr>
+                        <tr>
+                            <td><code>submission_name</code></td>
+                            <td>String</td>
+                            <td>(Optional) Display name for the submission. Defaults to filename.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h6>Example (Python)</h6>
+                <pre><code class="language-python">import requests
+
+url = "http://localhost:6060/dTOF/leaderboard/1/upload_submission"
+files = {'submission_zip': open('results.zip', 'rb')}
+data = {'submission_name': 'My Algorithm v1.0'}
+
+r = requests.post(url, files=files, data=data)
+print(r.status_code)</code></pre>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header font-monospace">
+                <span class="badge bg-success me-2">GET</span> /&lt;project_name&gt;/leaderboard_metrics_status
+            </div>
+            <div class="card-body">
+                <p>Poll for the status of metric calculations.</p>
+                <h6>Parameters (Query Param)</h6>
+                <ul>
+                    <li><code>leaderboard_id</code> (required): ID of the leaderboard.</li>
+                </ul>
+
+                <h6>Response</h6>
+                <pre><code class="language-json">{
+    "123": {  // Submission ID
+        "id": 123,
+        "name": "My Algorithm",
+        "metrics": {
+            "L1_Error": 0.45,
+            "Accuracy": "Calculating..." 
+        }
+    }
+}</code></pre>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}

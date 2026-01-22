@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Datasets - Bench-Hub{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="text-center py-4">
+        <h1 class="display-5 fw-bold mb-3 text-body-emphasis">
+            <i class="bi bi-database text-info me-2"></i>Global Datasets
+        </h1>
+        <p class="lead text-body-secondary">
+            Manage all uploaded datasets. These can be used by any project to create leaderboards.
+        </p>
+    </div>
+
+    <hr class="mb-5 border-secondary">
+
+    <div class="row g-5">
+        <!-- Datasets List -->
+        <div class="col-lg-7">
+            <h2 class="h4 mb-4 text-body-emphasis">
+                Available Datasets
+                <span class="badge bg-secondary fs-6 align-middle ms-2">{{ datasets|length }}</span>
+            </h2>
+
+            {% if datasets %}
+            <div class="list-group mb-4 shadow-sm">
+                {% for dataset in datasets %}
+                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                    <div>
+                        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                            class="text-decoration-none text-body fw-bold fs-5">
+                            {{ dataset.name }}
+                        </a>
+                        <small class="d-block text-body-secondary mt-1">
+                            <i class="bi bi-clock me-1"></i> Uploaded: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M')
+                            }}
+                        </small>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <!-- View Button -->
+                        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                            class="btn btn-sm btn-outline-primary me-2">
+                            <i class="bi bi-eye"></i> View
+                        </a>
+                        <!-- Delete Button -->
+                        <button type="button" class="btn btn-sm btn-outline-danger"
+                            onclick="event.stopPropagation(); confirmAction('Are you sure you want to delete the dataset \'{{ dataset.name }}\' and all its associated samples? This affects ALL projects using it.', () => { document.getElementById('delete-dataset-{{ dataset.id }}').submit(); });">
+                            <i class="bi bi-trash"></i> Delete
+                        </button>
+                        <form id="delete-dataset-{{ dataset.id }}"
+                            action="{{ url_for('delete_dataset', dataset_id=dataset.id) }}" method="post"
+                            style="display:none;"></form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="alert alert-secondary d-flex align-items-center" role="alert">
+                <i class="bi bi-info-circle me-2"></i> No datasets found. Upload one to get started.
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Upload Section -->
+        <div class="col-lg-5">
+            <div class="card shadow-sm border-0 bg-body-tertiary sticky-top" style="top: 100px; z-index: 900;">
+                <div class="card-body p-4">
+                    <h5 class="card-title text-body mb-3 fw-bold"><i class="bi bi-cloud-upload me-2"></i>Upload New
+                        Dataset</h5>
+                    <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="dataset_name" class="form-label text-body">Dataset Name (Optional)</label>
+                            <input type="text" class="form-control" id="dataset_name" name="dataset_name"
+                                placeholder="Auto-filled from filename">
+                        </div>
+                        <div class="mb-3">
+                            <label for="dataset_zip" class="form-label text-body">ZIP File(s)</label>
+                            <input type="file" class="form-control" id="dataset_zip" name="dataset_zip" accept=".zip"
+                                multiple required>
+                            <div class="form-text text-body-secondary">Select one or more .zip files. Structure: folders
+                                as samples.
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="override_dataset"
+                                    name="override_dataset" value="true">
+                                <label class="form-check-label text-body" for="override_dataset">
+                                    Override if exists
+                                </label>
+                                <div class="form-text text-body-secondary">If checked, replaces existing datasets with
+                                    same name.</div>
+                            </div>
+                        </div>
+                        <!-- Current Project Context Hidden Field: NOT NEEDED for global datasets, 
+                             but upload_dataset might look for redirect handling. 
+                             Usually upload redirects back to referrer or index. 
+                             Checked app.py: upload_dataset redirects to url_for('index') usually. 
+                             I should check upload_dataset return value. 
+                        -->
+                        <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">Upload Dataset</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.getElementById('dataset_zip').addEventListener('change', function (e) {
+        var datasetNameInput = document.getElementById('dataset_name');
+        if (datasetNameInput.value === '') {
+            var fileNames = Array.from(e.target.files).map(file => file.name.replace(/\.zip$/, ''));
+            datasetNameInput.value = fileNames.join(', ');
+        }
+    });
+</script>
+{% endblock %}

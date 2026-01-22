@@ -1,0 +1,8 @@
+*.zip
+*.pyc
+*.log
+*.db
+
+__pycache__
+data/
+uploads/

@@ -1,0 +1,1214 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Leaderboard - {{ leaderboard.name }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Edit Leaderboard: {{ leaderboard.name }}</h1>
+    <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}" class="btn btn-secondary">Back to
+        Leaderboard</a>
+</div>
+
+<ul class="nav nav-tabs mb-4" id="leaderboardSettingsTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="basic-tab" data-bs-toggle="tab" data-bs-target="#basic-pane" type="button"
+            role="tab">General</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="metrics-tab" data-bs-toggle="tab" data-bs-target="#metrics-pane" type="button"
+            role="tab">Metrics</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="viz-tab" data-bs-toggle="tab" data-bs-target="#viz-pane" type="button"
+            role="tab">Visualizations</button>
+    </li>
+</ul>
+
+<div class="tab-content" id="leaderboardSettingsTabsContent">
+    <!-- Tab 1: Basic Info -->
+    <div class="tab-pane fade show active" id="basic-pane" role="tabpanel" aria-labelledby="basic-tab">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">General Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <form action="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}" method="post">
+                            <div class="mb-3">
+                                <label for="name" class="form-label">Leaderboard Name</label>
+                                <input type="text" class="form-control" id="name" name="name"
+                                    value="{{ leaderboard.name }}" required>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">Display Settings (Overrides)</label>
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <label for="scalar_width" class="form-label small">Scalar Width</label>
+                                        <input type="text" class="form-control form-control-sm" id="scalar_width"
+                                            name="scalar_width" value="{{ leaderboard.scalar_width or '' }}"
+                                            placeholder="{{ global_settings.scalar_width }} (Global)">
+                                    </div>
+                                    <div class="col-6">
+                                        <label for="image_width" class="form-label small">Image Width</label>
+                                        <input type="text" class="form-control form-control-sm" id="image_width"
+                                            name="image_width" value="{{ leaderboard.image_width or '' }}"
+                                            placeholder="{{ global_settings.image_width }} (Global)">
+                                    </div>
+                                </div>
+                                <div class="form-text small">Leave empty to use global defaults.</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">Save General Settings</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <!-- Import Settings Card -->
+                <div class="card mb-4 border-warning shadow-sm">
+                    <div class="card-header bg-warning-subtle text-warning-emphasis">
+                        <h5 class="mb-0"><i class="bi bi-box-arrow-in-down me-2"></i>Import Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="small text-muted">Copy configuration (metrics, visualizations, views) from another
+                            leaderboard into this one.</p>
+                        <form action="{{ url_for('import_leaderboard_settings', leaderboard_id=leaderboard.id) }}"
+                            method="post"
+                            onsubmit="return confirm('WARNING: This will overwrite all current settings, metrics, and visualizations on this leaderboard. Continue?');">
+                            <div class="mb-3">
+                                <label for="source_leaderboard_id" class="form-label small fw-bold">Source
+                                    Leaderboard</label>
+                                <select class="form-select form-select-sm" id="source_leaderboard_id"
+                                    name="source_leaderboard_id" required>
+                                    <option value="" disabled selected>Select source...</option>
+                                    {% for project in all_projects %}
+                                    {% if project.leaderboards %}
+                                    <optgroup label="{{ project.name }}">
+                                        {% for lb in project.leaderboards %}
+                                        <option value="{{ lb.id }}" {{ 'disabled' if lb.id==leaderboard.id }}>
+                                            {{ lb.name }}
+                                        </option>
+                                        {% endfor %}
+                                    </optgroup>
+                                    {% endif %}
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <button type="submit" class="btn btn-warning w-100 text-dark fw-bold btn-sm">Import
+                                Now</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 2: Custom Metrics -->
+    <div class="tab-pane fade" id="metrics-pane" role="tabpanel" aria-labelledby="metrics-tab">
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center bg-body-tertiary">
+                <h5 class="mb-0">Dynamic Metrics (Python Functions)</h5>
+                <button class="btn btn-sm btn-success" type="button" id="toggle-add-btn">
+                    <i class="bi bi-plus-lg me-1"></i>Add New Metric
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="collapse mb-4" id="metricCardCollapse">
+                    <div class="border rounded p-3 bg-body-tertiary shadow-sm">
+                        <h5 class="card-title" id="metric-card-title">Add Metric to Leaderboard</h5>
+                        <p class="card-text text-muted small">Select a global metric from the library and map its
+                            arguments to your dataset/submissions.</p>
+
+                        <form
+                            action="{{ url_for('add_leaderboard_metric', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            data-base-action="{{ url_for('add_leaderboard_metric', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            method="post" id="metric-form">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="global_metric_id" class="form-label small fw-bold">Select
+                                            Metric</label>
+                                        <div class="input-group input-group-sm">
+                                            <select class="form-select" id="global_metric_id" name="global_metric_id"
+                                                required>
+                                                <option value="" disabled selected>Choose a metric...</option>
+                                                {% for gm in global_metrics %}
+                                                <option value="{{ gm.id }}" data-code="{{ gm.python_code }}">{{ gm.name
+                                                    }}
+                                                    {% if
+                                                    gm.is_aggregated %}[Aggregated]{% endif %}</option>
+                                                {% endfor %}
+                                            </select>
+                                            <a href="{{ url_for('metrics_view') }}" class="btn btn-outline-secondary"
+                                                target="_blank" title="Manage Global Metrics"><i
+                                                    class="bi bi-collection"></i></a>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="display_name" class="form-label small fw-bold">Display Name</label>
+                                        <input type="text" class="form-control form-control-sm" id="display_name"
+                                            name="display_name" placeholder="Optional alias">
+                                        <div class="form-text x-small">Defaults to metric name.</div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="sort_direction" class="form-label small fw-bold">Optimization
+                                            Goal</label>
+                                        <select class="form-select form-select-sm" id="sort_direction"
+                                            name="sort_direction">
+                                            <option value="higher_is_better">Higher is Better (Green)</option>
+                                            <option value="lower_is_better">Lower is Better (Green)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="col-md-6">
+                                    <!-- Preview Code (Optional helper) -->
+                                    <div class="mb-3 d-none" id="metric-preview-container">
+                                        <label class="form-label small text-muted">Metric Code Preview</label>
+                                        <pre class="bg-body-tertiary p-2 rounded small border"
+                                            style="max-height: 100px; overflow:auto;" id="metric-code-preview"></pre>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Mappings Section -->
+                            <div class="mb-3 border-top pt-3" id="metric-mappings-pane">
+                                <label class="form-label small fw-bold">Argument Mappings</label>
+                                <div id="mappings-container">
+                                    <!-- Mappings populated dynamically -->
+                                </div>
+                                <button type="button" class="btn btn-xs btn-outline-secondary mt-2"
+                                    id="add-mapping-btn"><i class="bi bi-plus"></i> Add Mapping</button>
+                            </div>
+
+                            <div class="text-end mt-3 border-top pt-3">
+                                <button type="button" class="btn btn-sm btn-secondary me-2"
+                                    id="cancel-metric-btn">Cancel</button>
+                                <button type="submit" class="btn btn-sm btn-success" id="submit-metric-btn">Add to
+                                    Leaderboard</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                {% if leaderboard.leaderboard_metrics %}
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>Type</th>
+                                <th>Mappings</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lm in leaderboard.leaderboard_metrics %}
+                            <tr>
+                                <td>
+                                    <strong>{{ lm.target_name if lm.target_name else lm.global_metric.name
+                                        }}</strong><br>
+                                    {% if lm.target_name and lm.target_name != lm.global_metric.name %}
+                                    <small class="text-muted">{{ lm.global_metric.name }}</small>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if lm.global_metric.is_aggregated %}
+                                    <span
+                                        class="badge bg-info-subtle text-info-emphasis border border-info">Aggregated</span>
+                                    {% else %}
+                                    <span
+                                        class="badge bg-secondary-subtle text-secondary-emphasis border">Per-Sample</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% set mappings = lm.arg_mappings|from_json %}
+                                    {% for arg, field in mappings.items() %}
+                                    <span class="badge bg-body-tertiary text-body border me-1 mb-1 font-monospace"
+                                        style="font-size: 0.75rem;">{{ arg }} &rarr; {{ field
+                                        }}</span>
+                                    {% endfor %}
+                                </td>
+                                <td class="text-end">
+                                    <div class="btn-group">
+                                        <button type="button" class="btn btn-sm btn-outline-primary edit-metric-btn"
+                                            data-metric-id="{{ lm.id }}"
+                                            data-global-metric-id="{{ lm.global_metric_id }}"
+                                            data-metric-name="{{ lm.global_metric.name }}"
+                                            data-target-name="{{ lm.target_name if lm.target_name else '' }}"
+                                            data-pooling-type="{{ lm.pooling_type }}"
+                                            data-pooling-percentile="{{ lm.pooling_percentile if lm.pooling_percentile else '' }}"
+                                            data-sort-direction="{{ lm.sort_direction if lm.sort_direction else 'higher_is_better' }}"
+                                            data-mappings="{{ lm.arg_mappings }}">
+                                            Edit
+                                        </button>
+                                        <form
+                                            action="{{ url_for('delete_leaderboard_metric', leaderboard_id=leaderboard.id, metric_id=lm.id) }}"
+                                            method="post" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                onclick="return confirm('Remove this metric from leaderboard?')">Remove</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5 border rounded bg-body-tertiary">
+                    <p class="text-muted mb-0">No custom metrics added yet.</p>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="card shadow-sm mt-4">
+                <div class="card-header bg-primary-subtle text-primary-emphasis">
+                    <h5 class="mb-0">Metric Configuration (Global Overrides)</h5>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted mb-4">Configure optimization goals and aggregation pooling for all
+                        metrics
+                        in this leaderboard. These settings affect how metrics are colored and summarized.</p>
+                    <form action="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}" method="post">
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead>
+                                    <tr>
+                                        <th>Metric Name</th>
+                                        <th>Optimization Goal (Coloring)</th>
+                                        <th>Aggregation Method</th>
+                                        <th>Percentile</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for metric in all_known_metrics %}
+                                    {% set agg_config = current_aggregation.get(metric, {'type': 'mean', 'percentile':
+                                    None}) %}
+                                    {% set lm = metric_to_lm.get(metric) %}
+                                    {% if lm %}
+                                    {% set current_type = lm.pooling_type or 'mean' %}
+                                    {% set current_perc = lm.pooling_percentile %}
+                                    {% set current_dir = lm.sort_direction or 'higher_is_better' %}
+                                    {% else %}
+                                    {% set current_type = agg_config.get('type', 'mean') %}
+                                    {% set current_perc = agg_config.get('percentile') %}
+                                    {% set current_dir = current_directions.get(metric, 'higher_is_better') %}
+                                    {% endif %}
+                                    <tr>
+                                        <td class="fw-bold">{{ metric }}</td>
+                                        <td>
+                                            <select class="form-select form-select-sm" name="direction_{{ metric }}">
+                                                <option value="higher_is_better" {% if current_dir=='higher_is_better'
+                                                    %}selected{% endif %}>Higher is Better (Green)</option>
+                                                <option value="lower_is_better" {% if current_dir=='lower_is_better'
+                                                    %}selected{% endif %}>Lower is Better (Green)</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <select class="form-select form-select-sm agg-type-select"
+                                                name="aggregation_type_{{ metric }}"
+                                                data-target="#agg_perc_config_{{ loop.index }}">
+                                                <option value="mean" {% if current_type=='mean' %}selected{% endif %}>
+                                                    Mean
+                                                </option>
+                                                <option value="median" {% if current_type=='median' %}selected{% endif
+                                                    %}>
+                                                    Median</option>
+                                                <option value="percentile" {% if current_type=='percentile' %}selected{%
+                                                    endif %}>Percentile</option>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <div id="agg_perc_config_{{ loop.index }}"
+                                                style="{% if current_type != 'percentile' %}display:none;{% endif %}">
+                                                <div class="input-group input-group-sm" style="width: 100px;">
+                                                    <input type="number" step="0.1" min="0" max="100"
+                                                        class="form-control" name="aggregation_percentile_{{ metric }}"
+                                                        value="{{ current_perc if current_perc else '' }}"
+                                                        placeholder="95">
+                                                    <span class="input-group-text">%</span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="text-end mt-4">
+                            <button type="submit" class="btn btn-primary">Save Metric Configuration</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 3: Visualizations -->
+    <div class="tab-pane fade" id="viz-pane" role="tabpanel" aria-labelledby="viz-tab">
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center bg-body-tertiary">
+                <h5 class="mb-0">Visualizations (Python PIL Plots)</h5>
+                <button class="btn btn-sm btn-success" type="button" id="toggle-add-viz-btn">
+                    <i class="bi bi-plus-lg me-1"></i>Add New Visualization
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="collapse mb-4" id="vizCardCollapse">
+                    <div class="border rounded p-3 bg-body-tertiary shadow-sm">
+                        <h5 class="card-title" id="viz-card-title">Add Visualization to Leaderboard</h5>
+                        <p class="card-text text-muted small">Select a global visualization and configure it for this
+                            leaderboard.</p>
+
+                        <form
+                            action="{{ url_for('add_leaderboard_visualization', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            data-base-action="{{ url_for('add_leaderboard_visualization', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            method="post" id="viz-form">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="global_viz_id" class="form-label small fw-bold">Select
+                                            Visualization</label>
+                                        <div class="input-group input-group-sm">
+                                            <select class="form-select" id="global_viz_id"
+                                                name="global_visualization_id" required>
+                                                <option value="" disabled selected>Choose a visualization...</option>
+                                                {% for gv in global_visualizations %}
+                                                <option value="{{ gv.id }}" data-code="{{ gv.python_code }}">{{
+                                                    gv.name
+                                                    }}
+                                                    {% if
+                                                    gv.is_aggregated %}[Aggregated]{% else %}[Per-Sample]{% endif %}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                            <a href="{{ url_for('visualizations_view', project_name=leaderboard.project.name) }}"
+                                                class="btn btn-outline-secondary" target="_blank"
+                                                title="Manage Global Visualizations"><i
+                                                    class="bi bi-collection-play"></i></a>
+                                        </div>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="viz_display_name" class="form-label small fw-bold">Display
+                                            Name</label>
+                                        <input type="text" class="form-control form-control-sm" id="viz_display_name"
+                                            name="display_name" placeholder="Name for this visualization">
+                                        <div class="form-text x-small">Defaults to visualization name.</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="viz_display_order" class="form-label small fw-bold">Display
+                                            Order</label>
+                                        <input type="number" class="form-control form-control-sm" id="viz_display_order"
+                                            name="display_order" value="0" min="0">
+                                        <div class="form-text x-small">Lower numbers appear first.</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Argument Mappings Section for Visualizations -->
+                            <div class="mb-3 border-top pt-3">
+                                <label class="form-label small fw-bold">Argument Mappings</label>
+                                <div id="viz-mappings-container">
+                                    <!-- Mappings populated dynamically -->
+                                </div>
+                                <button type="button" class="btn btn-xs btn-outline-secondary mt-2"
+                                    id="add-viz-mapping-btn"><i class="bi bi-plus"></i> Add Mapping</button>
+                            </div>
+
+                            <div class="text-end mt-3 border-top pt-3">
+                                <button type="button" class="btn btn-sm btn-secondary me-2"
+                                    id="cancel-viz-btn">Cancel</button>
+                                <button type="submit" class="btn btn-sm btn-success" id="submit-viz-btn">Add to
+                                    Leaderboard</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                {% if leaderboard.leaderboard_visualizations %}
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead>
+                            <tr>
+                                <th>Visualization</th>
+                                <th>Type</th>
+                                <th>Order</th>
+                                <th>Mappings</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for lv in leaderboard.leaderboard_visualizations %}
+                            <tr>
+                                <td><strong>{{ lv.target_name if lv.target_name else lv.global_visualization.name
+                                        }}</strong></td>
+                                <td>
+                                    {% if lv.global_visualization.is_aggregated %}
+                                    <span
+                                        class="badge bg-info-subtle text-info-emphasis border border-info">Aggregated</span>
+                                    {% else %}
+                                    <span
+                                        class="badge bg-secondary-subtle text-secondary-emphasis border">Per-Sample</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ lv.display_order }}</td>
+                                <td>
+                                    {% set viz_mappings = lv.arg_mappings|from_json %}
+                                    {% for arg, field in viz_mappings.items() %}
+                                    <span class="badge bg-body-tertiary text-body border me-1 mb-1 font-monospace"
+                                        style="font-size: 0.75rem;">{{ arg }} &rarr; {{ field
+                                        }}</span>
+                                    {% endfor %}
+                                </td>
+                                <td class="text-end">
+                                    <div class="btn-group">
+                                        <button type="button" class="btn btn-sm btn-outline-primary edit-viz-btn"
+                                            data-viz-id="{{ lv.id }}"
+                                            data-global-viz-id="{{ lv.global_visualization_id }}"
+                                            data-viz-name="{{ lv.global_visualization.name }}"
+                                            data-target-name="{{ lv.target_name if lv.target_name else '' }}"
+                                            data-display-order="{{ lv.display_order }}"
+                                            data-mappings="{{ lv.arg_mappings }}">
+                                            Edit
+                                        </button>
+                                        <form
+                                            action="{{ url_for('delete_leaderboard_visualization', leaderboard_id=leaderboard.id, viz_id=lv.id) }}"
+                                            method="post" style="display:inline;">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                onclick="return confirm('Remove this visualization from leaderboard?')">Remove</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5 border rounded bg-body-tertiary">
+                    <p class="text-muted mb-0">No visualizations added yet.</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Datalists for Argument Mapping Suggestions -->
+<datalist id="dataset-fields-list">
+    {% for f in dataset_fields %}
+    <option value="{{ f }}">
+        {% endfor %}
+</datalist>
+<datalist id="submission-fields-list">
+    {% for f in submission_fields %}
+    <option value="{{ f }}">
+        {% endfor %}
+</datalist>
+<datalist id="per-sample-metrics-list">
+    {% for m in per_sample_metrics %}
+    <option value="{{ m }}">
+        {% endfor %}
+</datalist>
+<datalist id="aggregated-metrics-list">
+    {% for m in aggregated_metrics %}
+    <option value="{{ m }}">
+        {% endfor %}
+</datalist>
+
+<!-- Robust JSON Data Store for JS -->
+<script id="leaderboard-data" type="application/json">
+{
+  "metrics": {
+    {% for lm in leaderboard.leaderboard_metrics %}
+    "{{ lm.id }}": {{ lm.arg_mappings | safe }}{{ "," if not loop.last }}
+    {% endfor %}
+  },
+  "visualizations": {
+    {% for lv in leaderboard.leaderboard_visualizations %}
+    "{{ lv.id }}": {{ lv.arg_mappings | safe }}{{ "," if not loop.last }}
+    {% endfor %}
+  },
+  "perSampleMetrics": {{ per_sample_metrics | tojson }},
+  "aggregatedMetrics": {{ aggregated_metrics | tojson }}
+}
+</script>
+
+<!-- Template for Mapping Row (Hidden) -->
+<div id="mapping-row-template" style="display:none;">
+    <div class="row g-2 mb-2 mapping-row">
+        <div class="col-4">
+            <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name">
+        </div>
+        <div class="col-3">
+            <select class="form-select form-select-sm" name="source[]">
+                <option value="gt">Dataset (GT)</option>
+                <option value="sub">Submission</option>
+                <option value="metric">Per-Sample Metric (Dependency)</option>
+                <option value="agg_metric">Aggregated Metric (Dependency)</option>
+            </select>
+        </div>
+        <div class="col-4">
+            <input type="text" class="form-control form-control-sm" name="field_name[]" placeholder="Folder/Field Name">
+        </div>
+        <div class="col-1">
+            <button type="button" class="btn btn-sm btn-outline-danger remove-mapping">&times;</button>
+        </div>
+    </div>
+</div>
+
+
+<script>
+    // Data passed from backend
+    const leaderboardData = JSON.parse(document.getElementById('leaderboard-data').textContent);
+    const datasetFields = {{ dataset_fields | tojson }};
+    const submissionFields = {{ submission_fields | tojson }};
+    const perSampleMetrics = leaderboardData.perSampleMetrics;
+    const aggregatedMetrics = leaderboardData.aggregatedMetrics;
+
+    // Function to add a mapping row
+    function addMappingRow(containerId, values = {}) {
+        const container = document.getElementById(containerId);
+        // If container has the "No arguments" message, clear it first IF we are adding a row (manually)
+        if (container.querySelector('.text-muted.fst-italic')) {
+            container.innerHTML = '';
+        }
+
+        const row = document.createElement('div');
+        row.className = 'row g-2 mb-2 mapping-row';
+        row.innerHTML = `
+            <div class="col-4">
+                <input type="text" class="form-control form-control-sm" name="arg_name[]" placeholder="Arg Name (e.g. gt)" value="${values.arg || ''}" required ${values.arg ? 'readonly' : ''}>
+            </div>
+            <div class="col-3">
+                <select class="form-select form-select-sm" name="source[]">
+                    <option value="gt" ${values.source === 'gt' ? 'selected' : ''}>Dataset (GT)</option>
+                    <option value="sub" ${values.source === 'sub' ? 'selected' : ''}>Submission</option>
+                    <option value="metric" ${values.source === 'metric' ? 'selected' : ''}>Per-Sample Metric (Dependency)</option>
+                    <option value="agg_metric" ${values.source === 'agg_metric' ? 'selected' : ''}>Aggregated Metric (Dependency)</option>
+                    <option value="scalar" ${values.source === 'scalar' ? 'selected' : ''}>Fixed Value (Scalar)</option>
+                </select>
+            </div>
+            <div class="col-4">
+                <input type="text" class="form-control form-control-sm field-input" name="field_name[]" placeholder="Folder/Field Name" value="${values.field || ''}" required list="dataset-fields-list">
+            </div>
+            <div class="col-1">
+                <button type="button" class="btn btn-sm btn-outline-danger remove-mapping">&times;</button>
+            </div>
+        `;
+        container.appendChild(row);
+
+        // Initial setup for the new row's source select logic
+        const select = row.querySelector('select[name="source[]"]');
+        const input = row.querySelector('input[name="field_name[]"]');
+
+        // Helper to update list Source
+        const updateList = () => {
+            // input.value = ''; // Don't clear value on simple edits/init, only on manual change? 
+            // Actually clearing value is annoying if you just switch types to check. 
+            // BUT if you switch from Scalar to Dataset, the value "10" is invalid.
+            // Let's keep it but maybe we need to be smarter. For now, keep clearing behavior on manual change unless it's initial load.
+
+            input.removeAttribute('list');
+            input.placeholder = "Folder/Field Name";
+
+            if (select.value === 'gt') input.setAttribute('list', 'dataset-fields-list');
+            else if (select.value === 'sub') input.setAttribute('list', 'submission-fields-list');
+            else if (select.value === 'metric') input.setAttribute('list', 'per-sample-metrics-list');
+            else if (select.value === 'agg_metric') input.setAttribute('list', 'aggregated-metrics-list');
+            else if (select.value === 'scalar') {
+                input.placeholder = "Value (e.g. 10, 0.5)";
+            }
+        };
+
+        // Run once to set initial state based on value
+        if (values.source) {
+            select.value = values.source;
+            updateList();
+            input.value = values.field || ''; // Restore value
+        } else {
+            // Default is GT
+            updateList();
+        }
+
+        // Add change listener
+        select.addEventListener('change', () => {
+            input.value = ''; // Clear on manual type change
+            updateList();
+        });
+
+        setupRemoveButtons();
+    }
+
+    // Unified UI Logic
+    document.addEventListener('DOMContentLoaded', function () {
+        // ... (existing helper defs) ...
+        const metricCardCollapse = document.getElementById('metricCardCollapse');
+        const metricForm = document.getElementById('metric-form');
+        const metricTitle = document.getElementById('metric-card-title');
+        const submitBtn = document.getElementById('submit-metric-btn');
+        const cancelBtn = document.getElementById('cancel-metric-btn');
+        const toggleAddBtn = document.getElementById('toggle-add-btn');
+
+        // ... (existing bootstrap setup) ...
+        let bsCollapse = null;
+        if (typeof bootstrap !== 'undefined' && metricCardCollapse) {
+            bsCollapse = new bootstrap.Collapse(metricCardCollapse, { toggle: false });
+        }
+
+
+        // Tab Persistence logic
+        const tabButtons = document.querySelectorAll('button[data-bs-toggle="tab"]');
+        tabButtons.forEach(button => {
+            button.addEventListener('shown.bs.tab', function (event) {
+                const targetId = event.target.getAttribute('data-bs-target').substring(1); // remove #
+                window.location.hash = targetId;
+            });
+        });
+        // Inject active tab into all form submissions
+        document.querySelectorAll('form').forEach(form => {
+            form.addEventListener('submit', function (e) {
+                const activeTabPane = document.querySelector('.tab-pane.active');
+                if (activeTabPane && activeTabPane.id) {
+                    let hiddenInput = this.querySelector('input[name="active_tab"]');
+                    if (!hiddenInput) {
+                        hiddenInput = document.createElement('input');
+                        hiddenInput.type = 'hidden';
+                        hiddenInput.name = 'active_tab';
+                        this.appendChild(hiddenInput);
+                    }
+                    hiddenInput.value = activeTabPane.id;
+                }
+
+                // Update leaderboardData for metric form before submission to prevent stale data
+                if (this.id === 'metric-form' && submitBtn.textContent === 'Update Mappings') {
+                    // Extract metric ID from form action
+                    const actionParts = this.action.split('/');
+                    const metricIdIndex = actionParts.indexOf('leaderboard_metric') + 1;
+                    const metricId = actionParts[metricIdIndex];
+
+                    if (metricId) {
+                        // Gather current form data
+                        const formData = new FormData(this);
+                        const argNames = formData.getAll('arg_name[]');
+                        const sources = formData.getAll('source[]');
+                        const fields = formData.getAll('field_name[]');
+
+                        // Build mappings object
+                        const updatedMappings = {};
+                        for (let i = 0; i < argNames.length; i++) {
+                            const arg = argNames[i];
+                            const source = sources[i];
+                            const field = fields[i];
+
+                            if (arg && field) {
+                                let key = field;
+                                if (source === 'gt') {
+                                    key = `gt_${field}`;
+                                } else if (source === 'sub') {
+                                    key = `sub_${field}`;
+                                } else if (source === 'scalar') {
+                                    key = `SCALAR:${field}`;
+                                }
+                                updatedMappings[arg] = key;
+                            }
+                        }
+
+                        // Update the global data store
+                        leaderboardData.metrics[metricId] = updatedMappings;
+                    }
+                }
+            });
+        });
+
+
+        // Restore tab from hash
+        const hash = window.location.hash;
+        if (hash) {
+            const targetTab = document.querySelector(`button[data-bs-target="${hash}"]`);
+            if (targetTab) {
+                const tab = new bootstrap.Tab(targetTab);
+                tab.show();
+            }
+        }
+
+        // ... (existing toggle/cancel logic) ...
+        if (toggleAddBtn && bsCollapse) {
+            toggleAddBtn.addEventListener('click', function () {
+                resetForm();
+                bsCollapse.toggle();
+            });
+        }
+        if (cancelBtn && bsCollapse) {
+            cancelBtn.addEventListener('click', function () {
+                resetForm();
+                bsCollapse.hide();
+            });
+        }
+
+        // Defined at top level for shared access
+        const metricSelect = document.getElementById('global_metric_id');
+        const previewContainer = document.getElementById('metric-preview-container');
+        const mappingsContainer = document.getElementById('mappings-container');
+        const codePreview = document.getElementById('metric-code-preview');
+
+        function resetForm() {
+            metricTitle.textContent = 'Add Metric to Leaderboard';
+            metricForm.action = metricForm.getAttribute('data-base-action');
+            submitBtn.textContent = 'Add to Leaderboard';
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-success');
+
+            // Reset inputs
+
+            // Reset inputs
+            metricSelect.value = '';
+            metricSelect.disabled = false;
+            document.getElementById('display_name').value = '';
+
+            // Reset inputs
+            metricSelect.value = '';
+            metricSelect.disabled = false;
+            document.getElementById('display_name').value = '';
+
+            previewContainer.classList.add('d-none');
+            mappingsContainer.innerHTML = '';
+            // Don't add default row, wait for selection or manual add
+            // Or add one? Previously we added one. 
+            // If user adds a metric that takes args, the dropdown change will populate.
+            // If user adds a metric without selecting (error?), or manual custom?
+            // Let's add one to be safe/standard.
+            addMappingRow('mappings-container');
+        }
+
+        // Handle Edit Clicks
+        document.querySelectorAll('.edit-metric-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                // ... (existing getAttribute calls) ...
+                const metricId = this.getAttribute('data-metric-id');
+                const globalMetricId = this.getAttribute('data-global-metric-id');
+                const metricName = this.getAttribute('data-metric-name');
+                const targetName = this.getAttribute('data-target-name');
+                const poolingType = this.getAttribute('data-pooling-type');
+                const poolingPercentile = this.getAttribute('data-pooling-percentile');
+                const sortDirection = this.getAttribute('data-sort-direction');
+
+                // Retrieve mappings from robust data store
+                const mappings = leaderboardData.metrics[metricId] || {};
+
+                // Switch to Edit Mode
+
+                // Switch to Edit Mode
+                metricTitle.textContent = 'Edit Metric Mappings: ' + metricName;
+                const lbId = "{{ leaderboard.id }}";
+                const projectName = "{{ leaderboard.project.name }}";
+                metricForm.action = `/${projectName}/leaderboard/${lbId}/leaderboard_metric/${metricId}/edit`;
+
+                submitBtn.textContent = 'Update Mappings';
+                submitBtn.classList.remove('btn-success');
+                submitBtn.classList.add('btn-primary');
+
+                metricSelect.value = globalMetricId;
+                metricSelect.disabled = true;
+                metricSelect.dispatchEvent(new Event('change'));
+
+                const displayNameInput = document.getElementById('display_name');
+                if (displayNameInput) displayNameInput.value = targetName;
+
+                const sortDirectionSelect = document.getElementById('sort_direction');
+                if (sortDirectionSelect) sortDirectionSelect.value = sortDirection || 'higher_is_better';
+
+
+                if (Object.keys(mappings).length > 0) {
+                    mappingsContainer.innerHTML = ''; // Clear default rows/messages from change event
+
+                    for (const [arg, key] of Object.entries(mappings)) {
+                        let source = 'gt'; // Default to GT if no prefix
+                        let field = key;
+
+                        if (key.startsWith('gt_')) {
+                            source = 'gt';
+                            field = key.substring(3);
+                        } else if (key.startsWith('sub_')) {
+                            source = 'sub';
+                            field = key.substring(4);
+                        } else if (key.startsWith('SCALAR:')) {
+                            source = 'scalar';
+                            field = key.substring(7);
+                        } else {
+                            // Check lists for dependency types
+                            if (perSampleMetrics.includes(key) || perSampleMetrics.includes(field)) {
+                                source = 'metric';
+                            } else if (aggregatedMetrics.includes(key) || aggregatedMetrics.includes(field)) {
+                                source = 'agg_metric';
+                            } else {
+                                // Default for results of other dynamic metrics is usually 'metric' or 'agg_metric'
+                                // if it doesn't have a prefix but is in the list.
+                                // If not in list yet (e.g. self-dependency or newly added), assume sub/metric?
+                                // Let's keep source for results as is.
+                                source = 'metric';
+                            }
+                        }
+
+                        addMappingRow('mappings-container', { arg, source, field });
+                    }
+                } else {
+                    // No saved mappings - add one empty row so user can input data
+                    mappingsContainer.innerHTML = '';
+                    addMappingRow('mappings-container');
+                }
+                // If no mappings and args were parsed (handled by change event above? NO asynchronous)
+                // The 'change' event will populate mappings based on Python code IF parsed args exist.
+                // But we are overwriting them here with stored mappings.
+                // The issue: dispatchEvent('change') runs synchronously? Yes. 
+                // So it will parse code, find args, and populate default 'gt' rows.
+                // Then WE overwrite with stored rows. This is correct.
+
+                // But if stored mappings is empty (no-arg metric), we should show the message?
+                // The change event logic does that: if args.length=0 -> show message.
+                // We verify duplication: if code provides args, change event adds rows.
+                // Then we clear innerHTML and add stored rows. Correct.
+
+                // If code provides NO args, change event shows message.
+                // If mappings is empty, we do loop 0 times. 
+                // If we also don't add default row, we are good.
+
+                if (bsCollapse) bsCollapse.show();
+                metricCardCollapse.scrollIntoView({ behavior: 'smooth' });
+            });
+        });
+
+        // Handle Pooling Type Change
+        const poolingSelect = document.getElementById('pooling_type');
+        const percentileContainer = document.getElementById('percentile-input-container');
+        const percentileInput = document.getElementById('pooling_percentile');
+
+        if (poolingSelect) {
+            poolingSelect.addEventListener('change', function () {
+                if (this.value === 'percentile') {
+                    percentileContainer.style.display = 'block';
+                    percentileInput.required = true;
+                } else {
+                    percentileContainer.style.display = 'none';
+                    percentileInput.required = false;
+                    percentileInput.value = '';
+                }
+            });
+        }
+
+        // Handle Metric Selection
+        if (metricSelect) {
+            metricSelect.addEventListener('change', function () {
+                const selectedOption = this.options[this.selectedIndex];
+                const code = selectedOption.dataset.code;
+                const name = selectedOption.text.split(' (')[0]; // Simple fallback for default name
+
+                // Set default display name (only when adding, not editing)
+                const displayNameInput = document.getElementById('display_name');
+                if (displayNameInput && !this.disabled) {
+                    displayNameInput.value = name;
+                }
+
+                // Show preview
+                if (code) {
+                    previewContainer.classList.remove('d-none');
+                    codePreview.textContent = code;
+
+                    // Parse args and populate mappings
+                    const args = parsePythonArgs(code);
+
+                    // Clear existing mappings
+                    mappingsContainer.innerHTML = '';
+
+                    if (args.length > 0) {
+                        args.forEach(arg => {
+                            addMappingRow('mappings-container', { arg: arg, source: 'gt', field: '' });
+                        });
+                    } else {
+                        // Show "No arguments required" message
+                        const msg = document.createElement('div');
+                        msg.className = 'text-muted small fst-italic';
+                        msg.textContent = 'This metric requires no arguments.';
+                        mappingsContainer.appendChild(msg);
+                    }
+                } else {
+                    previewContainer.classList.add('d-none');
+                }
+            });
+        }
+
+        document.getElementById('add-mapping-btn').addEventListener('click', function () {
+            addMappingRow('mappings-container');
+        });
+
+        // ==================== Visualization UI Handlers ====================
+
+        const vizCardCollapse = document.getElementById('vizCardCollapse');
+        const vizForm = document.getElementById('viz-form');
+        const vizTitle = document.getElementById('viz-card-title');
+        const submitVizBtn = document.getElementById('submit-viz-btn');
+        const cancelVizBtn = document.getElementById('cancel-viz-btn');
+        const toggleAddVizBtn = document.getElementById('toggle-add-viz-btn');
+
+        let bsVizCollapse = null;
+        if (typeof bootstrap !== 'undefined' && vizCardCollapse) {
+            bsVizCollapse = new bootstrap.Collapse(vizCardCollapse, { toggle: false });
+        }
+
+        // Toggle visualization form
+        if (toggleAddVizBtn && bsVizCollapse) {
+            toggleAddVizBtn.addEventListener('click', function () {
+                resetVizForm();
+                bsVizCollapse.toggle();
+            });
+        }
+
+        if (cancelVizBtn && bsVizCollapse) {
+            cancelVizBtn.addEventListener('click', function () {
+                resetVizForm();
+                bsVizCollapse.hide();
+            });
+        }
+
+        const vizSelect = document.getElementById('global_viz_id');
+        const vizMappingsContainer = document.getElementById('viz-mappings-container');
+
+        function resetVizForm() {
+            vizTitle.textContent = 'Add Visualization to Leaderboard';
+            vizForm.action = vizForm.getAttribute('data-base-action');
+            submitVizBtn.textContent = 'Add to Leaderboard';
+            submitVizBtn.classList.remove('btn-primary');
+            submitVizBtn.classList.add('btn-success');
+
+            vizSelect.value = '';
+            vizSelect.disabled = false;
+            document.getElementById('viz_display_name').value = '';
+            document.getElementById('viz_display_order').value = '0';
+
+            vizMappingsContainer.innerHTML = '';
+            addVizMappingRow('viz-mappings-container');
+        }
+
+        // Handle visualization selection
+        if (vizSelect) {
+            vizSelect.addEventListener('change', function () {
+                const selectedOption = this.options[this.selectedIndex];
+                const code = selectedOption.dataset.code;
+                const name = selectedOption.text.split(' [')[0];
+
+                const displayNameInput = document.getElementById('viz_display_name');
+                if (displayNameInput && !this.disabled) {
+                    displayNameInput.value = name;
+                }
+
+                // Parse args and populate mappings
+                const args = parsePythonArgs(code);
+                vizMappingsContainer.innerHTML = '';
+
+                if (args.length > 0) {
+                    args.forEach(arg => {
+                        addVizMappingRow('viz-mappings-container', { arg: arg, source: 'gt', field: '' });
+                    });
+                } else {
+                    const msg = document.createElement('div');
+                    msg.className = 'text-muted small fst-italic';
+                    msg.textContent = 'This visualization requires no arguments.';
+                    vizMappingsContainer.appendChild(msg);
+                }
+            });
+        }
+
+        // Add visualization mapping row
+        function addVizMappingRow(containerId, values = {}) {
+            const container = document.getElementById(containerId);
+            if (container.querySelector('.text-muted.fst-italic')) {
+                container.innerHTML = '';
+            }
+
+            // Determine initial datalist based on source
+            const initialDatalist = getVizDatalistForSource(values.source || 'gt');
+
+            const row = document.createElement('div');
+            row.className = 'row g-2 mb-2 viz-mapping-row';
+            row.innerHTML = `
+                <div class="col-4">
+                    <input type="text" class="form-control form-control-sm" name="viz_arg_name[]" placeholder="Arg Name" value="${values.arg || ''}" required ${values.arg ? 'readonly' : ''}>
+                </div>
+                <div class="col-3">
+                    <select class="form-select form-select-sm viz-source-select" name="viz_source[]">
+                        <option value="gt" ${values.source === 'gt' ? 'selected' : ''}>Dataset (GT)</option>
+                        <option value="sub" ${values.source === 'sub' ? 'selected' : ''}>Submission</option>
+                        <option value="metric" ${values.source === 'metric' ? 'selected' : ''}>Per-Sample Metric</option>
+                        <option value="agg_metric" ${values.source === 'agg_metric' ? 'selected' : ''}>Aggregated Metric</option>
+                        <option value="scalar" ${values.source === 'scalar' ? 'selected' : ''}>Fixed Value</option>
+                    </select>
+                </div>
+                <div class="col-4">
+                    <input type="text" class="form-control form-control-sm viz-field-input" name="viz_field_name[]" placeholder="Field Name" value="${values.field || ''}" required list="${initialDatalist}">
+                </div>
+                <div class="col-1">
+                    <button type="button" class="btn btn-sm btn-outline-danger remove-viz-mapping">&times;</button>
+                </div>
+            `;
+            container.appendChild(row);
+            setupRemoveVizButtons();
+            setupVizSourceChangeHandlers();
+        }
+
+        function getVizDatalistForSource(source) {
+            switch (source) {
+                case 'gt': return 'dataset-fields-list';
+                case 'sub': return 'submission-fields-list';
+                case 'metric': return 'per-sample-metrics-list';
+                case 'agg_metric': return 'aggregated-metrics-list';
+                default: return '';
+            }
+        }
+
+        function setupVizSourceChangeHandlers() {
+            document.querySelectorAll('.viz-source-select').forEach(select => {
+                if (!select.dataset.listenerAttached) {
+                    select.addEventListener('change', function () {
+                        const row = this.closest('.viz-mapping-row');
+                        const fieldInput = row.querySelector('.viz-field-input');
+                        const newDatalist = getVizDatalistForSource(this.value);
+                        fieldInput.setAttribute('list', newDatalist);
+                        fieldInput.value = ''; // Clear field when source changes
+                    });
+                    select.dataset.listenerAttached = 'true';
+                }
+            });
+        }
+
+        function setupRemoveVizButtons() {
+            document.querySelectorAll('.remove-viz-mapping').forEach(btn => {
+                btn.onclick = function () {
+                    const row = this.closest('.viz-mapping-row');
+                    const container = row.parentElement;
+                    if (container.children.length > 0) {
+                        row.remove();
+                    }
+                };
+            });
+        }
+
+        // Add mapping button
+        const addVizMappingBtn = document.getElementById('add-viz-mapping-btn');
+        if (addVizMappingBtn) {
+            addVizMappingBtn.addEventListener('click', function () {
+                addVizMappingRow('viz-mappings-container');
+            });
+        }
+
+        // Handle edit visualization
+        document.querySelectorAll('.edit-viz-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const vizId = this.getAttribute('data-viz-id');
+                const globalVizId = this.getAttribute('data-global-viz-id');
+                const vizName = this.getAttribute('data-viz-name');
+                const targetName = this.getAttribute('data-target-name');
+                const displayOrder = this.getAttribute('data-display-order');
+
+                // Retrieve mappings from robust data store
+                const mappings = leaderboardData.visualizations[vizId] || {};
+
+                vizTitle.textContent = 'Edit Visualization: ' + vizName;
+                const lbId = "{{ leaderboard.id }}";
+                const projectName = "{{ leaderboard.project.name }}";
+                vizForm.action = `/${projectName}/leaderboard/${lbId}/leaderboard_visualization/${vizId}/edit`;
+
+                submitVizBtn.textContent = 'Update Visualization';
+                submitVizBtn.classList.remove('btn-success');
+                submitVizBtn.classList.add('btn-primary');
+
+                vizSelect.value = globalVizId;
+                vizSelect.disabled = true;
+
+                document.getElementById('viz_display_name').value = targetName;
+                document.getElementById('viz_display_order').value = displayOrder;
+
+                if (Object.keys(mappings).length > 0) {
+                    vizMappingsContainer.innerHTML = '';
+
+                    for (const [arg, key] of Object.entries(mappings)) {
+                        let source = 'metric';
+                        let field = key;
+
+                        if (key.startsWith('gt_')) {
+                            source = 'gt';
+                            field = key.substring(3);
+                        } else if (key.startsWith('sub_')) {
+                            source = 'sub';
+                            field = key.substring(4);
+                        } else if (key.startsWith('SCALAR:')) {
+                            source = 'scalar';
+                            field = key.substring(7);
+                        }
+
+                        addVizMappingRow('viz-mappings-container', { arg, source, field });
+                    }
+                }
+
+                if (bsVizCollapse) bsVizCollapse.show();
+                vizCardCollapse.scrollIntoView({ behavior: 'smooth' });
+            });
+        });
+
+
+        // Handle Bulk Aggregation Type Change
+        document.querySelectorAll('.agg-type-select').forEach(select => {
+            select.addEventListener('change', function () {
+                const targetId = this.getAttribute('data-target');
+                const target = document.querySelector(targetId);
+                if (target) {
+                    if (this.value === 'percentile') {
+                        target.style.display = 'block';
+                        target.querySelector('input').required = true;
+                    } else {
+                        target.style.display = 'none';
+                        target.querySelector('input').required = false;
+                    }
+                }
+            });
+        });
+
+    }); // End DOMContentLoaded
+
+    // Argument Parser
+    function parsePythonArgs(code) {
+        // Search entire code block for def statement (not just first line)
+        // Visualizations often start with import statements
+        const match = code.match(/def\s+\w+\s*\(([^)]*)\)/);
+        if (match && match[1]) {
+            // 3. Split by comma and clean whitespace
+            return match[1].split(',').map(arg => {
+                // handle default values like arg=None (strip them)
+                return arg.split('=')[0].trim();
+            }).filter(arg => arg); // remove empty strings
+        }
+        return [];
+    }
+
+    function setupRemoveButtons() {
+        document.querySelectorAll('.remove-mapping').forEach(btn => {
+            btn.onclick = function () {
+                const row = this.closest('.mapping-row');
+                const container = row.parentElement;
+                if (container.children.length > 0) {
+                    row.remove();
+                }
+            };
+        });
+    }
+
+    setupRemoveButtons();
+
+</script>
+{% endblock %}
