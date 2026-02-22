@@ -1836,11 +1836,12 @@ def edit_leaderboard_metric(project_name, leaderboard_id, metric_id):
         needs_recalculation = (new_mappings_json != old_mappings_json)
         
         if needs_recalculation:
-            # Trigger recalculation for all submissions
+            # Invalidate submissions instead of automatic recalculation
             submissions = Submission.query.filter_by(leaderboard_id=leaderboard_id).all()
             for sub in submissions:
-                 tasks.process_submission.delay(sub.id)
-            flash(f'Metric "{final_name}" updated. Recalculation started.', 'success')
+                 sub.processing_status = 'Outdated'
+            db.session.commit()
+            flash(f'Metric "{final_name}" updated. Submissions marked as Outdated.', 'success')
         else:
             flash(f'Metric "{final_name}" updated.', 'success')
             
@@ -2135,26 +2136,21 @@ def execute_visualization(project_name, lv_id, sample_id, submission_id=None):
         traceback.print_exc()
         return create_error_image(str(e)[:50])
 
-@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated')
-@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated/<int:submission_id>')
-def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
-    """Execute an aggregated visualization (across all samples) and return the image as PNG."""
-    import io
+def generate_and_cache_agg_viz(lv, submission=None):
+    """Generates an aggregated visualization and saves it to cache. Returns the cache path."""
     import hashlib
-    import time
+    import os
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
     from PIL import Image
     
-    lv = LeaderboardVisualization.query.get_or_404(lv_id)
-    if not lv.global_visualization.is_aggregated:
-        return create_error_image("Not an aggregated visualization")
-
     leaderboard = lv.leaderboard
-    submission = Submission.query.get(submission_id) if submission_id else None
     
     # Generate cache key with hashes
     code_hash = hashlib.md5((lv.global_visualization.python_code or "").encode()).hexdigest()
     mapping_hash = hashlib.md5((lv.arg_mappings or "").encode()).hexdigest()
-    cache_key = f"viz_agg_{lv_id}_{submission_id or 'none'}_{code_hash}_{mapping_hash}"
+    cache_key = f"viz_agg_{lv.id}_{submission.id if submission else 'none'}_{code_hash}_{mapping_hash}"
     cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
     cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
@@ -2162,7 +2158,7 @@ def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
     
     # Return cached image if exists
     if os.path.exists(cache_path):
-        return send_file(cache_path, mimetype='image/png')
+        return cache_path
             
     try:
         # Fetch all samples for the dataset(s)
@@ -2191,8 +2187,6 @@ def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
         exec_globals = globals().copy()
         exec_globals.update({'np': np, 'plt': plt, 'Image': Image}) # Add convenience imports
 
-        local_scope = {} # kwargs handling inside wrapper?
-
         # We need to find the function, same as execute_visualization
         exec(code, exec_globals)
 
@@ -2209,19 +2203,30 @@ def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
             if isinstance(result_image, Image.Image):
                 # Save to cache
                 result_image.save(cache_path, 'PNG')
+                return cache_path
 
-                # Return image
-                img_io = io.BytesIO()
-                result_image.save(img_io, 'PNG')
-                img_io.seek(0)
-                return send_file(img_io, mimetype='image/png')
-
-        return create_error_image("No result or invalid function")
+        return None
             
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return create_error_image(f"Execution Error: {str(e)}")
+        return None
+
+@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated')
+@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated/<int:submission_id>')
+def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
+    """Execute an aggregated visualization (across all samples) and return the image as PNG."""
+    lv = LeaderboardVisualization.query.get_or_404(lv_id)
+    if not lv.global_visualization.is_aggregated:
+        return create_error_image("Not an aggregated visualization")
+
+    submission = Submission.query.get(submission_id) if submission_id else None
+    
+    cache_path = generate_and_cache_agg_viz(lv, submission)
+    if cache_path and os.path.exists(cache_path):
+        return send_file(cache_path, mimetype='image/png')
+    
+    return create_error_image("No result or execution error")
 
 def create_error_image(error_text):
     """Create a simple error image with text."""

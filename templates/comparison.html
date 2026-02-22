@@ -484,11 +484,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         {% if aggregated_viz_list %}
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center" data-bs-toggle="collapse"
-                data-bs-target="#aggregatedVizCollapse" aria-expanded="true" role="button">
+                data-bs-target="#aggregatedVizCollapse" aria-expanded="false" role="button">
                 <h6 class="mb-0"><i class="bi bi-graph-up-arrow me-2"></i>Aggregated Visualizations</h6>
                 <i class="bi bi-chevron-down"></i>
             </div>
-            <div id="aggregatedVizCollapse" class="collapse show">
+            <div id="aggregatedVizCollapse" class="collapse">
                 <div class="card-body">
                     {% for viz in aggregated_viz_list %}
                     <div class="mb-4">

@@ -258,6 +258,20 @@ def process_submission(self, submission_id, sample_filters=None):
         else:
             submission.last_sample_filter = None
             
+        submission.processing_status = 'Generating Visualizations'
+        session.commit()
+        
+        # Determine if we should optionally cache Visualizations
+        if leaderboard.leaderboard_visualizations:
+            from app import generate_and_cache_agg_viz
+            for lv in leaderboard.leaderboard_visualizations:
+                if lv.global_visualization.is_aggregated:
+                     logger.info(f"Pre-caching aggregated visualization: {lv.id}")
+                     try:
+                         generate_and_cache_agg_viz(lv, submission)
+                     except Exception as e:
+                         logger.error(f"Error pre-caching visualization {lv.id}: {e}")
+
         submission.processing_status = 'Processed'
         session.commit()
         logger.info(f"Processing submission {submission_id} done.")
