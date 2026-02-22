@@ -524,13 +524,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <th scope="col" style="width: 30px;"></th> <!-- Dropdown Column -->
                             <th scope="col" style="width: 5%;"><input class="form-check-input" type="checkbox"
                                     id="select_all"></th>
-                            <th scope="col" style="width: {{ global_settings.name_width }};" data-lb-column="name"
-                                draggable="true">Name</th>
+                            <th scope="col" style="width: {{ global_settings.name_width }}; cursor: pointer;"
+                                data-lb-column="name" draggable="true" onclick="changeSort('name')">Name
+                                {% if sort_metric == 'name' %}
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }}"></i>
+                                {% endif %}
+                            </th>
                             <th scope="col" style="width: {{ global_settings.tags_width }};" data-lb-column="tags"
                                 draggable="true">Tags</th>
-                            <th scope="col" style="width: {{ global_settings.config_width }};"
-                                data-lb-column="date_uploaded" draggable="true">Date
-                                Uploaded</th>
+                            <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
+                                data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')">
+                                Date Uploaded
+                                {% if sort_metric == 'date_uploaded' %}
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }}"></i>
+                                {% endif %}
+                            </th>
                             <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="git_info"
                                 draggable="true">Git Info</th>
                             <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="status"

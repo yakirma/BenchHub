@@ -2860,7 +2860,20 @@ def leaderboard_view(project_name, leaderboard_id):
         for prefix in prefix_tags:
             query = query.filter(Submission.tags.any(Tag.name.ilike(f'{prefix}%')))
 
-    submissions = query.order_by(Submission.upload_date.desc()).all()
+    if sort_metric == 'date_uploaded':
+        if sort_order == 'asc':
+            query = query.order_by(Submission.upload_date.asc())
+        else:
+            query = query.order_by(Submission.upload_date.desc())
+    elif sort_metric == 'name':
+        if sort_order == 'asc':
+            query = query.order_by(Submission.name.asc())
+        else:
+            query = query.order_by(Submission.name.desc())
+    else:
+        query = query.order_by(Submission.upload_date.desc())
+        
+    submissions = query.all()
     
     all_tags = Tag.query.join(Tag.submissions).filter(Submission.leaderboard_id == leaderboard.id).distinct().all()
     # Also get all sample tags for autocomplete
@@ -3844,14 +3857,14 @@ def comparison_view(project_name, leaderboard_id):
             sub_id = int(sub_id_str)
             target_sub = Submission.query.get(sub_id)
             if target_sub:
-                target_lm = next((lm for lm in leaderboard.leaderboard_metrics if (lm.target_name == metric_key or lm.global_metric.name == metric_key)), None)
+                target_lm = next((lm for lm in leaderboard.leaderboard_metrics if (f"lm_{lm.id}" == metric_key or lm.target_name == metric_key or lm.global_metric.name == metric_key)), None)
                 submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(target_sub.id))
                 
                 # Fetch pre-calculated results for the metric if possible
                 precalc_results = {res.sample_name: res.value for res in db.session.query(CustomField.sample_name, CustomField.value_float).filter(
                     CustomField.submission_id == sub_id,
                     CustomField.name == metric_key,
-                    CustomField.field_type == 'metric'
+                    CustomField.field_type.in_(['scalar', 'metric'])
                 ).all()}
 
                 def get_sort_val(s):
@@ -4836,7 +4849,7 @@ def dataset_view(dataset_id):
     ).distinct().all()
     
     custom_field_names = set(custom_field_query)
-    custom_scalar_metric_names = [name for name, ftype in custom_field_names if ftype == 'scalar']
+    custom_scalar_metric_names = [name for name, ftype in custom_field_names if ftype in ('scalar', 'metric')]
 
     # Sorting
     if sort_by == 'name':
