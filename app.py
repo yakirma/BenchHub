@@ -3855,13 +3855,13 @@ def comparison_view(project_name, leaderboard_id):
             parts = sort_by.split(':')
             metric_key, sub_id_str = parts
             sub_id = int(sub_id_str)
-            target_sub = Submission.query.get(sub_id)
+            target_sub = db.session.get(Submission, sub_id)
             if target_sub:
                 target_lm = next((lm for lm in leaderboard.leaderboard_metrics if (f"lm_{lm.id}" == metric_key or lm.target_name == metric_key or lm.global_metric.name == metric_key)), None)
                 submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(target_sub.id))
                 
                 # Fetch pre-calculated results for the metric if possible
-                precalc_results = {res.sample_name: res.value for res in db.session.query(CustomField.sample_name, CustomField.value_float).filter(
+                precalc_results = {res.sample_name: res.value_float for res in db.session.query(CustomField.sample_name, CustomField.value_float).filter(
                     CustomField.submission_id == sub_id,
                     CustomField.name == metric_key,
                     CustomField.field_type.in_(['scalar', 'metric'])
