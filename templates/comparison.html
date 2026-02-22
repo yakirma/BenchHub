@@ -355,7 +355,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% if all_field_types.get(field_name) in ['scalar', 'metric'] and field_name in
                             dataset_custom_fields %}
                             <option value="{{ field_name }}" {% if sort_by==field_name %}selected{% endif %}>GT {{
-                                field_name|capitalize }}</option>
+                                comparison_display_options.get(field_name, {}).get('label', field_name|capitalize) }}
+                            </option>
                             {% endif %}
                             {% endfor %}
                         </optgroup>
@@ -366,18 +367,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             </option>
                             {% for m in selected_metrics %}
                             <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
-                                {{ m|upper }}</option>
+                                {{ metric_labels.get(m, m)|capitalize }}</option>
                             {% endfor %}
                             {% for m in active_metrics %}
                             <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
-                                {{ sample_metric_options[m] }}</option>
+                                {{ metric_labels.get(m, sample_metric_options.get(m, m))|capitalize }}</option>
                             {% endfor %}
                             {% for field_name in all_custom_fields %}
                             {% if all_field_types.get(field_name) in ['scalar', 'metric'] and field_name in
                             submission_custom_fields.get(sub.id, []) %}
                             <option value="{{ field_name }}:{{ sub.id }}" {% if sort_by==field_name ~ ':' ~ sub.id
                                 %}selected{% endif %}>
-                                {{ field_name|capitalize }}</option>
+                                {{ metric_labels.get(field_name, field_name)|capitalize }}</option>
                             {% endif %}
                             {% endfor %}
                         </optgroup>

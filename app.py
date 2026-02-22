@@ -3775,7 +3775,8 @@ def comparison_view(project_name, leaderboard_id):
                                sample_metric_options=SAMPLE_METRIC_OPTIONS, 
                                active_metrics=[],
                                project_name=project_name,
-                               current_compare_ids=compare_ids_arg)
+                               current_compare_ids=compare_ids_arg,
+                               metric_labels=metric_labels)
 
     # Pagination params
     page = request.args.get('page', 1, type=int)
