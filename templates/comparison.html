@@ -252,11 +252,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 class="btn btn-sm btn-outline-primary ms-2">{{
                 submissions[0].leaderboard.name }}</a>
         </p>
-        <p class="text-muted d-flex align-items-center mt-2">
-            Underlying Dataset:
-            <a href="{{ url_for('dataset_view', dataset_id=submissions[0].leaderboard.dataset.id) }}"
-                class="btn btn-sm btn-outline-secondary ms-2">{{
-                submissions[0].leaderboard.dataset.name }}</a>
+        <p class="text-muted d-flex align-items-center mt-2 flex-wrap">
+            Underlying Datasets:
+            {% for ds in submissions[0].leaderboard.datasets %}
+        <div class="author-avatar-init me-1" data-author="{{ ds.git_author or '' }}" data-size="27"></div>
+        <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+            class="btn btn-sm btn-outline-secondary ms-1 me-2 my-1">{{ ds.name }}</a>
+        {% endfor %}
         </p>
     </div>
     <a href="{{ url_for('leaderboard_view', leaderboard_id=submissions[0].leaderboard.id) }}"
@@ -642,7 +644,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             data-sample-id="{{ data.sample_id }}"
                                             data-sample-name="{{ data.sample_name }}"
                                             data-sample-tags="{{ data.dataset_tags|join(',') if data.dataset_tags else '' }}">
-                                            <i class="bi bi-tag me-2"></i>Add Tags
+                                            <i class="bi bi-tag me-2"></i>Edit Tags
                                         </a>
                                     </li>
                                 </ul>
@@ -716,7 +718,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         </tr>
                                         {% for m, gt_val in gt_metrics_present %}
                                         <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ m }}">{{ m }}
+                                            <td class="text-truncate" style="max-width: 100px;"
+                                                title="{{ metric_labels.get(m, m) }}">{{ metric_labels.get(m, m) }}
                                             </td>
                                             <td>{{ "%.4f"|format(gt_val) if gt_val is number else gt_val }}</td>
                                         </tr>
@@ -780,7 +783,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         {% set row_min = row_values|min if row_values else none %}
                                         {% set row_max = row_values|max if row_values else none %}
                                         <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ m }}">{{ m }}
+                                            <td class="text-truncate" style="max-width: 100px;"
+                                                title="{{ metric_labels.get(m, m) }}">{{ metric_labels.get(m, m) }}
                                             </td>
                                             {% for sub in submissions %}
                                             {% set pred = data.predictions[loop.index0] %}
@@ -1090,7 +1094,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
-<!-- Add Tags Modal -->
+<!-- Edit Tags Modal -->
 <div class="modal fade" id="add-tags-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -1121,6 +1125,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
     </div>
 </div>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
+</script>
 {% endblock %}
 
 
@@ -2284,7 +2299,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     window.excludeTagsCtrl = setupTagInput('exclude-tags-wrapper', 'exclude-tags-input', 'exclude-suggestions', 'enable-exclude-tags', allAvailableTags);
     window.prefixTagsCtrl = setupTagInput('prefix-tags-wrapper', 'prefix-tags-input', 'prefix-suggestions', 'enable-prefix-tags', allAvailablePrefixes);
 
-    // --- Add Tags Modal Logic ---
+    // --- Edit Tags Modal Logic ---
     const modalTagsCtrl = setupTagInput('modal-tags-wrapper', 'modal-tags-input', 'modal-tags-suggestions', null, allAvailableTags);
     const addTagsModal = document.getElementById('add-tags-modal');
     if (addTagsModal) {
@@ -2311,12 +2326,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // Use event delegation on the table for dynamically rendered buttons
         const compTable = document.getElementById('comparison-table');
         if (compTable) {
-            console.log("Attaching event delegation to comparison-table for Add Tags");
+            console.log("Attaching event delegation to comparison-table for Edit Tags");
             compTable.addEventListener('click', function (e) {
                 const btn = e.target.closest('.add-tags-btn');
                 if (btn) {
                     e.preventDefault();
-                    console.log("Add Tags button clicked (delegated)", btn.getAttribute('data-sample-name'));
+                    console.log("Edit Tags button clicked (delegated)", btn.getAttribute('data-sample-name'));
                     const modalInstance = bootstrap.Modal.getOrCreateInstance(addTagsModal);
                     if (modalInstance) {
                         modalInstance.show(btn);
@@ -2949,5 +2964,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 
 
+</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
 </script>
 {% endblock %}

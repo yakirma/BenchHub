@@ -1,14 +1,17 @@
 import shutil
+import urllib.parse
+from urllib.parse import quote
 import sys
 import re
-from flask import Flask, render_template, request, redirect, url_for, jsonify, session, send_file, flash, abort, after_this_request, g, make_response
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session, send_file, flash, abort, after_this_request, g, make_response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 import os
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from celery import Celery
 import json
+import math
 import numpy as np
 import threading
 # For loading npz files
@@ -21,7 +24,96 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-from metric_engine import evaluate_dynamic_metric, get_metric_context
+from metric_engine import evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency
+import subprocess
+
+# Import local configuration (optional, with fallback)
+try:
+    from local_config import GIT_REPO_PATH
+except ImportError:
+    GIT_REPO_PATH = None  # Fallback to None if config doesn't exist
+
+def get_author_from_git_commit(commit_hash, repo_path=None, branch_name=None):
+    """
+    Extract author name from a git branch using remote origin.
+    Uses ONLY branch name as requested.
+    Uses: git log -1 --format='%an' origin/BRANCH_NAME
+    
+    Args:
+        commit_hash: (Ignored) Kept for compatibility.
+        repo_path: Optional path to git repository.
+        branch_name: The git branch name to query (REQUIRED)
+    
+    Returns:
+        Author name string or None if not found
+    """
+    if not branch_name or branch_name == 'N/A':
+        return None
+    
+    git_path = repo_path or GIT_REPO_PATH
+    
+    try:
+        # Fetch from remote first to ensure we have latest data
+        fetch_cmd = ['git', 'fetch', 'origin']
+        if git_path:
+            fetch_cmd = ['git', '-C', git_path, 'fetch', 'origin']
+        
+        subprocess.run(fetch_cmd, capture_output=True, text=True, timeout=30)
+        
+        # Get author from remote branch
+        cmd = ['git', 'log', '-1', '--format=%an', f'origin/{branch_name}']
+        if git_path:
+            cmd = ['git', '-C', git_path, 'log', '-1', '--format=%an', f'origin/{branch_name}']
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        
+        if result.returncode == 0:
+            author = result.stdout.strip()
+            if author:
+                return author
+        
+        print(f"Warning: Could not find author for branch '{branch_name}' from remote")
+        return None
+        
+    except subprocess.TimeoutExpired:
+        print(f"Warning: Timeout while extracting git author from branch '{branch_name}'")
+        return None
+    except Exception as e:
+        print(f"Warning: Could not extract git author from branch '{branch_name}': {e}")
+        return None
+
+
+
+def format_tag_value(val):
+    """
+    Parses and formats a tag value string into its appropriate type (int, float, bool as 0/1, or str).
+    Returns 'N/A' if val is None.
+    """
+    if val is None:
+        return 'N/A'
+    v_lower = str(val).lower().strip()
+    if v_lower in ('true', 'yes'):
+        return 1
+    if v_lower in ('false', 'no'):
+        return 0
+    # Try numeric conversion
+    try:
+        f_val = float(val)
+        if math.isfinite(f_val):
+            if f_val == int(f_val):
+                return int(f_val)
+            return f"{f_val:.6f}"
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return val
+
+def get_distinguishable_metric_name(lm):
+    """
+    Constructs a metric name for CSV exports as <metric_name>_<metric_id>.
+    """
+    base_name = lm.target_name or lm.global_metric.label or lm.global_metric.name
+    # Keep it clean as per user request
+    return f"{base_name}_{lm.id}"
 
 
 app = Flask(__name__)
@@ -43,7 +135,7 @@ app.config.update(
     UPLOAD_FOLDER=os.path.join(dtof_data_dir, 'uploads'),
     CELERY_BROKER_URL='redis://localhost:6379/0',
     CELERY_RESULT_BACKEND='redis://localhost:6379/0',
-    SQLALCHEMY_ENGINE_OPTIONS={'connect_args': {'timeout': 60}}  # 60 seconds timeout
+    SQLALCHEMY_ENGINE_OPTIONS={'connect_args': {'timeout': 120}}  # 120 seconds timeout
 )
 
 # Enable Write-Ahead Logging (WAL) for better concurrency
@@ -54,17 +146,13 @@ from sqlalchemy.engine import Engine
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=60000") # 60 seconds
+    cursor.execute("PRAGMA busy_timeout=120000") # 120 seconds
     cursor.close()
 
 # Ensure upload directory exists
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-
-
-# List of all available metrics
-AVAILABLE_METRICS = []
 
 # Helper to determine column priority for sorting
 def get_column_priority(key, column_type=None, is_dataset_field=False):
@@ -109,8 +197,6 @@ def get_column_priority(key, column_type=None, is_dataset_field=False):
     return 100
  
 
-# Define available display options for Dataset View
-# Reordered by priority
 # Define available display options for Dataset View
 # Reordered by priority: Name > Charts > Tags > Config > Histograms
 DATASET_DISPLAY_OPTIONS = {
@@ -174,6 +260,12 @@ submission_tags = db.Table('submission_tags',
     db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'), primary_key=True)
 )
 
+# Association Table for Leaderboards and Datasets
+leaderboard_datasets = db.Table('leaderboard_datasets',
+    db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
+    db.Column('dataset_id', db.Integer, db.ForeignKey('dataset.id'), primary_key=True)
+)
+
 # Models
 class Tag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -187,10 +279,11 @@ class Dataset(db.Model):
     git_commit = db.Column(db.String(100))
     git_branch = db.Column(db.String(100))
     git_message = db.Column(db.String(200))
+    git_author = db.Column(db.String(100))  # Git commit author
     display_columns = db.Column(db.String(500), nullable=False, default=DEFAULT_DATASET_DISPLAY_COLUMNS)
     visualizations = db.Column(db.String(500), nullable=False, default='') # Active visualizers
     selected_metrics = db.Column(db.String(500), nullable=False, default='') # No default metrics
-    leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan")
+    # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
 
 class Sample(db.Model):
@@ -313,6 +406,9 @@ class LeaderboardMetric(db.Model):
     # Optimization Goal
     sort_direction = db.Column(db.String(20), default='higher_is_better') # higher_is_better, lower_is_better
 
+    # Per-sample Filtering
+    tag_filter = db.Column(db.Text, nullable=True) # comma-separated tags
+
     global_metric = db.relationship('GlobalMetric', backref='leaderboard_usages')
     leaderboard = db.relationship('Leaderboard', backref=db.backref('leaderboard_metrics', lazy=True, cascade="all, delete-orphan"))
 
@@ -362,7 +458,7 @@ class MetricResult(db.Model):
 class Leaderboard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=False)
+    dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=True) # Deprecated: migration to leaderboard_datasets
     upload_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     summary_metrics = db.Column(db.String(200), nullable=False) # are, l1, l2 etc.
     comparison_display_columns = db.Column(db.String(500), nullable=False, default=DEFAULT_COMPARISON_DISPLAY_COLUMNS)
@@ -376,6 +472,7 @@ class Leaderboard(db.Model):
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON string: store last used filter settings
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True) # Added for Project Refactor (Migrated)
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
+    datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
 
 class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -393,12 +490,33 @@ class Submission(db.Model):
     git_commit = db.Column(db.String(100))
     git_branch = db.Column(db.String(100))
     git_message = db.Column(db.String(200))
+    git_author = db.Column(db.String(100))  # Git commit author
     upload_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     is_archived = db.Column(db.Boolean, default=False, nullable=False)
     processing_status = db.Column(db.String(50), default='Pending')
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON store of filters used for metrics
     tags = db.relationship('Tag', secondary=submission_tags, lazy='subquery', backref=db.backref('submissions', lazy=True))
     custom_fields = db.relationship('CustomField', backref='submission', lazy=True, cascade="all, delete-orphan", foreign_keys='CustomField.submission_id')
+
+class AuthorProfile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False) # The git_author string
+    display_name = db.Column(db.String(100), nullable=True)
+    avatar_filename = db.Column(db.String(255), nullable=True)
+    merged_into_username = db.Column(db.String(100), nullable=True) # Username this user is merged into
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+def get_canonical_username(username, profiles):
+    """Resolve a username to its canonical identity by following merge chains."""
+    visited = set()
+    curr = username
+    while curr in profiles and profiles[curr].merged_into_username:
+        if profiles[curr].merged_into_username in visited:  # Cycle detection
+            break
+        visited.add(curr)
+        curr = profiles[curr].merged_into_username
+    return curr
+
 
 # Initialize Celery after models are defined
 celery = make_celery(app)
@@ -408,11 +526,14 @@ import tasks  # noqa: F401
 
 @app.context_processor
 def inject_version():
-    return dict(version=__version__)
+    profiles = AuthorProfile.query.all()
+    mapping = {p.username: {
+        'display_name': p.display_name,
+        'avatar_url': url_for('serve_author_avatar', filename=p.avatar_filename) if p.avatar_filename else None,
+        'merged_into': p.merged_into_username
+    } for p in profiles}
+    return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
-
-
-from metric_engine import evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency
 
 def process_dataset_zip(zip_path, dataset_name, override=False):
     """
@@ -439,7 +560,7 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
         # Create preliminary entry
         new_dataset = Dataset(name=dataset_name)
         db.session.add(new_dataset)
-        db.session.flush()
+        db.session.commit() # Commit immediately to release lock and get ID
 
         # Unzip
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -470,7 +591,7 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
                         return False, f"Dataset '{real_dataset_name}' (extracted from ZIP) already exists.", None
                 new_dataset.name = real_dataset_name
                 db.session.add(new_dataset)
-                db.session.flush()
+                db.session.commit()
 
             # Permanent storage setup
             dataset_folder_name = secure_filename(new_dataset.name)
@@ -482,7 +603,10 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
             shutil.copy2(zip_path, original_zip_dest)
 
             # Git metadata
-            git_info_path = os.path.join(dataset_content_path, 'git.info')
+            git_info_path = os.path.join(dataset_content_path, 'git_info.json')
+            if not os.path.exists(git_info_path):
+                git_info_path = os.path.join(dataset_content_path, 'git.info')
+            
             if os.path.exists(git_info_path):
                 try:
                     with open(git_info_path, 'r') as git_file:
@@ -490,7 +614,13 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
                         new_dataset.git_commit = git_data.get('commit', '')
                         new_dataset.git_branch = git_data.get('branch', '')
                         new_dataset.git_message = git_data.get('message', '')
-                except: pass
+                        # Extract author from git_info.json or from git commit
+                        author = git_data.get('author', '')
+                        if not author and new_dataset.git_commit:
+                            # Try to extract author from git using the commit hash
+                            author = get_author_from_git_commit(new_dataset.git_commit, branch_name=new_dataset.git_branch)
+                        new_dataset.git_author = author or ''
+                except Exception: pass
 
             # Discover samples - scan all folders dynamically
             sample_names = set()
@@ -505,6 +635,7 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
 
             # Create sample records
             for s_name in sample_names:
+                if s_name == '.DS_Store': continue
                 sample = Sample(dataset_id=new_dataset.id, name=s_name)
                 
                 db.session.add(sample)
@@ -653,7 +784,7 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                             if field_type is None:
                                 field_type = 'text'
                             field_data[sample_name] = content
-                except:
+                except Exception:
                     pass
             
             # Check for JSON files
@@ -709,7 +840,6 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
          if c.sum() > 0:
              p = c / c.sum()
              res = float(-np.sum(p * np.log2(p)))
-             # print(f"DEBUG: calc_entropy input sum={c.sum()} shape={counts.shape} result={res}")
              return res
          return 0.0
 
@@ -720,7 +850,6 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
             # Strict check for 'hist_' prefix for dynamic ones, plus legacy 'raw_histogram'
             if os.path.isdir(folder_path) and (folder_name.startswith('hist_') or folder_name == 'raw_histogram'):
                 hist_file = os.path.join(folder_path, f'{sample.name}.npz')
-                # print(f"DEBUG: Checking hist file: {hist_file} (Exists: {os.path.exists(hist_file)})")
                 if os.path.exists(hist_file):
                     try:
                         with np.load(hist_file) as data:
@@ -759,20 +888,61 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
     
     # Add custom fields to pred_data and metrics
     custom_fields_for_sample = [cf for cf in submission.custom_fields if cf.sample_name == sample.name]
-    print(f"DEBUG: Found {len(custom_fields_for_sample)} custom fields for sample {sample.name}, submission {submission.id}")
     for cf in custom_fields_for_sample:
-        print(f"DEBUG:   Custom field: {cf.name}, type: {cf.field_type}, value: {cf.value_float if cf.field_type != 'image' else cf.value_text}")
         if cf.field_type == 'image':
             # Store image path
             pred_data[cf.name] = cf.value_text
-        elif cf.field_type == 'scalar':
-            # Store scalar value
+        elif cf.field_type in ['scalar', 'metric']:
+            # Store scalar/metric value
             pred_data[cf.name] = cf.value_float
-        elif cf.field_type == 'metric':
-            # Store metric value
             metrics[cf.name] = cf.value_float
-            pred_data[cf.name] = cf.value_float
-            print(f"DEBUG:   Added metric {cf.name} = {cf.value_float} to metrics dict")
+            
+            # [FIX] If the field name is lm_{id}, also register it under its friendly name for backward compatibility
+            # and to satisfy consumers expecting friendly names.
+            if cf.name.startswith('lm_'):
+                try:
+                    lm_id = int(cf.name[3:])
+                    lm = LeaderboardMetric.query.get(lm_id)
+                    if lm:
+                        friendly_name = lm.target_name or lm.global_metric.name
+                        metrics[friendly_name] = cf.value_float
+                        pred_data[friendly_name] = cf.value_float
+                except Exception: pass
+
+    # [FIX] strict mode cleanup:
+    # If the submission uses lm_{id} for a metric (globally), ensure we don't leak raw/legacy values 
+    # for samples where that metric was filtered out (and thus lm_{id} is missing).
+    if metrics:
+        submission_lm_ids = {
+            int(cf.name[3:]) for cf in submission.custom_fields 
+            if cf.name.startswith('lm_') and cf.name[3:].isdigit()
+        }
+        
+        if submission_lm_ids:
+            lb_metrics = submission.leaderboard.leaderboard_metrics
+            # Map friendly name to list of IDs (support multiple flavours)
+            friendly_to_ids = {}
+            for lm in lb_metrics:
+                name = lm.target_name or lm.global_metric.name
+                if name not in friendly_to_ids:
+                    friendly_to_ids[name] = []
+                friendly_to_ids[name].append(lm.id)
+            
+            for key in list(metrics.keys()):
+                if key in friendly_to_ids:
+                    # Check if ANY of the flavours for this name are tracked by this submission (New Mode)
+                    tracked_ids = [mid for mid in friendly_to_ids[key] if mid in submission_lm_ids]
+                    
+                    if tracked_ids:
+                        # If tracked, we expect at least one of the tracked lm_{id}s to be present in the sample metrics
+                        # If NONE are present, it implies all flavours were filtered out for this sample.
+                        # In that case, we remove the friendly name (which is likely a raw data leak).
+                        any_flavour_present = any(f'lm_{mid}' in metrics for mid in tracked_ids)
+                        
+                        if not any_flavour_present:
+                             del metrics[key]
+                             if key in pred_data:
+                                 del pred_data[key]
 
     return pred_data, metrics
 
@@ -1016,7 +1186,7 @@ def load_project_context():
             # If we are on a route that SHOULD have a project prefix but doesn't,
             # we might want to redirect. However, for now, we'll let it be as-is
             # unless we are on the root '/'.
-            if request.path == '/' or request.path == '/deprecated_index':
+            if request.path == '/':
                 return redirect(url_for('index', project_name=project.name))
             return
 
@@ -1138,18 +1308,47 @@ def index(project_name):
         
     # Updated for Global Datasets architecture
     leaderboards = g.current_project.leaderboards
+    
+    # Sort leaderboards by last activity (creation or last submission)
+    # And enrich with summary stats
+    processed_leaderboards = []
+    now = datetime.utcnow()
+    
+    for lb in leaderboards:
+        submissions = lb.submissions
+        submission_count = len(submissions)
+        
+        last_sub_date = None
+        if submissions:
+            last_sub_date = max(s.upload_date for s in submissions)
+            
+        last_activity = last_sub_date if last_sub_date else lb.upload_date
+        
+        # On Fire Signal: Check submissions in last 24h (temporarily 7 days for demo)
+        subs_last_24h = sum(1 for s in submissions if s.upload_date > now - timedelta(days=7))
+        
+        # Calculate total sample count from all associated datasets
+        total_samples = sum(len(ds.samples) for ds in lb.datasets)
+        
+        # Attach attributes for template usage
+        lb.last_submission_date = last_sub_date
+        lb.submission_count = submission_count
+        lb.sample_count = total_samples
+        lb.subs_last_24h = subs_last_24h
+        lb.last_activity = last_activity
+        
+        processed_leaderboards.append(lb)
+        
+    # Sort by last_activity descending
+    processed_leaderboards.sort(key=lambda x: x.last_activity, reverse=True)
+    
     # Datasets are global, passed for "Create Leaderboard" dropdown
     datasets = Dataset.query.order_by(Dataset.name).all()
     
-    return render_template('index.html', leaderboards=leaderboards, datasets=datasets)
+    return render_template('index.html', leaderboards=processed_leaderboards, datasets=datasets)
 
 # --- End Project Management Logic ---
 
-@app.route('/deprecated_index') # Renamed old index to preserve code structure if needed, or we just replaced it above.
-def deprecated_index():
-    datasets = Dataset.query.all()
-    leaderboards = Leaderboard.query.all()
-    return render_template('index.html', datasets=datasets, leaderboards=leaderboards, available_metrics=AVAILABLE_METRICS)
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/edit', methods=['GET', 'POST'])
 def edit_leaderboard(project_name, leaderboard_id):
@@ -1178,16 +1377,16 @@ def edit_leaderboard(project_name, leaderboard_id):
             leaderboard.metric_directions = json.dumps(directions)
             # Synchronize with LeaderboardMetric objects
             for lm in leaderboard.leaderboard_metrics:
-                target = lm.target_name if lm.target_name else lm.global_metric.name
-                if target in directions:
-                    lm.sort_direction = directions[target]
+                lmid = f"lm_{lm.id}"
+                if lmid in directions:
+                    lm.sort_direction = directions[lmid]
         
         # Update Aggregation Settings for existing metrics AND custom metrics
         metric_aggregation = {}
         if leaderboard.metric_aggregation:
              try:
                  metric_aggregation = json.loads(leaderboard.metric_aggregation)
-             except:
+             except Exception:
                  metric_aggregation = {}
 
         has_aggregation_updates = False
@@ -1207,8 +1406,8 @@ def edit_leaderboard(project_name, leaderboard_id):
                 
                 has_aggregation_updates = True
                 
-                # Check if it is a dynamic metric
-                lm = next((m for m in leaderboard.leaderboard_metrics if (m.target_name == metric_name or m.global_metric.name == metric_name)), None)
+                # Check if it is a dynamic metric using unique ID
+                lm = next((m for m in leaderboard.leaderboard_metrics if f"lm_{m.id}" == metric_name), None)
                 
                 if lm:
                     lm.pooling_type = agg_type
@@ -1229,8 +1428,8 @@ def edit_leaderboard(project_name, leaderboard_id):
             # Trigger recalculation for all submissions only if aggregation changed
             submissions = Submission.query.filter_by(leaderboard_id=leaderboard.id).all()
             for sub in submissions:
-                 tasks.process_submission.delay(sub.id)
-            flash('Leaderboard configuration updated. Recalculation started.', 'success')
+                 tasks.reaggregate_submission_metrics.delay(sub.id)
+            flash('Leaderboard configuration updated. Aggregation updated (Optimized).', 'success')
         elif has_direction_updates:
             flash('Leaderboard coloring updated.', 'success')
         else:
@@ -1242,7 +1441,8 @@ def edit_leaderboard(project_name, leaderboard_id):
     fields_set = set()
     
     # 1. Check GT data
-    samples = Sample.query.filter_by(dataset_id=leaderboard.dataset_id).all()
+    dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+    samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).all()
     if any(s.histogram_data for s in samples):
         fields_set.add('gt_histogram')
     
@@ -1272,14 +1472,19 @@ def edit_leaderboard(project_name, leaderboard_id):
     per_sample_metrics = set([])
     aggregated_metrics_list = set([])
     
+    # Map internal IDs to labels
+    metric_labels = { m: m for m in dataset_fields_set | submission_fields_set }
+    
     for lm in leaderboard.leaderboard_metrics:
         # Use target_name if available (custom alias), otherwise global metric name
         name_to_add = lm.target_name if lm.target_name else lm.global_metric.name
+        lmid = f"lm_{lm.id}"
+        metric_labels[lmid] = name_to_add
         
         if lm.global_metric.is_aggregated:
-            aggregated_metrics_list.add(name_to_add)
+            aggregated_metrics_list.add(lmid)
         else:
-            per_sample_metrics.add(name_to_add)
+            per_sample_metrics.add(lmid)
             
     # Add to submission fields for backward compatibility/default view if needed,
     # but also prepare separate lists for UI
@@ -1290,6 +1495,10 @@ def edit_leaderboard(project_name, leaderboard_id):
     # unless we explicitly want them to show up in "Submission/Metric" dropdown.
     # The user wants "New Category". So we will pass 'aggregated_metrics_list' separately.
 
+    # Fetch sample tags for auto-suggestions
+    all_sample_tag_names, all_sample_prefixes = get_all_sample_tags(dataset_ids)
+    all_sample_tags = sorted(list(set(all_sample_tag_names + all_sample_prefixes)))
+    
     # Standard calculated metrics (Wait, these are results, not sources usually.
     # But ARE/L1/L2 could be used as input for other metrics?)
     # Let's keep them in submission fields or creating a mixed list? 
@@ -1304,8 +1513,8 @@ def edit_leaderboard(project_name, leaderboard_id):
     all_known_metrics = set([])
     # Dynamic metrics
     for lm in leaderboard.leaderboard_metrics:
-        # Use target_name if available, consistent with metric_to_lm
-        all_known_metrics.add(lm.target_name if lm.target_name else lm.global_metric.name)
+        # Use unique internal ID
+        all_known_metrics.add(f"lm_{lm.id}")
     # Custom metrics from database (linked to this dataset/submissions)
     # Similar logic to leaderboard_view discovery
     dataset_custom_metrics = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples]), CustomField.field_type == 'metric').all()
@@ -1316,9 +1525,13 @@ def edit_leaderboard(project_name, leaderboard_id):
     
     # Submission custom metrics
     if sub_ids:
-        submission_custom_metrics = CustomField.query.filter(CustomField.submission_id.in_(sub_ids), CustomField.field_type =='metric').all()
+        submission_custom_metrics = CustomField.query.filter(
+            CustomField.submission_id.in_(sub_ids), 
+            CustomField.field_type.in_(['metric', 'scalar'])
+        ).all()
         for cf in submission_custom_metrics:
-            all_known_metrics.add(cf.name)
+            if not cf.name.startswith('lm_'):
+                all_known_metrics.add(cf.name)
             
     sorted_metrics = sorted(list(all_known_metrics))
     current_directions = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}
@@ -1333,8 +1546,7 @@ def edit_leaderboard(project_name, leaderboard_id):
     # Create map for efficient Template lookup
     metric_to_lm = {}
     for lm in leaderboard.leaderboard_metrics:
-         name = lm.target_name if lm.target_name else lm.global_metric.name
-         metric_to_lm[name] = lm
+         metric_to_lm[f"lm_{lm.id}"] = lm
 
     return render_template('edit_leaderboard.html', 
                            leaderboard=leaderboard,
@@ -1345,11 +1557,15 @@ def edit_leaderboard(project_name, leaderboard_id):
                            available_metrics=sorted_metrics,
                            all_known_metrics=sorted_metrics,
                            current_directions=current_directions,
+                           all_sample_tags=all_sample_tags,
                            current_aggregation=current_aggregation,
+                           metric_labels=metric_labels,
                            metric_to_lm=metric_to_lm,
                            global_metrics=global_metrics,
                            global_visualizations=global_visualizations,
-                           all_projects=Project.query.all())
+                           all_projects=Project.query.all(),
+                           all_datasets=Dataset.query.all(),
+                           project_name=project_name)
                            
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_metric/add', methods=['POST'])
@@ -1395,16 +1611,7 @@ def add_leaderboard_metric(project_name, leaderboard_id):
             else:
                 requested_name = gm.name
         
-        existing_metrics = LeaderboardMetric.query.filter_by(leaderboard_id=leaderboard.id).all()
-        existing_names = set()
-        for m in existing_metrics:
-            existing_names.add(m.target_name if m.target_name else m.global_metric.name)
-            
         final_name = requested_name
-        counter = 1
-        while final_name in existing_names:
-            final_name = f"{requested_name}_{counter}"
-            counter += 1
         
         lm = LeaderboardMetric(
             leaderboard_id=leaderboard.id,
@@ -1413,14 +1620,17 @@ def add_leaderboard_metric(project_name, leaderboard_id):
             target_name=final_name,
             pooling_type='mean',
             pooling_percentile=None,
-            sort_direction=request.form.get('sort_direction', 'higher_is_better')
+            sort_direction=request.form.get('sort_direction', 'higher_is_better'),
+            tag_filter=request.form.get('tag_filter', '').strip() or None
         )
         db.session.add(lm)
+        db.session.flush() # Ensure ID is generated for use below
         
-        # Auto-add to summary metrics for display
+        # Auto-add to summary metrics for display using unique ID
         current_metrics = [m.strip() for m in leaderboard.summary_metrics.split(',') if m.strip()]
-        if final_name not in current_metrics:
-            current_metrics.append(final_name)
+        lmid = f"lm_{lm.id}"
+        if lmid not in current_metrics:
+            current_metrics.append(lmid)
             leaderboard.summary_metrics = ','.join(current_metrics)
             
         db.session.commit()
@@ -1448,23 +1658,18 @@ def import_leaderboard_settings(leaderboard_id):
     source_lb = Leaderboard.query.get_or_404(source_lb_id)
     
     try:
-        # 1. Copy direct fields
-        target_lb.summary_metrics = source_lb.summary_metrics
-        target_lb.visualizations = source_lb.visualizations
-        target_lb.selected_metrics = source_lb.selected_metrics
-        target_lb.metric_directions = source_lb.metric_directions
-        target_lb.metric_aggregation = source_lb.metric_aggregation
-        target_lb.comparison_display_columns = source_lb.comparison_display_columns
-        target_lb.scalar_width = source_lb.scalar_width
-        target_lb.image_width = source_lb.image_width
-        target_lb.last_sample_filter = source_lb.last_sample_filter
-        
-        # 2. Copy LeaderboardMetric entries (complex objects)
-        # First, clear existing metrics on target to avoid duplicates/conflicts
+        # 1. Clear existing items on target first to avoid conflicts
         for old_metric in target_lb.leaderboard_metrics:
             db.session.delete(old_metric)
-            
-        # Then clone from source
+        for old_vis in target_lb.leaderboard_visualizations:
+            db.session.delete(old_vis)
+        
+        # Flush to ensure deletions happen
+        db.session.flush()
+
+        # 2. Clone Metrics and build ID map
+        metric_id_map = {} # old_id -> new_id
+        
         for src_metric in source_lb.leaderboard_metrics:
             new_metric = LeaderboardMetric(
                 leaderboard_id=target_lb.id,
@@ -1476,13 +1681,12 @@ def import_leaderboard_settings(leaderboard_id):
                 sort_direction=src_metric.sort_direction
             )
             db.session.add(new_metric)
+            db.session.flush() # Get new ID
+            metric_id_map[src_metric.id] = new_metric.id
 
-        # 3. Copy LeaderboardVisualization entries
-        # First, clear existing visualizations on target
-        for old_vis in target_lb.leaderboard_visualizations:
-            db.session.delete(old_vis)
-            
-        # Then clone from source
+        # 3. Clone Visualizations and build ID map
+        viz_id_map = {} # old_id -> new_id
+        
         for src_vis in source_lb.leaderboard_visualizations:
             new_vis = LeaderboardVisualization(
                 leaderboard_id=target_lb.id,
@@ -1492,9 +1696,69 @@ def import_leaderboard_settings(leaderboard_id):
                 display_order=src_vis.display_order
             )
             db.session.add(new_vis)
+            db.session.flush() # Get new ID
+            viz_id_map[src_vis.id] = new_vis.id
+
+        # Helper to replace IDs in comma-separated strings (CSV)
+        def replace_ids_csv(text):
+            if not text: return text
+            parts = [p.strip() for p in text.split(',')]
+            new_parts = []
+            for p in parts:
+                if p.startswith('lm_'):
+                    try:
+                        old_id = int(p[3:])
+                        if old_id in metric_id_map:
+                            new_parts.append(f"lm_{metric_id_map[old_id]}")
+                            continue
+                    except Exception: pass
+                elif p.startswith('viz_'):
+                    try:
+                        old_id = int(p[4:])
+                        if old_id in viz_id_map:
+                            new_parts.append(f"viz_{viz_id_map[old_id]}")
+                            continue
+                    except Exception: pass
+                
+                # Keep original if no match (e.g. custom metric name)
+                new_parts.append(p)
+            return ','.join(new_parts)
+
+        # Helper to replace IDs in JSON objects (keys)
+        def replace_ids_json(json_str):
+            if not json_str: return json_str
+            try:
+                data = json.loads(json_str)
+                new_data = {}
+                for k, v in data.items():
+                    new_key = k
+                    if k.startswith('lm_'):
+                        try:
+                            old_id = int(k[3:])
+                            if old_id in metric_id_map:
+                                new_key = f"lm_{metric_id_map[old_id]}"
+                        except Exception: pass
+                    new_data[new_key] = v
+                return json.dumps(new_data)
+            except Exception:
+                return json_str
+
+        # 4. Copy and Remap Fields
+        target_lb.summary_metrics = replace_ids_csv(source_lb.summary_metrics)
+        target_lb.visualizations = replace_ids_csv(source_lb.visualizations)
+        target_lb.selected_metrics = replace_ids_csv(source_lb.selected_metrics)
+        target_lb.comparison_display_columns = replace_ids_csv(source_lb.comparison_display_columns)
+        
+        target_lb.metric_directions = replace_ids_json(source_lb.metric_directions)
+        target_lb.metric_aggregation = replace_ids_json(source_lb.metric_aggregation)
+        
+        # Copy direct fields (no IDs involved)
+        target_lb.scalar_width = source_lb.scalar_width
+        target_lb.image_width = source_lb.image_width
+        target_lb.last_sample_filter = source_lb.last_sample_filter
             
         db.session.commit()
-        flash(f"Settings imported from '{source_lb.name}'.", "success")
+        flash(f"Settings imported from '{source_lb.name}' with ID remapping.", "success")
         
     except Exception as e:
         db.session.rollback()
@@ -1545,27 +1809,26 @@ def edit_leaderboard_metric(project_name, leaderboard_id, metric_id):
             else:
                 requested_name = lm.global_metric.name
         
-        # Uniqueness check against OTHER metrics in this leaderboard
-        existing_metrics = LeaderboardMetric.query.filter(
-            LeaderboardMetric.leaderboard_id == leaderboard_id,
-            LeaderboardMetric.id != metric_id
-        ).all()
-        existing_names = set()
-        for m in existing_metrics:
-            existing_names.add(m.target_name if m.target_name else m.global_metric.name)
-            
+        old_name = lm.target_name if lm.target_name else lm.global_metric.name
+        lm.target_name = requested_name
         final_name = requested_name
-        counter = 1
-        while final_name in existing_names:
-            final_name = f"{requested_name}_{counter}"
-            counter += 1
-            
-        lm.target_name = final_name
+        
+        # Sync summary_metrics: Replace old name with lmid to ensure it stays visible/valid
+        leaderboard = Leaderboard.query.get(leaderboard_id)
+        if leaderboard and leaderboard.summary_metrics:
+            current_selected = [m.strip() for m in leaderboard.summary_metrics.split(',') if m.strip()]
+            lmid = f"lm_{lm.id}"
+            if old_name in current_selected:
+                # Replace with lmid
+                new_selected = [lmid if m == old_name else m for m in current_selected]
+                leaderboard.summary_metrics = ','.join(new_selected)
+                # No need to commit here, it will be committed below with lm.target_name
         
         # Update Sort Direction
         if 'sort_direction' in request.form:
-            lm.sort_direction = request.form.get('sort_direction')
-
+            lm.sort_direction = request.form.get('sort_direction', 'higher_is_better')
+        lm.tag_filter = request.form.get('tag_filter', '').strip() or None
+        
         db.session.commit()
         
         # Determine if recalculation is actually needed
@@ -1597,11 +1860,15 @@ def delete_leaderboard_metric(project_name, leaderboard_id, metric_id):
     metric_name = lm.target_name if lm.target_name else lm.global_metric.name
     
     # 1. Remove from selected_metrics (Display Columns)
-    if leaderboard.selected_metrics:
-        current_selected = [m.strip() for m in leaderboard.selected_metrics.split(',') if m.strip()]
-        if metric_name in current_selected:
-            current_selected.remove(metric_name)
-            leaderboard.selected_metrics = ','.join(current_selected)
+    if leaderboard.summary_metrics:
+        # Prune both name and lm_{id} for safety
+        current_summary = [m.strip() for m in leaderboard.summary_metrics.split(',') if m.strip()]
+        lmid = f"lm_{lm.id}"
+        metric_name = lm.target_name if lm.target_name else lm.global_metric.name
+        
+        new_summary = [m for m in current_summary if m != lmid and m != metric_name]
+        if len(new_summary) != len(current_summary):
+            leaderboard.summary_metrics = ','.join(new_summary)
             
     # 2. Delete the record
     db.session.delete(lm)
@@ -1770,7 +2037,6 @@ def extract_viz_arg_value(sample, submission, field_key):
         # Fallback: Try as a direct metric/scalar lookup on the submission
         if submission and sample:
             # Debug logging
-            print(f"DEBUG: Lookup field='{field_key}', sub={submission.id}, sample='{sample.name}' (ID: {sample.id})")
             
             # 1. Try by sample_id
             cf = CustomField.query.filter_by(submission_id=submission.id, sample_id=sample.id, name=field_key).first()
@@ -1779,13 +2045,17 @@ def extract_viz_arg_value(sample, submission, field_key):
                  # 2. Fallback to sample_name
                 cf = CustomField.query.filter_by(submission_id=submission.id, sample_name=sample.name, name=field_key).first()
                 if not cf:
-                    print(f"DEBUG: FAILED lookup for '{field_key}' on sample '{sample.name}'")
-                    # Check if it's a known GlobalMetric that hasn't been computed
+                    # Check if it's a known GlobalMetric
+                    # [FIX] Import GlobalMetric inside to avoid circular imports if any, 
+                    # but mainly we need to ensure we are in a valid session context.
+                    # This function is likely called from the Flask routes above, so context should exist.
+                    # The error 'Flask app is not registered' suggests we might be detached or using a stale session?
+                    # Explicitly using db.session might help if the query object is detached.
+                    
                     from app import GlobalMetric
                     gm = GlobalMetric.query.filter_by(name=field_key).first()
                     if gm:
-                         print(f"DEBUG: '{field_key}' is a GlobalMetric (ID: {gm.id}) but has no computed value for this submission. The user needs to run 'Recalculate' for this submission.")
-            
+                        pass  # GlobalMetric exists but no computed value for this submission
             if cf:
                 value = cf.get_value()
             
@@ -1895,9 +2165,9 @@ def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
         return send_file(cache_path, mimetype='image/png')
             
     try:
-        # Fetch all samples for the dataset
-        # Respect filters if we could access them, but for MVP we use all samples
-        all_samples = Sample.query.filter_by(dataset_id=leaderboard.dataset_id).order_by(Sample.name).all()
+        # Fetch all samples for the dataset(s)
+        dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+        all_samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).order_by(Sample.name).all()
 
         # Parse arg mappings
         arg_mappings = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
@@ -1991,9 +2261,7 @@ def handle_dlp_safe_code(code_str):
             # If decoding fails, return as is or maybe flash warning
     return code_str
 
-# Deprecated/Removed: add_dynamic_metric
-    pass
-    
+
 @app.route('/<project_name>/metrics')
 def metrics_view(project_name):
     metrics = GlobalMetric.query.order_by(GlobalMetric.name).all()
@@ -2137,7 +2405,6 @@ def edit_global_metric(project_name, metric_id):
 @app.route('/projects/<int:project_id>/clone', methods=['POST'])
 def clone_project(project_id):
     import sys
-    print(f"DEBUG: Entering clone_project for ID {project_id}", file=sys.stderr)
     original_project = Project.query.get_or_404(project_id)
     new_name = request.form.get('name')
     
@@ -2244,12 +2511,10 @@ def clone_project(project_id):
                     db.session.add(new_cf)
                     
         db.session.commit()
-        print(f"CLONE SUCCESS: Project cloned as {new_name}", file=sys.stderr)
         flash(f'Project cloned successfully as "{new_name}"', 'success')
         return redirect(url_for('list_projects'))
         
     except Exception as e:
-        print(f"CLONE ERROR: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
         db.session.rollback()
@@ -2265,7 +2530,6 @@ def clone_project(project_id):
 def delete_project(project_id):
     project = Project.query.get_or_404(project_id)
     import sys
-    print(f"DEBUG: Deleting project {project_id}", file=sys.stderr)
     try:
         project = Project.query.get_or_404(project_id)
         
@@ -2273,7 +2537,6 @@ def delete_project(project_id):
         
         db.session.delete(project)
         db.session.commit()
-        print(f"DEBUG: Delete Success for ID {project_id}", file=sys.stderr)
         
         flash(f'Project "{project.name}" deleted successfully.', 'success')
         
@@ -2286,7 +2549,6 @@ def delete_project(project_id):
         return response
         
     except Exception as e:
-        print(f"DEBUG: Delete Error {e}", file=sys.stderr)
         db.session.rollback()
         # Check integrity error (should be handled by cascade, but just in case)
         flash(f'Error deleting project: {str(e)}', 'danger')
@@ -2310,10 +2572,10 @@ def download_metric(project_name, metric_id):
     """Download metric code as a .txt file"""
     metric = GlobalMetric.query.get_or_404(metric_id)
     
-    # Create response with metric code
     response = make_response(metric.python_code)
     response.headers['Content-Type'] = 'text/plain'
-    response.headers['Content-Disposition'] = f'attachment; filename={metric.name}.txt'
+    filename = f"{metric.name}.txt"
+    response.headers['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
     
     return response
 
@@ -2424,10 +2686,10 @@ def download_visualization(project_name, viz_id):
     """Download visualization code as a .txt file."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
     
-    # Create response with visualization code
     response = make_response(viz.python_code)
     response.headers['Content-Type'] = 'text/plain'
-    response.headers['Content-Disposition'] = f'attachment; filename={viz.name}.txt'
+    filename = f"{viz.name}.txt"
+    response.headers['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
     
     return response
 
@@ -2602,7 +2864,8 @@ def leaderboard_view(project_name, leaderboard_id):
     
     all_tags = Tag.query.join(Tag.submissions).filter(Submission.leaderboard_id == leaderboard.id).distinct().all()
     # Also get all sample tags for autocomplete
-    all_sample_tag_names, all_sample_prefixes = get_all_sample_tags(leaderboard.dataset_id)
+    dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+    all_sample_tag_names, all_sample_prefixes = get_all_sample_tags(dataset_ids)
 
     processed_submissions = [s for s in submissions if s.processing_status == 'Processed']
     selected_metrics = [m for m in leaderboard.summary_metrics.split(',') if m.strip()]
@@ -2611,20 +2874,95 @@ def leaderboard_view(project_name, leaderboard_id):
     custom_metrics = set()
     for sub in processed_submissions:
         for cf in sub.custom_fields:
-            if cf.field_type == 'metric':
+            if cf.field_type in ['metric', 'scalar'] and not cf.name.startswith('lm_'):
                 custom_metrics.add(cf.name)
     
+    # Map internal IDs to labels
+    metric_labels = {}
+    for m in custom_metrics:
+        metric_labels[m] = m
+        
     # Get all dynamic metrics (linked global metrics) - mapping target_name to lm
-    leaderboard_metrics_map = { (lm.target_name if lm.target_name else lm.global_metric.name): lm for lm in leaderboard.leaderboard_metrics }
+    # Key by lm_{id} to support duplicate display names
+    leaderboard_metrics_map = { f"lm_{lm.id}": lm for lm in leaderboard.leaderboard_metrics }
+    for lmid, lm in leaderboard_metrics_map.items():
+        metric_labels[lmid] = lm.target_name if lm.target_name else lm.global_metric.name
+
+    # Map from name to list of matching lmids for support in summary_metrics
+    name_to_lmids = {}
+    for lmid, lm in leaderboard_metrics_map.items():
+        name = lm.target_name if lm.target_name else lm.global_metric.name
+        if name not in name_to_lmids:
+            name_to_lmids[name] = []
+        name_to_lmids[name].append(lmid)
+
+    # State for consumption
+    consumed_counts = {}
+
+    # Convert selected_metrics to use IDs for LeaderboardMetrics and PRUNE stale ones
+    updated_selected = []
+    for m in selected_metrics:
+        if m in name_to_lmids:
+            # If the metric name maps to multiple IDs (flavours), we add all of them
+            # Sort them by ID to ensure consistent order
+            mapped_ids = sorted(name_to_lmids[m])
+            
+            for mid in mapped_ids:
+                if mid not in updated_selected:
+                    updated_selected.append(mid)
+        elif m in leaderboard_metrics_map:
+            # Already a valid unique ID
+            # [FIX] Also expand to peers (other flavours of the same metric name) 
+            # to ensure we show all variants even if only one was saved as ID.
+            lm = leaderboard_metrics_map[m]
+            target_name = lm.target_name if lm.target_name else lm.global_metric.name
+            
+            if target_name in name_to_lmids:
+                 mapped_ids = sorted(name_to_lmids[target_name])
+                 for mid in mapped_ids:
+                     if mid not in updated_selected:
+                         updated_selected.append(mid)
+            else:
+                 if m not in updated_selected:
+                    updated_selected.append(m)
+        elif m in custom_metrics:
+            # Valid static or custom submission metric
+            updated_selected.append(m)
+        else:
+            # Legacy/stale name that doesn't match any current metric
+            # PRUNED: do not add to updated_selected
+            pass
     
-    # Add custom and dynamic metrics to selected_metrics for display
-    # Use target_name for dynamic metrics to ensure uniqueness
-    # Fix: Deduplicate while preserving selected_metrics order
+    # Auto-migrate summary_metrics to use unique IDs permanently and REMOVE stale names
+    if updated_selected != selected_metrics:
+        leaderboard.summary_metrics = ','.join(updated_selected)
+        
+        # Proactively clean up JSON settings to remove stale/pruned metrics
+        valid_set = set(updated_selected)
+        
+        if leaderboard.metric_directions:
+            try:
+                directions = json.loads(leaderboard.metric_directions)
+                new_directions = {k: v for k, v in directions.items() if k in valid_set}
+                if len(new_directions) != len(directions):
+                    leaderboard.metric_directions = json.dumps(new_directions)
+            except: pass
+            
+        if leaderboard.metric_aggregation:
+            try:
+                aggs = json.loads(leaderboard.metric_aggregation)
+                new_aggs = {k: v for k, v in aggs.items() if k in valid_set}
+                if len(new_aggs) != len(aggs):
+                    leaderboard.metric_aggregation = json.dumps(new_aggs)
+            except: pass
+
+        db.session.commit()
+    
+    selected_metrics = updated_selected
+
+    # discovered_metrics contains lm_ids (strings) and custom_metrics (names)
     discovered_metrics = set(custom_metrics) | set(leaderboard_metrics_map.keys())
     all_metrics = list(selected_metrics)
-    for m in sorted(list(discovered_metrics)):
-        if m not in all_metrics:
-            all_metrics.append(m)
     
     metrics_ranges = {}
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
@@ -2643,20 +2981,26 @@ def leaderboard_view(project_name, leaderboard_id):
             if res.submission_id not in calculated_dynamic_values:
                 calculated_dynamic_values[res.submission_id] = {}
             
-            # Use the target_name (unique)
-            metric_name = res.leaderboard_metric.target_name if res.leaderboard_metric.target_name else res.leaderboard_metric.global_metric.name
+            # Use the internal ID to avoid collisions
+            metric_identifier = f"lm_{res.leaderboard_metric_id}"
             
+            val = res.value
             if res.error_message:
-                calculated_dynamic_values[res.submission_id][metric_name] = str(res.error_message) 
-            else:
-                calculated_dynamic_values[res.submission_id][metric_name] = res.value
+                val = str(res.error_message)
+
+            # Store by ID
+            calculated_dynamic_values[res.submission_id][metric_identifier] = val
+            
+            # Store by Global Name
+            calculated_dynamic_values[res.submission_id][res.leaderboard_metric.global_metric.name] = val
+            
+            # Store by Target Name (if exists)
+            if res.leaderboard_metric.target_name:
+                calculated_dynamic_values[res.submission_id][res.leaderboard_metric.target_name] = val
 
 
         for metric in all_metrics:
-            if metric in AVAILABLE_METRICS:
-                # Standard metric
-                values = [getattr(s, metric) for s in processed_submissions if getattr(s, metric) is not None]
-            elif metric in leaderboard_metrics_map:
+            if metric in leaderboard_metrics_map:
                 values = [calculated_dynamic_values.get(s.id, {}).get(metric) for s in processed_submissions]
                 values = [v for v in values if isinstance(v, (int, float))]
             else:
@@ -2674,7 +3018,7 @@ def leaderboard_view(project_name, leaderboard_id):
                     ).filter(
                         CustomField.submission_id == sub.id,
                         CustomField.name == metric,
-                        CustomField.field_type == 'metric'
+                        CustomField.field_type.in_(['metric', 'scalar'])
                     )
                     
                     # Apply sample filters by sample_name (not via Sample join)
@@ -2682,7 +3026,8 @@ def leaderboard_view(project_name, leaderboard_id):
                     
                     # Apply Normalized filters by getting matching sample names first
                     if current_sample_filters:
-                        sample_names_query = db.session.query(Sample.name).filter_by(dataset_id=leaderboard.dataset_id)
+                        dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+                        sample_names_query = db.session.query(Sample.name).filter(Sample.dataset_id.in_(dataset_ids))
                         
                         if current_sample_filters.get('search'):
                             sample_names_query = sample_names_query.filter(Sample.name.ilike(f"%{current_sample_filters['search']}%"))
@@ -2736,7 +3081,7 @@ def leaderboard_view(project_name, leaderboard_id):
                              try:
                                  current_aggregation = json.loads(leaderboard.metric_aggregation)
                                  agg_config = current_aggregation.get(metric, {})
-                             except:
+                             except Exception:
                                  agg_config = {}
                         
                         pooling_type = agg_config.get('type', 'mean')
@@ -2771,14 +3116,8 @@ def leaderboard_view(project_name, leaderboard_id):
     # Apply sorting if requested
     if sort_metric and sort_metric in all_metrics:
         def get_metric_value(sub):
-            if sort_metric in AVAILABLE_METRICS:
-                val = getattr(sub, sort_metric)
-                return val if val is not None else float('inf')
-            elif sort_metric in all_metrics:
-                # Dynamic or Custom metric
-                val = calculated_dynamic_values.get(sub.id, {}).get(sort_metric)
-                return val if val is not None else float('inf')
-            return float('inf')
+            val = calculated_dynamic_values.get(sub.id, {}).get(sort_metric)
+            return val if val is not None else float('inf')
         
         submissions.sort(key=get_metric_value, reverse=(sort_order == 'desc'))
 
@@ -2791,7 +3130,7 @@ def leaderboard_view(project_name, leaderboard_id):
     for metric in all_metrics:
         label = None
         # Check dynamic
-        lm = next((m for m in leaderboard.leaderboard_metrics if (m.target_name == metric or m.global_metric.name == metric)), None)
+        lm = next((m for m in leaderboard.leaderboard_metrics if f"lm_{m.id}" == metric), None)
         if lm:
             if lm.pooling_type == 'percentile':
                 label = f"{lm.pooling_percentile}% Percentile" if lm.pooling_percentile else "Percentile"
@@ -2816,8 +3155,7 @@ def leaderboard_view(project_name, leaderboard_id):
     metric_directions_dict = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}
     if leaderboard.leaderboard_metrics:
         for lm in leaderboard.leaderboard_metrics:
-            target = lm.target_name if lm.target_name else lm.global_metric.name
-            
+            target = f"lm_{lm.id}"
             if lm.sort_direction:
                 metric_directions_dict[target] = lm.sort_direction
 
@@ -2828,8 +3166,10 @@ def leaderboard_view(project_name, leaderboard_id):
                            all_metrics=all_metrics,
                            selected_metrics=all_metrics,
                            metrics_ranges=metrics_ranges,
-                           dynamic_values=calculated_dynamic_values,
-                           sort_metric=sort_metric,
+                            dynamic_values=calculated_dynamic_values,
+                            metric_to_lm=leaderboard_metrics_map,
+                            metric_labels=metric_labels,
+                            sort_metric=sort_metric,
                            sort_order=sort_order,
                            metric_agg_info=metric_agg_info,
                            show_archived=show_archived,
@@ -2913,10 +3253,23 @@ def create_leaderboard(project_name):
     
     new_leaderboard = Leaderboard(
         name=leaderboard_name, 
-        dataset_id=request.form['dataset_id'],
         project_id=project.id,
         summary_metrics=','.join(request.form.getlist('summary_metrics'))
     )
+    
+    # Handle multiple datasets
+    dataset_ids = request.form.getlist('dataset_ids')
+    if not dataset_ids and 'dataset_id' in request.form:
+        dataset_ids = [request.form['dataset_id']] # Fallback to single ID if present
+        
+    if dataset_ids:
+        # Link all selected datasets
+        datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()
+        new_leaderboard.datasets = datasets
+        # Also set the legacy field to the first one for backwards compatibility
+        if datasets:
+            new_leaderboard.dataset_id = datasets[0].id
+
     db.session.add(new_leaderboard)
     db.session.commit() # Commit to get ID
     
@@ -2958,7 +3311,7 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
     try:
         new_submission = Submission(name=submission_name, leaderboard_id=leaderboard_id, processing_status='Queued')
         db.session.add(new_submission)
-        db.session.flush() # Get ID for folder name
+        db.session.commit() # Commit immediately to release lock and get ID
 
         submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(new_submission.id))
         
@@ -2990,7 +3343,7 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
              # UPDATE SUBMISSION NAME to match folder name
              new_submission.name = folder_name
              db.session.add(new_submission)
-             db.session.flush()
+             db.session.commit()
         
         # Move all contents from source_dir to submission_folder
         for item in os.listdir(source_dir):
@@ -3006,11 +3359,13 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
         # Cleanup temp
         shutil.rmtree(temp_extract_dir)
             
-        print(f"Extracted submission to: {submission_folder}")
         # --- End clean up and extraction ---
 
-        # Read git.info from its final location
-        git_info_path = os.path.join(submission_folder, 'git.info')
+        # Read git_info.json from its final location
+        git_info_path = os.path.join(submission_folder, 'git_info.json')
+        if not os.path.exists(git_info_path):
+            git_info_path = os.path.join(submission_folder, 'git.info')
+
         if os.path.exists(git_info_path):
             with open(git_info_path, 'r') as git_file:
                 git_data = json.load(git_file)
@@ -3018,6 +3373,12 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
                 new_submission.git_commit = git_data.get('commit') or git_data.get('commit_sha')
                 new_submission.git_branch = git_data.get('branch') or git_data.get('repo_url') # Fallback repo_url to branch for visibility if branch missing
                 new_submission.git_message = git_data.get('message')
+                # Extract author from git_info.json or from git commit
+                author = git_data.get('author', '')
+                if not author and new_submission.git_commit:
+                    # Try to extract author from git using the commit hash
+                    author = get_author_from_git_commit(new_submission.git_commit, branch_name=new_submission.git_branch)
+                new_submission.git_author = author or ''
         
         # Parse tags from tags.txt or tags/ folder
         tags_to_add = set()
@@ -3057,38 +3418,20 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
         # This is correct.
         
         leaderboard = Leaderboard.query.get(leaderboard_id)
-        dataset_samples = Sample.query.filter_by(dataset_id=leaderboard.dataset_id).all()
+        dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+        dataset_samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).all()
         sample_names = [s.name for s in dataset_samples]
         
-        # Debug: Log submission structure
-        print(f"\n=== CUSTOM FIELD DETECTION DEBUG ===")
-        print(f"Submission folder: {submission_folder}")
-        print(f"Submission folder contents:")
-        try:
-            for item in os.listdir(submission_folder):
-                item_path = os.path.join(submission_folder, item)
-                if os.path.isdir(item_path):
-                    files = os.listdir(item_path)
-                    print(f"  {item}/ ({len(files)} files)")
-                else:
-                    print(f"  {item}")
-        except Exception as e:
-            print(f"  Error listing contents: {e}")
-        
-        print(f"Dataset sample names: {sample_names}")
-        
+
+
         # Only exclude internal metadata folders we definitively don't want as custom fields
         known_folders = {'git.info', '__MACOSX'} 
         
-        print(f"Known folders (excluded from custom fields): {known_folders}")
         
         custom_fields = detect_custom_fields(submission_folder, sample_names, known_folders, is_submission=True)
         
-        print(f"Detected custom fields: {list(custom_fields.keys())}")
-        for field_name, field_info in custom_fields.items():
-            print(f"  {field_name}: type={field_info['type']}, samples={list(field_info['data'].keys())}")
-        print(f"=== END DEBUG ===\n")
-        
+
+
         # Create sample name to ID map
         sample_map = {s.name: s.id for s in dataset_samples}
 
@@ -3162,14 +3505,23 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
                         submission_id=new_submission.id,
                         sample_name=s_name
                     )
-                else:  # scalar or metric
-                    custom_field = CustomField(
-                        name=field_name,
-                        field_type=field_type,
-                        value_float=value,
-                        submission_id=new_submission.id,
-                        sample_name=s_name
-                    )
+                else:  # scalar or metric or text
+                    if field_type == 'text':
+                        custom_field = CustomField(
+                            name=field_name,
+                            field_type=field_type,
+                            value_text=str(value),
+                            submission_id=new_submission.id,
+                            sample_name=s_name
+                        )
+                    else: # scalar or metric
+                        custom_field = CustomField(
+                            name=field_name,
+                            field_type=field_type,
+                            value_float=float(value),
+                            submission_id=new_submission.id,
+                            sample_name=s_name
+                        )
                 db.session.add(custom_field)
         
         db.session.commit()
@@ -3331,6 +3683,28 @@ def batch_action(project_name):
     
     return redirect(url_for('leaderboard_view', **redirect_args))
 
+
+@app.route('/<project_name>/submission/<int:submission_id>/update_tags', methods=['POST'])
+def update_submission_tags(project_name, submission_id):
+    submission = Submission.query.get_or_404(submission_id)
+    new_tags_str = request.form.get('tags', '').strip()
+    
+    # Get tag names
+    tag_names = [t.strip() for t in new_tags_str.split(',') if t.strip()]
+    
+    # Clear existing tags
+    submission.tags = []
+    
+    # Add new tags
+    for tag_name in tag_names:
+        tag = Tag.query.filter_by(name=tag_name).first() or Tag(name=tag_name)
+        if tag not in submission.tags:
+            submission.tags.append(tag)
+    
+    db.session.commit()
+    flash(f'Tags updated for submission {submission.name}', 'success')
+    return redirect(request.referrer or url_for('leaderboard_view', project_name=project_name, leaderboard_id=submission.leaderboard_id))
+
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/update_metrics', methods=['POST'])
 def update_leaderboard_metrics(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
@@ -3398,7 +3772,8 @@ def comparison_view(project_name, leaderboard_id):
     sort_order = request.args.get('sort_order', 'asc')
 
     # Base query for samples
-    samples_query = Sample.query.filter_by(dataset_id=leaderboard.dataset_id)
+    dataset_ids = [ds.id for ds in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+    samples_query = Sample.query.filter(Sample.dataset_id.in_(dataset_ids))
     
     # Apply search filter
     if search_query:
@@ -3410,7 +3785,7 @@ def comparison_view(project_name, leaderboard_id):
     # Collect unique custom field names efficiently
     # Dataset fields
     dataset_custom_fields_query = db.session.query(CustomField.name, CustomField.field_type).join(Sample).filter(
-        Sample.dataset_id == leaderboard.dataset_id,
+        Sample.dataset_id.in_(dataset_ids),
         CustomField.submission_id == None
     ).distinct().all()
     
@@ -3439,12 +3814,15 @@ def comparison_view(project_name, leaderboard_id):
     all_field_types = dataset_field_types.copy()
     all_field_types.update(submission_field_types)
     
-    # Standard metrics
-    for m in ['mse', 'rmse', 'mae', 'mape', 'smape']:
-        all_field_types[m] = 'metric'
+    # Map internal IDs to labels for all metrics including dynamic ones
+    metric_labels = {}
+    for m in all_submission_fields:
+        metric_labels[m] = m
     
-    for lm in leaderboard.leaderboard_metrics:
-        all_field_types[lm.global_metric.name] = 'metric'
+    leaderboard_metrics_map = { f"lm_{lm.id}": lm for lm in leaderboard.leaderboard_metrics }
+    for lmid, lm in leaderboard_metrics_map.items():
+        metric_labels[lmid] = f"{lm.target_name if lm.target_name else lm.global_metric.name} ({lmid})"
+        all_field_types[lmid] = 'metric'
     
     custom_scalar_metric_names = [name for name, ftype in all_field_types.items() if ftype in ['scalar', 'metric']]
 
@@ -3501,7 +3879,7 @@ def comparison_view(project_name, leaderboard_id):
             # Sort by custom scalar/dataset metric
             # Fetch all filtered IDs and values for sorting
             sort_vals = {s_name: v for s_name, v in db.session.query(Sample.name, CustomField.value_float).join(CustomField).filter(
-                Sample.dataset_id == leaderboard.dataset_id,
+                Sample.dataset_id.in_(dataset_ids),
                 CustomField.name == sort_by,
                 CustomField.submission_id == None
             ).all()}
@@ -3555,9 +3933,7 @@ def comparison_view(project_name, leaderboard_id):
             if cf.field_type in ['scalar', 'metric'] and cf.submission_id is None:
                 sample_metrics_map[s.id][cf.name] = cf.value_float
 
-    print(f"DEBUG: Processing {len(samples_on_page)} samples for comparison view.")
     for sample in samples_on_page:
-        print(f"DEBUG: Processing sample: {sample.name} (ID: {sample.id})")
         signal_shape = sample.signal_shape.shape_name if sample.signal_shape else 'gaussian'
         gt_bins = json.loads(sample.histogram_data.bins) if sample.histogram_data else []
         gt_counts = json.loads(sample.histogram_data.counts) if sample.histogram_data else []
@@ -3597,7 +3973,6 @@ def comparison_view(project_name, leaderboard_id):
         all_observed_metrics = set()
 
         for sub in submissions:
-            print(f"DEBUG:   Processing submission: {sub.name} (ID: {sub.id}) for sample {sample.name}")
             gt_pick = sample_metrics_map[sample.id].get('pick', 0)
             pred_data, current_sample_metrics = calculate_submission_metrics(sub, sample, gt_pick, signal_shape, active_metrics)
             
@@ -3652,32 +4027,20 @@ def comparison_view(project_name, leaderboard_id):
                 # Use GlobalMetric code + LeaderboardMetric mapping
                 val, err = evaluate_dynamic_metric(lm.global_metric, dynamic_ctx, lm.arg_mappings)
                 if val is not None:
-                    # Determine if it's a submission metric or GT metric
-                    arg_mappings = {}
-                    try: arg_mappings = json.loads(lm.arg_mappings)
-                    except: pass
-                    is_sub_metric = any(field_name.startswith('sub_') for field_name in arg_mappings.values())
-                    
+                    m_id_name = f"lm_{lm.id}"
                     log_safe_val = get_log_safe_value(val)
-                    if is_sub_metric:
-                        log_safe_metrics[lm.global_metric.name] = log_safe_val
-                    else:
-                        # Purely GT based metric - add to Ground Truth in chart
-                        if 'Ground Truth' not in sample_chart_metrics_for_this_sample['metrics']:
-                            sample_chart_metrics_for_this_sample['metrics']['Ground Truth'] = {}
-                        sample_chart_metrics_for_this_sample['metrics']['Ground Truth'][lm.global_metric.name] = log_safe_val
+                    log_safe_metrics[m_id_name] = log_safe_val
                     
                     # Also add to comparison table
-                    if lm.global_metric.name not in sample_info['custom_metrics']:
-                        sample_info['custom_metrics'][lm.global_metric.name] = {'submissions': {}}
-                    sample_info['custom_metrics'][lm.global_metric.name]['submissions'][sub.id] = val
+                    if m_id_name not in sample_info['custom_metrics']:
+                        sample_info['custom_metrics'][m_id_name] = {'submissions': {}}
+                    sample_info['custom_metrics'][m_id_name]['submissions'][sub.id] = val
                     
-                    # Ensure it's in pred_data for the per_sample_values column
-                    pred_data[lm.global_metric.name] = val
+                    # Ensure it's in pred_data for the per-sample values column
+                    pred_data[m_id_name] = val
 
             sample_chart_metrics_for_this_sample['metrics'][sub.name] = log_safe_metrics
             all_observed_metrics.update(log_safe_metrics.keys())
-            print(f"DEBUG:     Log-safe metrics for {sample.name} (sub {sub.id}): {log_safe_metrics}")
 
         # Add Ground Truth to chart metrics
         # Only add dynamic hist_entropy_* variants if they exist in submissions
@@ -3702,7 +4065,8 @@ def comparison_view(project_name, leaderboard_id):
         all_comparison_tags.update([tag.name for tag in sub.tags])
 
     # Also get ALL sample tags from the dataset for auto-suggestions
-    all_sample_tag_names, all_sample_prefixes = get_all_sample_tags(leaderboard.dataset_id)
+    dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+    all_sample_tag_names, all_sample_prefixes = get_all_sample_tags(dataset_ids)
 
     # Collect all custom metrics from submissions
     custom_metrics = set()
@@ -3711,10 +4075,15 @@ def comparison_view(project_name, leaderboard_id):
             if cf.field_type == 'metric':
                 custom_metrics.add(cf.name)
     
-    # Add dynamic metrics names to custom_metrics
-    leaderboard_metrics_map = {lm.global_metric.name: lm for lm in leaderboard.leaderboard_metrics}
-    for dm_name, lm in leaderboard_metrics_map.items():
-        custom_metrics.add(dm_name)
+    # Deduplicate: Remove names that are already represented as leaderboard metrics
+    lb_metric_names = {lm.global_metric.name for lm in leaderboard.leaderboard_metrics} | \
+                      {lm.target_name for lm in leaderboard.leaderboard_metrics if lm.target_name}
+    custom_metrics = {m for m in custom_metrics if m not in lb_metric_names and not m.startswith('lm_')}
+    
+    # Add dynamic metrics names to custom_metrics (IDs already handled in transmissions_json)
+    # leaderboard_metrics_map = {lm.global_metric.name: lm for lm in leaderboard.leaderboard_metrics}
+    # for dm_name, lm in leaderboard_metrics_map.items():
+    #     custom_metrics.add(dm_name)
 
     # # Also collect dynamic metrics found in chart_metrics_data (e.g. hist_entropy_*)
     # # These are not in sub.custom_fields but are in the calculated metrics
@@ -3744,9 +4113,6 @@ def comparison_view(project_name, leaderboard_id):
     # Wait, the frontend iterates `datasetMetricsData` but for SUBMISSIONS it iterates `chartMetricsData`.
     # Let's check `comparison.html` again.
     
-    print(f"DEBUG: Standard metrics: {standard_metrics}")
-    print(f"DEBUG: Custom metrics: {custom_metrics}")
-    print(f"DEBUG: All selected metrics: {all_selected_metrics}")
     
     # Build submissions_json with both standard and custom metrics
     submissions_json = []
@@ -3773,8 +4139,9 @@ def comparison_view(project_name, leaderboard_id):
     for res in results:
         if res.submission_id not in calculated_dynamic_values:
             calculated_dynamic_values[res.submission_id] = {}
-        metric_name = res.leaderboard_metric.target_name or res.leaderboard_metric.global_metric.name
-        calculated_dynamic_values[res.submission_id][metric_name] = res.value if not res.error_message else str(res.error_message)
+        # Use UNIQUE ID (lm_ID) instead of target_name to avoid collisions and match metric_labels
+        metric_key = f"lm_{res.leaderboard_metric_id}"
+        calculated_dynamic_values[res.submission_id][metric_key] = res.value if not res.error_message else str(res.error_message)
 
     # 2. Fetch/Aggregate Custom Metric fields (e.g. standard custom metrics)
     for sub in submissions:
@@ -3795,29 +4162,26 @@ def comparison_view(project_name, leaderboard_id):
     submissions_json = []
     for s in submissions:
         sub_data = {'id': s.id, 'name': s.name}
-        # Add standard metrics
-        for m in AVAILABLE_METRICS:
-            sub_data[m] = getattr(s, m)
+
             
-        # Add custom/dynamic metrics
-        for metric_name in custom_metrics:
-            if metric_name in leaderboard_metrics_map:
-                # Use value from 2-pass calculation
-                sub_data[metric_name] = calculated_dynamic_values[s.id].get(metric_name)
-            else:
-                # Standard Database Custom Metric
-                metric_fields = [cf for cf in s.custom_fields if cf.name == metric_name and cf.field_type == 'metric']
-                if metric_fields:
-                    avg_value = sum(cf.value_float for cf in metric_fields if cf.value_float is not None) / len(metric_fields)
-                    sub_data[metric_name] = avg_value
-                else:
-                    sub_data[metric_name] = None
-                    
+        # Add values from calculated_dynamic_values (includes both MetricResult and aggregated CustomFields)
+        if s.id in calculated_dynamic_values:
+            for m_key, m_val in calculated_dynamic_values[s.id].items():
+                sub_data[m_key] = m_val
+        
+        # Ensure we also populate by names for all leaderboard metrics to match chart labels
+        for lm in leaderboard.leaderboard_metrics:
+             lmid = f"lm_{lm.id}"
+             val = calculated_dynamic_values.get(s.id, {}).get(lmid)
+             if val is not None:
+                 # Provide by global name and target name if they were selected in settings
+                 sub_data[lm.global_metric.name] = val
+                 if lm.target_name:
+                      sub_data[lm.target_name] = val
+
         submissions_json.append(sub_data)
     # Discovery moved early for sorting
     
-    print(f"DEBUG: Final chart_metrics_data before JSON dump: {chart_metrics_data}")
-    print(f"DEBUG: Submissions JSON: {submissions_json}")
     
     # Build active visualizations from LeaderboardVisualization model
     # Legacy: active_visualizations = [v for v in leaderboard.visualizations.split(',') if v.strip()]
@@ -3836,13 +4200,17 @@ def comparison_view(project_name, leaderboard_id):
     
     # Filter active_metrics to ONLY include per-sample metrics for the detailed charts
     # Aggregated metrics should only appear in the summary chart/table
-    aggregated_metric_names = {lm.global_metric.name for lm in leaderboard.leaderboard_metrics if lm.global_metric.is_aggregated}
-    raw_selected_metrics = [m for m in leaderboard.selected_metrics.split(',') if m.strip()]
-    active_metrics = [m for m in raw_selected_metrics if m not in aggregated_metric_names]
+    agg_lm_ids = {f"lm_{lm.id}" for lm in leaderboard.leaderboard_metrics if lm.global_metric.is_aggregated}
+    agg_metric_names = {lm.global_metric.name for lm in leaderboard.leaderboard_metrics if lm.global_metric.is_aggregated}
     
-    print(f"DEBUG: leaderboard.selected_metrics = '{leaderboard.selected_metrics}'")
-    print(f"DEBUG: aggregated_metric_names = {aggregated_metric_names}")
-    print(f"DEBUG: active_metrics (filtered) = {active_metrics}")
+    raw_selected_metrics = [m for m in leaderboard.selected_metrics.split(',') if m.strip()]
+    
+    active_metrics = []
+    for m in raw_selected_metrics:
+        if m in agg_lm_ids: continue
+        if m in agg_metric_names: continue
+        active_metrics.append(m)
+    
  
     # Fix: Deduplicate sort options. Remove active_metrics from all_custom_fields
     # so they don't appear twice in the dropdown (once as Active, once as Custom)
@@ -3855,12 +4223,13 @@ def comparison_view(project_name, leaderboard_id):
     # Dynamic sample metric options (no custom metrics - they auto-appear in charts)
     sample_metric_options_dynamic = SAMPLE_METRIC_OPTIONS.copy()
     
+
+    
     # Ensure all active_metrics have a label so they appear in the Sort dropdown
     for m in active_metrics:
         if m not in sample_metric_options_dynamic:
-            # Use the metric name as a label (or fallback)
-            # We preserve the original case for the 'Active' group
-            sample_metric_options_dynamic[m] = m
+            # Try to use metric_labels if available, else m
+            sample_metric_options_dynamic[m] = metric_labels.get(m, m)
 
     # Clean up available_display_options: remove metrics that should now be handled via sample_metric_options_dynamic
     # Actually, they weren't added to available_display_options yet in dataset_view, but I should be careful.
@@ -3869,11 +4238,17 @@ def comparison_view(project_name, leaderboard_id):
     available_display_options = COMPARISON_DISPLAY_OPTIONS.copy()
     
     # Inject Custom Fields into display options with proper ordering
-    sample_metric_options_dynamic = SAMPLE_METRIC_OPTIONS.copy()
+    # (Redundant copy removed, variable already updated above)
     
-    for m in active_metrics:
+    # Ensure all selected_metrics (including aggregated ones) have labels for the Chart
+    for m in all_selected_metrics:
         if m not in sample_metric_options_dynamic:
-            sample_metric_options_dynamic[m] = m
+             sample_metric_options_dynamic[m] = metric_labels.get(m, m)
+             
+    # Ensure aggregated metrics specifically are covered (since they might be filtered out of active_metrics)
+    for lmid in agg_lm_ids:
+        if lmid not in sample_metric_options_dynamic:
+            sample_metric_options_dynamic[lmid] = metric_labels.get(lmid, lmid)
 
     custom_image_fields = []
     dataset_fields_dict = {}
@@ -4021,11 +4396,9 @@ def comparison_view(project_name, leaderboard_id):
     # Make sure we don't lose the separate lists needed for data extraction in template if we don't fully refactor rendering yet.
     # But for the FORM, this is key.
 
-    print(f"DEBUG: available_display_options.keys() = {list(available_display_options.keys())}")
-    print(f"DEBUG: selected_comparison_display_columns = {selected_comparison_display_columns}")
     
     # Filter custom_metrics to exclude aggregated metrics (like F1 score) so they don't appear in per-sample charts/tables
-    per_sample_custom_metrics = [m for m in sorted(list(custom_metrics)) if m not in aggregated_metric_names]
+    per_sample_custom_metrics = [m for m in sorted(list(custom_metrics)) if m not in agg_metric_names and m not in agg_lm_ids]
     
     # Sort available_display_options by priority for the "View Options" form
     sorted_display_options = dict(sorted(available_display_options.items(), 
@@ -4080,6 +4453,7 @@ def comparison_view(project_name, leaderboard_id):
                            sort_order=sort_order, 
                            sample_metric_options=sample_metric_options_dynamic, 
                            metric_directions=metric_directions,
+                           metric_labels=metric_labels,
                            active_metrics=active_metrics,
                            project_name=project_name,
                            current_compare_ids=compare_ids_arg)
@@ -4203,7 +4577,228 @@ def serve_depth_data(filepath):
 @app.route('/datasets')
 def datasets_list():
     datasets = Dataset.query.order_by(Dataset.upload_date.desc()).all()
+    
+    # Pre-calculate activity stats for leaderboards used by these datasets
+    now = datetime.utcnow()
+    for ds in datasets:
+        # ds.leaderboards is a dynamic relationship query object
+        lbs = ds.leaderboards.all()
+        ds.active_leaderboards = []
+        
+        # Track the very latest activity across all LBs for this dataset for sorting
+        ds_last_activity = ds.upload_date
+        
+        for lb in lbs:
+            submissions = lb.submissions # This is lazy loaded
+            
+            # Find the last submission date for this LB
+            lb_last_sub = None
+            if submissions:
+                lb_last_sub = max(s.upload_date for s in submissions)
+            
+            # Update dataset's overall max activity:
+            # 1. Check LB creation date
+            if lb.upload_date > ds_last_activity:
+                ds_last_activity = lb.upload_date
+                
+            # 2. Check last submission date
+            if lb_last_sub and lb_last_sub > ds_last_activity:
+                ds_last_activity = lb_last_sub
+            
+            # Check for recent activity (using same 7-day window as active)
+            subs_last_24h = sum(1 for s in submissions if s.upload_date > now - timedelta(days=7)) 
+            
+            # Create a simple dict for the template
+            ds.active_leaderboards.append({
+                'id': lb.id,
+                'name': lb.name,
+                'subs_last_24h': subs_last_24h
+            })
+        
+        # Store for sorting
+        ds.last_associated_activity = ds_last_activity
+
+    # Sort datasets by their last associated activity (most recent first)
+    datasets.sort(key=lambda x: x.last_associated_activity, reverse=True)
+            
     return render_template('datasets.html', datasets=datasets)
+
+@app.route('/users')
+@app.route('/users_list')
+def users_list():
+    # Gather all raw usernames
+    dataset_authors = db.session.query(Dataset.git_author).distinct().all()
+    submission_authors = db.session.query(Submission.git_author).distinct().all()
+    
+    raw_usernames = set(a for (a,) in dataset_authors if a) | set(a for (a,) in submission_authors if a)
+    
+    profiles = {p.username: p for p in AuthorProfile.query.all()}
+
+    canonical_users = {} # canonical_name -> {stats}
+    
+    for raw in raw_usernames:
+        canonical = get_canonical_username(raw, profiles)
+        if canonical not in canonical_users:
+            canonical_users[canonical] = {
+                'username': canonical,
+                'aliases': [],
+                'datasets': 0,
+                'submissions': 0,
+                'last_activity': None
+            }
+        
+        if raw != canonical:
+            canonical_users[canonical]['aliases'].append(raw)
+            
+        ds_count = Dataset.query.filter_by(git_author=raw).count()
+        sub_count = Submission.query.filter_by(git_author=raw).count()
+        
+        canonical_users[canonical]['datasets'] += ds_count
+        canonical_users[canonical]['submissions'] += sub_count
+        
+        latest_ds = Dataset.query.filter_by(git_author=raw).order_by(Dataset.upload_date.desc()).first()
+        latest_sub = Submission.query.filter_by(git_author=raw).order_by(Submission.upload_date.desc()).first()
+        
+        raw_last = None
+        if latest_ds and latest_sub:
+            raw_last = max(latest_ds.upload_date, latest_sub.upload_date)
+        elif latest_ds:
+            raw_last = latest_ds.upload_date
+        elif latest_sub:
+            raw_last = latest_sub.upload_date
+            
+        if raw_last:
+            if not canonical_users[canonical]['last_activity'] or raw_last > canonical_users[canonical]['last_activity']:
+                canonical_users[canonical]['last_activity'] = raw_last
+
+    user_list = sorted(canonical_users.values(), key=lambda x: x['last_activity'] if x['last_activity'] else datetime.min, reverse=True)
+    return render_template('users.html', users=user_list)
+
+@app.route('/api/user/<username>/stats')
+def get_user_stats(username):
+    # Resolve canonical identity for stats
+    profiles = {p.username: p for p in AuthorProfile.query.all()}
+        
+    canonical = get_canonical_username(username, profiles)
+    
+    # Find all identities that merge into this canonical user
+    identities = [canonical]
+    for p_name, p in profiles.items():
+        if p_name != canonical and get_canonical_username(p_name, profiles) == canonical:
+            identities.append(p_name)
+    
+    # Datasets
+    user_datasets = Dataset.query.filter(Dataset.git_author.in_(identities)).all()
+    # Submissions
+    user_submissions = Submission.query.filter(Submission.git_author.in_(identities)).all()
+    
+    activity = {}
+    now = datetime.utcnow()
+    one_year_ago = now - timedelta(days=365)
+    
+    for ds in user_datasets:
+        if ds.upload_date > one_year_ago:
+            date_str = ds.upload_date.strftime('%Y-%m-%d')
+            activity[date_str] = activity.get(date_str, 0) + 1
+            
+    for sub in user_submissions:
+        if sub.upload_date > one_year_ago:
+            date_str = sub.upload_date.strftime('%Y-%m-%d')
+            activity[date_str] = activity.get(date_str, 0) + 1
+            
+    # LBs used
+    lbs = db.session.query(Leaderboard.name, Leaderboard.id, Project.name).join(Submission).join(Project, Leaderboard.project_id == Project.id).filter(Submission.git_author.in_(identities)).distinct().all()
+    lb_info = [{'name': r[0], 'id': r[1], 'project_name': r[2]} for r in lbs]
+    
+    # Recent submissions
+    recent = []
+    for s in Submission.query.filter(Submission.git_author.in_(identities)).order_by(Submission.upload_date.desc()).limit(10).all():
+        recent.append({
+            'name': s.name,
+            'date': s.upload_date.strftime('%Y-%m-%d %H:%M'),
+            'lb': s.leaderboard.name,
+            'lb_id': s.leaderboard_id,
+            'project_name': s.leaderboard.project.name
+        })
+        
+    return jsonify({
+        'username': canonical,
+        'identities_merged': identities if len(identities) > 1 else [],
+        'dataset_count': len(user_datasets),
+        'submission_count': len(user_submissions),
+        'activity': activity,
+        'leaderboards': lb_info,
+        'recent_submissions': recent
+    })
+
+@app.route('/api/user/merge', methods=['POST'])
+def merge_users():
+    source_username = request.form.get('source_username')
+    target_username = request.form.get('target_username')
+    
+    if not source_username or not target_username:
+        return jsonify({'success': False, 'message': 'Both source and target required'}), 400
+        
+    if source_username == target_username:
+        return jsonify({'success': False, 'message': 'Cannot merge user into itself'}), 400
+        
+    profile = AuthorProfile.query.filter_by(username=source_username).first()
+    if not profile:
+        profile = AuthorProfile(username=source_username)
+        db.session.add(profile)
+        
+    profile.merged_into_username = target_username
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/api/user/unmerge', methods=['POST'])
+def unmerge_users():
+    username = request.form.get('username')
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Username required'}), 400
+        
+    profile = AuthorProfile.query.filter_by(username=username).first()
+    if not profile:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+    profile.merged_into_username = None
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/api/user/update_profile', methods=['POST'])
+def update_user_profile():
+    username = request.form.get('username')
+    display_name = request.form.get('display_name')
+    avatar_file = request.files.get('avatar')
+    
+    if not username:
+        return jsonify({'success': False, 'message': 'Username required'}), 400
+        
+    profile = AuthorProfile.query.filter_by(username=username).first()
+    if not profile:
+        profile = AuthorProfile(username=username)
+        db.session.add(profile)
+        
+    if display_name:
+        profile.display_name = display_name
+        
+    if avatar_file and avatar_file.filename:
+        avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
+        os.makedirs(avatar_dir, exist_ok=True)
+        
+        filename = secure_filename(f"{username}_{avatar_file.filename}")
+        avatar_path = os.path.join(avatar_dir, filename)
+        avatar_file.save(avatar_path)
+        profile.avatar_filename = filename
+        
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/author_avatars/<filename>')
+def serve_author_avatar(filename):
+    avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
+    return send_from_directory(avatar_dir, filename)
 
 @app.route('/dataset/<int:dataset_id>')
 def dataset_view(dataset_id):
@@ -4214,12 +4809,23 @@ def dataset_view(dataset_id):
     sort_order = request.args.get('sort_order', 'asc')
     selected_display_columns = dataset.display_columns.split(',')
     
-    # Collect all unique tags and prefixes for this dataset for filtering and auto-suggestions
-    all_dataset_tags, all_dataset_prefixes = get_all_sample_tags(dataset.id)
-    
+    # 1. OPTIMIZED TAGS/PREFIXES COLLECTION
+    distinct_tags_query = db.session.query(func.distinct(Sample.tags)).filter(Sample.dataset_id == dataset.id).all()
+    all_dataset_tags = set()
+    all_dataset_prefixes = set()
+    for t_str, in distinct_tags_query:
+        if t_str:
+            for t in t_str.split(','):
+                cleaned_t = t.strip()
+                if cleaned_t:
+                    all_dataset_tags.add(cleaned_t)
+                    if ':' in cleaned_t:
+                        all_dataset_prefixes.add(cleaned_t.split(':')[0])
+    all_dataset_tags = sorted(list(all_dataset_tags))
+    all_dataset_prefixes = sorted(list(all_dataset_prefixes))
+
     samples_query = Sample.query.filter_by(dataset_id=dataset.id)
-    
-    # Apply Tag Filters
+    # Apply tag filters (port from comparison view)
     samples_query = apply_tag_filters(samples_query, request.args)
 
     # Collect unique custom field names from the dataset early for sorting/display
@@ -4239,35 +4845,84 @@ def dataset_view(dataset_id):
         else:
             samples_query = samples_query.order_by(Sample.name.asc())
     elif sort_by in custom_scalar_metric_names:
-        # Complex sort by custom field requires joining CustomField
-        # We join and order by value_float
-        samples_query = samples_query.join(CustomField, isouter=True).filter(
-            or_(CustomField.name == sort_by, CustomField.id == None)
+        # Optimized sort by custom field
+        samples_query = samples_query.outerjoin(
+            CustomField, 
+            and_(CustomField.sample_id == Sample.id, CustomField.name == sort_by, CustomField.submission_id == None)
         )
         if sort_order == 'desc':
             samples_query = samples_query.order_by(CustomField.value_float.desc())
         else:
             samples_query = samples_query.order_by(CustomField.value_float.asc())
 
-    # Pagination
+    # Pagination with eager loading to avoid N+1 queries
+    # Load related data in bulk for better performance
+    # Note: histogram_data and config_data are @property methods that shadow relationships,
+    # so we can't eager load them. We only eager load custom_fields.
+    from sqlalchemy.orm import joinedload
+    
+    samples_query = samples_query.options(
+        joinedload(Sample.custom_fields)
+    )
+    
     total = samples_query.count()
     paginated_samples = samples_query.paginate(page=page, per_page=samples_per_page, error_out=False)
+
+    # 6. ROW RENDERING DATA PREPARATION (Fix N+1)
+    current_sample_ids = [s.id for s in paginated_samples.items]
+    hist_map = {h.sample_id: h for h in HistogramData.query.filter(HistogramData.sample_id.in_(current_sample_ids)).all()}
+    shape_map = {s.id: s for s in SignalShape.query.filter(SignalShape.id.in_(current_sample_ids)).all()}
 
     active_metrics = [m for m in dataset.selected_metrics.split(',') if m.strip()]
 
     dataset_metrics_data = [] # For per_sample_metrics chart
     samples_data_for_charts = []
     
+    # Create a map of sample_id -> {field_name: value}
+    # Only for samples on current page
+    custom_fields_map = {}
+
     # Only process samples on the current page
     for sample in paginated_samples.items:
+        # Resolve histogram data using our bulk-fetched map + eager loaded custom_fields
+        sample_hist = hist_map.get(sample.id)
+        if not sample_hist:
+            hist_cf = next((cf for cf in sample.custom_fields if cf.name == 'hist' and cf.field_type == 'histogram'), None)
+            if hist_cf and hist_cf.value_text:
+                try:
+                    data = json.loads(hist_cf.value_text)
+                    class MockHist: pass
+                    sample_hist = MockHist()
+                    sample_hist.bins = json.dumps(data['bins'])
+                    sample_hist.counts = json.dumps(data['counts'])
+                except Exception: pass
+
+        # Resolve signal shape
+        sample_shape = shape_map.get(sample.id)
+        if not sample_shape:
+            shape_cf = next((cf for cf in sample.custom_fields if cf.name == 'wave_shape' and cf.field_type == 'scalar'), None)
+            if shape_cf:
+                class MockShape: pass
+                sample_shape = MockShape()
+                sample_shape.shape_name = shape_cf.value_text or 'gaussian'
+
+        # Cache on sample object for template access without triggering properties
+        sample._resolved_hist = sample_hist
+        sample._resolved_shape = sample_shape
+
         tags_list = [t.strip() for t in sample.tags.split(',')] if sample.tags else []
         
         # Standard metrics
         metrics = {}
-        # Add custom scalar metrics for this sample
+        cf_vals = {}
         for cf in sample.custom_fields:
-            if cf.field_type == 'scalar' and cf.submission_id is None:
+            if cf.submission_id is not None: continue
+            
+            if cf.field_type in ('scalar', 'metric'):
                 metrics[cf.name] = cf.value_float
+                cf_vals[cf.name] = {'type': cf.field_type, 'value': cf.value_float, 'field_id': cf.id}
+            else:
+                cf_vals[cf.name] = {'type': cf.field_type, 'value': cf.value_text, 'field_id': cf.id}
 
         dataset_metrics_data.append({
             'sample_id': sample.id,
@@ -4275,37 +4930,18 @@ def dataset_view(dataset_id):
             'metrics': {'GT': metrics}
         })
 
-        if 'histogram' in selected_display_columns and sample.histogram_data:
+        if 'histogram' in selected_display_columns and sample_hist:
             samples_data_for_charts.append({
                 'id': sample.id, 
                 'name': sample.name, 
-                'bins': json.loads(sample.histogram_data.bins), 
-                'counts': json.loads(sample.histogram_data.counts), 
+                'bins': json.loads(sample_hist.bins), 
+                'counts': json.loads(sample_hist.counts), 
                 'tags': tags_list
             })
         else:
             samples_data_for_charts.append({'id': sample.id, 'name': sample.name, 'bins': [], 'counts': [], 'tags': tags_list})
-    
-    # Create a map of sample_id -> {field_name: value}
-    # Only for samples on current page
-    custom_fields_map = {}
-    for sample in paginated_samples.items:
-        custom_fields_map[sample.id] = {}
-        for cf in sample.custom_fields:
-            # We skip submission-specific custom fields in the dataset view
-            if cf.submission_id is not None:
-                continue
-                
-            if cf.field_type == 'image':
-                custom_fields_map[sample.id][cf.name] = {'type': 'image', 'value': cf.value_text, 'field_id': cf.id}
-            elif cf.field_type == 'scalar':
-                custom_fields_map[sample.id][cf.name] = {'type': 'scalar', 'value': cf.value_float, 'field_id': cf.id}
-            elif cf.field_type == 'depth':
-                 custom_fields_map[sample.id][cf.name] = {'type': 'depth', 'value': cf.value_text, 'field_id': cf.id}
-            elif cf.field_type == 'json':
-                 custom_fields_map[sample.id][cf.name] = {'type': 'json', 'value': cf.value_text, 'field_id': cf.id}
-            elif cf.field_type == 'text':
-                 custom_fields_map[sample.id][cf.name] = {'type': 'text', 'value': cf.value_text, 'field_id': cf.id}
+        
+        custom_fields_map[sample.id] = cf_vals
     
     # Determine available columns based on data existence
     available_display_options = DATASET_DISPLAY_OPTIONS.copy()
@@ -4321,15 +4957,11 @@ def dataset_view(dataset_id):
         # Scalars are not added as individual columns - they appear in per_source_stats
     
     # Check if any sample has data for these fields
-    # Using all_dataset_tags check from above for 'tags'
     has_tags = bool(all_dataset_tags)
     
-    # For DB fields, we can do efficient queries or simple checks on all_samples
-    all_samples = dataset.samples
-    has_gt = any(sample.custom_fields for sample in all_samples if any(cf.name == 'pick' for cf in sample.custom_fields))
-    has_hist = any(s.histogram_data for s in all_samples)
-    has_shape = any(s.signal_shape for s in all_samples)
-    
+    # Efficient existence checks
+    has_hist = any(ft == 'histogram' for fn, ft in custom_field_names) or db.session.query(HistogramData.id).join(Sample).filter(Sample.dataset_id == dataset.id).limit(1).first() is not None
+    has_shape = any(fn == 'wave_shape' for fn, ft in custom_field_names) or db.session.query(SignalShape.id).join(Sample).filter(Sample.dataset_id == dataset.id).limit(1).first() is not None
 
     if not has_hist: available_display_options.pop('histogram', None)
     if not has_shape: available_display_options.pop('signal_shape', None)
@@ -4693,12 +5325,15 @@ def download_sample(project_name, sample_id):
     return send_file(memory_file, download_name=f'{sample.name}_data.zip', as_attachment=True)
 
     
-def get_all_sample_tags(dataset_id):
+def get_all_sample_tags(dataset_ids):
     """
-    Retrieves all unique sample tags and prefixes for a given dataset.
+    Retrieves all unique sample tags and prefixes for a given list of datasets.
     Returns (all_tag_names, all_prefixes) as sorted lists.
     """
-    all_sample_tags_query = db.session.query(Sample.tags).filter(Sample.dataset_id == dataset_id).all()
+    if isinstance(dataset_ids, int):
+        dataset_ids = [dataset_ids]
+        
+    all_sample_tags_query = db.session.query(Sample.tags).filter(Sample.dataset_id.in_(dataset_ids)).all()
     all_sample_tag_names = set()
     for (tags_str,) in all_sample_tags_query:
         if tags_str:
@@ -4823,9 +5458,13 @@ def get_leaderboard_info_api(leaderboard_id):
     return jsonify({
         'id': leaderboard.id,
         'name': leaderboard.name,
+        'datasets': [{
+            'id': ds.id,
+            'name': ds.name
+        } for ds in leaderboard.datasets],
         'dataset': {
-            'id': leaderboard.dataset.id,
-            'name': leaderboard.dataset.name
+            'id': leaderboard.datasets[0].id if leaderboard.datasets else None,
+            'name': leaderboard.datasets[0].name if leaderboard.datasets else None
         }
     })
 
@@ -4843,9 +5482,13 @@ def get_leaderboard_info_by_name_api(project_name, leaderboard_name):
     return jsonify({
         'id': leaderboard.id,
         'name': leaderboard.name,
+        'datasets': [{
+            'id': ds.id,
+            'name': ds.name
+        } for ds in leaderboard.datasets],
         'dataset': {
-            'id': leaderboard.dataset.id,
-            'name': leaderboard.dataset.name
+            'id': leaderboard.datasets[0].id if leaderboard.datasets else None,
+            'name': leaderboard.datasets[0].name if leaderboard.datasets else None
         }
     })
 
@@ -4886,13 +5529,7 @@ def download_dataset(project_name, dataset_id):
     
     return send_file(zip_path, as_attachment=True, download_name=zip_file)
 
-@app.route('/test_ping')
-def test_ping():
-    return "PONG: Server is running modified code"
 
-@app.route('/test_verification_123')
-def test_verification():
-    return "VERIFICATION: This route was added at 13:02 on Dec 28"
 
 @app.route('/<project_name>/api/dataset/<dataset_id>/download', methods=['GET'], endpoint='api_download_dataset')
 def api_download_dataset(project_name, dataset_id):
@@ -4981,12 +5618,20 @@ def recalculate_leaderboard_async(leaderboard_id):
     submissions = Submission.query.filter(Submission.id.in_(submission_ids), Submission.leaderboard_id == leaderboard_id).all()
     
     triggered_count = 0
+    # Iterate and commit in batches to avoid long locks if many submissions
     for sub in submissions:
         sub.processing_status = 'Pending'
+        db.session.add(sub)
+        # Commit immediately? No, that might be too slow.
+        # But locking for all might cause issues.
+        # Let's verify if we can do it in one go but with a short transaction.
+        # Actually, the error happens at commit() time.
+        # Maybe just processing them one by one is safer for SQLite concurrent access.
+        
+        db.session.commit() # Commit each status change individually to keep transaction short
+        
         tasks.process_submission.delay(sub.id, sample_filters=sample_filters)
         triggered_count += 1
-        
-    db.session.commit()
     return jsonify({'success': True, 'triggered_count': triggered_count})
 
 @app.route('/api/leaderboard/<int:leaderboard_id>/metrics_status', methods=['POST'])
@@ -5014,8 +5659,16 @@ def leaderboard_metrics_status(leaderboard_id):
             metric_results = MetricResult.query.filter_by(submission_id=sub.id).all()
             metrics = {}
             for res in metric_results:
-                metric_name = res.leaderboard_metric.global_metric.name
-                metrics[metric_name] = res.value
+                lm = res.leaderboard_metric
+                lmid = f"lm_{lm.id}"
+                val = res.value
+                
+                # Provide by ID
+                metrics[lmid] = val
+                # Provide by Names
+                metrics[lm.global_metric.name] = val
+                if lm.target_name:
+                    metrics[lm.target_name] = val
             
             # Fetch custom metrics (scalars) - Aggregate with Filters
             # Parse filters from stored state
@@ -5023,7 +5676,7 @@ def leaderboard_metrics_status(leaderboard_id):
             if sub.last_sample_filter:
                 try:
                     filters = json.loads(sub.last_sample_filter)
-                except:
+                except Exception:
                     pass
             
             # Build Aggregation Query - Fetch raw values
@@ -5097,7 +5750,7 @@ def leaderboard_metrics_status(leaderboard_id):
                             avg_val = float(np.percentile(values, float(pooling_percentile)))
                         else:
                             avg_val = float(np.mean(values))
-                    except:
+                    except Exception:
                         avg_val = None
                     
                     metrics[name] = avg_val
@@ -5112,7 +5765,7 @@ def leaderboard_metrics_status(leaderboard_id):
                 else:
                     try:
                         formatted[name] = "{:.4f}".format(val)
-                    except:
+                    except Exception:
                         formatted[name] = str(val)
             sub_data['metrics_formatted'] = formatted
 
@@ -5179,18 +5832,19 @@ def leaderboard_metrics_status(leaderboard_id):
     
     all_values = {} # metric -> list of values
     for res in all_results:
-        m_name = res.leaderboard_metric.target_name if res.leaderboard_metric.target_name else res.leaderboard_metric.global_metric.name
-        if m_name not in all_values: all_values[m_name] = []
-        if res.value is not None: all_values[m_name].append(res.value)
+        lm = res.leaderboard_metric
+        val = res.value
+        if val is None: continue
         
-    for m in all_metrics:
-        if m in AVAILABLE_METRICS:
-            vals = [getattr(s, m) for s in processed_submissions if getattr(s, m) is not None]
-            if m not in all_values: all_values[m] = []
-            all_values[m].extend(vals)
-        # Note: Custom metrics would require aggregating for ALL submissions here.
-        # This might be slow. Optimization: only do this if any processed submission is a custom metric.
-        # For now, let's focus on the submissions in the current request's result for ranges if they are custom.
+        lmid = f"lm_{lm.id}"
+        keys_to_update = [lmid, lm.global_metric.name]
+        if lm.target_name: keys_to_update.append(lm.target_name)
+        
+        for k in keys_to_update:
+            if k not in all_values: all_values[k] = []
+            all_values[k].append(val)
+        
+
     
     for m, vals in all_values.items():
         if vals:
@@ -5198,10 +5852,23 @@ def leaderboard_metrics_status(leaderboard_id):
              if numeric_vals:
                  metrics_ranges[m] = {'min': min(numeric_vals), 'max': max(numeric_vals)}
 
+    # Ensure directions are also available by lm_ID and names
+    final_directions = {}
+    if metric_directions_dict:
+        final_directions.update(metric_directions_dict)
+    
+    for lm in leaderboard.leaderboard_metrics:
+        if lm.sort_direction:
+            lmid = f"lm_{lm.id}"
+            final_directions[lmid] = lm.sort_direction
+            final_directions[lm.global_metric.name] = lm.sort_direction
+            if lm.target_name:
+                final_directions[lm.target_name] = lm.sort_direction
+
     return jsonify({
         'submissions': result,
         'ranges': metrics_ranges,
-        'directions': metric_directions_dict
+        'directions': final_directions
     })
 
 
@@ -5209,7 +5876,7 @@ def leaderboard_metrics_status(leaderboard_id):
 def from_json_filter(s):
     try:
         return json.loads(s)
-    except:
+    except Exception:
         return {}
 
 def check_and_migrate_db():
@@ -5249,6 +5916,47 @@ def check_and_migrate_db():
                     ''')
                     conn.commit()
                     print("Created 'project' table.")
+
+                # --- 6. Tag Filter migration ---
+                # Check if leaderboard_metric table has tag_filter column using PRAGMA
+                cursor.execute("PRAGMA table_info(leaderboard_metric)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'tag_filter' not in columns:
+                    print("Migrating DB: Adding 'tag_filter' to 'leaderboard_metric' table...")
+                    try:
+                        cursor.execute("ALTER TABLE leaderboard_metric ADD COLUMN tag_filter TEXT DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'tag_filter' column.")
+                    except Exception as e:
+                        print(f"Migration error (tag_filter): {e}")
+
+                # --- 7. Git Author migration ---
+                # Add git_author column to dataset table
+                cursor.execute("PRAGMA table_info(dataset)")
+                dataset_columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'git_author' not in dataset_columns:
+                    print("Migrating DB: Adding 'git_author' to 'dataset' table...")
+                    try:
+                        cursor.execute("ALTER TABLE dataset ADD COLUMN git_author VARCHAR(100) DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'git_author' column to dataset.")
+                    except Exception as e:
+                        print(f"Migration error (dataset.git_author): {e}")
+                
+                # Add git_author column to submission table
+                cursor.execute("PRAGMA table_info(submission)")
+                submission_columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'git_author' not in submission_columns:
+                    print("Migrating DB: Adding 'git_author' to 'submission' table...")
+                    try:
+                        cursor.execute("ALTER TABLE submission ADD COLUMN git_author VARCHAR(100) DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'git_author' column to submission.")
+                    except Exception as e:
+                        print(f"Migration error (submission.git_author): {e}")
 
                 # Helper to get/create General project
                 def ensure_general_project():
@@ -5311,6 +6019,18 @@ def check_and_migrate_db():
                             print(f"Successfully added '{col_name}'.")
                         except Exception as e:
                             print(f"Failed to add '{col_name}': {e}")
+
+                # --- 8. AuthorProfile merging migration ---
+                try:
+                    cursor.execute("PRAGMA table_info(author_profile)")
+                    ap_columns = [row[1] for row in cursor.fetchall()]
+                    if ap_columns and 'merged_into_username' not in ap_columns:
+                        print("Migrating DB: Adding 'merged_into_username' to 'author_profile' table...")
+                        cursor.execute("ALTER TABLE author_profile ADD COLUMN merged_into_username VARCHAR(100) DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'merged_into_username' column.")
+                except Exception as e:
+                    print(f"Migration error (author_profile.merged_into_username): {e}")
                             
                 conn.close()
                 
@@ -5359,7 +6079,7 @@ def download_submission_metrics(submission_id):
     writer = csv.writer(si)
     
     # Write header
-    writer.writerow(['Metric', 'Value'])
+    writer.writerow(['Metric', 'Value', 'Mapping', 'Tags'])
     
     # Fetch results joined with LeaderboardMetric to get display names
     results = db.session.query(MetricResult, LeaderboardMetric).join(
@@ -5367,8 +6087,8 @@ def download_submission_metrics(submission_id):
     ).filter(MetricResult.submission_id == submission_id).all()
     
     for result, lb_metric in results:
-        # Determine display name (same logic as in template)
-        display_name = lb_metric.target_name or lb_metric.global_metric.label or lb_metric.global_metric.name
+        # Determine display name
+        display_name = get_distinguishable_metric_name(lb_metric)
         
         # Format value
         value = result.value
@@ -5379,10 +6099,11 @@ def download_submission_metrics(submission_id):
         else:
             value_str = f"{value:.6f}"
             
-        writer.writerow([display_name, value_str])
+        writer.writerow([display_name, value_str, lb_metric.arg_mappings, lb_metric.tag_filter or ''])
         
     output = make_response(si.getvalue())
-    output.headers["Content-Disposition"] = f"attachment; filename=submission_{submission_id}_aggregated_metrics.csv"
+    filename = f"{submission.name}_metrics.csv"
+    output.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename)}"
     output.headers["Content-type"] = "text/csv"
     return output
 
@@ -5391,45 +6112,111 @@ def download_sample_metrics_csv(submission_id):
     submission = Submission.query.get_or_404(submission_id)
     leaderboard = submission.leaderboard
     
-    # Get all samples for this dataset
-    samples = Sample.query.filter_by(dataset_id=leaderboard.dataset_id).order_by(Sample.name).all()
+    # [FIX] Support multiple datasets
+    dataset_ids = [ds.id for ds in leaderboard.datasets]
+    if not dataset_ids and leaderboard.dataset_id:
+        dataset_ids = [leaderboard.dataset_id]
+        
+    # Get all samples for all associated datasets
+    samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).order_by(Sample.name).all()
     sample_names = [s.name for s in samples]
     sample_ids = [s.id for s in samples]
     
     # Get metric display names
     lb_metrics = LeaderboardMetric.query.filter_by(leaderboard_id=leaderboard.id).all()
     metric_names = []
-    metric_display_map = {}
+    
+    # Map both friendly names and lm_{id} to LeaderboardMetric objects
+    metric_id_to_lm = {}
     for lm in lb_metrics:
         if lm.global_metric.is_aggregated:
             continue
-        display_name = lm.target_name or lm.global_metric.label or lm.global_metric.name
+        
+        display_name = get_distinguishable_metric_name(lm)
         metric_names.append(display_name)
-        metric_display_map[display_name] = (lm.target_name if lm.target_name else lm.global_metric.name)
+        
+        # Index by distinguish name, friendly name, and lm_{id}
+        metric_id_to_lm[display_name] = lm
+        metric_id_to_lm[f"lm_{lm.id}"] = lm
+        friendly_name = lm.target_name if lm.target_name else lm.global_metric.name
+        metric_id_to_lm[friendly_name] = lm
 
     # Fetch per-sample metrics from CustomField
     # Rows: Metrics, Columns: Samples
     si = io.StringIO()
     writer = csv.writer(si)
     
-    # Header: Metric, Sample1, Sample2, ...
-    writer.writerow(['Metric'] + sample_names)
+    # Header: Metric, Mapping, Tags, Sample1, Sample2, ...
+    writer.writerow(['Metric', 'Mapping', 'Tags'] + sample_names)
     
-    # Data rows
     for m_display in metric_names:
-        m_raw = metric_display_map[m_display]
-        row = [m_display]
-        # Fetch all custom fields for this metric and submission at once for efficiency
-        cfs = CustomField.query.filter_by(submission_id=submission_id, name=m_raw, field_type='scalar').all()
-        cf_map = {cf.sample_id: cf.value_float for cf in cfs}
+        lm = metric_id_to_lm.get(m_display)
+        if not lm: continue
+        
+        m_id_name = f"lm_{lm.id}"
+        friendly_name = lm.target_name if lm.target_name else lm.global_metric.name
+        row = [m_display, lm.arg_mappings, lm.tag_filter or '']
+        
+        # Fetch results for both name variants and both types ('scalar' and legacy 'metric')
+        cfs = CustomField.query.filter(
+            CustomField.submission_id == submission_id,
+            CustomField.name.in_([m_id_name, friendly_name, f"metric_{friendly_name}"]),
+            CustomField.field_type.in_(['scalar', 'metric'])
+        ).all()
+        
+        # Check if ANY lm_{id} fields exist for this metric/submission
+        # If so, we are in "New Mode" and should strictly ignore friendly-name fallbacks (which might be raw/unfiltered data)
+        has_new_format = any(cf.name == m_id_name for cf in cfs)
+        
+        cf_map = {}
+        for cf in cfs:
+            if has_new_format and cf.name != m_id_name:
+                continue
+            
+            if cf.name == m_id_name or cf.sample_id not in cf_map:
+                cf_map[cf.sample_id] = cf.value_float
         
         for s_id in sample_ids:
             val = cf_map.get(s_id)
             row.append(f"{val:.6f}" if val is not None else 'N/A')
         writer.writerow(row)
+
+    # [NEW] Add Tag Parsing Rows
+    # Dataset tags are stored in the 'tags' column of the Sample model
+    parsed_tags_by_sample = {} # sample_id -> {tag_key: tag_value}
+    all_tag_keys = set()
+    
+    for sample in samples:
+        if not sample.tags:
+            continue
+        parts = sample.tags.split(',')
+        sample_tags = {}
+        for part in parts:
+            if '=' in part:
+                try:
+                    k, v = part.split('=', 1)
+                    k = k.strip()
+                    v = v.strip()
+                    if k:
+                        sample_tags[k] = v
+                        all_tag_keys.add(k)
+                except ValueError:
+                    continue
+        parsed_tags_by_sample[sample.id] = sample_tags
+
+    sorted_tag_keys = sorted(list(all_tag_keys))
+    
+    for tag_key in sorted_tag_keys:
+        row = [f"tag_{tag_key}", "", ""]
+        for s_id in sample_ids:
+            tags = parsed_tags_by_sample.get(s_id, {})
+            val = tags.get(tag_key)
+            row.append(format_tag_value(val))
+        writer.writerow(row)
         
     output = make_response(si.getvalue())
-    output.headers["Content-Disposition"] = f"attachment; filename=submission_{submission_id}_per_sample_metrics.csv"
+    filename = f"{submission.name}_per_sample_metrics.csv"
+    output.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename)}"
     output.headers["Content-type"] = "text/csv"
     return output
 
@@ -5461,33 +6248,120 @@ def download_submissions_sample_metrics_bulk(leaderboard_id):
     try:
         with ZipFile(tmp_path, 'w') as zf:
             for sub in submissions:
-                # Reuse the logic from download_sample_metrics_csv but write to zip
-                samples = Sample.query.filter_by(dataset_id=sub.leaderboard.dataset_id).order_by(Sample.name).all()
+                # [FIX] Support multiple datasets
+                dataset_ids = [ds.id for ds in sub.leaderboard.datasets]
+                if not dataset_ids and sub.leaderboard.dataset_id:
+                    dataset_ids = [sub.leaderboard.dataset_id]
+                    
+                # Get all samples for all associated datasets
+                samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).order_by(Sample.name).all()
                 sample_names = [s.name for s in samples]
                 sample_ids = [s.id for s in samples]
                 
                 lb_metrics = LeaderboardMetric.query.filter_by(leaderboard_id=sub.leaderboard_id).all()
                 metric_names = []
-                metric_display_map = {}
+                metric_id_to_lm = {}
                 for lm in lb_metrics:
                     if lm.global_metric.is_aggregated:
                         continue
-                    display_name = lm.target_name or lm.global_metric.label or lm.global_metric.name
+                    display_name = get_distinguishable_metric_name(lm)
                     metric_names.append(display_name)
-                    metric_display_map[display_name] = (lm.target_name if lm.target_name else lm.global_metric.name)
+                    
+                    metric_id_to_lm[display_name] = lm
+                    metric_id_to_lm[f"lm_{lm.id}"] = lm
+                    friendly_name = lm.target_name if lm.target_name else lm.global_metric.name
+                    metric_id_to_lm[friendly_name] = lm
 
                 si = io.StringIO()
                 writer = csv.writer(si)
-                writer.writerow(['Metric'] + sample_names)
+                writer.writerow(['Metric', 'Mapping', 'Tags'] + sample_names)
                 
                 for m_display in metric_names:
-                    m_raw = metric_display_map[m_display]
-                    row = [m_display]
-                    cfs = CustomField.query.filter_by(submission_id=sub.id, name=m_raw, field_type='scalar').all()
-                    cf_map = {cf.sample_id: cf.value_float for cf in cfs}
+                    lm = metric_id_to_lm.get(m_display)
+                    if not lm: continue
+                    m_id_name = f"lm_{lm.id}"
+                    friendly_name = lm.target_name if lm.target_name else lm.global_metric.name
+                    row = [m_display, lm.arg_mappings, lm.tag_filter or '']
+                    
+                    cfs = CustomField.query.filter(
+                        CustomField.submission_id == sub.id,
+                        CustomField.name.in_([m_id_name, friendly_name, f"metric_{friendly_name}"]),
+                        CustomField.field_type.in_(['scalar', 'metric'])
+                    ).all()
+                    
+                    # Check if ANY lm_{id} fields exist for this metric/submission
+                    found_any_flavour_in_submission = False
+                    
+                    # Optimization: Check if this submission has *any* lm_ fields generally (New Mode)
+                    # We can cache this per submission if needed, but doing a simple query is okay for now.
+                    # Or check against all lb_metrics IDs.
+                    
+                    # Let's verify if any of the Friendly Name's flavours are present in this submission
+                    other_flavour_ids = []
+                    for other_lm in lb_metrics:
+                        other_name = other_lm.target_name if other_lm.target_name else other_lm.global_metric.name
+                        if other_name == friendly_name:
+                            other_flavour_ids.append(f"lm_{other_lm.id}")
+                            
+                    # Check if any of these exist in the database for this submission
+                    # (This confirms "New Mode" for this specific metric name)
+                    has_new_mode_specific = db.session.query(CustomField.id).filter(
+                        CustomField.submission_id == sub.id,
+                        CustomField.name.in_(other_flavour_ids)
+                    ).first() is not None
+
+                    use_strict_id = has_new_mode_specific
+                    
+                    cf_map = {}
+                    for cf in cfs:
+                        if use_strict_id:
+                            if cf.name == m_id_name:
+                                cf_map[cf.sample_id] = cf.value_float
+                        else:
+                            # Legacy mode: accept friendly name or id
+                            if cf.name == m_id_name or cf.sample_id not in cf_map:
+                                cf_map[cf.sample_id] = cf.value_float
+                    
+                    for cf in cfs:
+                        if use_strict_id:
+                            if cf.name == m_id_name:
+                                cf_map[cf.sample_id] = cf.value_float
+                        else:
+                            # Legacy mode: accept friendly name or id
+                            if cf.name == m_id_name or cf.sample_id not in cf_map:
+                                cf_map[cf.sample_id] = cf.value_float
+                    
                     for s_id in sample_ids:
                         val = cf_map.get(s_id)
                         row.append(f"{val:.6f}" if val is not None else 'N/A')
+                    writer.writerow(row)
+
+                # [NEW] Add Tag Parsing Rows
+                parsed_tags_by_sample = {}
+                all_tag_keys = set()
+                for sample in samples:
+                    if not sample.tags: continue
+                    parts = sample.tags.split(',')
+                    sample_tags = {}
+                    for part in parts:
+                        if '=' in part:
+                            try:
+                                k, v = part.split('=', 1)
+                                k, v = k.strip(), v.strip()
+                                if k:
+                                    sample_tags[k] = v
+                                    all_tag_keys.add(k)
+                            except ValueError: continue
+                    parsed_tags_by_sample[sample.id] = sample_tags
+                
+                sorted_tag_keys = sorted(list(all_tag_keys))
+
+                for tag_key in sorted_tag_keys:
+                    row = [f"tag_{tag_key}", "", ""]
+                    for s_id in sample_ids:
+                        tags = parsed_tags_by_sample.get(s_id, {})
+                        val = tags.get(tag_key)
+                        row.append(format_tag_value(val))
                     writer.writerow(row)
                 
                 zf.writestr(f"{sub.name}_{sub.id}_per_sample_metrics.csv", si.getvalue())
@@ -5540,14 +6414,14 @@ def download_submissions_metrics_bulk(leaderboard_id):
                 # Generate CSV
                 si = io.StringIO()
                 writer = csv.writer(si)
-                writer.writerow(['Metric', 'Value'])
+                writer.writerow(['Metric', 'Value', 'Mapping', 'Tags'])
                 
                 results = db.session.query(MetricResult, LeaderboardMetric).join(
                     LeaderboardMetric, MetricResult.leaderboard_metric_id == LeaderboardMetric.id
                 ).filter(MetricResult.submission_id == sub.id).all()
                 
                 for result, lb_metric in results:
-                    display_name = lb_metric.target_name or lb_metric.global_metric.label or lb_metric.global_metric.name
+                    display_name = get_distinguishable_metric_name(lb_metric)
                     value = result.value
                     if value is None:
                         value_str = 'N/A'
@@ -5555,7 +6429,7 @@ def download_submissions_metrics_bulk(leaderboard_id):
                             value_str = f"Error: {result.error_message}"
                     else:
                         value_str = str(value)
-                    writer.writerow([display_name, value_str])
+                    writer.writerow([display_name, value_str, lb_metric.arg_mappings, lb_metric.tag_filter or ''])
                 
                 # Add to zip
                 zf.writestr(f"{sub.name}_{sub.id}_metrics.csv", si.getvalue())
@@ -5614,14 +6488,14 @@ def download_submissions_full_bulk(leaderboard_id):
                 # 2. Add Metrics CSV
                 si = io.StringIO()
                 writer = csv.writer(si)
-                writer.writerow(['Metric', 'Value'])
+                writer.writerow(['Metric', 'Value', 'Mapping', 'Tags'])
                 
                 results = db.session.query(MetricResult, LeaderboardMetric).join(
                     LeaderboardMetric, MetricResult.leaderboard_metric_id == LeaderboardMetric.id
                 ).filter(MetricResult.submission_id == sub.id).all()
                 
                 for result, lb_metric in results:
-                    display_name = lb_metric.target_name or lb_metric.global_metric.label or lb_metric.global_metric.name
+                    display_name = get_distinguishable_metric_name(lb_metric)
                     value = result.value
                     if value is None:
                         value_str = 'N/A'
@@ -5629,12 +6503,18 @@ def download_submissions_full_bulk(leaderboard_id):
                             value_str = f"Error: {result.error_message}"
                     else:
                         value_str = f"{value:.6f}"
-                    writer.writerow([display_name, value_str])
+                    writer.writerow([display_name, value_str, lb_metric.arg_mappings, lb_metric.tag_filter or ''])
                 
-                zf.writestr(f"{sub.name}_{sub.id}_aggregated_metrics.csv", si.getvalue())
+                zf.writestr(f"{sub.name}_{sub.id}_metrics.csv", si.getvalue())
 
                 # 3. Add Per-Sample Metrics CSV
-                samples = Sample.query.filter_by(dataset_id=sub.leaderboard.dataset_id).order_by(Sample.name).all()
+                # [FIX] Support multiple datasets
+                dataset_ids = [ds.id for ds in sub.leaderboard.datasets]
+                if not dataset_ids and sub.leaderboard.dataset_id:
+                    dataset_ids = [sub.leaderboard.dataset_id]
+                
+                # Get all samples for all associated datasets
+                samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).order_by(Sample.name).all()
                 sample_names = [s.name for s in samples]
                 sample_ids = [s.id for s in samples]
                 
@@ -5644,22 +6524,55 @@ def download_submissions_full_bulk(leaderboard_id):
                 for lm in lb_metrics:
                     if lm.global_metric.is_aggregated:
                         continue
-                    display_name = lm.target_name or lm.global_metric.label or lm.global_metric.name
+                    display_name = get_distinguishable_metric_name(lm)
                     metric_names.append(display_name)
                     metric_display_map[display_name] = (lm.target_name if lm.target_name else lm.global_metric.name)
 
                 si_ps = io.StringIO()
                 writer_ps = csv.writer(si_ps)
-                writer_ps.writerow(['Metric'] + sample_names)
+                writer_ps.writerow(['Metric', 'Mapping', 'Tags'] + sample_names)
                 
+                # Store lm mapping for easier access to Mapping/Tags
+                metric_id_to_lm = { get_distinguishable_metric_name(lm): lm for lm in lb_metrics }
+
                 for m_display in metric_names:
-                    m_raw = metric_display_map[m_display]
-                    row = [m_display]
-                    cfs = CustomField.query.filter_by(submission_id=sub.id, name=m_raw, field_type='scalar').all()
+                    lm = metric_id_to_lm.get(m_display)
+                    if not lm: continue
+                    m_id_name = f"lm_{lm.id}"
+                    row = [m_display, lm.arg_mappings, lm.tag_filter or '']
+                    cfs = CustomField.query.filter_by(submission_id=sub.id, name=m_id_name, field_type='scalar').all()
                     cf_map = {cf.sample_id: cf.value_float for cf in cfs}
                     for s_id in sample_ids:
                         val = cf_map.get(s_id)
                         row.append(f"{val:.6f}" if val is not None else 'N/A')
+                    writer_ps.writerow(row)
+
+                # [NEW] Add Tag Parsing Rows
+                parsed_tags_by_sample = {}
+                all_tag_keys = set()
+                for sample in samples:
+                    if not sample.tags: continue
+                    parts = sample.tags.split(',')
+                    sample_tags = {}
+                    for part in parts:
+                        if '=' in part:
+                            try:
+                                k, v = part.split('=', 1)
+                                k, v = k.strip(), v.strip()
+                                if k:
+                                    sample_tags[k] = v
+                                    all_tag_keys.add(k)
+                            except ValueError: continue
+                    parsed_tags_by_sample[sample.id] = sample_tags
+                
+                sorted_tag_keys = sorted(list(all_tag_keys))
+
+                for tag_key in sorted_tag_keys:
+                    row = [f"tag_{tag_key}", "", ""]
+                    for s_id in sample_ids:
+                        tags = parsed_tags_by_sample.get(s_id, {})
+                        val = tags.get(tag_key)
+                        row.append(format_tag_value(val))
                     writer_ps.writerow(row)
                 
                 zf.writestr(f"{sub.name}_{sub.id}_per_sample_metrics.csv", si_ps.getvalue())

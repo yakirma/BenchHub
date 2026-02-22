@@ -3,6 +3,101 @@
 {% block title %}Edit Leaderboard - {{ leaderboard.name }}{% endblock %}
 
 {% block content %}
+<style>
+    /* Tag Input Styles ported from leaderboard.html */
+    .tag-input-wrapper {
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        display: flex;
+        flex-wrap: wrap;
+        padding: 0.25rem;
+        align-items: center;
+        flex-grow: 1;
+        position: relative;
+        padding-right: 30px;
+        /* Space for clear button */
+        min-height: 31px;
+    }
+
+    .tag-input-wrapper.disabled {
+        background-color: var(--bs-secondary-bg);
+        cursor: not-allowed;
+    }
+
+    .tag-chip {
+        background-color: #0d6efd;
+        color: white;
+        border-radius: 0.25rem;
+        padding: 0.1rem 0.4rem;
+        margin: 0.1rem;
+        font-size: 0.75rem;
+        display: flex;
+        align-items: center;
+    }
+
+    .tag-chip .remove-tag {
+        margin-left: 0.3rem;
+        cursor: pointer;
+        font-weight: bold;
+    }
+
+    .tag-input {
+        border: none;
+        outline: none;
+        flex-grow: 1;
+        background: transparent;
+        padding: 0.1rem 0.2rem;
+        min-width: 60px;
+        font-size: 0.875rem;
+    }
+
+    .suggestions-list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 0.25rem;
+        background-color: var(--bs-body-bg);
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+        display: none;
+    }
+
+    .suggestions-list li {
+        padding: 0.4rem 0.6rem;
+        cursor: pointer;
+        font-size: 0.875rem;
+    }
+
+    .suggestions-list li:hover,
+    .suggestions-list li.active {
+        background-color: #0d6efd;
+        color: white;
+    }
+
+    .clear-all-tags {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        cursor: pointer;
+        color: #6c757d;
+        font-size: 1.2rem;
+        display: none;
+        z-index: 10;
+        line-height: 1;
+    }
+
+    .clear-all-tags:hover {
+        color: #dc3545;
+    }
+</style>
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1>Edit Leaderboard: {{ leaderboard.name }}</h1>
     <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}" class="btn btn-secondary">Back to
@@ -39,6 +134,20 @@
                                 <label for="name" class="form-label">Leaderboard Name</label>
                                 <input type="text" class="form-control" id="name" name="name"
                                     value="{{ leaderboard.name }}" required>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">Associated Datasets</label>
+                                <div class="p-2 border rounded bg-body-tertiary">
+                                    {% for dataset in leaderboard.datasets %}
+                                    <div class="d-flex align-items-center mb-1 last-child-mb-0">
+                                        <i class="bi bi-database me-2 text-info"></i>
+                                        <span>{{ dataset.name }}</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <div class="form-text small text-muted">Datasets cannot be changed once the leaderboard
+                                    is created to ensure data integrity.</div>
                             </div>
 
                             <div class="mb-3">
@@ -156,11 +265,21 @@
                                     <div class="mb-3">
                                         <label for="sort_direction" class="form-label small fw-bold">Optimization
                                             Goal</label>
-                                        <select class="form-select form-select-sm" id="sort_direction"
-                                            name="sort_direction">
-                                            <option value="higher_is_better">Higher is Better (Green)</option>
-                                            <option value="lower_is_better">Lower is Better (Green)</option>
                                         </select>
+                                    </div>
+
+                                    <div class="mb-3">
+                                        <label for="tag_filter" class="form-label small fw-bold">Sample Tag
+                                            Filter</label>
+                                        <div class="tag-input-wrapper" id="metric-tag-wrapper">
+                                            <div class="chips-container d-flex flex-wrap"></div>
+                                            <input type="text" class="tag-input" id="metric-tag-input"
+                                                placeholder="e.g. valid, !noise" autocomplete="off">
+                                            <ul class="suggestions-list" id="metric-tag-suggestions"></ul>
+                                        </div>
+                                        <input type="hidden" id="tag_filter" name="tag_filter">
+                                        <div class="form-text x-small">Only calculate for samples matching these tags.
+                                            Use leading ! to exclude.</div>
                                     </div>
                                 </div>
 
@@ -201,6 +320,7 @@
                             <tr>
                                 <th>Metric</th>
                                 <th>Type</th>
+                                <th>Tag Filter</th>
                                 <th>Mappings</th>
                                 <th class="text-end">Actions</th>
                             </tr>
@@ -209,8 +329,8 @@
                             {% for lm in leaderboard.leaderboard_metrics %}
                             <tr>
                                 <td>
-                                    <strong>{{ lm.target_name if lm.target_name else lm.global_metric.name
-                                        }}</strong><br>
+                                    <strong>{{ lm.target_name if lm.target_name else lm.global_metric.name }}</strong>
+                                    <span class="text-muted small font-monospace ms-1">({{ lm.id }})</span><br>
                                     {% if lm.target_name and lm.target_name != lm.global_metric.name %}
                                     <small class="text-muted">{{ lm.global_metric.name }}</small>
                                     {% endif %}
@@ -225,9 +345,18 @@
                                     {% endif %}
                                 </td>
                                 <td>
+                                    {% if lm.tag_filter %}
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning">{{
+                                        lm.tag_filter }}</span>
+                                    {% else %}
+                                    <span class="text-muted small">None</span>
+                                    {% endif %}
+                                </td>
+                                <td>
                                     {% set mappings = lm.arg_mappings|from_json %}
                                     {% for arg, field in mappings.items() %}
-                                    <span class="badge bg-body-tertiary text-body border me-1 mb-1 font-monospace"
+                                    <span
+                                        class="badge bg-info-subtle text-info-emphasis border border-info-subtle me-1 mb-1 font-monospace"
                                         style="font-size: 0.75rem;">{{ arg }} &rarr; {{ field
                                         }}</span>
                                     {% endfor %}
@@ -242,8 +371,21 @@
                                             data-pooling-type="{{ lm.pooling_type }}"
                                             data-pooling-percentile="{{ lm.pooling_percentile if lm.pooling_percentile else '' }}"
                                             data-sort-direction="{{ lm.sort_direction if lm.sort_direction else 'higher_is_better' }}"
+                                            data-tag-filter="{{ lm.tag_filter if lm.tag_filter else '' }}"
                                             data-mappings="{{ lm.arg_mappings }}">
                                             Edit
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-info duplicate-metric-btn"
+                                            data-metric-id="{{ lm.id }}"
+                                            data-global-metric-id="{{ lm.global_metric_id }}"
+                                            data-metric-name="{{ lm.global_metric.name }}"
+                                            data-target-name="{{ lm.target_name if lm.target_name else '' }}"
+                                            data-pooling-type="{{ lm.pooling_type }}"
+                                            data-pooling-percentile="{{ lm.pooling_percentile if lm.pooling_percentile else '' }}"
+                                            data-sort-direction="{{ lm.sort_direction if lm.sort_direction else 'higher_is_better' }}"
+                                            data-tag-filter="{{ lm.tag_filter if lm.tag_filter else '' }}"
+                                            data-mappings="{{ lm.arg_mappings }}">
+                                            Duplicate
                                         </button>
                                         <form
                                             action="{{ url_for('delete_leaderboard_metric', leaderboard_id=leaderboard.id, metric_id=lm.id) }}"
@@ -289,6 +431,7 @@
                                     {% set agg_config = current_aggregation.get(metric, {'type': 'mean', 'percentile':
                                     None}) %}
                                     {% set lm = metric_to_lm.get(metric) %}
+                                    {% set display_label = metric_labels.get(metric, metric) %}
                                     {% if lm %}
                                     {% set current_type = lm.pooling_type or 'mean' %}
                                     {% set current_perc = lm.pooling_percentile %}
@@ -299,7 +442,7 @@
                                     {% set current_dir = current_directions.get(metric, 'higher_is_better') %}
                                     {% endif %}
                                     <tr>
-                                        <td class="fw-bold">{{ metric }}</td>
+                                        <td class="fw-bold">{{ display_label }}</td>
                                         <td>
                                             <select class="form-select form-select-sm" name="direction_{{ metric }}">
                                                 <option value="higher_is_better" {% if current_dir=='higher_is_better'
@@ -462,7 +605,8 @@
                                 <td>
                                     {% set viz_mappings = lv.arg_mappings|from_json %}
                                     {% for arg, field in viz_mappings.items() %}
-                                    <span class="badge bg-body-tertiary text-body border me-1 mb-1 font-monospace"
+                                    <span
+                                        class="badge bg-info-subtle text-info-emphasis border border-info-subtle me-1 mb-1 font-monospace"
                                         style="font-size: 0.75rem;">{{ arg }} &rarr; {{ field
                                         }}</span>
                                     {% endfor %}
@@ -514,12 +658,12 @@
 </datalist>
 <datalist id="per-sample-metrics-list">
     {% for m in per_sample_metrics %}
-    <option value="{{ m }}">
+    <option value="{{ m }}" label="{{ metric_labels.get(m, m) }}">
         {% endfor %}
 </datalist>
 <datalist id="aggregated-metrics-list">
     {% for m in aggregated_metrics %}
-    <option value="{{ m }}">
+    <option value="{{ m }}" label="{{ metric_labels.get(m, m) }}">
         {% endfor %}
 </datalist>
 
@@ -768,15 +912,11 @@
 
             // Reset inputs
 
-            // Reset inputs
             metricSelect.value = '';
             metricSelect.disabled = false;
             document.getElementById('display_name').value = '';
-
-            // Reset inputs
-            metricSelect.value = '';
-            metricSelect.disabled = false;
-            document.getElementById('display_name').value = '';
+            document.getElementById('tag_filter').value = '';
+            if (metricTagCtrl) metricTagCtrl.clearTags();
 
             previewContainer.classList.add('d-none');
             mappingsContainer.innerHTML = '';
@@ -788,100 +928,99 @@
             addMappingRow('mappings-container');
         }
 
-        // Handle Edit Clicks
-        document.querySelectorAll('.edit-metric-btn').forEach(btn => {
-            btn.addEventListener('click', function () {
-                // ... (existing getAttribute calls) ...
-                const metricId = this.getAttribute('data-metric-id');
-                const globalMetricId = this.getAttribute('data-global-metric-id');
-                const metricName = this.getAttribute('data-metric-name');
-                const targetName = this.getAttribute('data-target-name');
-                const poolingType = this.getAttribute('data-pooling-type');
-                const poolingPercentile = this.getAttribute('data-pooling-percentile');
-                const sortDirection = this.getAttribute('data-sort-direction');
+        // Function to populate the form from an existing metric (used for Edit and Duplicate)
+        function populateMetricForm(data, mode = 'edit') {
+            const { metricId, globalMetricId, metricName, targetName, sortDirection, tagFilter, mappings } = data;
 
-                // Retrieve mappings from robust data store
-                const mappings = leaderboardData.metrics[metricId] || {};
-
-                // Switch to Edit Mode
-
-                // Switch to Edit Mode
+            if (mode === 'edit') {
                 metricTitle.textContent = 'Edit Metric Mappings: ' + metricName;
                 const lbId = "{{ leaderboard.id }}";
                 const projectName = "{{ leaderboard.project.name }}";
                 metricForm.action = `/${projectName}/leaderboard/${lbId}/leaderboard_metric/${metricId}/edit`;
-
                 submitBtn.textContent = 'Update Mappings';
                 submitBtn.classList.remove('btn-success');
                 submitBtn.classList.add('btn-primary');
-
-                metricSelect.value = globalMetricId;
                 metricSelect.disabled = true;
-                metricSelect.dispatchEvent(new Event('change'));
+            } else { // mode === 'duplicate'
+                metricTitle.textContent = 'Duplicate Metric: ' + metricName;
+                metricForm.action = metricForm.getAttribute('data-base-action');
+                submitBtn.textContent = 'Add to Leaderboard';
+                submitBtn.classList.remove('btn-primary');
+                submitBtn.classList.add('btn-success');
+                metricSelect.disabled = false;
+            }
 
-                const displayNameInput = document.getElementById('display_name');
-                if (displayNameInput) displayNameInput.value = targetName;
+            metricSelect.value = globalMetricId;
+            metricSelect.dispatchEvent(new Event('change'));
 
-                const sortDirectionSelect = document.getElementById('sort_direction');
-                if (sortDirectionSelect) sortDirectionSelect.value = sortDirection || 'higher_is_better';
-
-
-                if (Object.keys(mappings).length > 0) {
-                    mappingsContainer.innerHTML = ''; // Clear default rows/messages from change event
-
-                    for (const [arg, key] of Object.entries(mappings)) {
-                        let source = 'gt'; // Default to GT if no prefix
-                        let field = key;
-
-                        if (key.startsWith('gt_')) {
-                            source = 'gt';
-                            field = key.substring(3);
-                        } else if (key.startsWith('sub_')) {
-                            source = 'sub';
-                            field = key.substring(4);
-                        } else if (key.startsWith('SCALAR:')) {
-                            source = 'scalar';
-                            field = key.substring(7);
-                        } else {
-                            // Check lists for dependency types
-                            if (perSampleMetrics.includes(key) || perSampleMetrics.includes(field)) {
-                                source = 'metric';
-                            } else if (aggregatedMetrics.includes(key) || aggregatedMetrics.includes(field)) {
-                                source = 'agg_metric';
-                            } else {
-                                // Default for results of other dynamic metrics is usually 'metric' or 'agg_metric'
-                                // if it doesn't have a prefix but is in the list.
-                                // If not in list yet (e.g. self-dependency or newly added), assume sub/metric?
-                                // Let's keep source for results as is.
-                                source = 'metric';
-                            }
-                        }
-
-                        addMappingRow('mappings-container', { arg, source, field });
-                    }
+            const displayNameInput = document.getElementById('display_name');
+            if (displayNameInput) {
+                if (mode === 'duplicate') {
+                    displayNameInput.value = targetName ? `${targetName} (Copy)` : `${metricName} (Copy)`;
                 } else {
-                    // No saved mappings - add one empty row so user can input data
-                    mappingsContainer.innerHTML = '';
-                    addMappingRow('mappings-container');
+                    displayNameInput.value = targetName;
                 }
-                // If no mappings and args were parsed (handled by change event above? NO asynchronous)
-                // The 'change' event will populate mappings based on Python code IF parsed args exist.
-                // But we are overwriting them here with stored mappings.
-                // The issue: dispatchEvent('change') runs synchronously? Yes. 
-                // So it will parse code, find args, and populate default 'gt' rows.
-                // Then WE overwrite with stored rows. This is correct.
+            }
 
-                // But if stored mappings is empty (no-arg metric), we should show the message?
-                // The change event logic does that: if args.length=0 -> show message.
-                // We verify duplication: if code provides args, change event adds rows.
-                // Then we clear innerHTML and add stored rows. Correct.
+            const sortSelect = document.getElementById('sort_direction');
+            if (sortSelect) sortSelect.value = sortDirection || 'higher_is_better';
 
-                // If code provides NO args, change event shows message.
-                // If mappings is empty, we do loop 0 times. 
-                // If we also don't add default row, we are good.
+            if (metricTagCtrl) {
+                const tagArray = tagFilter ? tagFilter.split(',').map(t => t.trim()).filter(Boolean) : [];
+                metricTagCtrl.setTags(tagArray);
+            }
 
-                if (bsCollapse) bsCollapse.show();
-                metricCardCollapse.scrollIntoView({ behavior: 'smooth' });
+            if (Object.keys(mappings).length > 0) {
+                mappingsContainer.innerHTML = '';
+                for (const [arg, key] of Object.entries(mappings)) {
+                    let source = 'gt', field = key;
+                    if (key.startsWith('gt_')) { source = 'gt'; field = key.substring(3); }
+                    else if (key.startsWith('sub_')) { source = 'sub'; field = key.substring(4); }
+                    else if (key.startsWith('SCALAR:')) { source = 'scalar'; field = key.substring(7); }
+                    else if (perSampleMetrics.includes(key)) { source = 'metric'; }
+                    else if (aggregatedMetrics.includes(key)) { source = 'agg_metric'; }
+                    else { source = 'metric'; }
+                    addMappingRow('mappings-container', { arg, source, field });
+                }
+            } else {
+                addMappingRow('mappings-container');
+            }
+
+            if (bsCollapse) bsCollapse.show();
+            window.scrollTo({ top: metricCardCollapse.offsetTop - 100, behavior: 'smooth' });
+        }
+
+        // Handle Edit Clicks
+        document.querySelectorAll('.edit-metric-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const metricId = this.getAttribute('data-metric-id');
+                const data = {
+                    metricId: metricId,
+                    globalMetricId: this.getAttribute('data-global-metric-id'),
+                    metricName: this.getAttribute('data-metric-name'),
+                    targetName: this.getAttribute('data-target-name'),
+                    sortDirection: this.getAttribute('data-sort-direction'),
+                    tagFilter: this.getAttribute('data-tag-filter'),
+                    mappings: leaderboardData.metrics[metricId] || {}
+                };
+                populateMetricForm(data, 'edit');
+            });
+        });
+
+        // Handle Duplicate Clicks
+        document.querySelectorAll('.duplicate-metric-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const metricId = this.getAttribute('data-metric-id');
+                const data = {
+                    metricId: metricId,
+                    globalMetricId: this.getAttribute('data-global-metric-id'),
+                    metricName: this.getAttribute('data-metric-name'),
+                    targetName: this.getAttribute('data-target-name'),
+                    sortDirection: this.getAttribute('data-sort-direction'),
+                    tagFilter: this.getAttribute('data-tag-filter'),
+                    mappings: leaderboardData.metrics[metricId] || {}
+                };
+                populateMetricForm(data, 'duplicate');
             });
         });
 
@@ -1180,6 +1319,171 @@
         });
 
     }); // End DOMContentLoaded
+
+    // Ported setupTagInput from leaderboard.html
+    function setupTagInput(wrapperId, inputId, suggestionsId, checkboxId, sourceList) {
+        const wrapper = document.getElementById(wrapperId);
+        const input = document.getElementById(inputId);
+        const suggestionsList = document.getElementById(suggestionsId);
+        const checkbox = checkboxId ? document.getElementById(checkboxId) : null;
+
+        if (!wrapper || !input || !suggestionsList) return null;
+
+        const chipsContainer = wrapper.querySelector('.chips-container');
+        let tags = [];
+
+        // Add Clear Button
+        let clearBtn = wrapper.querySelector('.clear-all-tags');
+        if (!clearBtn) {
+            clearBtn = document.createElement('span');
+            clearBtn.className = 'clear-all-tags';
+            clearBtn.innerHTML = '&times;';
+            wrapper.appendChild(clearBtn);
+
+            clearBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                tags = [];
+                input.value = '';
+                renderChips();
+                input.focus();
+            });
+        }
+
+        let currentFocus = -1;
+
+        function renderChips() {
+            chipsContainer.innerHTML = '';
+            tags.forEach((tag, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'tag-chip';
+                chip.innerHTML = `${tag} <span class="remove-tag" data-index="${index}">&times;</span>`;
+                chipsContainer.appendChild(chip);
+            });
+            clearBtn.style.display = (tags.length > 0 || input.value.trim().length > 0) ? 'block' : 'none';
+        }
+
+        chipsContainer.addEventListener('click', (e) => {
+            if (e.target.classList.contains('remove-tag')) {
+                const index = parseInt(e.target.dataset.index, 10);
+                tags.splice(index, 1);
+                renderChips();
+            }
+        });
+
+        function addTag(tag) {
+            tag = tag.trim();
+            if (tag && !tags.some(t => t.toLowerCase() === tag.toLowerCase())) {
+                tags.push(tag);
+                renderChips();
+            }
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+                if (currentFocus > -1) {
+                    const items = suggestionsList.querySelectorAll('li');
+                    if (items[currentFocus]) {
+                        e.preventDefault();
+                        items[currentFocus].click();
+                        return;
+                    }
+                }
+                if (e.key === 'Enter') e.preventDefault();
+                const val = input.value.trim();
+                if (val) {
+                    const parts = val.split(/[ ,]+/);
+                    parts.forEach(part => addTag(part));
+                    input.value = '';
+                    renderChips();
+                }
+            } else if (e.key === 'Backspace' && !input.value && tags.length > 0) {
+                tags.pop();
+                renderChips();
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                currentFocus++;
+                addActive(suggestionsList.querySelectorAll('li'));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                currentFocus--;
+                addActive(suggestionsList.querySelectorAll('li'));
+            }
+        });
+
+        function addActive(x) {
+            if (!x) return false;
+            removeActive(x);
+            if (currentFocus >= x.length) currentFocus = 0;
+            if (currentFocus < 0) currentFocus = (x.length - 1);
+            x[currentFocus].classList.add("active");
+            x[currentFocus].scrollIntoView({ block: "nearest" });
+        }
+        function removeActive(x) {
+            for (var i = 0; i < x.length; i++) x[i].classList.remove("active");
+        }
+
+        function updateSuggestions() {
+            currentFocus = -1;
+            const val = input.value.trim().toLowerCase();
+            const hasPrefix = val.startsWith('!');
+            const searchVal = hasPrefix ? val.substring(1) : val;
+
+            suggestionsList.innerHTML = '';
+            let matches = [];
+            if (searchVal) {
+                if (sourceList) matches = sourceList.filter(t => t.toLowerCase().includes(searchVal) && !tags.includes((hasPrefix ? '!' : '') + t));
+            } else {
+                if (sourceList) matches = sourceList.filter(t => !tags.includes((hasPrefix ? '!' : '') + t));
+            }
+
+            if (matches.length > 0) {
+                matches.slice(0, 10).forEach(match => {
+                    const li = document.createElement('li');
+                    li.textContent = (hasPrefix ? '!' : '') + match;
+                    li.addEventListener('click', () => {
+                        addTag((hasPrefix ? '!' : '') + match);
+                        input.value = '';
+                        suggestionsList.style.display = 'none';
+                        input.focus();
+                        renderChips();
+                    });
+                    suggestionsList.appendChild(li);
+                });
+                suggestionsList.style.display = 'block';
+            } else {
+                suggestionsList.style.display = 'none';
+            }
+            clearBtn.style.display = (val || tags.length > 0) ? 'block' : 'none';
+        }
+
+        input.addEventListener('input', updateSuggestions);
+        input.addEventListener('focus', updateSuggestions);
+        document.addEventListener('click', (e) => {
+            if (!wrapper.contains(e.target)) suggestionsList.style.display = 'none';
+        });
+
+        return {
+            getTags: () => tags,
+            setTags: (tArray) => { tags = tArray; renderChips(); },
+            clearTags: () => { tags = []; renderChips(); }
+        };
+    }
+
+    // Initialize Metric Tag Control
+    const allSampleTags = {{ all_sample_tags | tojson | safe }};
+    const metricTagCtrl = setupTagInput('metric-tag-wrapper', 'metric-tag-input', 'metric-tag-suggestions', null, allSampleTags);
+
+    // Sync tag component with hidden input on form submit
+    const metricForm = document.getElementById('metric-form');
+    if (metricForm) {
+        metricForm.addEventListener('submit', function () {
+            const hiddenInput = document.getElementById('tag_filter');
+            if (hiddenInput && metricTagCtrl) {
+                hiddenInput.value = metricTagCtrl.getTags().join(',');
+            }
+        });
+    }
+
 
     // Argument Parser
     function parsePythonArgs(code) {

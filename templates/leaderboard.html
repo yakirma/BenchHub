@@ -4,6 +4,18 @@
 
 {% block content %}
 <style>
+    /* Prevent table-responsive from clipping dropdowns */
+    #table-container.table-responsive {
+        overflow: visible !important;
+    }
+
+    @media (max-width: 767.98px) {
+        #table-container.table-responsive {
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch;
+        }
+    }
+
     /* Tag Input Styles */
     .tag-input-wrapper {
         border: 1px solid var(--bs-border-color);
@@ -22,6 +34,11 @@
     .tag-input-wrapper.disabled {
         background-color: var(--bs-secondary-bg);
         cursor: not-allowed;
+    }
+
+    .submission-name-link:hover {
+        text-decoration: underline !important;
+        color: var(--bs-primary-border-subtle);
     }
 
     .tag-chip {
@@ -191,10 +208,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
         <h1>{{ leaderboard.name }}</h1>
-        <p class="lead d-flex align-items-center">
-            Using dataset: <a href="{{ url_for('dataset_view', dataset_id=leaderboard.dataset.id) }}"
-                class="btn btn-sm btn-outline-primary ms-2">{{
-                leaderboard.dataset.name }}</a>
+        <p class="lead d-flex align-items-center flex-wrap">
+            Using datasets:
+            {% for ds in leaderboard.datasets %}
+        <div class="d-inline-flex align-items-center ms-2 my-1">
+            <div class="author-avatar-init me-1" data-author="{{ ds.git_author or '' }}" data-size="27"></div>
+            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}" class="btn btn-sm btn-outline-primary">{{ ds.name
+                }}</a>
+        </div>
+        {% endfor %}
         </p>
     </div>
     <div class="d-flex align-items-center">
@@ -396,17 +418,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <label class="form-check-label" for="lb_col_git_info">Git Info</label>
                 </div>
                 {% for metric in selected_metrics %}
-                {% set metric_config = None %}
-                {% for lm in leaderboard.leaderboard_metrics %}
-                {% if (lm.target_name if lm.target_name else lm.global_metric.name) == metric %}
-                {% set metric_config = lm %}
-                {% endif %}
-                {% endfor %}
-                {% set display_label = metric %}
-                {% if metric_config %}
-                {% set display_label = metric_config.target_name or metric_config.global_metric.label or
-                metric_config.global_metric.name %}
-                {% endif %}
+                {% set display_label = metric_labels.get(metric, metric) %}
                 <div class="form-check form-check-inline">
                     <input class="form-check-input lb-column-checkbox" type="checkbox" value="metric_{{ metric }}"
                         id="lb_col_metric_{{ metric }}" onchange="updateLBColumnVisibility()">
@@ -489,7 +501,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     (CSV)</button></li>
                             <li><button class="dropdown-item" type="submit"
                                     formaction="{{ url_for('download_submissions_sample_metrics_bulk', leaderboard_id=leaderboard.id) }}">Per-Sample
-                                    Metrics
+                                    Metrics & Tags
                                     (CSV)</button></li>
                             <li><button class="dropdown-item" type="submit"
                                     formaction="{{ url_for('download_submissions_full_bulk', leaderboard_id=leaderboard.id) }}">Source
@@ -524,13 +536,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="status"
                                 draggable="true">Status</th>
                             {% for metric in selected_metrics %}
-                            {% set metric_config = None %}
-                            {% for lm in leaderboard.leaderboard_metrics %}
-                            {% if (lm.target_name if lm.target_name else lm.global_metric.name) == metric %}
-                            {% set metric_config = lm %}
-                            {% endif %}
-                            {% endfor %}
-                            {% set display_label = metric %}
+                            {% set metric_config = metric_to_lm.get(metric) %}
+                            {% set display_label = metric_labels.get(metric, metric) %}
                             {% if metric_config %}
                             {% set display_label = metric_config.target_name or metric_config.global_metric.label or
                             metric_config.global_metric.name %}
@@ -539,12 +546,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 data-lb-column="metric_{{ metric }}" draggable="true"
                                 onclick="changeSort('{{ metric }}')">
                                 {{ display_label }}
+                                {% if metric_config %}
+                                <div class="mt-1 fw-normal" style="line-height: 1.1;">
+                                    {% set mappings = metric_config.arg_mappings|from_json %}
+                                    <div class="d-flex flex-wrap gap-1">
+                                        {% for arg, field in mappings.items() %}
+                                        <span
+                                            class="badge bg-info-subtle text-info-emphasis border border-info-subtle text-truncate"
+                                            style="font-size: 0.6em; padding: 1px 3px; max-width: 100%;"
+                                            title="{{ arg }} &rarr; {{ field }}">
+                                            {{ arg }}&rarr;{{ field }}
+                                        </span>
+                                        {% endfor %}
+                                    </div>
+                                    {% if metric_config.tag_filter %}
+                                    <div class="mt-1">
+                                        <span
+                                            class="badge bg-warning-subtle text-warning-emphasis border border-warning"
+                                            style="font-size: 0.6em; padding: 1px 3px;">
+                                            <i class="bi bi-filter"></i> {{ metric_config.tag_filter }}
+                                        </span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
                                 {% if metric_agg_info and metric_agg_info.get(metric) %}
-                                <small class="text-muted d-block fw-normal" style="font-size: 0.7em">{{
+                                <small class="text-primary d-block fw-bold mt-1" style="font-size: 0.7em">{{
                                     metric_agg_info[metric] }}</small>
                                 {% endif %}
                                 {% if sort_metric == metric %}
-                                <i class="fas fa-sort-{{ sort_order == 'asc' and 'up' or 'down' }}"></i>
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }}"></i>
                                 {% endif %}
                             </th>
                             {% endfor %}
@@ -561,7 +592,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <div class="dropdown">
                                     <button class="btn btn-sm btn-link text-primary text-decoration-none p-0"
                                         type="button" id="actionsDropdown{{ submission.id }}" data-bs-toggle="dropdown"
-                                        aria-expanded="false" style="font-size: 1.2rem; line-height: 1;">
+                                        data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false"
+                                        style="font-size: 1.2rem; line-height: 1;">
                                         ⋮
                                     </button>
                                     <ul class="dropdown-menu" aria-labelledby="actionsDropdown{{ submission.id }}">
@@ -582,7 +614,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             <a class="dropdown-item"
                                                 href="{{ url_for('download_sample_metrics_csv', submission_id=submission.id) }}">
                                                 <i class="bi bi-file-earmark-spreadsheet me-2"></i>Download Per-Sample
-                                                Metrics
+                                                Metrics & Tags
+                                            </a>
+                                        </li>
+                                        <li>
+                                            <hr class="dropdown-divider">
+                                        </li>
+                                        <li>
+                                            <a class="dropdown-item edit-submission-tags-btn" href="#"
+                                                data-bs-toggle="modal" data-bs-target="#add-tags-modal"
+                                                data-submission-id="{{ submission.id }}"
+                                                data-submission-name="{{ submission.name }}"
+                                                data-submission-tags="{{ submission.tags|map(attribute='name')|join(',') }}">
+                                                <i class="bi bi-tag me-2"></i>Edit Tags
                                             </a>
                                         </li>
                                     </ul>
@@ -592,7 +636,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     name="submission_ids" value="{{ submission.id }}"></td>
                             <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}">
                                 <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    {{ submission.name }}
+                                    <a href="{{ url_for('comparison_view', project_name=project_name, leaderboard_id=leaderboard.id, compare_ids=submission.id, 
+                                        search_query=sample_search_query,
+                                        enable_include='true' if enable_sample_include else 'false',
+                                        include_tags=sample_include_tags|join(','),
+                                        enable_exclude='true' if enable_sample_exclude else 'false',
+                                        exclude_tags=sample_exclude_tags|join(','),
+                                        enable_prefix='true' if enable_sample_prefix else 'false',
+                                        prefix_tags=sample_prefix_tags|join(',')) }}"
+                                        class="text-decoration-none fw-bold submission-name-link">
+                                        {{ submission.name }}
+                                    </a>
                                 </div>
                             </td>
                             <td data-lb-column="tags" style="max-width: 200px;"
@@ -606,10 +660,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
                             </td>
                             <td data-lb-column="git_info" style="max-width: 200px;"
-                                title="{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or 'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}">
-                                <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    <small>{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or
-                                        'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}</small>
+                                title="{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or 'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}{% if submission.git_author %} by {{ submission.git_author }}{% endif %}">
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="author-avatar-init" data-author="{{ submission.git_author or '' }}"
+                                        data-size="32"></div>
+                                    <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        <small>{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or
+                                            'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}</small>
+                                    </div>
                                 </div>
                             </td>
                             <td data-lb-column="status">
@@ -656,25 +714,37 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
-<!-- Add Tags Modal -->
+<!-- Add/Edit Tags Modal -->
 <div class="modal fade" id="add-tags-modal" tabindex="-1" aria-labelledby="addTagsModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="addTagsModalLabel">Add Tags to Selected Submissions</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p>Enter tags, separated by commas. Start typing to see existing tags.</p>
-                <div class="position-relative">
-                    <input type="text" class="form-control" id="tags-input" name="tags" autocomplete="off">
-                    <div id="autocomplete-list" class="list-group position-absolute w-100" style="z-index: 1050;"></div>
+            <form id="add-tags-form" method="POST" action="{{ url_for('batch_action') }}">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addTagsModalLabel">Add Tags to Selected Submissions</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <button type="button" class="btn btn-primary" id="save-tags-btn">Save Tags</button>
-            </div>
+                <div class="modal-body">
+                    <p id="tag-modal-description">Enter tags, separated by commas. Start typing to see existing tags.
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label">Tags</label>
+                        <div class="tag-input-wrapper" id="modal-tags-wrapper" style="width: 100%;">
+                            <div class="chips-container d-flex flex-wrap"></div>
+                            <input type="text" class="tag-input" id="modal-tags-input" placeholder="Add tags..."
+                                autocomplete="off">
+                            <ul class="suggestions-list" id="modal-tags-suggestions"></ul>
+                        </div>
+                        <input type="hidden" name="tags" id="hidden-modal-tags">
+                        <input type="hidden" name="action" value="add_tags" id="tag-modal-action">
+                        <!-- Hidden inputs for preserving filter state in batch action -->
+                        <div id="batch-tag-filters-container"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary" id="save-tags-btn">Save Changes</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -709,6 +779,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 {% endblock %}
 
 {% block scripts %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
 <script>
     const GLOBAL_LEADERBOARD_ID = {{ leaderboard.id }};
     const LEADERBOARD_ID = GLOBAL_LEADERBOARD_ID;
@@ -885,23 +957,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         });
     });
 
-    document.getElementById('save-tags-btn').addEventListener('click', function () {
-        const tags = document.getElementById('tags-input').value;
-        const hiddenTagsInput = document.createElement('input');
-        hiddenTagsInput.type = 'hidden';
-        hiddenTagsInput.name = 'tags';
-        hiddenTagsInput.value = tags;
 
-        const hiddenActionInput = document.createElement('input');
-        hiddenActionInput.type = 'hidden';
-        hiddenActionInput.name = 'action';
-        hiddenActionInput.value = 'add_tags';
-
-        const form = document.getElementById('batch-form');
-        form.appendChild(hiddenTagsInput);
-        form.appendChild(hiddenActionInput);
-        form.submit();
-    });
 
     document.getElementById('submission_zip').addEventListener('change', function (e) {
         var submissionNameInput = document.getElementById('submission_name');
@@ -917,38 +973,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     const allAvailableTags = {{ all_tags| map(attribute = 'name') | list | tojson }};
     const allAvailablePrefixes = [...new Set(allAvailableTags.map(t => t.split(/[=:-]/)[0]).filter(Boolean))];
 
-    tagsInput.addEventListener('keyup', function () {
-        const value = this.value;
-        const currentTags = value.split(',').map(t => t.trim());
-        const currentTag = currentTags.pop() || '';
 
-        modalAutocompleteList.innerHTML = '';
-        if (!currentTag) return;
-
-        const filteredTags = allAvailableTags.filter(tag => tag.toLowerCase().startsWith(currentTag.toLowerCase()) && !currentTags.includes(tag));
-
-        filteredTags.forEach(tag => {
-            const item = document.createElement('a');
-            item.href = '#';
-            item.className = 'list-group-item list-group-item-action';
-            item.textContent = tag;
-            item.addEventListener('click', function (e) {
-                e.preventDefault();
-                const newValue = [...currentTags, tag, ''].join(', ');
-                tagsInput.value = newValue;
-                modalAutocompleteList.innerHTML = '';
-                tagsInput.focus();
-            });
-            modalAutocompleteList.appendChild(item);
-        });
-    });
-
-    // Hide autocomplete when clicking outside
-    document.addEventListener('click', function (e) {
-        if (e.target !== tagsInput) {
-            modalAutocompleteList.innerHTML = '';
-        }
-    });
 
     // --- Advanced Tag Filtering Logic (Chips UI) ---
     function setupTagInput(wrapperId, inputId, suggestionsId, checkboxId, sourceList, filterType = 'submission') {
@@ -1042,9 +1067,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         return;
                     }
                 }
+                if (e.key === 'Enter') {
+                    e.preventDefault(); // Always prevent default for Enter in tag input
+                }
                 const val = input.value.trim();
                 if (val) {
-                    e.preventDefault();
                     const parts = val.split(/[ ,]+/);
                     parts.forEach(part => {
                         if (part && !tags.some(t => t.toLowerCase() === part.toLowerCase())) {
@@ -1092,28 +1119,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
         function updateSuggestions() {
             currentFocus = -1;
-            const val = input.value.trim().toLowerCase();
+            let val = input.value.trim().toLowerCase();
+            const hasPrefix = val.startsWith('!');
+            const searchVal = hasPrefix ? val.substring(1) : val;
+
             suggestionsList.innerHTML = '';
 
             // Show suggestions if value exists OR if input is focused (show all/top)
             let matches = [];
-            if (val) {
+            if (searchVal) {
                 if (sourceList && sourceList.length > 0) {
-                    matches = sourceList.filter(t => t.toLowerCase().includes(val) && !tags.includes(t));
+                    matches = sourceList.filter(t => t.toLowerCase().includes(searchVal) && !tags.includes((hasPrefix ? '!' : '') + t));
                 }
             } else {
                 // Show all (or top 10) if no input but focused
                 if (sourceList && sourceList.length > 0) {
-                    matches = sourceList.filter(t => !tags.includes(t));
+                    matches = sourceList.filter(t => !tags.includes((hasPrefix ? '!' : '') + t));
                 }
             }
 
             if (matches.length > 0) {
                 matches.slice(0, 10).forEach(match => {
                     const li = document.createElement('li');
-                    li.textContent = match;
+                    li.textContent = (hasPrefix ? '!' : '') + match;
                     li.addEventListener('click', () => {
-                        addTag(match);
+                        addTag((hasPrefix ? '!' : '') + match);
                         input.value = ''; // Clear input on selection
                         suggestionsList.style.display = 'none';
                         input.focus();
@@ -1202,6 +1232,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 
     function applyFilters(type) {
+        if (type === 'modal') return; // Do not auto-submit form for modal tags
         if (type === 'sample') {
             debounceSampleFilter();
         } else {
@@ -2311,11 +2342,97 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         localStorage.setItem(ROW_HEIGHT_KEY, finalHeight);
     }
 
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initRowResize);
     } else {
         initRowResize();
     }
+
+    // --- Modal Tag Logic ---
+    // Modal Tag Controller - use 'modal' type to prevent auto-filtering the main table
+    const modalTagsCtrl = setupTagInput('modal-tags-wrapper', 'modal-tags-input', 'modal-tags-suggestions', null, allAvailableTags, 'modal');
+
+    const addTagsModal = document.getElementById('add-tags-modal');
+    if (addTagsModal) {
+        addTagsModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const form = document.getElementById('add-tags-form');
+            const title = document.getElementById('addTagsModalLabel');
+            const description = document.getElementById('tag-modal-description');
+            const actionInput = document.getElementById('tag-modal-action');
+            const filtersContainer = document.getElementById('batch-tag-filters-container');
+
+            // Reset filters container
+            filtersContainer.innerHTML = '';
+
+            if (button && button.classList.contains('edit-submission-tags-btn')) {
+                // SINGLE EDIT MODE
+                const subId = button.getAttribute('data-submission-id');
+                const subName = button.getAttribute('data-submission-name');
+                const subTags = button.getAttribute('data-submission-tags');
+
+                title.textContent = `Edit Tags: ${subName}`;
+                description.textContent = "Manage tags for this submission. Existing tags will be replaced by your selection.";
+                form.action = `/{{ project_name }}/submission/${subId}/update_tags`;
+                actionInput.value = 'update_tags'; // Though the route is explicit
+
+                const tagsArray = subTags ? subTags.split(',').map(t => t.trim()).filter(Boolean) : [];
+                modalTagsCtrl.setTags(tagsArray);
+            } else {
+                // BATCH ADD MODE
+                title.textContent = "Add Tags to Selected Submissions";
+                description.textContent = "Enter tags to be ADDED to the selected submissions. Existing tags will persist.";
+                form.action = "{{ url_for('batch_action', project_name=project_name) }}";
+                actionInput.value = 'add_tags';
+                modalTagsCtrl.clearTags();
+
+                // Add hidden inputs for preserving filter state (copy from batch-form)
+                const batchForm = document.getElementById('batch-form');
+                if (batchForm) {
+                    const paramsToCopy = [
+                        'search_query', 'show_archived', 'enable_include', 'enable_exclude', 'enable_prefix',
+                        'include_tags', 'exclude_tags', 'prefix_tags', 'sort_metric', 'sort_order',
+                        'sample_search_query', 'enable_sample_include', 'enable_sample_exclude', 'enable_sample_prefix',
+                        'sample_include_tags', 'sample_exclude_tags', 'sample_prefix_tags', 'leaderboard_id'
+                    ];
+                    paramsToCopy.forEach(name => {
+                        const val = batchForm.querySelector(`input[name="${name}"]`)?.value;
+                        if (val !== undefined) {
+                            const hidden = document.createElement('input');
+                            hidden.type = 'hidden';
+                            hidden.name = name;
+                            hidden.value = val;
+                            filtersContainer.appendChild(hidden);
+                        }
+                    });
+
+                    // IMPORTANT: Copy selected submission_ids too!
+                    batchForm.querySelectorAll('input[name="submission_ids"]:checked').forEach(cb => {
+                        const hidden = document.createElement('input');
+                        hidden.type = 'hidden';
+                        hidden.name = 'submission_ids';
+                        hidden.value = cb.value;
+                        filtersContainer.appendChild(hidden);
+                    });
+                }
+            }
+        });
+
+        document.getElementById('add-tags-form').addEventListener('submit', function (e) {
+            const currentTags = modalTagsCtrl.getTags();
+            document.getElementById('hidden-modal-tags').value = currentTags.join(',');
+        });
+    }
+
+    // Initialize author avatars
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '43');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    });
 
 </script>
 {% endblock %}

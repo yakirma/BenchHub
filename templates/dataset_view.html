@@ -4,15 +4,19 @@
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <div>
-        <h1>Dataset: {{ dataset.name }}</h1>
-        <p class="text-muted mb-0">Uploaded on: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}</p>
-        {% if dataset.git_commit %}
-        <p class="text-muted">
-            <small>{{ dataset.git_branch or 'N/A' }} @ {{ dataset.git_commit[:7] }}: {{ dataset.git_message or 'N/A'
-                }}</small>
-        </p>
-        {% endif %}
+    <div class="d-flex align-items-center gap-3">
+        <div class="author-avatar-init" data-author="{{ dataset.git_author or '' }}" data-size="53"
+            id="dataset-author-avatar"></div>
+        <div>
+            <h1>Dataset: {{ dataset.name }}</h1>
+            <p class="text-muted mb-0">Uploaded on: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}</p>
+            {% if dataset.git_commit %}
+            <p class="text-muted">
+                <small>{{ dataset.git_branch or 'N/A' }} @ {{ dataset.git_commit[:7] }}: {{ dataset.git_message or 'N/A'
+                    }}{% if dataset.git_author %} by {{ dataset.git_author }}{% endif %}</small>
+            </p>
+            {% endif %}
+        </div>
     </div>
     <div class="d-flex align-items-center">
         <a href="/api/dataset/{{ dataset.id }}/download" class="btn btn-outline-success">
@@ -442,7 +446,7 @@
                             <li>
                                 <a class="dropdown-item add-tags-btn" href="#" data-sample-id="{{ sample.id }}"
                                     data-sample-name="{{ sample.name }}" data-sample-tags="{{ sample.tags or '' }}">
-                                    <i class="bi bi-tag me-2"></i>Add Tags
+                                    <i class="bi bi-tag me-2"></i>Edit Tags
                                 </a>
                             </li>
                         </ul>
@@ -454,7 +458,7 @@
                     {% if col_key == 'sample_name' %}
                     {{ sample.name }}
                     {% elif col_key == 'signal_shape' %}
-                    {{ sample.signal_shape.shape_name if sample.signal_shape else 'N/A' }}
+                    {{ sample._resolved_shape.shape_name if sample._resolved_shape else 'N/A' }}
                     {% elif col_key == 'tags' %}
                     {% if sample.tags %}
                     {% for tag in sample.tags.split(',') %}
@@ -701,7 +705,7 @@
         </div>
     </div>
 </div>
-<!-- Add Tags Modal -->
+<!-- Edit Tags Modal -->
 <div class="modal fade" id="add-tags-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -761,6 +765,18 @@
 {% endblock %}
 
 {% block scripts %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    // Initialize author avatars
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '43');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    });
+</script>
 <script>
     console.log('!!! CRITICAL DEBUG: DATASET_VIEW SCRIPT STARTED !!!');
     // alert('dataset_view script loaded'); 
@@ -1559,7 +1575,7 @@
     // Modal Tag Controller
     const modalTagsCtrl = setupTagInput('modal-tags-wrapper', 'modal-tags-input', 'modal-tags-suggestions', null, allAvailableTags);
 
-    // Add Tags Modal Initialization
+    // Edit Tags Modal Initialization
     const addTagsModal = document.getElementById('add-tags-modal');
     if (addTagsModal) {
         addTagsModal.addEventListener('show.bs.modal', function (event) {

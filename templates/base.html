@@ -160,6 +160,16 @@
             word-wrap: break-word;
             white-space: normal;
         }
+
+        .change-on-hover {
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .change-on-hover:hover {
+            opacity: 0.8;
+            border-color: var(--bs-primary) !important;
+        }
     </style>
 </head>
 
@@ -178,6 +188,11 @@
                 <a class="ms-3 text-decoration-none {{ 'fw-bold text-primary' if request.endpoint == 'datasets_list' else 'text-body' }}"
                     href="{{ url_for('datasets_list') }}">
                     <i class="bi bi-database me-1 text-info"></i> Datasets
+                </a>
+
+                <a class="ms-3 text-decoration-none {{ 'fw-bold text-primary' if request.endpoint == 'users_list' else 'text-body' }}"
+                    href="{{ url_for('users_list') }}">
+                    <i class="bi bi-people me-1 text-success"></i> Users
                 </a>
 
                 {% if g.current_project %}
@@ -674,6 +689,9 @@
         }
     </script>
     {% block scripts %}{% endblock %}
+    <script>
+        window.AUTHOR_PROFILES = {{ author_profiles_json | safe }};
+    </script>
 </body>
 
 </html>

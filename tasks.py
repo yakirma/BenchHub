@@ -31,8 +31,13 @@ def process_submission(self, submission_id, sample_filters=None):
         if not leaderboard.leaderboard_metrics:
             logger.info(f"No metrics defined for leaderboard {leaderboard.id}. Skipping calculation.")
         else:
-            # Fetch all samples for this dataset
-            dataset_samples_query = session.query(Sample).filter_by(dataset_id=leaderboard.dataset_id)
+            # 1. Preparing Context Status
+            submission.processing_status = 'Processing: Preparing Context'
+            session.commit()
+
+            # Fetch all samples for this dataset(s)
+            dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+            dataset_samples_query = session.query(Sample).filter(Sample.dataset_id.in_(dataset_ids))
             
             # Apply filters if provided
             if sample_filters:
@@ -97,11 +102,18 @@ def process_submission(self, submission_id, sample_filters=None):
                  metric_is_agg_map[name] = lm.global_metric.is_aggregated
             
             logger.info(f"Evaluating {len(sorted_metrics)} leaderboard metrics...")
-
-            for lm in sorted_metrics:
+            
+            total_metrics = len(sorted_metrics)
+            for i, lm in enumerate(sorted_metrics):
                 global_metric = lm.global_metric
+                metric_name = lm.target_name if lm.target_name else global_metric.name
+                
+                # Update Status: Evaluating Metric X/Y
+                submission.processing_status = f'Processing: Metric {i+1}/{total_metrics} ({metric_name})'
+                session.commit()
+
                 arg_mappings_json = lm.arg_mappings
-                metric_out_name = lm.target_name if lm.target_name else global_metric.name
+                metric_out_name = f"lm_{lm.id}"
 
                 # Check for existing result
                 existing_result = session.query(MetricResult).filter_by(
@@ -111,6 +123,32 @@ def process_submission(self, submission_id, sample_filters=None):
                 if existing_result:
                     session.delete(existing_result)
                 
+                # Tag-based filtering for this specific metric
+                current_metric_samples = dataset_samples
+                current_metric_ctx = samples_context
+                
+                if hasattr(lm, 'tag_filter') and lm.tag_filter:
+                    tags = [t.strip().lower() for t in lm.tag_filter.split(',')]
+                    include_tags = [t for t in tags if not t.startswith('!')]
+                    exclude_tags = [t[1:] for t in tags if t.startswith('!')]
+                    
+                    filtered_indices = []
+                    for i_sample, sample in enumerate(dataset_samples):
+                        sample_tags = [t.strip().lower() for t in (sample.tags.split(',') if sample.tags else [])]
+                        
+                        # Check excludes
+                        if any(t in sample_tags for t in exclude_tags):
+                            continue
+                        
+                        # Check includes
+                        if not include_tags or any(t in sample_tags for t in include_tags):
+                            filtered_indices.append(i_sample)
+                    
+                    current_metric_samples = [dataset_samples[idx] for idx in filtered_indices]
+                    current_metric_ctx = [samples_context[idx] for idx in filtered_indices]
+                    
+                    logger.info(f"  [Metric: {metric_out_name}] Filtered to {len(current_metric_samples)}/{len(dataset_samples)} samples due to tag_filter: {lm.tag_filter}")
+
                 value = None
                 error = None
                 
@@ -125,19 +163,20 @@ def process_submission(self, submission_id, sample_filters=None):
                     for key in required_keys:
                         is_agg_input = metric_is_agg_map.get(key, False)
                         if is_agg_input:
-                            if samples_context:
-                                agg_context[key] = samples_context[0].get(key, None)
+                            if current_metric_ctx:
+                                agg_context[key] = current_metric_ctx[0].get(key, None)
                             else:
                                 agg_context[key] = None
                         else:
                             vals = []
-                            for ctx in samples_context:
+                            for ctx in current_metric_ctx:
                                 vals.append(ctx.get(key, None)) 
                             agg_context[key] = vals
 
                     value, error = evaluate_dynamic_metric(global_metric, agg_context, arg_mappings_json)
                     logger.info(f"  [Metric: {metric_out_name}] Aggregated calculation. Value: {value}")
                     if value is not None:
+                        # Update ALL samples with the aggregated value for this metric
                         for ctx in samples_context:
                             ctx[metric_out_name] = value
                 else:
@@ -146,13 +185,12 @@ def process_submission(self, submission_id, sample_filters=None):
                     sample_errors = []
                     
                     # Cleanup existing CustomFields for this metric to avoid stale data
-                    # Use delete with synchronize_session=False for performance/bulk
                     session.query(CustomField).filter_by(
                          submission_id=submission.id, 
                          name=metric_out_name
                     ).delete(synchronize_session=False)
 
-                    for i, ctx in enumerate(samples_context):
+                    for i_ctx, ctx in enumerate(current_metric_ctx):
                         val, err = evaluate_dynamic_metric(global_metric, ctx, arg_mappings_json)
                         if val is not None:
                             sample_values.append(val)
@@ -160,7 +198,7 @@ def process_submission(self, submission_id, sample_filters=None):
                             
                             # Persist to CustomField for Visualization
                             try:
-                                current_sample = dataset_samples[i]
+                                current_sample = current_metric_samples[i_ctx]
                                 cf = CustomField(
                                     submission_id=submission.id,
                                     sample_id=current_sample.id,
@@ -171,7 +209,7 @@ def process_submission(self, submission_id, sample_filters=None):
                                 )
                                 session.add(cf)
                             except Exception as e:
-                                logger.error(f"Error persisting custom field {metric_out_name} for sample {i}: {e}")
+                                logger.error(f"Error persisting custom field {metric_out_name} for sample {i_ctx}: {e}")
 
                         if err:
                             sample_errors.append(err)
@@ -234,5 +272,136 @@ def process_submission(self, submission_id, sample_filters=None):
         except Exception as inner_e:
             logger.critical(f"Critical error updating submission status: {inner_e}")
         logger.exception(f"Error processing submission {submission_id}: {e}")
+    finally:
+        session.remove()
+
+@celery.task(bind=True, max_retries=3, ignore_result=True)
+def reaggregate_submission_metrics(self, submission_id):
+    """
+    Re-calculates aggregated metric results (mean/max/etc) from existing per-sample 
+    CustomField values, without re-running the python metric code.
+    Used when only aggregation settings change.
+    """
+    # Force remove any existing session
+    db.session.remove()
+    session = db.session
+    try:
+        submission = session.query(Submission).get(submission_id)
+        if not submission:
+            return
+
+        # safety check: if submission is 'dirty' (was calculated on subset), 
+        # we can't produce a valid full-dataset aggregation from it.
+        if submission.last_sample_filter:
+             logger.info(f"Submission {submission_id} has filtered results. Falling back to full calculation.")
+             process_submission(submission_id)
+             return
+             
+        submission.processing_status = 'Processing'
+        session.commit()
+
+        leaderboard = submission.leaderboard
+        logger.info(f"Re-aggregating metrics for submission {submission_id} (Optimized)...")
+
+        updated_count = 0
+        
+        # Pre-calc total
+        total_metrics = 0
+        for lm in leaderboard.leaderboard_metrics:
+            if not lm.global_metric.is_aggregated:
+                total_metrics += 1
+                
+        processed_i = 0
+        for lm in leaderboard.leaderboard_metrics:
+            # Skip global aggregated metrics (they don't use pooling)
+            if lm.global_metric.is_aggregated:
+                continue
+            
+            processed_i += 1
+            metric_name = lm.target_name if lm.target_name else lm.global_metric.name
+            submission.processing_status = f'Re-aggregating: {processed_i}/{total_metrics} ({metric_name})'
+            session.commit()
+
+            metric_out_name = f"lm_{lm.id}"
+            
+            # 1. Fetch all per-sample scalar values from CustomField
+            # We filter by name AND type='scalar' to be sure
+            # Note: process_submission ensures these are created
+            cfs = session.query(CustomField.value_float).filter_by(
+                submission_id=submission.id,
+                name=metric_out_name,
+                field_type='scalar'
+            ).all()
+            
+            sample_values = [r[0] for r in cfs if r[0] is not None]
+
+            # If no values found, it might mean the metric failed previously or wasn't calculated.
+            # In this case, we can't aggregate. 
+            if not sample_values:
+                continue
+                
+            # 2. Perform Aggregation
+            pooling_type = getattr(lm, 'pooling_type', 'mean')
+            pooling_percentile = getattr(lm, 'pooling_percentile', None)
+            
+            value = None
+            error = None
+            agg_desc = pooling_type
+            
+            try:
+                if pooling_type == 'median':
+                    value = float(np.median(sample_values))
+                    agg_desc = "Median"
+                elif pooling_type == 'percentile' and pooling_percentile is not None:
+                    value = float(np.percentile(sample_values, pooling_percentile))
+                    agg_desc = f"{pooling_percentile}th Percentile"
+                elif pooling_type == 'min': 
+                     value = float(np.min(sample_values))
+                     agg_desc = "Min"
+                elif pooling_type == 'max':
+                     value = float(np.max(sample_values))
+                     agg_desc = "Max"
+                else:
+                    # Default to Mean
+                    value = float(np.mean(sample_values))
+                    agg_desc = "Mean"
+                    
+                logger.info(f"  [Metric: {metric_out_name}] Re-aggregated {agg_desc} of {len(sample_values)} samples. Result: {value}")
+                
+            except Exception as e:
+                logger.error(f"  [Metric: {metric_out_name}] Re-aggregation ({pooling_type}) failed: {e}")
+                error = f"Aggregation failed: {str(e)}"
+
+            # 3. Update MetricResult
+            result = session.query(MetricResult).filter_by(
+                submission_id=submission.id,
+                leaderboard_metric_id=lm.id
+            ).first()
+            
+            if not result:
+                result = MetricResult(
+                    submission_id=submission.id,
+                    leaderboard_metric_id=lm.id
+                )
+                session.add(result)
+            
+            result.value = value
+            result.error_message = error
+            updated_count += 1
+            
+        submission.processing_status = 'Processed'
+        session.commit()
+        logger.info(f"Re-aggregation complete for {submission_id}. Updated {updated_count} metrics.")
+        
+    except Exception as e:
+        session.rollback()
+        logger.exception(f"Error re-aggregating submission {submission_id}: {e}")
+        # Mark as error so user knows something went wrong
+        try:
+             submission = session.query(Submission).get(submission_id)
+             if submission:
+                 submission.processing_status = "Error Recalc"
+                 session.commit()
+        except: pass
     finally:
         session.remove()

@@ -1,0 +1,32 @@
+/* Git Author Avatar Styles */
+.author-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: white;
+    font-weight: 600;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    flex-shrink: 0;
+    user-select: none;
+    cursor: default;
+}
+
+.author-avatar-small {
+    width: 32px;
+    height: 32px;
+    font-size: 13px;
+}
+
+.author-avatar-medium {
+    width: 43px;
+    height: 43px;
+    font-size: 17px;
+}
+
+.author-avatar-large {
+    width: 53px;
+    height: 53px;
+    font-size: 21px;
+}

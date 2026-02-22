@@ -1,5 +1,16 @@
 {% extends "base.html" %}
 
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
+</script>
 {% block title %}Home - Bench-Hub{% endblock %}
 
 {% block content %}
@@ -27,15 +38,50 @@
                 {% for leaderboard in leaderboards %}
                 <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
                     <div>
-                        <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
-                            class="text-decoration-none text-body fw-bold fs-5">
-                            {{ leaderboard.name }}
-                        </a>
+                        <div class="d-flex align-items-center">
+                            <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
+                                class="text-decoration-none text-body fw-bold fs-5">
+                                {{ leaderboard.name }}
+                            </a>
+                            {% if leaderboard.subs_last_24h and leaderboard.subs_last_24h > 0 %}
+                            {% set percentage = (leaderboard.subs_last_24h * 20) if leaderboard.subs_last_24h < 5 else
+                                100 %} <i class="bi bi-fire ms-2"
+                                style="font-size: 1.25rem; background: linear-gradient(to top, #ff4500 {{ percentage }}%, #adadad {{ percentage }}%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"
+                                title="{{ leaderboard.subs_last_24h }} submissions in the last 24 hours"></i>
+                                {% endif %}
+                        </div>
                         <small class="d-block text-body-secondary mt-1">
                             <i class="bi bi-clock me-1"></i> Created: {{ leaderboard.upload_date.strftime('%Y-%m-%d
                             %H:%M') }}
-                            <span class="ms-2 badge bg-secondary-subtle text-emphasis-secondary border">{{
-                                leaderboard.dataset.name }}</span>
+
+                            <span class="mx-2 opacity-50">|</span>
+                            <span title="Total Samples"><i class="bi bi-card-image me-1"></i> {{
+                                leaderboard.sample_count|default(0) }} Samples</span>
+
+                            <span class="mx-2 opacity-50">|</span>
+                            <span title="Total Submissions"><i class="bi bi-layers me-1"></i> {{
+                                leaderboard.submission_count|default(0) }} Subs</span>
+
+                            {% if leaderboard.last_submission_date %}
+                            <span class="mx-2 opacity-50">|</span>
+                            <span title="Last Activity"><i class="bi bi-activity me-1"></i> Last Change: {{
+                                leaderboard.last_submission_date.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% endif %}
+
+                            {% if leaderboard.datasets %}
+                            {% for ds in leaderboard.datasets %}
+                            <div class="d-inline-flex align-items-center me-2 my-1">
+                                <div class="author-avatar-init me-1" data-author="{{ ds.git_author or '' }}"
+                                    data-size="21"></div>
+                                <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}" class="text-decoration-none"
+                                    title="View Dataset">
+                                    <span
+                                        class="badge bg-secondary-subtle text-emphasis-secondary border change-on-hover">{{
+                                        ds.name }}</span>
+                                </a>
+                            </div>
+                            {% endfor %}
+                            {% endif %}
                         </small>
                     </div>
                     <div class="d-flex align-items-center">
@@ -69,16 +115,16 @@
                         Leaderboard</h5>
                     <form action="{{ url_for('create_leaderboard') }}" method="post">
                         <div class="mb-3">
-                            <label for="dataset_id" class="form-label text-body">Select Dataset</label>
-                            <select class="form-select" id="dataset_id" name="dataset_id" required>
-                                <option value="" disabled selected>Choose a dataset...</option>
+                            <label for="dataset_ids" class="form-label text-body">Select Datasets</label>
+                            <select class="form-select" id="dataset_ids" name="dataset_ids" required multiple size="5">
                                 {% for dataset in datasets %}
                                 <option value="{{ dataset.id }}" data-name="{{ dataset.name }}">{{ dataset.name }}
                                 </option>
                                 {% endfor %}
                             </select>
                             <div class="form-text">
-                                Don't see your dataset? <a href="{{ url_for('datasets_list') }}">Manage Datasets</a>
+                                Hold Ctrl (or Cmd) to select multiple. Don't see your dataset? <a
+                                    href="{{ url_for('datasets_list') }}">Manage Datasets</a>
                             </div>
                         </div>
                         <div class="mb-3">
@@ -98,27 +144,54 @@
         </div>
     </div>
 </div>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
+</script>
 {% endblock %}
 
 {% block scripts %}
 <script>
-    document.getElementById('dataset_zip').addEventListener('change', function (e) {
-        var datasetNameInput = document.getElementById('dataset_name');
-        if (datasetNameInput.value === '') {
-            var fileNames = Array.from(e.target.files).map(file => file.name.replace(/\.zip$/, ''));
-            datasetNameInput.value = fileNames.join(', ');
-        }
-    });
+    const datasetZip = document.getElementById('dataset_zip');
+    if (datasetZip) {
+        datasetZip.addEventListener('change', function (e) {
+            var datasetNameInput = document.getElementById('dataset_name');
+            if (datasetNameInput && datasetNameInput.value === '') {
+                var fileNames = Array.from(e.target.files).map(file => file.name.replace(/\.zip$/, ''));
+                datasetNameInput.value = fileNames.join(', ');
+            }
+        });
+    }
 
-    const datasetSelect = document.getElementById('dataset_id');
+    const datasetSelect = document.getElementById('dataset_ids');
     if (datasetSelect) {
+        const leaderboardNameInput = document.getElementById('leaderboard_name');
+
+        // Track manual edits
+        if (leaderboardNameInput) {
+            leaderboardNameInput.addEventListener('input', function () {
+                if (this.value.trim() === '') {
+                    this.dataset.manualEdit = 'false';
+                } else {
+                    this.dataset.manualEdit = 'true';
+                }
+            });
+        }
+
         datasetSelect.addEventListener('change', async function (e) {
-            var leaderboardNameInput = document.getElementById('leaderboard_name');
-            if (leaderboardNameInput && leaderboardNameInput.value === '') {
-                var selectedOption = e.target.options[e.target.selectedIndex];
-                var datasetName = selectedOption.getAttribute('data-name');
-                if (datasetName) {
-                    var baseName = datasetName + '_LB';
+            if (leaderboardNameInput && leaderboardNameInput.dataset.manualEdit !== 'true') {
+                var selectedOptions = Array.from(e.target.selectedOptions);
+                var datasetNames = selectedOptions.map(opt => opt.getAttribute('data-name')).filter(n => n);
+
+                if (datasetNames.length > 0) {
+                    var baseName = datasetNames[0] + (datasetNames.length > 1 ? '_MULTI_LB' : '_LB');
                     try {
                         const response = await fetch(`/api/leaderboard/suggest_name?name=${encodeURIComponent(baseName)}`);
                         const data = await response.json();
@@ -126,9 +199,22 @@
                     } catch (error) {
                         leaderboardNameInput.value = baseName;
                     }
+                } else {
+                    leaderboardNameInput.value = '';
                 }
             }
         });
     }
+</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
 </script>
 {% endblock %}

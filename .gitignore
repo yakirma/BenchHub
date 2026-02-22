@@ -2,7 +2,11 @@
 *.pyc
 *.log
 *.db
+*.bak
+.DS_Store
+debug_log.txt
 
 __pycache__
 data/
 uploads/
+dataset*

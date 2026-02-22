@@ -1,5 +1,16 @@
 {% extends "base.html" %}
 
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
+</script>
 {% block title %}Datasets - Bench-Hub{% endblock %}
 
 {% block content %}
@@ -28,14 +39,45 @@
                 {% for dataset in datasets %}
                 <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
                     <div>
-                        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
-                            class="text-decoration-none text-body fw-bold fs-5">
-                            {{ dataset.name }}
-                        </a>
+                        <div class="d-flex align-items-center mb-1">
+                            <div class="author-avatar-init me-2" data-author="{{ dataset.git_author or '' }}"
+                                data-size="32"></div>
+                            <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                                class="text-decoration-none text-body fw-bold fs-5">
+                                {{ dataset.name }}
+                            </a>
+                        </div>
                         <small class="d-block text-body-secondary mt-1">
                             <i class="bi bi-clock me-1"></i> Uploaded: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M')
                             }}
+                            {% if dataset.last_associated_activity and dataset.last_associated_activity >
+                            dataset.upload_date %}
+                            <span class="mx-2 opacity-50">|</span>
+                            <span title="Most recent activity (Active Leaderboard or Submission)"><i
+                                    class="bi bi-activity me-1"></i> Active: {{
+                                dataset.last_associated_activity.strftime('%Y-%m-%d %H:%M') }}</span>
+                            {% endif %}
+                            <span class="mx-2 opacity-50">|</span>
+                            <span title="Total Samples"><i class="bi bi-card-image me-1"></i> {{ dataset.samples|length
+                                }} Samples</span>
                         </small>
+                        {% if dataset.active_leaderboards %}
+                        <div class="mt-2">
+                            <small class="text-body-secondary"><i class="bi bi-trophy me-1"></i> Used in:</small>
+                            {% for lb in dataset.active_leaderboards %}
+                            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                                class="text-decoration-none badge bg-body-secondary border text-body ms-1 change-on-hover">
+                                {{ lb.name }}
+                                {% if lb.subs_last_24h and lb.subs_last_24h > 0 %}
+                                {% set percentage = (lb.subs_last_24h * 20) if lb.subs_last_24h < 5 else 100 %} <i
+                                    class="bi bi-fire ms-1"
+                                    style="background: linear-gradient(to top, #ff4500 {{ percentage }}%, #adadad {{ percentage }}%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"
+                                    title="{{ lb.subs_last_24h }} submissions in the last 24 hours"></i>
+                                    {% endif %}
+                            </a>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
                     <div class="d-flex align-items-center">
                         <!-- View Button -->
@@ -106,6 +148,17 @@
         </div>
     </div>
 </div>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
+</script>
 {% endblock %}
 
 {% block scripts %}
@@ -117,5 +170,16 @@
             datasetNameInput.value = fileNames.join(', ');
         }
     });
+</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
+<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        document.querySelectorAll('.author-avatar-init').forEach(el => {
+            const author = el.dataset.author;
+            const size = parseInt(el.dataset.size || '32');
+            el.innerHTML = createAuthorAvatar(author, size);
+        });
+    }); 
 </script>
 {% endblock %}

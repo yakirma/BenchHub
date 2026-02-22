@@ -115,6 +115,18 @@ def get_metric_context(sample, sub=None, submission_folder=None):
                 if cf.field_type == 'metric' or cf.field_type == 'scalar':
                      context[f"sub_{cf.name}"] = cf.value_float
                      context[cf.name] = cf.value_float # Also store without prefix for direct access
+                     
+                     # [FIX] Fallback for lm_{id} naming: also provide friendly name in context
+                     if cf.name.startswith('lm_'):
+                         try:
+                             lm_id = int(cf.name[3:])
+                             from app import LeaderboardMetric
+                             lm = LeaderboardMetric.query.get(lm_id)
+                             if lm:
+                                 friendly_name = lm.target_name or lm.global_metric.name
+                                 context[friendly_name] = cf.value_float
+                                 context[f"sub_{friendly_name}"] = cf.value_float
+                         except: pass
         
         # Add 'sub_peak' convenience if it exists
         # 'detect_custom_fields' creates CustomFields so it should be in there.
