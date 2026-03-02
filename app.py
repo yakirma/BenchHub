@@ -3673,8 +3673,10 @@ def batch_action(project_name):
         }
         for sub in submissions:
             sub.processing_status = 'Pending'
-            tasks.process_submission.delay(sub.id, sample_filters=sample_filters)
-        flash(f'Started recalculation for {len(submissions)} submissions.', 'info')
+        db.session.commit()
+        
+        tasks.process_submissions_batch_sequential.delay([s.id for s in submissions], sample_filters=sample_filters)
+        flash(f'Started sequential recalculation for {len(submissions)} submissions.', 'info')
     db.session.commit()
     
     # Preserve filter parameters in redirect

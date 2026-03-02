@@ -8,8 +8,7 @@ import numpy as np
 # Configure logging
 logger = logging.getLogger(__name__)
 
-@celery.task(bind=True, max_retries=5, ignore_result=True)
-def process_submission(self, submission_id, sample_filters=None):
+def _process_submission_impl(submission_id, sample_filters=None, task_instance=None):
     # Force remove any existing session to avoid issues in some Celery environments
     db.session.remove()
     session = db.session
@@ -17,10 +16,11 @@ def process_submission(self, submission_id, sample_filters=None):
         submission = session.query(Submission).get(submission_id)
         if not submission:
             logger.info(f"Submission {submission_id} not found in task. Retrying...")
-            try:
-                self.retry(countdown=1)
-            except self.MaxRetriesExceededError:
-                logger.error(f"Submission {submission_id} not found after retries.")
+            if task_instance:
+                try:
+                    task_instance.retry(countdown=1)
+                except task_instance.MaxRetriesExceededError:
+                    logger.error(f"Submission {submission_id} not found after retries.")
             return
 
         submission.processing_status = 'Processing'
@@ -288,6 +288,24 @@ def process_submission(self, submission_id, sample_filters=None):
         logger.exception(f"Error processing submission {submission_id}: {e}")
     finally:
         session.remove()
+
+@celery.task(bind=True, max_retries=5, ignore_result=True)
+def process_submission(self, submission_id, sample_filters=None):
+    """
+    Standard background task to calculate a single submission.
+    """
+    _process_submission_impl(submission_id, sample_filters, self)
+
+@celery.task(bind=True, max_retries=5, ignore_result=True)
+def process_submissions_batch_sequential(self, submission_ids, sample_filters=None):
+    """
+    Background task to calculate a list of submissions sequentially.
+    """
+    logger.info(f"Starting sequential batch calculation for {len(submission_ids)} submissions: {submission_ids}")
+    for idx, sub_id in enumerate(submission_ids):
+        logger.info(f"Batch processing {idx+1}/{len(submission_ids)}: Submission {sub_id}")
+        _process_submission_impl(sub_id, sample_filters, task_instance=None)
+    logger.info("Sequential batch calculation complete.")
 
 @celery.task(bind=True, max_retries=3, ignore_result=True)
 def reaggregate_submission_metrics(self, submission_id):
