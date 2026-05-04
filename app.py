@@ -121,7 +121,7 @@ __version__ = "1.0.0"
 app.secret_key = 'supersecretkey' # Needed for session management
 # basedir = os.path.abspath(os.path.dirname(__file__)) # No longer used for data
 user_home = os.path.expanduser("~")
-dtof_data_dir = os.path.join(user_home, ".dtofbenchmarking")
+dtof_data_dir = os.environ.get('BENCHHUB_DATA_DIR') or os.path.join(user_home, ".dtofbenchmarking")
 
 # Ensure data directory exists
 if not os.path.exists(dtof_data_dir):
