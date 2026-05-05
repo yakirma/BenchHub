@@ -1,6 +1,7 @@
-# BenchHub container — runs the same image as both web (gunicorn) and worker
-# (celery). The process is selected by Fly's [processes] table in fly.toml,
-# which becomes the container's CMD.
+# BenchHub container — runs gunicorn AND celery inside one VM via start.sh.
+# Why not two Fly process groups: Fly volumes are 1:1 with machines, but the
+# web + worker need to share /data (SQLite DB + uploads). Single VM keeps
+# them on one volume.
 
 FROM python:3.13-slim AS base
 
@@ -31,10 +32,11 @@ COPY . .
 # Non-root user; data dir bind-mounted at /data via Fly volume.
 RUN useradd --create-home --uid 1000 app \
  && mkdir -p /data \
+ && chmod +x /app/start.sh \
  && chown -R app:app /app /data
 USER app
 
 EXPOSE 8080
 
-# Default CMD is the web process; Fly overrides this for the worker process.
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "--workers", "2", "--timeout", "120", "app:app"]
+# start.sh runs celery + gunicorn together with proper SIGTERM forwarding.
+CMD ["./start.sh"]

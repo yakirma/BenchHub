@@ -21,19 +21,18 @@ primary_region = 'iad'
   # SQLite-on-volume schema by itself.
   BENCHHUB_AUTO_MIGRATE = '1'
 
-[processes]
-  web = 'gunicorn -b 0.0.0.0:8080 --workers 2 --timeout 120 app:app'
-  worker = 'celery -A app.celery worker --loglevel=info --concurrency=1'
+# Single process group: the Dockerfile's ./start.sh runs both gunicorn and
+# celery inside the one VM. Why: Fly volumes are 1:1 with machines, but the
+# web + worker need to share /data (SQLite DB + uploads). Two process groups
+# would mean two volumes, two divergent DBs.
 
 [[mounts]]
   source = 'benchhub_data'
   destination = '/data'
-  processes = ['web', 'worker']
 
 [[services]]
   protocol = 'tcp'
   internal_port = 8080
-  processes = ['web']
 
   [[services.ports]]
     port = 80
