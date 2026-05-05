@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Start both the Celery worker and gunicorn inside the same Fly VM.
 #
 # Why one VM: Fly volumes are 1:1 with machines, but the worker (writes
@@ -7,6 +7,9 @@
 # groups in fly.toml would each get their own volume → out-of-sync state.
 # Single machine, single volume, both processes is the right shape for the
 # Cloudflare-Access-gated single-user deploy.
+#
+# NOTE: must be bash, not sh — we use `wait -n` which is a bashism. The
+# python:3.13-slim image ships /bin/bash, so this is fine.
 
 set -eu
 
