@@ -131,12 +131,27 @@ else:
     print(f"Using data directory at: {dtof_data_dir}")
 
 _redis_url = os.environ.get('REDIS_URL') or 'redis://localhost:6379/0'
+_celery_broker = os.environ.get('CELERY_BROKER_URL') or _redis_url
+_celery_backend = os.environ.get('CELERY_RESULT_BACKEND') or _redis_url
+
+# Celery 5+ refuses to connect to rediss:// without an explicit ssl_cert_reqs
+# value (raises "A rediss:// URL must have parameter ssl_cert_reqs..."). When
+# the URL uses TLS, set the SSL options programmatically so the secret can be
+# the bare connection string from Upstash etc.
+import ssl as _ssl
+_celery_extra_config = {}
+if _celery_broker.startswith('rediss://') or _celery_backend.startswith('rediss://'):
+    _ssl_opts = {'ssl_cert_reqs': _ssl.CERT_REQUIRED}
+    _celery_extra_config['BROKER_USE_SSL'] = _ssl_opts
+    _celery_extra_config['REDIS_BACKEND_USE_SSL'] = _ssl_opts
+
 app.config.update(
     SQLALCHEMY_DATABASE_URI='sqlite:///' + os.path.join(dtof_data_dir, 'database.db'),
     UPLOAD_FOLDER=os.path.join(dtof_data_dir, 'uploads'),
-    CELERY_BROKER_URL=os.environ.get('CELERY_BROKER_URL') or _redis_url,
-    CELERY_RESULT_BACKEND=os.environ.get('CELERY_RESULT_BACKEND') or _redis_url,
-    SQLALCHEMY_ENGINE_OPTIONS={'connect_args': {'timeout': 120}}  # 120 seconds timeout
+    CELERY_BROKER_URL=_celery_broker,
+    CELERY_RESULT_BACKEND=_celery_backend,
+    SQLALCHEMY_ENGINE_OPTIONS={'connect_args': {'timeout': 120}},  # 120 seconds timeout
+    **_celery_extra_config,
 )
 
 # Enable Write-Ahead Logging (WAL) for better concurrency
