@@ -6616,12 +6616,27 @@ def download_submissions_full_bulk(leaderboard_id):
 
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions_full.zip")
 def run_migrations():
-    """Idempotent boot-time migration runner — invoked from `python app.py migrate`
-    so it can be wired into Fly's release_command (or any other deploy hook)."""
+    """Idempotent boot-time migration runner. Safe to call concurrently —
+    SQLite WAL + 120s busy_timeout absorb the race, and both `db.create_all()`
+    (CREATE TABLE IF NOT EXISTS) and `check_and_migrate_db()` (try/except
+    around each ALTER) are no-ops when the schema is already current."""
     with app.app_context():
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         check_and_migrate_db()
         db.create_all()
+
+
+# Auto-run migrations at module import time when the env var is set. This is
+# how the schema gets onto Fly's persistent volume: Fly's `release_command`
+# runs in a temp VM that doesn't mount our volume, so we can't rely on it for
+# SQLite-on-volume setups. Setting BENCHHUB_AUTO_MIGRATE=1 in fly.toml means
+# every gunicorn / celery process boots through run_migrations() against the
+# real volume-backed DB.
+#
+# Tests deliberately don't set this env var — the pytest conftest manages
+# the schema itself via db.create_all() per test.
+if os.environ.get('BENCHHUB_AUTO_MIGRATE') == '1':
+    run_migrations()
 
 
 if __name__ == '__main__':
