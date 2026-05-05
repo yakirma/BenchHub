@@ -1,6 +1,9 @@
-Flask
-Flask-SQLAlchemy
-celery
-redis
-numpy
-scipy
+Flask>=3.0,<4
+Flask-SQLAlchemy>=3.1,<4
+celery>=5.3,<6
+redis>=5,<7
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
+Pillow>=10
+gunicorn>=22

@@ -1,0 +1,52 @@
+# Build context exclusions — keep the image small and avoid leaking local
+# state into production. Mirrors .gitignore plus a few build-time extras.
+
+# Python / build artifacts
+__pycache__
+*.pyc
+*.pyo
+.coverage
+.coverage_html
+.pytest_cache
+*.egg-info
+build/
+dist/
+
+# Virtualenvs
+.venv
+venv
+env
+
+# Local app data — datasets and uploads belong on the Fly volume, NEVER in
+# the image.
+.dtofbenchmarking
+data/
+uploads/
+
+# IDE / editor / OS metadata
+.idea
+.vscode
+.claude
+.DS_Store
+
+# Tests + dev-only files (don't need them in the prod image; CI runs them
+# from the source checkout, not from the image).
+tests/
+test_chain.py
+test_chain_app.py
+test_celery_chain.py
+
+# Sample data committed to the repo (large + not useful at runtime).
+*.zip
+dataset_*/
+
+# Git, CI, docs (image doesn't need them)
+.git
+.github
+.gitignore
+
+# Local config (use Fly secrets instead)
+local_config.py
+
+# Coverage / pytest config aren't needed at runtime, but they're tiny — leave
+# them in case a debug shell wants to run pytest against the deployed image.

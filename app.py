@@ -118,7 +118,7 @@ def get_distinguishable_metric_name(lm):
 
 app = Flask(__name__)
 __version__ = "1.0.0"
-app.secret_key = 'supersecretkey' # Needed for session management
+app.secret_key = os.environ.get('SECRET_KEY') or 'supersecretkey'  # Override in prod via SECRET_KEY env
 # basedir = os.path.abspath(os.path.dirname(__file__)) # No longer used for data
 user_home = os.path.expanduser("~")
 dtof_data_dir = os.environ.get('BENCHHUB_DATA_DIR') or os.path.join(user_home, ".dtofbenchmarking")
@@ -130,11 +130,12 @@ if not os.path.exists(dtof_data_dir):
 else:
     print(f"Using data directory at: {dtof_data_dir}")
 
+_redis_url = os.environ.get('REDIS_URL') or 'redis://localhost:6379/0'
 app.config.update(
     SQLALCHEMY_DATABASE_URI='sqlite:///' + os.path.join(dtof_data_dir, 'database.db'),
     UPLOAD_FOLDER=os.path.join(dtof_data_dir, 'uploads'),
-    CELERY_BROKER_URL='redis://localhost:6379/0',
-    CELERY_RESULT_BACKEND='redis://localhost:6379/0',
+    CELERY_BROKER_URL=os.environ.get('CELERY_BROKER_URL') or _redis_url,
+    CELERY_RESULT_BACKEND=os.environ.get('CELERY_RESULT_BACKEND') or _redis_url,
     SQLALCHEMY_ENGINE_OPTIONS={'connect_args': {'timeout': 120}}  # 120 seconds timeout
 )
 
@@ -6614,12 +6615,21 @@ def download_submissions_full_bulk(leaderboard_id):
         return response
 
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions_full.zip")
-if __name__ == '__main__':
+def run_migrations():
+    """Idempotent boot-time migration runner — invoked from `python app.py migrate`
+    so it can be wired into Fly's release_command (or any other deploy hook)."""
     with app.app_context():
-        # Ensure upload directory exists
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        # Check and migrate DB before creating/accessing
         check_and_migrate_db()
         db.create_all()
 
-    app.run(host='0.0.0.0', port=6060, debug=True)
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'migrate':
+        run_migrations()
+        sys.exit(0)
+
+    run_migrations()
+    port = int(os.environ.get('PORT', '6060'))
+    debug = os.environ.get('FLASK_DEBUG', '1') == '1'
+    app.run(host='0.0.0.0', port=port, debug=debug)
