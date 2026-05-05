@@ -1,0 +1,59 @@
+# Optional CI sketch — remove this file if you don't intend to push the repo
+# to GitHub. The test suite uses CELERY_TASK_ALWAYS_EAGER (set in
+# tests/conftest.py), so Redis isn't actually required at test time. The
+# service container below is left commented-out for the day someone adds
+# a non-eager integration test that does need a real broker.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    # Uncomment when a test path needs a real Redis broker.
+    # services:
+    #   redis:
+    #     image: redis:7-alpine
+    #     ports:
+    #       - 6379:6379
+    #     options: >-
+    #       --health-cmd "redis-cli ping"
+    #       --health-interval 10s
+    #       --health-timeout 5s
+    #       --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Test-only deps + the runtime deps that requirements.txt currently
+          # forgets (matplotlib, Pillow). Drop these once requirements.txt is
+          # fixed (see CLAUDE.md).
+          pip install pytest pytest-flask pytest-cov matplotlib Pillow
+
+      - name: Run tests with coverage
+        run: |
+          pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=50
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
