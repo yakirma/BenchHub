@@ -143,6 +143,47 @@
                         -->
                         <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">Upload Dataset</button>
                     </form>
+
+                    <hr class="my-4">
+
+                    {# Phase 4: HuggingFace BYO. The HF repo must follow the
+                       BenchHub folder convention (metric_*/, hist_*/, raw_*/,
+                       image_*/) — this is *not* a generic HF Datasets importer. #}
+                    <h6 class="fw-bold mb-3">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>Import from HuggingFace
+                    </h6>
+                    <form action="{{ url_for('import_from_hf') }}" method="post">
+                        <div class="mb-3">
+                            <label for="hf_repo_id" class="form-label small text-body">Repo ID</label>
+                            <input type="text" class="form-control form-control-sm font-monospace"
+                                id="hf_repo_id" name="hf_repo_id"
+                                placeholder="user/repo-name" required>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-7">
+                                <label for="hf_dataset_name" class="form-label small text-body">Dataset name</label>
+                                <input type="text" class="form-control form-control-sm"
+                                    id="hf_dataset_name" name="dataset_name" placeholder="(repo name)">
+                            </div>
+                            <div class="col-5">
+                                <label for="hf_revision" class="form-label small text-body">Revision</label>
+                                <input type="text" class="form-control form-control-sm font-monospace"
+                                    id="hf_revision" name="hf_revision" placeholder="main">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="hf_token" class="form-label small text-body">
+                                Access token <span class="text-body-secondary">(optional, for private repos)</span>
+                            </label>
+                            <input type="password" class="form-control form-control-sm font-monospace"
+                                id="hf_token" name="hf_token" autocomplete="off">
+                        </div>
+                        <p class="form-text text-body-secondary small mb-3">
+                            <i class="bi bi-exclamation-circle me-1"></i>The repo must follow BenchHub's
+                            folder convention (<code>metric_*/</code>, <code>hist_*/</code>, etc.).
+                        </p>
+                        <button type="submit" class="btn btn-outline-primary w-100">Import</button>
+                    </form>
                 </div>
             </div>
         </div>

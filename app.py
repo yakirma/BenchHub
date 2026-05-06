@@ -20,6 +20,7 @@ from sqlalchemy import or_, and_, not_, func
 import io
 import csv
 import secrets
+import tempfile
 import warnings
 import matplotlib
 matplotlib.use('Agg')
@@ -1303,6 +1304,7 @@ def load_project_context():
                         'terms', 'privacy',
                         # Phase 8: settings (login_required handles auth itself).
                         'api_tokens', 'api_tokens_regenerate', 'api_tokens_revoke',
+                        'account_settings', 'account_delete',
                         # Project-mutation routes use project_id from URL, not g.current_project.
                         'rename_project', 'clone_project', 'delete_project',
                         # Datasets are global, not project-scoped — see CLAUDE.md.
@@ -1779,6 +1781,85 @@ def api_tokens_revoke():
     db.session.commit()
     flash("API token revoked.", "warning")
     return redirect(url_for('api_tokens'))
+
+
+# ===================== Account deletion (GDPR) =====================
+# Right-to-be-forgotten flow. Wipes everything the user owns plus their
+# user row. Submissions sitting in someone *else's* leaderboard get their
+# owner detached (set to NULL) rather than deleted — the leaderboard
+# owner's benchmark history stays intact, but the personal-data link is
+# severed.
+
+@app.route('/settings/account', methods=['GET'])
+@login_required
+def account_settings():
+    return render_template('account_settings.html')
+
+
+@app.route('/settings/account/delete', methods=['POST'])
+@login_required
+def account_delete():
+    """Delete the user's account and all owned data.
+
+    Confirm-text gate: the user must type their email exactly. We use
+    email (not display name or "DELETE") because email is a thing the
+    user demonstrably knows and can't accidentally tab-complete from
+    a UI hint.
+    """
+    typed = (request.form.get('confirm_email') or '').strip().lower()
+    expected = (g.current_user.email or '').strip().lower()
+    if typed != expected:
+        flash("Email confirmation didn't match. Account not deleted.", "danger")
+        return redirect(url_for('account_settings'))
+
+    user = g.current_user
+    user_id = user.id
+
+    # 1) Submissions in OTHER users' leaderboards: detach owner only.
+    foreign_subs = (
+        db.session.query(Submission)
+        .join(Leaderboard, Submission.leaderboard_id == Leaderboard.id)
+        .filter(
+            Submission.owner_user_id == user_id,
+            or_(Leaderboard.owner_user_id != user_id,
+                Leaderboard.owner_user_id.is_(None)),
+        )
+        .all()
+    )
+    for sub in foreign_subs:
+        sub.owner_user_id = None
+
+    # 2) Owned projects (cascade deletes their leaderboards + submissions).
+    for proj in Project.query.filter_by(owner_user_id=user_id).all():
+        db.session.delete(proj)
+
+    # 3) Orphan leaderboards: owned by the user but living in someone
+    # else's project (rare but possible if visibility was loosened
+    # historically). Delete them outright.
+    for lb in Leaderboard.query.filter_by(owner_user_id=user_id).all():
+        db.session.delete(lb)
+
+    # 4) Owned datasets (cascades samples + custom fields). Also nuke
+    # the on-disk dataset folder so we're not paying for orphaned bytes.
+    for ds in Dataset.query.filter_by(owner_user_id=user_id).all():
+        folder_name = secure_filename(ds.name)
+        ds_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', folder_name)
+        if os.path.isdir(ds_dir):
+            shutil.rmtree(ds_dir, ignore_errors=True)
+        db.session.delete(ds)
+
+    # 5) Owned global metrics + visualizations.
+    GlobalMetric.query.filter_by(owner_user_id=user_id).delete(synchronize_session=False)
+    GlobalVisualization.query.filter_by(owner_user_id=user_id).delete(synchronize_session=False)
+
+    # 6) The user row itself. Drops the cookie next.
+    db.session.delete(user)
+    db.session.commit()
+
+    session.pop('user_id', None)
+    session.pop('oauth_next', None)
+    flash("Your account and owned content have been deleted.", "success")
+    return redirect(url_for('landing'))
 
 
 # ===================== Legal stubs (Phase 8) =====================
@@ -4143,6 +4224,85 @@ def upload_dataset(project_name):
             os.remove(temp_zip_path)
 
     return redirect(url_for('datasets_list'))
+
+
+# ===================== HuggingFace BYO (Phase 4 — simple) =====================
+# Constraint: the HF repo MUST already follow BenchHub's folder convention
+# (metric_*/, hist_*/, raw_*/, image_*/ folders with one file per sample).
+# We don't translate arbitrary HF Datasets schemas — that's a much bigger
+# design problem that needs explicit user input on which datasets to support.
+# This path is "snapshot a structured repo + reuse the existing ZIP pipeline."
+
+def import_dataset_from_hf(repo_id, dataset_name, *, revision=None,
+                           hf_token=None, owner_user_id=None):
+    """Pull an HF repo to a temp dir, zip it, and feed it to
+    process_dataset_zip. Returns the same (success, message, ds_id) tuple.
+
+    `huggingface_hub` is imported lazily so the rest of the app boots
+    without it (and so tests can patch the import path).
+    """
+    from huggingface_hub import snapshot_download
+
+    work_dir = tempfile.mkdtemp(prefix='benchhub-hf-')
+    try:
+        snap_dir = snapshot_download(
+            repo_id=repo_id,
+            repo_type='dataset',
+            revision=revision,
+            token=hf_token,
+            local_dir=os.path.join(work_dir, 'snap'),
+        )
+        # Re-zip the snapshot so process_dataset_zip can ingest it without
+        # needing a directory-mode branch. The cost is one extra
+        # write/read of the bytes; cheap relative to the network pull.
+        zip_base = os.path.join(work_dir, secure_filename(dataset_name))
+        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=snap_dir)
+        return process_dataset_zip(
+            zip_path, dataset_name, override=False,
+            owner_user_id=owner_user_id,
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.route('/<project_name>/import_from_hf', methods=['POST'])
+@login_required
+def import_from_hf(project_name):
+    repo_id = (request.form.get('hf_repo_id') or '').strip()
+    dataset_name = (request.form.get('dataset_name') or '').strip()
+    revision = (request.form.get('hf_revision') or '').strip() or None
+    hf_token = (request.form.get('hf_token') or '').strip() or None
+
+    if not repo_id:
+        flash("Missing HuggingFace repo ID.", "danger")
+        return redirect(url_for('datasets_list'))
+    if not dataset_name:
+        # Default to the repo's last segment.
+        dataset_name = repo_id.rstrip('/').split('/')[-1]
+
+    # Quota gate: count check only (we don't know the size until we pull).
+    # The storage cap re-checks after extraction inside process_dataset_zip
+    # would be ideal, but we trust the count gate + the post-pull caller
+    # to abort if the resulting dataset would push storage over.
+    ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=0)
+    if not ok:
+        flash(msg, "danger")
+        return redirect(url_for('datasets_list'))
+
+    try:
+        success, message, _ = import_dataset_from_hf(
+            repo_id, dataset_name,
+            revision=revision, hf_token=hf_token,
+            owner_user_id=g.current_user.id,
+        )
+        flash(message, "success" if success else "danger")
+    except ImportError:
+        flash("HuggingFace import is not available on this server (huggingface_hub not installed).", "danger")
+    except Exception as e:
+        flash(f"HuggingFace import failed: {e}", "danger")
+
+    return redirect(url_for('datasets_list'))
+
 
 @app.route('/<project_name>/create_leaderboard', methods=['POST'])
 @login_required

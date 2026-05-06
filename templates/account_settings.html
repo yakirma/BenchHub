@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Account settings — BenchHub{% endblock %}
+
+{% set meta_title = 'Account settings — BenchHub' %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+    <h1 class="h3 fw-bold mb-1">Account settings</h1>
+    <p class="text-body-secondary mb-4">Manage your BenchHub account.</p>
+
+    {# ---- Profile summary ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h2 class="h6 fw-semibold text-uppercase text-body-secondary mb-3">Profile</h2>
+            <dl class="row mb-0">
+                <dt class="col-sm-3 text-body-secondary fw-normal">Name</dt>
+                <dd class="col-sm-9">{{ current_user.display_name }}</dd>
+                <dt class="col-sm-3 text-body-secondary fw-normal">Email</dt>
+                <dd class="col-sm-9 font-monospace small">{{ current_user.email }}</dd>
+                <dt class="col-sm-3 text-body-secondary fw-normal">Provider</dt>
+                <dd class="col-sm-9">{{ current_user.oauth_provider|title }}</dd>
+                <dt class="col-sm-3 text-body-secondary fw-normal">Joined</dt>
+                <dd class="col-sm-9">{{ current_user.created_at.strftime('%Y-%m-%d') if current_user.created_at else '—' }}</dd>
+            </dl>
+        </div>
+    </div>
+
+    {# ---- Quotas ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h2 class="h6 fw-semibold text-uppercase text-body-secondary mb-3">Quotas</h2>
+            <ul class="list-unstyled small mb-0">
+                <li><i class="bi bi-database me-2"></i>{{ current_user.quota_max_datasets }} datasets max</li>
+                <li><i class="bi bi-hdd me-2"></i>{{ (current_user.quota_max_storage_bytes / 1024 / 1024)|round|int }} MB storage</li>
+                <li><i class="bi bi-arrow-up-circle me-2"></i>{{ current_user.quota_max_submissions_per_day }} submissions / 24h</li>
+            </ul>
+        </div>
+    </div>
+
+    {# ---- Related links ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h2 class="h6 fw-semibold text-uppercase text-body-secondary mb-3">Related</h2>
+            <ul class="list-unstyled mb-0">
+                <li class="mb-2">
+                    <a href="{{ url_for('api_tokens') }}" class="text-decoration-none">
+                        <i class="bi bi-key me-2"></i>API tokens
+                    </a>
+                </li>
+                <li>
+                    <a href="{{ url_for('user_profile', user_id=current_user.id) }}" class="text-decoration-none">
+                        <i class="bi bi-person me-2"></i>Public profile
+                    </a>
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    {# ---- Danger zone ---- #}
+    <div class="card border-danger shadow-sm">
+        <div class="card-body p-4">
+            <h2 class="h6 fw-semibold text-uppercase text-danger mb-3">
+                <i class="bi bi-exclamation-octagon me-1"></i>Danger zone
+            </h2>
+            <p class="mb-3">
+                Deleting your account will permanently remove:
+            </p>
+            <ul class="small text-body-secondary mb-3">
+                <li>All datasets, projects, and leaderboards you own</li>
+                <li>All submissions to your leaderboards</li>
+                <li>All metrics and visualizations you uploaded</li>
+                <li>Your API tokens</li>
+            </ul>
+            <p class="small text-body-secondary mb-3">
+                Submissions you sent to other users' leaderboards are kept,
+                but the link to your account is removed.
+            </p>
+            <p class="small text-body-secondary mb-4">
+                <strong>This cannot be undone.</strong>
+            </p>
+
+            <form method="POST" action="{{ url_for('account_delete') }}"
+                  onsubmit="return confirm('Permanently delete your account and all owned content? This cannot be undone.');">
+                <div class="mb-3">
+                    <label for="confirm_email" class="form-label small fw-semibold">
+                        Type your email to confirm:
+                    </label>
+                    <input type="text" id="confirm_email" name="confirm_email"
+                           class="form-control font-monospace"
+                           placeholder="{{ current_user.email }}"
+                           autocomplete="off" required>
+                </div>
+                <button type="submit" class="btn btn-danger">
+                    <i class="bi bi-trash me-1"></i>Delete my account
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
