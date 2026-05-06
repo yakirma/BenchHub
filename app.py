@@ -330,6 +330,12 @@ class Dataset(db.Model):
     display_columns = db.Column(db.String(500), nullable=False, default=DEFAULT_DATASET_DISPLAY_COLUMNS)
     visualizations = db.Column(db.String(500), nullable=False, default='') # Active visualizers
     selected_metrics = db.Column(db.String(500), nullable=False, default='') # No default metrics
+    # Phase 1 multi-tenancy.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    # server_default (not just `default`) so raw SQL INSERTs in the legacy
+    # migration code don't trip the NOT NULL constraint.
+    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
 
@@ -518,6 +524,14 @@ class Leaderboard(db.Model):
     image_width = db.Column(db.String(50), nullable=True) # Override for image column width
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON string: store last used filter settings
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True) # Added for Project Refactor (Migrated)
+    # Phase 1 multi-tenancy. Inheriting visibility from project would be
+    # cleaner but requires more schema work; for now leaderboards have their
+    # own visibility so a public leaderboard can live in a private project.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    # server_default (not just `default`) so raw SQL INSERTs in the legacy
+    # migration code don't trip the NOT NULL constraint.
+    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
 
@@ -526,8 +540,15 @@ class Project(db.Model):
     name = db.Column(db.String(100), unique=True, nullable=False)
     description = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Datasets are now global. 
-    # datasets = db.relationship('Dataset', backref='project', lazy=True, cascade="all, delete-orphan") 
+    # Phase 1 multi-tenancy. owner_user_id is nullable so legacy rows survive
+    # the migration; new rows get it populated by the create routes.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    # server_default (not just `default`) so raw SQL INSERTs in the legacy
+    # migration code don't trip the NOT NULL constraint.
+    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')  # private | unlisted | public
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
+    # Datasets are now global.
+    # datasets = db.relationship('Dataset', backref='project', lazy=True, cascade="all, delete-orphan")
     leaderboards = db.relationship('Leaderboard', backref='project', lazy=True, cascade="all, delete-orphan")
 
 class Submission(db.Model):
@@ -542,6 +563,10 @@ class Submission(db.Model):
     is_archived = db.Column(db.Boolean, default=False, nullable=False)
     processing_status = db.Column(db.String(50), default='Pending')
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON store of filters used for metrics
+    # Phase 1 multi-tenancy. Submissions don't get their own visibility — they
+    # inherit the leaderboard's. Owner is whoever uploaded the submission.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
     tags = db.relationship('Tag', secondary=submission_tags, lazy='subquery', backref=db.backref('submissions', lazy=True))
     custom_fields = db.relationship('CustomField', backref='submission', lazy=True, cascade="all, delete-orphan", foreign_keys='CustomField.submission_id')
 
@@ -601,10 +626,12 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
-def process_dataset_zip(zip_path, dataset_name, override=False):
+def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=None):
     """
     Helper to process a dataset zip file and create database entries.
     If override is True, deletes existing dataset with the same name.
+    owner_user_id (Phase 1 multi-tenancy) is the User who uploaded; None
+    means "legacy / scripted" upload.
     Returns (success: bool, message: str, dataset_id: int or None)
     """
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_extract_' + datetime.now().strftime('%Y%m%d%H%M%S%f'))
@@ -624,7 +651,7 @@ def process_dataset_zip(zip_path, dataset_name, override=False):
                 return False, f"Dataset '{dataset_name}' already exists.", None
 
         # Create preliminary entry
-        new_dataset = Dataset(name=dataset_name)
+        new_dataset = Dataset(name=dataset_name, owner_user_id=owner_user_id)
         db.session.add(new_dataset)
         db.session.commit() # Commit immediately to release lock and get ID
 
@@ -1216,7 +1243,9 @@ def load_project_context():
     public_endpoints = ['static', 'create_project', 'select_project', 'check_and_migrate_db',
                         'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
                         # Auth routes — must be reachable without a project context.
-                        'login', 'login_github', 'oauth_callback_github', 'logout']
+                        'login', 'login_github', 'oauth_callback_github', 'logout',
+                        # Project-mutation routes use project_id from URL, not g.current_project.
+                        'rename_project', 'clone_project', 'delete_project']
     if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
         return
     
@@ -1289,6 +1318,47 @@ def login_required(view):
             return redirect(url_for('login', next=request.path))
         return view(*args, **kwargs)
     return wrapped
+
+
+def owner_required(model_cls, id_kwarg='id'):
+    """Gate a route to the owner of a row.
+
+    Usage::
+        @app.route('/foo/<int:foo_id>/edit', methods=['POST'])
+        @login_required
+        @owner_required(Foo, 'foo_id')
+        def edit_foo(foo_id):
+            ...
+
+    Order matters: stack `@login_required` ABOVE `@owner_required` so anon
+    users get the login redirect before we look up the row.
+
+    Rules:
+    - row not found        -> 404
+    - row.owner_user_id is NULL (legacy data, pre-migration) -> allow
+    - row.owner_user_id matches g.current_user.id            -> allow
+    - anything else                                          -> 403
+    """
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            row_id = kwargs.get(id_kwarg)
+            if row_id is None:
+                abort(404)
+            row = model_cls.query.get(row_id)
+            if row is None:
+                abort(404)
+            owner_id = getattr(row, 'owner_user_id', None)
+            current = getattr(g, 'current_user', None)
+            if owner_id is None:
+                # Legacy / unowned. Permit for now; the eventual backfill
+                # plan assigns an owner so this branch becomes unreachable.
+                return view(*args, **kwargs)
+            if current is None or current.id != owner_id:
+                abort(403)
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
 
 
 @app.route('/login')
@@ -1383,22 +1453,23 @@ def list_projects():
     return render_template('projects.html', projects=projects, active_project_id=active_project_id, version=__version__)
 
 @app.route('/projects/create', methods=['POST'])
+@login_required
 def create_project():
     name = request.form.get('name')
     description = request.form.get('description')
-    
+
     if not name:
         flash("Project name is required.", "danger")
         return redirect(url_for('list_projects'))
-        
+
     if Project.query.filter_by(name=name).first():
         flash(f"Project '{name}' already exists.", "danger")
         return redirect(url_for('list_projects'))
-        
-    new_project = Project(name=name, description=description)
+
+    new_project = Project(name=name, description=description, owner_user_id=g.current_user.id)
     db.session.add(new_project)
     db.session.commit()
-    
+
     flash(f"Project '{name}' created!", "success")
     return redirect(url_for('list_projects'))
 
@@ -1422,6 +1493,8 @@ def select_project(project_id):
     return resp
 
 @app.route('/projects/<int:project_id>/rename', methods=['POST'])
+@login_required
+@owner_required(Project, 'project_id')
 def rename_project(project_id):
     project = Project.query.get_or_404(project_id)
     new_name = request.form.get('name')
@@ -1530,6 +1603,8 @@ def index(project_name):
 
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/edit', methods=['GET', 'POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
 def edit_leaderboard(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     if request.method == 'POST':
@@ -1826,6 +1901,8 @@ def add_leaderboard_metric(project_name, leaderboard_id):
     return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
 @app.route('/leaderboard/<int:leaderboard_id>/import_settings', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
 def import_leaderboard_settings(leaderboard_id):
     target_lb = Leaderboard.query.get_or_404(leaderboard_id)
     source_lb_id = request.form.get('source_leaderboard_id')
@@ -2587,6 +2664,7 @@ def edit_global_metric(project_name, metric_id):
     return redirect(url_for('metrics_view'))
 
 @app.route('/projects/<int:project_id>/clone', methods=['POST'])
+@login_required
 def clone_project(project_id):
     import sys
     original_project = Project.query.get_or_404(project_id)
@@ -2603,7 +2681,11 @@ def clone_project(project_id):
     created_paths = []
     try:
         # 1. Create New Project
-        new_project = Project(name=new_name, description=f"Clone of {original_project.name}")
+        new_project = Project(
+            name=new_name,
+            description=f"Clone of {original_project.name}",
+            owner_user_id=g.current_user.id,
+        )
         db.session.add(new_project)
         db.session.flush() # Get ID
         
@@ -2711,6 +2793,8 @@ def clone_project(project_id):
         return redirect(url_for('list_projects'))
 
 @app.route('/projects/<int:project_id>/delete', methods=['POST'])
+@login_required
+@owner_required(Project, 'project_id')
 def delete_project(project_id):
     project = Project.query.get_or_404(project_id)
     import sys
@@ -2941,6 +3025,8 @@ def upload_metric(project_name):
     return redirect(url_for('metrics_view'))
 
 @app.route('/<project_name>/submission/<int:submission_id>/recalculate', methods=['POST'])
+@login_required
+@owner_required(Submission, 'submission_id')
 def recalculate_submission(project_name, submission_id):
     submission = Submission.query.get_or_404(submission_id)
     
@@ -3390,6 +3476,7 @@ def leaderboard_view(project_name, leaderboard_id):
                            metric_directions=metric_directions_dict)
 
 @app.route('/<project_name>/upload_dataset', methods=['POST'])
+@login_required
 def upload_dataset(project_name):
     dataset_names_input = request.form.get('dataset_name', '')
     files = request.files.getlist('dataset_zip')
@@ -3419,7 +3506,10 @@ def upload_dataset(project_name):
         temp_zip_path = os.path.join(temp_dir, filename)
         file.save(temp_zip_path)
 
-        success, message, ds_id = process_dataset_zip(temp_zip_path, dataset_name, override=override)
+        success, message, ds_id = process_dataset_zip(
+            temp_zip_path, dataset_name, override=override,
+            owner_user_id=g.current_user.id,
+        )
 
         if success:
             flash(message, "success")
@@ -3433,10 +3523,11 @@ def upload_dataset(project_name):
     return redirect(url_for('datasets_list'))
 
 @app.route('/<project_name>/create_leaderboard', methods=['POST'])
+@login_required
 def create_leaderboard(project_name):
     project = Project.query.filter_by(name=project_name).first_or_404()
     leaderboard_name = request.form['leaderboard_name']
-    
+
     # Check if leaderboard with this name already exists in this project
     existing = Leaderboard.query.filter_by(name=leaderboard_name, project_id=project.id).first()
     if existing:
@@ -3447,11 +3538,12 @@ def create_leaderboard(project_name):
         else:
             flash(f'Leaderboard "{leaderboard_name}" already exists in this project. Please choose a different name or check "Overwrite".', 'danger')
             return redirect(url_for('index', project_name=project_name))
-    
+
     new_leaderboard = Leaderboard(
-        name=leaderboard_name, 
+        name=leaderboard_name,
         project_id=project.id,
-        summary_metrics=','.join(request.form.getlist('summary_metrics'))
+        summary_metrics=','.join(request.form.getlist('summary_metrics')),
+        owner_user_id=g.current_user.id,
     )
     
     # Handle multiple datasets
@@ -3500,13 +3592,19 @@ def create_leaderboard(project_name):
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
     return redirect(url_for('index', project_name=project_name))
 
-def process_submission_zip(leaderboard_id, submission_name, zip_path):
+def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user_id=None):
     """
     Helper function to process a single submission zip file.
     Create DB entry, extract files, and queue processing task.
+    owner_user_id (Phase 1 multi-tenancy): the User who uploaded.
     """
     try:
-        new_submission = Submission(name=submission_name, leaderboard_id=leaderboard_id, processing_status='Queued')
+        new_submission = Submission(
+            name=submission_name,
+            leaderboard_id=leaderboard_id,
+            processing_status='Queued',
+            owner_user_id=owner_user_id,
+        )
         db.session.add(new_submission)
         db.session.commit() # Commit immediately to release lock and get ID
 
@@ -3733,6 +3831,7 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path):
         return False, str(e)
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>/upload_submission', methods=['POST'])
+@login_required
 def upload_submission(project_name, leaderboard_id):
     files = request.files.getlist('submission_zip')
     submission_names_input = request.form.get('submission_name')
@@ -3792,8 +3891,11 @@ def upload_submission(project_name, leaderboard_id):
                     if filename.endswith('.zip') and not filename.startswith('__MACOSX'):
                         inner_zip_path = os.path.join(root, filename)
                         sub_name = filename.replace('.zip', '')
-                        process_submission_zip(leaderboard_id, sub_name, inner_zip_path)
-            
+                        process_submission_zip(
+                            leaderboard_id, sub_name, inner_zip_path,
+                            owner_user_id=g.current_user.id,
+                        )
+
             if os.path.exists(extract_dir):
                 shutil.rmtree(extract_dir)
 
@@ -3804,8 +3906,11 @@ def upload_submission(project_name, leaderboard_id):
                 sub_name = provided_names[i]
             else:
                 sub_name = file.filename.replace('.zip', '')
-                
-            process_submission_zip(leaderboard_id, sub_name, temp_zip_path)
+
+            process_submission_zip(
+                leaderboard_id, sub_name, temp_zip_path,
+                owner_user_id=g.current_user.id,
+            )
 
         # Cleanup original upload
         if os.path.exists(temp_zip_path):
@@ -3884,6 +3989,8 @@ def batch_action(project_name):
 
 
 @app.route('/<project_name>/submission/<int:submission_id>/update_tags', methods=['POST'])
+@login_required
+@owner_required(Submission, 'submission_id')
 def update_submission_tags(project_name, submission_id):
     submission = Submission.query.get_or_404(submission_id)
     new_tags_str = request.form.get('tags', '').strip()
@@ -5348,6 +5455,8 @@ def download_submissions_bulk(project_name, leaderboard_id):
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions.zip")
 
 @app.route('/dataset/<int:dataset_id>/delete', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
 def delete_dataset(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
     dataset_folder_name = secure_filename(dataset.name)
@@ -5357,6 +5466,8 @@ def delete_dataset(dataset_id):
     return redirect(url_for('datasets_list'))
 
 @app.route('/<project_name>/delete_leaderboard/<int:leaderboard_id>', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
 def delete_leaderboard(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     db.session.delete(leaderboard)
@@ -5364,6 +5475,8 @@ def delete_leaderboard(project_name, leaderboard_id):
     return redirect(url_for('index'))
 
 @app.route('/<project_name>/delete_submission/<int:submission_id>', methods=['POST'])
+@login_required
+@owner_required(Submission, 'submission_id')
 def delete_submission(project_name, submission_id):
     submission = Submission.query.get_or_404(submission_id)
     shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id)), ignore_errors=True)
@@ -5623,7 +5736,13 @@ def apply_tag_filters(query, args):
 
 @app.route('/api/dataset/upload', methods=['POST'])
 def dataset_upload_api():
-    """Programmatic dataset upload API"""
+    """Programmatic dataset upload API.
+
+    TODO(phase-1): no auth here yet because this endpoint serves headless
+    scripts that pre-date the OAuth flow. Cloudflare Access still gates the
+    entire app. When CF Access is removed (or a public tier is enabled),
+    swap to API tokens (stored on User) before this endpoint goes public.
+    """
     if 'dataset_zip' not in request.files:
         return jsonify({'error': 'No dataset_zip file provided'}), 400
     
@@ -6292,6 +6411,38 @@ def check_and_migrate_db():
                         print("Created 'user' table.")
                     except Exception as e:
                         print(f"Failed to create 'user' table: {e}")
+
+                # --- Owner / visibility columns (Phase 1 Slice 2) ---
+                # Add owner_user_id + visibility to project / dataset /
+                # leaderboard, and owner_user_id only to submission.
+                # Each ALTER is wrapped so a half-applied state is recoverable
+                # by re-running the migration.
+                _ownership_migrations = [
+                    ("project",     "owner_user_id", "INTEGER"),
+                    ("project",     "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("dataset",     "owner_user_id", "INTEGER"),
+                    ("dataset",     "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("leaderboard", "owner_user_id", "INTEGER"),
+                    ("leaderboard", "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("submission",  "owner_user_id", "INTEGER"),
+                ]
+                for tbl, col, coldef in _ownership_migrations:
+                    cursor.execute(f"PRAGMA table_info({tbl})")
+                    existing = {row[1] for row in cursor.fetchall()}
+                    # PRAGMA returns no rows on a missing table (no exception).
+                    # On a fresh install the table doesn't exist yet —
+                    # db.create_all() below will build it with the right
+                    # columns, so we skip rather than try to ALTER nothing.
+                    if not existing:
+                        continue
+                    if col in existing:
+                        continue
+                    try:
+                        cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {coldef}")
+                        conn.commit()
+                        print(f"Added {tbl}.{col}.")
+                    except Exception as e:
+                        print(f"Failed to add {tbl}.{col}: {e}")
 
                 conn.close()
 

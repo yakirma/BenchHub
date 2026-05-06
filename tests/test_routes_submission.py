@@ -64,14 +64,14 @@ def submissions(db_session, leaderboard_with_samples):
 
 
 def test_upload_single_submission_via_web_form(
-    client, project, leaderboard_with_samples, make_zip
+    auth_client, project, leaderboard_with_samples, make_zip, logged_in_user
 ):
     proj_name, lb_id = project.name, leaderboard_with_samples.id
     layout = {"metric_acc/s1.txt": "0.95"}
     zip_path = make_zip("upload.zip", layout, root_folder="up")
 
     with open(zip_path, "rb") as f:
-        resp = client.post(
+        resp = auth_client.post(
             f"/{proj_name}/leaderboard/{lb_id}/upload_submission",
             data={"submission_name": "via_form", "submission_zip": (f, "upload.zip")},
             content_type="multipart/form-data",
@@ -82,13 +82,14 @@ def test_upload_single_submission_via_web_form(
     assert sub is not None
     # Inner-folder name overrides the form name (existing behavior).
     assert sub.name == "up"
+    assert sub.owner_user_id == logged_in_user.id
 
 
 def test_upload_with_no_files_redirects_back(
-    client, project, leaderboard_with_samples
+    auth_client, project, leaderboard_with_samples
 ):
     proj_name, lb_id = project.name, leaderboard_with_samples.id
-    resp = client.post(
+    resp = auth_client.post(
         f"/{proj_name}/leaderboard/{lb_id}/upload_submission",
         data={"submission_name": "x"},
         content_type="multipart/form-data",
@@ -103,12 +104,12 @@ def test_upload_with_no_files_redirects_back(
 
 
 def test_recalculate_single_submission_dispatches_task(
-    client, project, leaderboard_with_samples, submissions
+    auth_client, project, leaderboard_with_samples, submissions
 ):
     proj_name, sub_id = project.name, submissions[0].id
 
     with patch("tasks.process_submission.delay") as task_mock:
-        resp = client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
+        resp = auth_client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
 
     assert resp.status_code == 302
     task_mock.assert_called_once()
@@ -116,27 +117,27 @@ def test_recalculate_single_submission_dispatches_task(
 
 
 def test_recalculate_single_marks_pending_immediately(
-    client, project, submissions
+    auth_client, project, submissions
 ):
     proj_name, sub_id = project.name, submissions[0].id
 
     with patch("tasks.process_submission.delay"):
-        client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
+        auth_client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
 
     db.session.expire_all()
     assert Submission.query.get(sub_id).processing_status == "Pending"
 
 
-def test_recalculate_single_404_for_unknown(client, project):
-    resp = client.post(f"/{project.name}/submission/9999/recalculate")
+def test_recalculate_single_404_for_unknown(auth_client, project):
+    resp = auth_client.post(f"/{project.name}/submission/9999/recalculate")
     assert resp.status_code == 404
 
 
-def test_recalculate_forwards_sample_filters(client, project, submissions):
+def test_recalculate_forwards_sample_filters(auth_client, project, submissions):
     proj_name, sub_id = project.name, submissions[0].id
 
     with patch("tasks.process_submission.delay") as task_mock:
-        client.post(
+        auth_client.post(
             f"/{proj_name}/submission/{sub_id}/recalculate",
             data={
                 "enable_sample_include": "true",
@@ -298,14 +299,14 @@ def test_batch_action_no_submissions_redirects_to_leaderboard(
 
 
 def test_update_submission_tags_replaces_existing(
-    client, project, submissions
+    auth_client, project, submissions
 ):
     sub = submissions[0]
     existing_tag = Tag(name="old_tag")
     sub.tags.append(existing_tag)
     db.session.commit()
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/submission/{sub.id}/update_tags",
         data={"tags": "new_a,new_b"},
     )
@@ -321,10 +322,10 @@ def test_update_submission_tags_replaces_existing(
 # ---------------------------------------------------------------------------
 
 
-def test_delete_submission_removes_row(client, project, submissions):
+def test_delete_submission_removes_row(auth_client, project, submissions):
     sub_id = submissions[0].id
 
-    resp = client.post(f"/{project.name}/delete_submission/{sub_id}")
+    resp = auth_client.post(f"/{project.name}/delete_submission/{sub_id}")
     assert resp.status_code == 302
 
     db.session.expire_all()

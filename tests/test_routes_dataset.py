@@ -56,27 +56,29 @@ def test_dataset_view_404_for_unknown_id(client, project_ctx):
 # ---------------------------------------------------------------------------
 
 
-def test_web_upload_creates_dataset(client, project_ctx, make_zip):
+def test_web_upload_creates_dataset(auth_client, project_ctx, make_zip, logged_in_user):
     layout = {"config/s1.json": '{"k":1}'}
     zip_path = make_zip("web.zip", layout, root_folder="web_ds")
 
     with open(zip_path, "rb") as f:
-        resp = client.post(
+        resp = auth_client.post(
             f"/{project_ctx.name}/upload_dataset",
             data={"dataset_name": "web_ds", "dataset_zip": (f, "web.zip")},
             content_type="multipart/form-data",
         )
 
     assert resp.status_code == 302
-    assert Dataset.query.filter_by(name="web_ds").count() == 1
+    ds = Dataset.query.filter_by(name="web_ds").first()
+    assert ds is not None
+    assert ds.owner_user_id == logged_in_user.id
 
 
-def test_web_upload_with_blank_name_uses_filename(client, project_ctx, make_zip):
+def test_web_upload_with_blank_name_uses_filename(auth_client, project_ctx, make_zip):
     layout = {"config/s1.json": '{"k":1}'}
     zip_path = make_zip("auto_named.zip", layout, root_folder="auto_named")
 
     with open(zip_path, "rb") as f:
-        resp = client.post(
+        resp = auth_client.post(
             f"/{project_ctx.name}/upload_dataset",
             data={"dataset_name": "", "dataset_zip": (f, "auto_named.zip")},
             content_type="multipart/form-data",
@@ -196,11 +198,11 @@ def test_update_display_columns_with_empty_uses_sentinel(
 # ---------------------------------------------------------------------------
 
 
-def test_delete_dataset_removes_row_and_files(client, project_ctx, seeded_dataset):
+def test_delete_dataset_removes_row_and_files(auth_client, project_ctx, seeded_dataset):
     ds_dir = os.path.join(app.config["UPLOAD_FOLDER"], "datasets", "seed_ds")
     assert os.path.isdir(ds_dir)  # sanity
 
-    resp = client.post(f"/dataset/{seeded_dataset.id}/delete")
+    resp = auth_client.post(f"/dataset/{seeded_dataset.id}/delete")
     assert resp.status_code == 302
 
     db.session.expire_all()
@@ -208,6 +210,6 @@ def test_delete_dataset_removes_row_and_files(client, project_ctx, seeded_datase
     assert not os.path.exists(ds_dir)
 
 
-def test_delete_dataset_404_unknown(client, project_ctx):
-    resp = client.post("/dataset/9999/delete")
+def test_delete_dataset_404_unknown(auth_client, project_ctx):
+    resp = auth_client.post("/dataset/9999/delete")
     assert resp.status_code == 404

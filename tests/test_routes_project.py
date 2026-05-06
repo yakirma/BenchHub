@@ -45,28 +45,37 @@ def test_projects_index_lists_existing_projects(client):
 # ---------------------------------------------------------------------------
 
 
-def test_create_project_inserts_row_and_redirects(client):
-    resp = client.post("/projects/create", data={"name": "shiny", "description": "desc"})
+def test_create_project_inserts_row_and_redirects(auth_client, logged_in_user):
+    resp = auth_client.post("/projects/create", data={"name": "shiny", "description": "desc"})
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/projects")
 
     p = Project.query.filter_by(name="shiny").first()
     assert p is not None
     assert p.description == "desc"
+    # Phase 1 multi-tenancy: owner stamped from session.
+    assert p.owner_user_id == logged_in_user.id
 
 
-def test_create_project_rejects_blank_name(client):
-    resp = client.post("/projects/create", data={"name": ""})
+def test_create_project_anonymous_redirects_to_login(client):
+    resp = client.post("/projects/create", data={"name": "shiny"}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+    assert Project.query.count() == 0
+
+
+def test_create_project_rejects_blank_name(auth_client):
+    resp = auth_client.post("/projects/create", data={"name": ""})
     # Redirects with flash; no DB row created.
     assert resp.status_code == 302
     assert Project.query.count() == 0
 
 
-def test_create_project_rejects_duplicate_name(client):
+def test_create_project_rejects_duplicate_name(auth_client):
     db.session.add(Project(name="dup"))
     db.session.commit()
 
-    resp = client.post("/projects/create", data={"name": "dup"})
+    resp = auth_client.post("/projects/create", data={"name": "dup"})
     assert resp.status_code == 302
     # No second row.
     assert Project.query.filter_by(name="dup").count() == 1
@@ -108,12 +117,12 @@ def test_select_project_404_for_unknown(client):
 # ---------------------------------------------------------------------------
 
 
-def test_rename_project_updates_name(client, project_ctx):
+def test_rename_project_updates_name(auth_client, project_ctx):
     p = Project(name="old")
     db.session.add(p)
     db.session.commit()
 
-    resp = client.post(f"/projects/{p.id}/rename", data={"name": "new"})
+    resp = auth_client.post(f"/projects/{p.id}/rename", data={"name": "new"})
     assert resp.status_code == 302
 
     db.session.expire_all()
@@ -121,24 +130,24 @@ def test_rename_project_updates_name(client, project_ctx):
     assert refreshed.name == "new"
 
 
-def test_rename_project_rejects_blank_name(client, project_ctx):
+def test_rename_project_rejects_blank_name(auth_client, project_ctx):
     p = Project(name="keep")
     db.session.add(p)
     db.session.commit()
 
-    client.post(f"/projects/{p.id}/rename", data={"name": ""})
+    auth_client.post(f"/projects/{p.id}/rename", data={"name": ""})
 
     db.session.expire_all()
     assert Project.query.get(p.id).name == "keep"
 
 
-def test_rename_project_rejects_collision(client, project_ctx):
+def test_rename_project_rejects_collision(auth_client, project_ctx):
     p1 = Project(name="one")
     p2 = Project(name="two")
     db.session.add_all([p1, p2])
     db.session.commit()
 
-    client.post(f"/projects/{p1.id}/rename", data={"name": "two"})
+    auth_client.post(f"/projects/{p1.id}/rename", data={"name": "two"})
 
     db.session.expire_all()
     assert Project.query.get(p1.id).name == "one"  # unchanged
@@ -149,7 +158,7 @@ def test_rename_project_rejects_collision(client, project_ctx):
 # ---------------------------------------------------------------------------
 
 
-def test_clone_project_duplicates_leaderboards_and_metrics(client, project_ctx):
+def test_clone_project_duplicates_leaderboards_and_metrics(auth_client, project_ctx):
     src = Project(name="source")
     db.session.add(src)
     db.session.flush()
@@ -177,7 +186,7 @@ def test_clone_project_duplicates_leaderboards_and_metrics(client, project_ctx):
     ))
     db.session.commit()
 
-    resp = client.post(f"/projects/{src.id}/clone", data={"name": "cloned"})
+    resp = auth_client.post(f"/projects/{src.id}/clone", data={"name": "cloned"})
     assert resp.status_code == 302
 
     cloned = Project.query.filter_by(name="cloned").first()
@@ -192,26 +201,26 @@ def test_clone_project_duplicates_leaderboards_and_metrics(client, project_ctx):
     assert cloned_lms[0].target_name == "renamed"
 
 
-def test_clone_project_rejects_existing_target_name(client, project_ctx):
+def test_clone_project_rejects_existing_target_name(auth_client, project_ctx):
     src = Project(name="src")
     dst = Project(name="taken")
     db.session.add_all([src, dst])
     db.session.commit()
     before = Project.query.count()
 
-    resp = client.post(f"/projects/{src.id}/clone", data={"name": "taken"})
+    resp = auth_client.post(f"/projects/{src.id}/clone", data={"name": "taken"})
     assert resp.status_code == 302
     # No new project created.
     assert Project.query.count() == before
 
 
-def test_clone_project_rejects_blank_name(client, project_ctx):
+def test_clone_project_rejects_blank_name(auth_client, project_ctx):
     src = Project(name="src")
     db.session.add(src)
     db.session.commit()
     before = Project.query.count()
 
-    resp = client.post(f"/projects/{src.id}/clone", data={"name": ""})
+    resp = auth_client.post(f"/projects/{src.id}/clone", data={"name": ""})
     assert resp.status_code == 302
     assert Project.query.count() == before
 
@@ -221,7 +230,7 @@ def test_clone_project_rejects_blank_name(client, project_ctx):
 # ---------------------------------------------------------------------------
 
 
-def test_delete_project_removes_row_and_leaderboards(client, project_ctx):
+def test_delete_project_removes_row_and_leaderboards(auth_client, project_ctx):
     p = Project(name="doomed")
     db.session.add(p)
     db.session.flush()
@@ -234,7 +243,7 @@ def test_delete_project_removes_row_and_leaderboards(client, project_ctx):
     db.session.add(lb)
     db.session.commit()
 
-    resp = client.post(f"/projects/{p.id}/delete")
+    resp = auth_client.post(f"/projects/{p.id}/delete")
     assert resp.status_code == 302
 
     db.session.expire_all()

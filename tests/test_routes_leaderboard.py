@@ -51,8 +51,8 @@ def leaderboard(db_session, project, dataset):
 # ---------------------------------------------------------------------------
 
 
-def test_create_leaderboard_attaches_dataset(client, project, dataset):
-    resp = client.post(
+def test_create_leaderboard_attaches_dataset(auth_client, project, dataset, logged_in_user):
+    resp = auth_client.post(
         f"/{project.name}/create_leaderboard",
         data={"leaderboard_name": "new_lb", "dataset_ids": [str(dataset.id)]},
     )
@@ -62,14 +62,15 @@ def test_create_leaderboard_attaches_dataset(client, project, dataset):
     assert lb is not None
     assert lb.project_id == project.id
     assert dataset in lb.datasets
+    assert lb.owner_user_id == logged_in_user.id
 
 
-def test_create_leaderboard_supports_multiple_datasets(client, project, dataset):
+def test_create_leaderboard_supports_multiple_datasets(auth_client, project, dataset):
     ds2 = Dataset(name="lb_ds_2")
     db.session.add(ds2)
     db.session.commit()
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/create_leaderboard",
         data={
             "leaderboard_name": "multi_lb",
@@ -83,9 +84,9 @@ def test_create_leaderboard_supports_multiple_datasets(client, project, dataset)
 
 
 def test_create_leaderboard_collision_without_overwrite_blocks(
-    client, project, dataset, leaderboard
+    auth_client, project, dataset, leaderboard
 ):
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/create_leaderboard",
         data={
             "leaderboard_name": leaderboard.name,
@@ -98,11 +99,11 @@ def test_create_leaderboard_collision_without_overwrite_blocks(
 
 
 def test_create_leaderboard_with_overwrite_replaces_existing(
-    client, project, dataset, leaderboard
+    auth_client, project, dataset, leaderboard
 ):
     old_id = leaderboard.id
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/create_leaderboard",
         data={
             "leaderboard_name": leaderboard.name,
@@ -135,13 +136,13 @@ def test_leaderboard_view_unknown_404(client, project):
     assert resp.status_code == 404
 
 
-def test_edit_leaderboard_get_renders(client, project, leaderboard):
-    resp = client.get(f"/{project.name}/leaderboard/{leaderboard.id}/edit")
+def test_edit_leaderboard_get_renders(auth_client, project, leaderboard):
+    resp = auth_client.get(f"/{project.name}/leaderboard/{leaderboard.id}/edit")
     assert resp.status_code == 200
 
 
-def test_delete_leaderboard_removes_row(client, project, leaderboard):
-    resp = client.post(f"/{project.name}/delete_leaderboard/{leaderboard.id}")
+def test_delete_leaderboard_removes_row(auth_client, project, leaderboard):
+    resp = auth_client.post(f"/{project.name}/delete_leaderboard/{leaderboard.id}")
     assert resp.status_code == 302
 
     db.session.expire_all()
@@ -195,7 +196,7 @@ def test_legacy_comparison_redirect_includes_project_name(
 
 
 def test_import_settings_clones_metrics_with_id_remapping(
-    client, project, dataset, leaderboard
+    auth_client, project, dataset, leaderboard
 ):
     # Set up a SOURCE leaderboard with one metric and a summary_metrics field
     # that references that metric's lm_<id>.
@@ -220,7 +221,7 @@ def test_import_settings_clones_metrics_with_id_remapping(
     src_lb.summary_metrics = f"lm_{src_lm.id}"
     db.session.commit()
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/leaderboard/{leaderboard.id}/import_settings",
         data={"source_leaderboard_id": str(src_lb.id)},
     )
@@ -236,7 +237,7 @@ def test_import_settings_clones_metrics_with_id_remapping(
 
 
 def test_import_settings_clears_existing_metrics_first(
-    client, project, dataset, leaderboard
+    auth_client, project, dataset, leaderboard
 ):
     # Pre-populate target with a metric — it must be deleted before import.
     gm = GlobalMetric(name="pre_existing", python_code="def m(): return 1")
@@ -256,7 +257,7 @@ def test_import_settings_clears_existing_metrics_first(
     db.session.add(src_lb)
     db.session.commit()
 
-    client.post(
+    auth_client.post(
         f"/leaderboard/{leaderboard.id}/import_settings",
         data={"source_leaderboard_id": str(src_lb.id)},
     )

@@ -98,6 +98,32 @@ def project_ctx(app, db_session, client):
     return p
 
 
+@pytest.fixture
+def logged_in_user(app, db_session):
+    """Create a User row representing the test caller. Phase 1 multi-tenancy
+    means routes that mutate state are now @login_required — tests that hit
+    them depend on this fixture (or auth_client below)."""
+    from app import User, db
+    user = User(
+        email="tester@example.com",
+        display_name="Test User",
+        oauth_provider="github",
+        oauth_sub="test-sub-1",
+    )
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+@pytest.fixture
+def auth_client(client, logged_in_user):
+    """Test client with `logged_in_user` already in the session. Use this in
+    place of `client` for any route that's now @login_required."""
+    with client.session_transaction() as sess:
+        sess['user_id'] = logged_in_user.id
+    return client
+
+
 # ---------------------------------------------------------------------------
 # ZIP factory — used by Phase 2-4
 # ---------------------------------------------------------------------------
