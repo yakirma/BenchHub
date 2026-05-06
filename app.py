@@ -437,6 +437,13 @@ class GlobalMetric(db.Model):
     python_code = db.Column(db.Text, nullable=False)  # The function definition: def metric_func(...)
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)
     accepts_aggregated_inputs = db.Column(db.Boolean, default=False)
+    # Phase 1 Slice 4 multi-tenancy. NOTE: `name` is still globally unique;
+    # two users can't both ship a metric called "L1Loss". For Phase 1 that's
+    # acceptable (rename your fork). Composite (owner, name) uniqueness is a
+    # bigger schema change deferred to a later slice.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
     # Default/Example mappings for UI hints? (Optional, maybe later)
 
 class LeaderboardMetric(db.Model):
@@ -475,6 +482,10 @@ class GlobalVisualization(db.Model):
     accepts_aggregated_inputs = db.Column(db.Boolean, default=False)
     upload_date = db.Column(db.DateTime, default=datetime.utcnow)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
+    # Phase 1 Slice 4 multi-tenancy.
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
 
 class LeaderboardVisualization(db.Model):
     """Link table between Leaderboard and GlobalVisualization"""
@@ -2618,7 +2629,12 @@ def handle_dlp_safe_code(code_str):
 
 @app.route('/<project_name>/metrics')
 def metrics_view(project_name):
-    metrics = GlobalMetric.query.order_by(GlobalMetric.name).all()
+    metrics = (
+        GlobalMetric.query
+        .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
+        .order_by(GlobalMetric.name)
+        .all()
+    )
     return render_template('metrics.html', metrics=metrics)
 
 def extract_code_from_file(file_storage):
@@ -2676,6 +2692,7 @@ def extract_code_from_file(file_storage):
     return None
 
 @app.route('/<project_name>/metrics/create', methods=['POST'])
+@login_required
 def create_global_metric(project_name):
     try:
         name = request.form.get('name')
@@ -2705,7 +2722,8 @@ def create_global_metric(project_name):
             description=description,
             python_code=python_code,
             is_aggregated=is_aggregated,
-            accepts_aggregated_inputs=accepts_aggregated_inputs
+            accepts_aggregated_inputs=accepts_aggregated_inputs,
+            owner_user_id=g.current_user.id,
         )
         db.session.add(metric)
         db.session.commit()
@@ -2717,6 +2735,8 @@ def create_global_metric(project_name):
     return redirect(url_for('metrics_view'))
 
 @app.route('/<project_name>/metrics/<int:metric_id>/edit', methods=['POST'])
+@login_required
+@owner_required(GlobalMetric, 'metric_id')
 def edit_global_metric(project_name, metric_id):
     metric = GlobalMetric.query.get_or_404(metric_id)
     try:
@@ -2916,6 +2936,8 @@ def delete_project(project_id):
         return redirect(url_for('list_projects'))
 
 @app.route('/<project_name>/metrics/<int:metric_id>/delete', methods=['POST'])
+@login_required
+@owner_required(GlobalMetric, 'metric_id')
 def delete_global_metric(project_name, metric_id):
     metric = GlobalMetric.query.get_or_404(metric_id)
     try:
@@ -2945,10 +2967,16 @@ def download_metric(project_name, metric_id):
 @app.route('/<project_name>/visualizations')
 def visualizations_view(project_name):
     """List all visualizations for the project."""
-    visualizations = GlobalVisualization.query.order_by(GlobalVisualization.name).all()
+    visualizations = (
+        GlobalVisualization.query
+        .filter(visible_in_list(GlobalVisualization, getattr(g, 'current_user', None)))
+        .order_by(GlobalVisualization.name)
+        .all()
+    )
     return render_template('visualizations.html', visualizations=visualizations, project_name=project_name)
 
 @app.route('/<project_name>/create_visualization', methods=['POST'])
+@login_required
 def create_visualization(project_name):
     """Create a new visualization."""
     try:
@@ -2977,7 +3005,8 @@ def create_visualization(project_name):
             description=description,
             python_code=python_code,
             is_aggregated='is_aggregated' in request.form,
-            accepts_aggregated_inputs='accepts_aggregated_inputs' in request.form
+            accepts_aggregated_inputs='accepts_aggregated_inputs' in request.form,
+            owner_user_id=g.current_user.id,
         )
         
         db.session.add(new_viz)
@@ -2990,6 +3019,8 @@ def create_visualization(project_name):
     return redirect(url_for('visualizations_view', project_name=project_name))
 
 @app.route('/<project_name>/visualizations/<int:viz_id>/edit', methods=['POST'])
+@login_required
+@owner_required(GlobalVisualization, 'viz_id')
 def edit_visualization(project_name, viz_id):
     """Edit an existing visualization."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
@@ -3029,6 +3060,8 @@ def edit_visualization(project_name, viz_id):
     return redirect(url_for('visualizations_view', project_name=project_name))
 
 @app.route('/<project_name>/visualizations/<int:viz_id>/delete', methods=['POST'])
+@login_required
+@owner_required(GlobalVisualization, 'viz_id')
 def delete_visualization(project_name, viz_id):
     """Delete a visualization."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
@@ -3055,6 +3088,7 @@ def download_visualization(project_name, viz_id):
     return response
 
 @app.route('/<project_name>/metrics/upload', methods=['POST'])
+@login_required
 def upload_metric(project_name):
     """Upload/update metric from a .txt file"""
     try:
@@ -3085,8 +3119,14 @@ def upload_metric(project_name):
         
         # Check if metric with this name exists
         existing_metric = GlobalMetric.query.filter_by(name=metric_name).first()
-        
+
         if existing_metric:
+            # Multi-tenancy guard: only the owner (or anyone if it's legacy NULL-owner)
+            # can overwrite an existing metric by name.
+            if (existing_metric.owner_user_id is not None
+                    and existing_metric.owner_user_id != g.current_user.id):
+                flash(f'Metric "{metric_name}" is owned by another user — pick a different name.', 'danger')
+                return redirect(url_for('metrics_view'))
             # Update existing metric
             existing_metric.python_code = python_code
             existing_metric.description = description or existing_metric.description
@@ -3099,13 +3139,14 @@ def upload_metric(project_name):
             if not metric_name:
                 flash('Metric name is required for new metrics.', 'danger')
                 return redirect(url_for('metrics_view'))
-            
+
             new_metric = GlobalMetric(
                 name=metric_name,
                 description=description,
                 python_code=python_code,
                 is_aggregated=is_aggregated,
-                accepts_aggregated_inputs=accepts_aggregated_inputs
+                accepts_aggregated_inputs=accepts_aggregated_inputs,
+                owner_user_id=g.current_user.id,
             )
             db.session.add(new_metric)
             db.session.commit()
@@ -6519,13 +6560,18 @@ def check_and_migrate_db():
                 # Each ALTER is wrapped so a half-applied state is recoverable
                 # by re-running the migration.
                 _ownership_migrations = [
-                    ("project",     "owner_user_id", "INTEGER"),
-                    ("project",     "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
-                    ("dataset",     "owner_user_id", "INTEGER"),
-                    ("dataset",     "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
-                    ("leaderboard", "owner_user_id", "INTEGER"),
-                    ("leaderboard", "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
-                    ("submission",  "owner_user_id", "INTEGER"),
+                    ("project",              "owner_user_id", "INTEGER"),
+                    ("project",              "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("dataset",              "owner_user_id", "INTEGER"),
+                    ("dataset",              "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("leaderboard",          "owner_user_id", "INTEGER"),
+                    ("leaderboard",          "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("submission",           "owner_user_id", "INTEGER"),
+                    # Slice 4: shared "library" assets.
+                    ("global_metric",        "owner_user_id", "INTEGER"),
+                    ("global_metric",        "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    ("global_visualization", "owner_user_id", "INTEGER"),
+                    ("global_visualization", "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
                 ]
                 for tbl, col, coldef in _ownership_migrations:
                     cursor.execute(f"PRAGMA table_info({tbl})")

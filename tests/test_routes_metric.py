@@ -65,9 +65,9 @@ def test_metrics_view_renders(client, project, metric):
     assert b"abs_err" in resp.data
 
 
-def test_create_metric_persists_to_db(client, project):
+def test_create_metric_persists_to_db(auth_client, project, logged_in_user):
     code = "def m(x):\n    return x * 2\n"
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/metrics/create",
         data={
             "name": "doubler",
@@ -80,13 +80,14 @@ def test_create_metric_persists_to_db(client, project):
     gm = GlobalMetric.query.filter_by(name="doubler").first()
     assert gm is not None
     assert gm.python_code.strip() == code.strip()
+    assert gm.owner_user_id == logged_in_user.id
 
 
-def test_create_metric_decodes_dlp_base64_payload(client, project):
+def test_create_metric_decodes_dlp_base64_payload(auth_client, project):
     raw = "def m():\n    return 42\n"
     encoded = "BASE64:" + base64.b64encode(raw.encode()).decode()
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/{project.name}/metrics/create",
         data={"name": "encoded_m", "python_code": encoded},
     )
@@ -99,8 +100,8 @@ def test_create_metric_decodes_dlp_base64_payload(client, project):
     assert "BASE64:" not in gm.python_code
 
 
-def test_create_metric_blocks_zip_placeholder(client, project):
-    resp = client.post(
+def test_create_metric_blocks_zip_placeholder(auth_client, project):
+    resp = auth_client.post(
         f"/{project.name}/metrics/create",
         data={
             "name": "bad",
@@ -111,8 +112,8 @@ def test_create_metric_blocks_zip_placeholder(client, project):
     assert GlobalMetric.query.filter_by(name="bad").count() == 0
 
 
-def test_create_metric_blocks_blank_code(client, project):
-    resp = client.post(
+def test_create_metric_blocks_blank_code(auth_client, project):
+    resp = auth_client.post(
         f"/{project.name}/metrics/create",
         data={"name": "empty", "python_code": ""},
     )
@@ -120,8 +121,8 @@ def test_create_metric_blocks_blank_code(client, project):
     assert GlobalMetric.query.filter_by(name="empty").count() == 0
 
 
-def test_edit_metric_updates_fields(client, project, metric):
-    resp = client.post(
+def test_edit_metric_updates_fields(auth_client, project, metric):
+    resp = auth_client.post(
         f"/{project.name}/metrics/{metric.id}/edit",
         data={
             "name": "renamed",
@@ -140,18 +141,18 @@ def test_edit_metric_updates_fields(client, project, metric):
     assert fresh.is_aggregated is True
 
 
-def test_edit_metric_404_unknown(client, project):
-    resp = client.post(
+def test_edit_metric_404_unknown(auth_client, project):
+    resp = auth_client.post(
         f"/{project.name}/metrics/9999/edit",
         data={"name": "x", "python_code": "def x(): return 1"},
     )
     assert resp.status_code == 404
 
 
-def test_delete_metric_removes_row(client, project, metric):
+def test_delete_metric_removes_row(auth_client, project, metric):
     metric_id = metric.id
 
-    resp = client.post(f"/{project.name}/metrics/{metric_id}/delete")
+    resp = auth_client.post(f"/{project.name}/metrics/{metric_id}/delete")
     assert resp.status_code == 302
 
     assert GlobalMetric.query.get(metric_id) is None

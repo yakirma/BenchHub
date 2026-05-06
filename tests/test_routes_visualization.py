@@ -64,8 +64,8 @@ def test_visualizations_view_renders(client, project, viz):
     assert b"line_plot" in resp.data
 
 
-def test_create_visualization_persists(client, project):
-    resp = client.post(
+def test_create_visualization_persists(auth_client, project, logged_in_user):
+    resp = auth_client.post(
         f"/{project.name}/create_visualization",
         data={
             "name": "scatter",
@@ -77,10 +77,11 @@ def test_create_visualization_persists(client, project):
 
     gv = GlobalVisualization.query.filter_by(name="scatter").first()
     assert gv is not None
+    assert gv.owner_user_id == logged_in_user.id
 
 
-def test_create_visualization_blocks_blank_code(client, project):
-    resp = client.post(
+def test_create_visualization_blocks_blank_code(auth_client, project):
+    resp = auth_client.post(
         f"/{project.name}/create_visualization",
         data={"name": "empty", "python_code": ""},
     )
@@ -88,8 +89,8 @@ def test_create_visualization_blocks_blank_code(client, project):
     assert GlobalVisualization.query.filter_by(name="empty").count() == 0
 
 
-def test_edit_visualization_updates_fields(client, project, viz):
-    resp = client.post(
+def test_edit_visualization_updates_fields(auth_client, project, viz):
+    resp = auth_client.post(
         f"/{project.name}/visualizations/{viz.id}/edit",
         data={
             "name": "renamed_viz",
@@ -106,9 +107,9 @@ def test_edit_visualization_updates_fields(client, project, viz):
     assert fresh.is_aggregated is True
 
 
-def test_delete_visualization_removes_row(client, project, viz):
+def test_delete_visualization_removes_row(auth_client, project, viz):
     viz_id = viz.id
-    resp = client.post(f"/{project.name}/visualizations/{viz_id}/delete")
+    resp = auth_client.post(f"/{project.name}/visualizations/{viz_id}/delete")
     assert resp.status_code == 302
     assert GlobalVisualization.query.get(viz_id) is None
 
