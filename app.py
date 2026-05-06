@@ -767,13 +767,24 @@ def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=No
                         new_dataset.git_author = author or ''
                 except Exception: pass
 
-            # Discover samples - scan all folders dynamically
+            # Discover samples - scan all folders dynamically.
+            # Strip trailing _<W>x<H> dimension suffix in raw_ depth folders;
+            # the convention is `<sample>_<W>x<H>.npz`, so the bare
+            # extension-strip would otherwise turn a depth file into a
+            # phantom sample with no other fields.
             sample_names = set()
+            _depth_dim_re = re.compile(r'^(.*)_\d+x\d+$')
             for folder_name in os.listdir(dataset_content_path):
                 folder_path = os.path.join(dataset_content_path, folder_name)
                 if os.path.isdir(folder_path) and folder_name not in ['__MACOSX', 'git.info']:
+                    is_raw_depth = folder_name.startswith('raw_')
                     for fname in os.listdir(folder_path):
-                        sample_names.add(os.path.splitext(fname)[0])
+                        base = os.path.splitext(fname)[0]
+                        if is_raw_depth:
+                            m = _depth_dim_re.match(base)
+                            if m:
+                                base = m.group(1)
+                        sample_names.add(base)
             
             if not sample_names:
                 return False, "No valid samples (hist, config, etc.) found in ZIP.", None

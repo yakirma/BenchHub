@@ -52,6 +52,25 @@ def test_happy_path_creates_dataset_samples_and_custom_fields(client, make_zip):
     assert ("thumbnails", samples["s1"].id) in fields_by_name
 
 
+def test_raw_depth_does_not_create_phantom_samples(client, make_zip):
+    """Regression: `raw_<field>/<sample>_<W>x<H>.npz` files used to land
+    sample-name=`s0_640x480` because os.path.splitext only strips the
+    extension. The discovery code now strips the dimension suffix when
+    the folder is a raw_ depth folder."""
+    layout = {
+        "image_rgb/s0.png": b"\x89PNG-img",
+        "image_rgb/s1.png": b"\x89PNG-img",
+        "raw_depth/s0_8x6.npz": {"npz": {"depth": np.zeros((6, 8))}},
+        "raw_depth/s1_8x6.npz": {"npz": {"depth": np.zeros((6, 8))}},
+    }
+    zip_path = make_zip("nodupes.zip", layout, root_folder="nodupes_ds")
+    success, msg, ds_id = process_dataset_zip(zip_path, "nodupes_ds")
+    assert success
+    assert "(2 samples)" in msg, msg
+    sample_names = {s.name for s in Sample.query.filter_by(dataset_id=ds_id).all()}
+    assert sample_names == {"s0", "s1"}
+
+
 def test_persists_files_to_uploads_directory(client, make_zip):
     layout = {
         "thumbnails/s1.png": b"\x89PNG-img",
