@@ -1232,10 +1232,14 @@
                         if (loadingSpinner) loadingSpinner.style.display = 'none';
                         if (modalPlotly) modalPlotly.style.display = 'block';
 
+                        // Match the matplotlib thumbnail: row 0 at the
+                        // top (image-style coords), no gridlines, equal
+                        // pixel aspect, turbo colormap not reversed.
                         const plotData = [{
                             z: data.data,
                             type: 'heatmap',
                             colorscale: 'turbo',
+                            reversescale: false,
                             hoverongaps: false,
                             hovertemplate: 'X: %{x}<br>Y: %{y}<br>Depth: %{z}<extra></extra>'
                         }];
@@ -1243,9 +1247,21 @@
                         const layout = {
                             title: 'Interactive Depth Map',
                             autosize: true,
-                            margin: { l: 50, r: 50, b: 50, t: 50 },
-                            xaxis: { title: 'X' },
-                            yaxis: { title: 'Y', scaleanchor: 'x' }
+                            margin: { l: 40, r: 40, b: 40, t: 40 },
+                            xaxis: {
+                                showgrid: false,
+                                zeroline: false,
+                                ticks: '',
+                                showticklabels: false,
+                            },
+                            yaxis: {
+                                showgrid: false,
+                                zeroline: false,
+                                ticks: '',
+                                showticklabels: false,
+                                scaleanchor: 'x',
+                                autorange: 'reversed',  // imshow-style: y=0 at top
+                            },
                         };
 
                         Plotly.newPlot('modal-plotly-div', plotData, layout, { responsive: true });

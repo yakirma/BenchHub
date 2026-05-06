@@ -5647,18 +5647,35 @@ def download_sample(sample_id):
             np.savez_compressed(hist_buf, bins=bins, counts=counts)
             zf.writestr(f'ground_truth/hist/{sample.name}.npz', hist_buf.getvalue())
         
-        # Custom fields from dataset
+        # Custom fields from dataset (full type coverage — previously only
+        # scalar+image were included, so depth maps and json/text fields
+        # silently dropped from the bundle).
         for cf in sample.custom_fields:
             if cf.field_type == 'scalar':
-                # Write scalar value to text file
                 zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', str(cf.value_float))
-            elif cf.field_type == 'image':
-                # Copy image file from uploads folder
-                img_path = os.path.join(app.config['UPLOAD_FOLDER'], cf.value_text)
-                if os.path.exists(img_path):
-                    # Determine file extension from original path
-                    ext = os.path.splitext(cf.value_text)[1]
-                    zf.write(img_path, f'ground_truth/{cf.name}/{sample.name}{ext}')
+
+            elif cf.field_type in ('image', 'depth', 'json'):
+                # All three store a relative path under UPLOAD_FOLDER.
+                # Preserve the original filename (depth files carry a
+                # `_<W>x<H>` suffix that the importer expects on round-trip).
+                src_path = os.path.join(app.config['UPLOAD_FOLDER'], cf.value_text or '')
+                if os.path.exists(src_path):
+                    arc_filename = os.path.basename(cf.value_text)
+                    zf.write(src_path, f'ground_truth/{cf.name}/{arc_filename}')
+
+            elif cf.field_type == 'histogram':
+                # value_text is the JSON {bins, counts}; round-trip to .npz
+                # so the bundle matches the original ZIP convention.
+                try:
+                    h = json.loads(cf.value_text)
+                    buf = io.BytesIO()
+                    np.savez_compressed(buf, bins=np.array(h['bins']), counts=np.array(h['counts']))
+                    zf.writestr(f'ground_truth/{cf.name}/{sample.name}.npz', buf.getvalue())
+                except Exception:
+                    pass
+
+            elif cf.field_type == 'text':
+                zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', cf.value_text or '')
 
 
         # 2. Add Submission fields from disk
