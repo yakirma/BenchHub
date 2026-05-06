@@ -258,3 +258,50 @@ def test_admin_endpoint_no_token_returns_401(client, db_session):
     not a 403 from require_admin. The two layers stack correctly."""
     resp = client.post('/api/admin/datasets/1/curate')
     assert resp.status_code == 401
+
+
+# --- admin leaderboard create ---
+
+
+def test_admin_leaderboard_create_in_curated_project(client, db_session, admin_user):
+    from app import Dataset, Leaderboard, ensure_curated_seed, db as _db
+    ensure_curated_seed()
+    ds = Dataset(name='lb_target_ds', visibility='public')
+    _db.session.add(ds); _db.session.commit()
+
+    resp = client.post(
+        '/api/admin/leaderboards/create',
+        json={'name': 'lb_curated_a', 'dataset_ids': [ds.id]},
+        headers={'Authorization': f'Bearer {admin_user.api_token}'},
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body['created'] is True
+    assert body['dataset_ids'] == [ds.id]
+
+    lb = Leaderboard.query.get(body['leaderboard_id'])
+    sys_user = User.query.filter_by(email='curated@benchhub.local').first()
+    assert lb.owner_user_id == sys_user.id
+    assert lb.visibility == 'public'
+    assert lb.project.name == 'benchhub-curated'
+
+
+def test_admin_leaderboard_create_is_idempotent(client, db_session, admin_user):
+    from app import ensure_curated_seed
+    ensure_curated_seed()
+    headers = {'Authorization': f'Bearer {admin_user.api_token}'}
+    body1 = client.post('/api/admin/leaderboards/create',
+                        json={'name': 'lb_dup'}, headers=headers).get_json()
+    body2 = client.post('/api/admin/leaderboards/create',
+                        json={'name': 'lb_dup'}, headers=headers).get_json()
+    assert body1['leaderboard_id'] == body2['leaderboard_id']
+    assert body2['created'] is False
+
+
+def test_admin_leaderboard_create_requires_name(client, db_session, admin_user):
+    resp = client.post(
+        '/api/admin/leaderboards/create',
+        json={},
+        headers={'Authorization': f'Bearer {admin_user.api_token}'},
+    )
+    assert resp.status_code == 400

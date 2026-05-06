@@ -6655,6 +6655,68 @@ def admin_dataset_uncurate(dataset_id):
     return jsonify({'dataset_id': ds.id, 'is_curated': False}), 200
 
 
+@app.route('/api/admin/leaderboards/create', methods=['POST'])
+@require_api_token
+@require_admin
+def admin_leaderboard_create():
+    """Create a curated leaderboard owned by the system user.
+
+    JSON body:
+        name (str, required)        Leaderboard name.
+        dataset_ids (list[int])     Datasets to link.
+        project_name (str)          Defaults to 'benchhub-curated'.
+        summary_metrics (str)       Comma-separated, defaults to ''.
+
+    Idempotent on (project_id, name): returns the existing row if present.
+    """
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+    dataset_ids = payload.get('dataset_ids') or []
+    project_name = (payload.get('project_name') or CURATED_PROJECT_NAME).strip()
+    summary_metrics = payload.get('summary_metrics') or ''
+
+    proj = Project.query.filter_by(name=project_name).first()
+    if proj is None:
+        return jsonify({'error': f"project '{project_name}' not found"}), 404
+
+    sys_user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
+    if sys_user is None:
+        return jsonify({'error': 'curated system user missing'}), 500
+
+    existing = Leaderboard.query.filter_by(project_id=proj.id, name=name).first()
+    if existing is not None:
+        return jsonify({
+            'leaderboard_id': existing.id,
+            'name': existing.name,
+            'project_name': proj.name,
+            'created': False,
+        }), 200
+
+    lb = Leaderboard(
+        name=name,
+        project_id=proj.id,
+        summary_metrics=summary_metrics,
+        owner_user_id=sys_user.id,
+        visibility='public',
+    )
+    if dataset_ids:
+        datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()
+        lb.datasets = datasets
+        if datasets:
+            lb.dataset_id = datasets[0].id  # legacy back-compat field
+    db.session.add(lb)
+    db.session.commit()
+    return jsonify({
+        'leaderboard_id': lb.id,
+        'name': lb.name,
+        'project_name': proj.name,
+        'dataset_ids': [d.id for d in lb.datasets],
+        'created': True,
+    }), 201
+
+
 @app.route('/api/leaderboard/<int:leaderboard_id>/info', methods=['GET'])
 def get_leaderboard_info_api(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
