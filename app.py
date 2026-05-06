@@ -16,7 +16,7 @@ import numpy as np
 import threading
 # For loading npz files
 from scipy.optimize import curve_fit
-from sqlalchemy import or_, not_, func
+from sqlalchemy import or_, and_, not_, func
 import io
 import csv
 import warnings
@@ -1245,10 +1245,26 @@ def load_project_context():
                         # Auth routes — must be reachable without a project context.
                         'login', 'login_github', 'oauth_callback_github', 'logout',
                         # Project-mutation routes use project_id from URL, not g.current_project.
-                        'rename_project', 'clone_project', 'delete_project']
+                        'rename_project', 'clone_project', 'delete_project',
+                        # Datasets are global, not project-scoped — see CLAUDE.md.
+                        'datasets_list', 'dataset_view', 'delete_dataset',
+                        'update_dataset_display_columns', 'update_dataset_visualizations',
+                        'update_dataset_metrics']
     if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
+        # Public endpoint — skip the redirect-when-no-project guard, but
+        # still populate g.current_project from the cookie so url_for(...)
+        # can auto-inject project_name into project-scoped URLs that the
+        # rendered template might build (e.g. an "Upload" button on /datasets).
+        project_id = request.cookies.get('active_project_id')
+        if project_id:
+            try:
+                p = Project.query.get(int(project_id))
+                if p:
+                    g.current_project = p
+            except (ValueError, TypeError):
+                pass
         return
-    
+
     # Programmatic API access should skip redirection
     if request.path.startswith('/api/'):
         return
@@ -1361,6 +1377,72 @@ def owner_required(model_cls, id_kwarg='id'):
     return decorator
 
 
+def visible_in_list(model_cls, user):
+    """SQL filter: rows that should appear in a *list* page.
+
+    Show:
+    - rows with visibility='public'
+    - legacy NULL-owner rows (treated as public until backfill)
+    - **owner's own non-unlisted rows** (so I can find my private stuff)
+
+    Hide:
+    - unlisted (URL-only by design — even from the owner's list pages)
+    - other users' private rows
+
+    Use as ``Model.query.filter(visible_in_list(Model, g.current_user))``."""
+    public_or_legacy = or_(
+        model_cls.visibility == 'public',
+        model_cls.owner_user_id.is_(None),
+    )
+    if user is None:
+        return public_or_legacy
+    return or_(
+        public_or_legacy,
+        and_(
+            model_cls.owner_user_id == user.id,
+            model_cls.visibility != 'unlisted',
+        ),
+    )
+
+
+def visibility_required(model_cls, id_kwarg='id'):
+    """Gate a *detail* route based on the row's visibility.
+
+    Rules:
+    - row not found                                 -> 404
+    - viewer is the owner                           -> allow
+    - row.owner_user_id IS NULL (legacy)            -> allow
+    - row.visibility in ('public', 'unlisted')      -> allow
+                                                       (unlisted is "by URL only" — that's
+                                                        what this branch represents: list
+                                                        pages exclude it via visible_in_list,
+                                                        but a direct URL goes through.)
+    - row.visibility == 'private' and not owner     -> 404 (don't leak existence)
+    """
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            row_id = kwargs.get(id_kwarg)
+            if row_id is None:
+                abort(404)
+            row = model_cls.query.get(row_id)
+            if row is None:
+                abort(404)
+            current = getattr(g, 'current_user', None)
+            owner_id = getattr(row, 'owner_user_id', None)
+            visibility = getattr(row, 'visibility', 'public')
+
+            if owner_id is None:
+                return view(*args, **kwargs)
+            if current is not None and current.id == owner_id:
+                return view(*args, **kwargs)
+            if visibility in ('public', 'unlisted'):
+                return view(*args, **kwargs)
+            abort(404)
+        return wrapped
+    return decorator
+
+
 @app.route('/login')
 def login():
     return render_template('login.html', next=request.args.get('next', ''))
@@ -1448,7 +1530,12 @@ def logout():
 
 @app.route('/projects')
 def list_projects():
-    projects = Project.query.order_by(Project.created_at).all()
+    projects = (
+        Project.query
+        .filter(visible_in_list(Project, getattr(g, 'current_user', None)))
+        .order_by(Project.created_at)
+        .all()
+    )
     active_project_id = request.cookies.get('active_project_id')
     return render_template('projects.html', projects=projects, active_project_id=active_project_id, version=__version__)
 
@@ -1557,9 +1644,15 @@ def index(project_name):
     if not hasattr(g, 'current_project'):
         # Should be caught by before_request, but safety check
         return redirect(url_for('list_projects'))
-        
-    # Updated for Global Datasets architecture
-    leaderboards = g.current_project.leaderboards
+
+    # Visibility-filtered list (Phase 1 Slice 3): only public + owned LBs
+    # show up here; private + unlisted LBs need a direct URL.
+    leaderboards = (
+        Leaderboard.query
+        .filter(Leaderboard.project_id == g.current_project.id)
+        .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
+        .all()
+    )
     
     # Sort leaderboards by last activity (creation or last submission)
     # And enrich with summary stats
@@ -3073,6 +3166,7 @@ def recalculate_submission(project_name, submission_id):
     return redirect(url_for('leaderboard_view', **redirect_args))
 
 @app.route('/<project_name>/leaderboard/<int:leaderboard_id>')
+@visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_view(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     show_archived = request.args.get('show_archived', 'false').lower() == 'true'
@@ -4020,6 +4114,7 @@ def update_leaderboard_metrics(project_name, leaderboard_id):
     return redirect(url_for('comparison_view', leaderboard_id=leaderboard_id))
 
 @app.route('/<project_name>/comparison/<int:leaderboard_id>')
+@visibility_required(Leaderboard, 'leaderboard_id')
 def comparison_view(project_name, leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     
@@ -4883,7 +4978,12 @@ def serve_depth_data(filepath):
 
 @app.route('/datasets')
 def datasets_list():
-    datasets = Dataset.query.order_by(Dataset.upload_date.desc()).all()
+    datasets = (
+        Dataset.query
+        .filter(visible_in_list(Dataset, getattr(g, 'current_user', None)))
+        .order_by(Dataset.upload_date.desc())
+        .all()
+    )
     
     # Pre-calculate activity stats for leaderboards used by these datasets
     now = datetime.utcnow()
@@ -5108,6 +5208,7 @@ def serve_author_avatar(filename):
     return send_from_directory(avatar_dir, filename)
 
 @app.route('/dataset/<int:dataset_id>')
+@visibility_required(Dataset, 'dataset_id')
 def dataset_view(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
     page = request.args.get('page', 1, type=int)

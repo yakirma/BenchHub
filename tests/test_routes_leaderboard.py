@@ -154,19 +154,6 @@ def test_delete_leaderboard_removes_row(auth_client, project, leaderboard):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Intermittent DetachedInstanceError when run after another test that "
-        "issued a request — the legacy redirect's get_fallback_project_name() "
-        "accesses g.current_project.name and the cookie-loaded Project ends up "
-        "detached from the active session. Passes alone. The route itself "
-        "works in production; this is a test-isolation issue between "
-        "Flask-SQLAlchemy 3.1 scoped sessions and the session-scoped app "
-        "context fixture. Revisit when the conftest is reworked to push a "
-        "fresh app context per test."
-    ),
-    strict=False,
-)
 def test_legacy_leaderboard_redirect_includes_project_name(
     client, project, leaderboard
 ):
@@ -178,7 +165,6 @@ def test_legacy_leaderboard_redirect_includes_project_name(
     assert f"/{proj_name}/leaderboard/{lb_id}" in resp.headers["Location"]
 
 
-@pytest.mark.xfail(reason="Same issue as legacy_leaderboard_redirect — see above.", strict=False)
 def test_legacy_comparison_redirect_includes_project_name(
     client, project, leaderboard
 ):
