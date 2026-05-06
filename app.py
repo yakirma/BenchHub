@@ -26,6 +26,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from metric_engine import evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency
 import subprocess
+from functools import wraps
+from authlib.integrations.flask_client import OAuth
 
 # Import local configuration (optional, with fallback)
 try:
@@ -172,6 +174,23 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 # Ensure upload directory exists
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+# --- OAuth (Phase 1 multi-tenancy) ---
+# Authlib client config. GITHUB_CLIENT_ID/SECRET come from `fly secrets set`
+# in prod and from a local .env (or your shell) in dev. Missing creds means
+# the /login/github route will return a 503 — the rest of the app keeps
+# working, so local dev without OAuth set up is fine.
+oauth = OAuth(app)
+oauth.register(
+    name='github',
+    client_id=os.environ.get('GITHUB_CLIENT_ID'),
+    client_secret=os.environ.get('GITHUB_CLIENT_SECRET'),
+    access_token_url='https://github.com/login/oauth/access_token',
+    authorize_url='https://github.com/login/oauth/authorize',
+    api_base_url='https://api.github.com/',
+    client_kwargs={'scope': 'read:user user:email'},
+)
 
 
 # Helper to determine column priority for sorting
@@ -525,6 +544,25 @@ class AuthorProfile(db.Model):
     avatar_filename = db.Column(db.String(255), nullable=True)
     merged_into_username = db.Column(db.String(100), nullable=True) # Username this user is merged into
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class User(db.Model):
+    """Authenticated account. Phase 1 of the public-web rollout — every other
+    multi-tenant feature (owner_user_id FKs, visibility, quotas) hangs off this.
+    OAuth-only by design: no password column, no signup form."""
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
+    display_name = db.Column(db.String(120))
+    avatar_url = db.Column(db.String(500))
+    oauth_provider = db.Column(db.String(20), nullable=False)  # 'github', later 'google'
+    oauth_sub = db.Column(db.String(120), nullable=False)      # provider's user id
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = db.Column(db.DateTime)
+
+    __table_args__ = (
+        db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
+    )
+
 
 def get_canonical_username(username, profiles):
     """Resolve a username to its canonical identity by following merge chains."""
@@ -1167,8 +1205,10 @@ Map.is_endpoint_expecting = is_endpoint_expecting
 def load_project_context():
     # Public routes and API routes that don't need project context check
     # list_projects, app_settings, docs NOW ALLOW context loading (via cookie) so tabs stay visible
-    public_endpoints = ['static', 'create_project', 'select_project', 'check_and_migrate_db', 
-                        'legacy_leaderboard_redirect', 'legacy_comparison_redirect']
+    public_endpoints = ['static', 'create_project', 'select_project', 'check_and_migrate_db',
+                        'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
+                        # Auth routes — must be reachable without a project context.
+                        'login', 'login_github', 'oauth_callback_github', 'logout']
     if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
         return
     
@@ -1216,6 +1256,117 @@ def load_project_context():
     if request.endpoint != 'list_projects':
         return redirect(url_for('list_projects'))
 
+
+# ===================== Authentication routes =====================
+
+@app.before_request
+def load_current_user():
+    """Populate g.current_user from session on every request. None if anonymous."""
+    user_id = session.get('user_id')
+    g.current_user = User.query.get(user_id) if user_id else None
+
+
+@app.context_processor
+def inject_current_user():
+    """Make current_user available in every Jinja template."""
+    return {'current_user': getattr(g, 'current_user', None)}
+
+
+def login_required(view):
+    """Redirect anonymous users to /login, preserving the intended path so the
+    callback can bounce them back. Use on any route that needs an account."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not getattr(g, 'current_user', None):
+            return redirect(url_for('login', next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route('/login')
+def login():
+    return render_template('login.html', next=request.args.get('next', ''))
+
+
+@app.route('/login/github')
+def login_github():
+    if not os.environ.get('GITHUB_CLIENT_ID') or not os.environ.get('GITHUB_CLIENT_SECRET'):
+        # Most common dev mistake — make it loud rather than crashing in Authlib.
+        return ("GitHub OAuth not configured: set GITHUB_CLIENT_ID and "
+                "GITHUB_CLIENT_SECRET (env vars or Fly secrets)."), 503
+    # Stash the post-login redirect in the session so the OAuth state stays clean.
+    session['oauth_next'] = request.args.get('next') or url_for('list_projects')
+    redirect_uri = url_for('oauth_callback_github', _external=True)
+    return oauth.github.authorize_redirect(redirect_uri)
+
+
+@app.route('/oauth/callback/github')
+def oauth_callback_github():
+    try:
+        token = oauth.github.authorize_access_token()
+    except Exception as e:
+        flash(f"GitHub login failed: {e}", "danger")
+        return redirect(url_for('login'))
+
+    # GitHub: /user gives the profile, /user/emails gives the verified primary email.
+    profile_resp = oauth.github.get('user', token=token)
+    profile = profile_resp.json()
+    oauth_sub = str(profile.get('id'))
+    if not oauth_sub:
+        flash("GitHub didn't return a user id.", "danger")
+        return redirect(url_for('login'))
+
+    email = profile.get('email')
+    if not email:
+        try:
+            emails_resp = oauth.github.get('user/emails', token=token)
+            emails = emails_resp.json() or []
+            primary = next((e for e in emails if e.get('primary') and e.get('verified')), None)
+            email = (primary or {}).get('email') or (emails[0] if emails else {}).get('email')
+        except Exception:
+            email = None
+
+    if not email:
+        flash("GitHub login succeeded but no email was available — make sure your GitHub "
+              "account has at least one verified email.", "warning")
+        return redirect(url_for('login'))
+
+    # Upsert: provider+sub is the stable identity; email can change on GitHub side.
+    user = User.query.filter_by(oauth_provider='github', oauth_sub=oauth_sub).first()
+    if user is None:
+        # Email collision against a different provider would land here on a new
+        # provider. For now: GitHub-only, so this just means a brand-new account.
+        user = User(
+            email=email,
+            display_name=profile.get('name') or profile.get('login') or email.split('@')[0],
+            avatar_url=profile.get('avatar_url'),
+            oauth_provider='github',
+            oauth_sub=oauth_sub,
+        )
+        db.session.add(user)
+    else:
+        # Refresh denormalized profile fields in case the user changed them on GitHub.
+        user.email = email
+        user.display_name = profile.get('name') or profile.get('login') or user.display_name
+        user.avatar_url = profile.get('avatar_url') or user.avatar_url
+    user.last_login_at = datetime.utcnow()
+    db.session.commit()
+
+    session['user_id'] = user.id
+    flash(f"Logged in as {user.display_name}.", "success")
+    next_url = session.pop('oauth_next', None) or url_for('list_projects')
+    return redirect(next_url)
+
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user_id', None)
+    session.pop('oauth_next', None)
+    flash("Logged out.", "info")
+    return redirect(url_for('login'))
+
+
+# ===================== Project routes =====================
 
 @app.route('/projects')
 def list_projects():
@@ -6101,7 +6252,39 @@ def check_and_migrate_db():
                         print("Successfully added 'pooling_percentile'.")
                     except Exception as e:
                         print(f"Failed to add 'pooling_percentile': {e}")
-                
+
+                # --- User table (Phase 1 multi-tenancy) ---
+                # check_and_migrate_db runs BEFORE db.create_all(), so we
+                # explicitly create the User table here so existing installs
+                # (with a populated DB but no `user` table) get it without
+                # reinstalling. db.create_all() handles fresh installs.
+                try:
+                    cursor.execute("SELECT id FROM user LIMIT 1")
+                except sqlite3.OperationalError:
+                    print("Migrating DB: Creating 'user' table...")
+                    try:
+                        cursor.execute('''
+                            CREATE TABLE user (
+                                id INTEGER PRIMARY KEY,
+                                email VARCHAR(255) NOT NULL UNIQUE,
+                                display_name VARCHAR(120),
+                                avatar_url VARCHAR(500),
+                                oauth_provider VARCHAR(20) NOT NULL,
+                                oauth_sub VARCHAR(120) NOT NULL,
+                                created_at DATETIME NOT NULL,
+                                last_login_at DATETIME
+                            )
+                        ''')
+                        cursor.execute('CREATE INDEX ix_user_email ON user (email)')
+                        cursor.execute(
+                            'CREATE UNIQUE INDEX uq_user_oauth_identity '
+                            'ON user (oauth_provider, oauth_sub)'
+                        )
+                        conn.commit()
+                        print("Created 'user' table.")
+                    except Exception as e:
+                        print(f"Failed to create 'user' table: {e}")
+
                 conn.close()
 
                 print("Database schema check complete.")

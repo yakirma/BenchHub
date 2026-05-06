@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Log in — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 480px;">
+    <div class="card shadow-sm mt-5">
+        <div class="card-body p-4 p-md-5">
+            <h1 class="h3 mb-3 text-center">Log in to BenchHub</h1>
+            <p class="text-muted text-center mb-4 small">
+                Sign in with your GitHub account to upload datasets, create
+                leaderboards, and submit predictions.
+            </p>
+
+            <a href="{{ url_for('login_github', next=next) }}"
+                class="btn btn-dark w-100 d-flex align-items-center justify-content-center">
+                <i class="bi bi-github me-2 fs-5"></i>
+                Continue with GitHub
+            </a>
+
+            {% if next %}
+            <p class="text-muted text-center small mt-3 mb-0">
+                You'll be sent to <code>{{ next }}</code> after logging in.
+            </p>
+            {% endif %}
+        </div>
+    </div>
+
+    <p class="text-muted text-center small mt-4">
+        BenchHub doesn't store passwords. We use GitHub's OAuth flow and only
+        receive your name, email, and avatar.
+    </p>
+</div>
+{% endblock %}

@@ -276,6 +276,42 @@
                             title="General Settings">
                             <i class="bi bi-gear fs-4"></i>
                         </a>
+
+                        {# Auth widget — Phase 1 multi-tenancy. Shows the
+                           signed-in user with a dropdown for logout, or a
+                           Login link for anonymous visitors. #}
+                        {% if current_user %}
+                        <div class="dropdown ms-3">
+                            <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                                {% if current_user.avatar_url %}
+                                <img src="{{ current_user.avatar_url }}" alt="" width="28" height="28"
+                                    class="rounded-circle me-2">
+                                {% else %}
+                                <i class="bi bi-person-circle fs-4 me-2"></i>
+                                {% endif %}
+                                <span class="d-none d-md-inline">{{ current_user.display_name }}</span>
+                            </a>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li class="dropdown-item-text small text-muted">
+                                    {{ current_user.email }}
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <form method="POST" action="{{ url_for('logout') }}" class="m-0">
+                                        <button type="submit" class="dropdown-item">
+                                            <i class="bi bi-box-arrow-right me-1"></i> Log out
+                                        </button>
+                                    </form>
+                                </li>
+                            </ul>
+                        </div>
+                        {% else %}
+                        <a href="{{ url_for('login') }}"
+                            class="btn btn-outline-primary btn-sm ms-3">
+                            <i class="bi bi-box-arrow-in-right me-1"></i> Log in
+                        </a>
+                        {% endif %}
                     </div>
                 </div>
             </div>
