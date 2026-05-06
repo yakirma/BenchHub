@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Home — BenchHub{% endblock %}
+
+{% set meta_title = 'Your dashboard — BenchHub' %}
+{% set meta_description = 'Your datasets, leaderboards, and recent activity on BenchHub.' %}
+
+{% block flash_messages %}{% endblock %}
+
+{% block content %}
+<style>
+    .home-card {
+        position: relative;
+        overflow: hidden;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .home-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.12);
+    }
+    .home-card-thumb {
+        height: 130px;
+        background-size: cover;
+        background-position: center;
+        background-color: var(--bs-body-tertiary-bg, var(--bs-tertiary-bg));
+        background-repeat: no-repeat;
+    }
+    .home-card-placeholder {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2.5rem;
+        color: var(--bs-body-secondary);
+        opacity: 0.4;
+    }
+    .home-card-tint-1 { background-color: #d6e4ff20; }
+    .home-card-tint-2 { background-color: #ffe9d620; }
+    .home-card-tint-3 { background-color: #d6f5d620; }
+    .home-card-tint-4 { background-color: #f5d6e420; }
+    .home-card-tint-5 { background-color: #e6d6f520; }
+    .visibility-badge {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        font-size: 0.65rem;
+        z-index: 2;
+    }
+</style>
+
+<div class="container py-4">
+    <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="h3 fw-bold mb-1">Welcome back, {{ current_user.display_name }}</h1>
+            <p class="text-body-secondary mb-0">Your datasets and leaderboards, most recent first.</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-primary">
+                <i class="bi bi-plus-circle me-1"></i>New dataset
+            </a>
+            <a href="{{ url_for('explore') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-compass me-1"></i>Explore
+            </a>
+        </div>
+    </div>
+
+    {# ---- Quick search across both lists ---- #}
+    <div class="mb-4">
+        <input type="search" id="home-search"
+            class="form-control form-control-lg"
+            placeholder="Filter your datasets and leaderboards…"
+            autocomplete="off">
+    </div>
+
+    {# ---- Datasets ---- #}
+    <section class="mb-5">
+        <div class="d-flex align-items-baseline gap-2 mb-3">
+            <h2 class="h5 fw-semibold mb-0">
+                <i class="bi bi-database me-2 text-info"></i>Datasets
+            </h2>
+            <span class="text-body-secondary small">({{ datasets|length }})</span>
+        </div>
+
+        {% if datasets %}
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-dataset-grid">
+            {% for ds in datasets %}
+            <div class="col home-grid-item" data-name="{{ ds.name|lower }}">
+                <div class="card home-card h-100 border-0 shadow-sm">
+                    {% if ds.visibility != 'public' %}
+                    <span class="badge text-bg-secondary visibility-badge">
+                        <i class="bi bi-{{ 'eye-slash' if ds.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ ds.visibility }}
+                    </span>
+                    {% endif %}
+                    {% set thumb = dataset_thumbs.get(ds.id) %}
+                    {% if thumb %}
+                    <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                    {% else %}
+                    <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                        <i class="bi bi-database"></i>
+                    </div>
+                    {% endif %}
+                    <div class="card-body p-3">
+                        <h6 class="card-title fw-semibold mb-1 text-truncate" title="{{ ds.name }}">
+                            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                                class="text-decoration-none stretched-link text-body">
+                                {{ ds.name }}
+                            </a>
+                        </h6>
+                        <p class="text-body-secondary small mb-0">
+                            <i class="bi bi-clock me-1"></i>{{ ds.upload_date.strftime('%b %d, %Y') if ds.upload_date else '—' }}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-5 text-body-secondary border rounded">
+            <i class="bi bi-database display-5 d-block mb-2 opacity-50"></i>
+            <p class="mb-2">No datasets yet.</p>
+            <a href="{{ url_for('datasets_list') }}" class="btn btn-primary btn-sm">
+                <i class="bi bi-plus-circle me-1"></i>Upload your first dataset
+            </a>
+        </div>
+        {% endif %}
+    </section>
+
+    {# ---- Leaderboards ---- #}
+    <section class="mb-5">
+        <div class="d-flex align-items-baseline gap-2 mb-3">
+            <h2 class="h5 fw-semibold mb-0">
+                <i class="bi bi-trophy me-2 text-warning"></i>Leaderboards
+            </h2>
+            <span class="text-body-secondary small">({{ leaderboards|length }})</span>
+        </div>
+
+        {% if leaderboards %}
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-lb-grid">
+            {% for lb in leaderboards %}
+            <div class="col home-grid-item" data-name="{{ lb.name|lower }}">
+                <div class="card home-card h-100 border-0 shadow-sm">
+                    {% if lb.visibility != 'public' %}
+                    <span class="badge text-bg-secondary visibility-badge">
+                        <i class="bi bi-{{ 'eye-slash' if lb.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ lb.visibility }}
+                    </span>
+                    {% endif %}
+                    {% set thumb = leaderboard_thumbs.get(lb.id) %}
+                    {% if thumb %}
+                    <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                    {% else %}
+                    <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                        <i class="bi bi-trophy"></i>
+                    </div>
+                    {% endif %}
+                    <div class="card-body p-3">
+                        <h6 class="card-title fw-semibold mb-1 text-truncate" title="{{ lb.name }}">
+                            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                                class="text-decoration-none stretched-link text-body">
+                                {{ lb.name }}
+                            </a>
+                        </h6>
+                        <div class="small text-body-secondary d-flex flex-wrap gap-2">
+                            <span><i class="bi bi-people me-1"></i>{{ lb.submissions|length }}</span>
+                            <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-5 text-body-secondary border rounded">
+            <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
+            <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
+        </div>
+        {% endif %}
+    </section>
+
+    {# ---- Discover others ---- #}
+    <div class="text-center pt-3 pb-5 text-body-secondary small">
+        Looking for someone else's work?
+        <a href="{{ url_for('explore') }}" class="text-decoration-none">Browse public leaderboards</a>.
+    </div>
+</div>
+
+<script>
+    (function () {
+        const search = document.getElementById('home-search');
+        if (!search) return;
+        const items = document.querySelectorAll('.home-grid-item');
+        search.addEventListener('input', () => {
+            const q = search.value.trim().toLowerCase();
+            items.forEach(el => {
+                const matches = !q || (el.dataset.name || '').includes(q);
+                el.style.display = matches ? '' : 'none';
+            });
+        });
+    })();
+</script>
+{% endblock %}

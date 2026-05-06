@@ -218,7 +218,15 @@
 
                 <div class="collapse navbar-collapse" id="mainNavbar">
                     <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                        {% if current_user %}
                         <li class="nav-item ms-lg-3">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'home' }}"
+                                href="{{ url_for('home') }}">
+                                <i class="bi bi-house me-1"></i> Home
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="nav-item {{ 'ms-lg-3' if not current_user }}">
                             <a class="nav-link {{ 'active' if request.endpoint == 'datasets_list' }}"
                                 href="{{ url_for('datasets_list') }}">
                                 <i class="bi bi-database me-1"></i> Datasets

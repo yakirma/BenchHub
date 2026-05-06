@@ -1518,7 +1518,7 @@ def login_github():
         return ("GitHub OAuth not configured: set GITHUB_CLIENT_ID and "
                 "GITHUB_CLIENT_SECRET (env vars or Fly secrets)."), 503
     # Stash the post-login redirect in the session so the OAuth state stays clean.
-    session['oauth_next'] = request.args.get('next') or url_for('datasets_list')
+    session['oauth_next'] = request.args.get('next') or url_for('home')
     redirect_uri = url_for('oauth_callback_github', _external=True)
     return oauth.github.authorize_redirect(redirect_uri)
 
@@ -1577,7 +1577,7 @@ def oauth_callback_github():
 
     session['user_id'] = user.id
     flash(f"Logged in as {user.display_name}.", "success")
-    next_url = session.pop('oauth_next', None) or url_for('datasets_list')
+    next_url = session.pop('oauth_next', None) or url_for('home')
     return redirect(next_url)
 
 
@@ -1759,6 +1759,69 @@ def landing():
     return render_template(
         'landing.html',
         featured=featured_rows,
+    )
+
+
+def _dataset_thumb_url(ds):
+    """Return a URL for a representative thumbnail of `ds`, or None.
+
+    Prefers an `image_*` custom field on any sample (rendered by the
+    existing /custom_field_image endpoint). Falls back to a depth field
+    (which the depth-image endpoint will render to PNG). Returns None
+    if the dataset has no visualizable content yet (e.g. metric-only)."""
+    sample_ids = [s.id for s in Sample.query.filter_by(dataset_id=ds.id).limit(20).all()]
+    if not sample_ids:
+        return None
+    cf = (
+        CustomField.query
+        .filter(CustomField.sample_id.in_(sample_ids),
+                CustomField.field_type.in_(('image', 'depth')))
+        .order_by(CustomField.field_type.desc())  # 'image' before 'depth'
+        .first()
+    )
+    if cf is None:
+        return None
+    return url_for('custom_field_image', field_id=cf.id)
+
+
+@app.route('/home')
+@login_required
+def home():
+    """User dashboard: their datasets + leaderboards, recent first, each
+    with a sample thumbnail when one exists. Becomes the post-login
+    destination."""
+    user = g.current_user
+
+    datasets = (
+        Dataset.query
+        .filter(Dataset.owner_user_id == user.id)
+        .order_by(Dataset.upload_date.desc())
+        .limit(24)
+        .all()
+    )
+    leaderboards = (
+        Leaderboard.query
+        .filter(Leaderboard.owner_user_id == user.id)
+        .order_by(Leaderboard.upload_date.desc())
+        .limit(24)
+        .all()
+    )
+
+    # For each leaderboard, pick a thumbnail from its first dataset.
+    dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
+    leaderboard_thumbs = {}
+    for lb in leaderboards:
+        lb_datasets = list(lb.datasets)
+        leaderboard_thumbs[lb.id] = (
+            _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
+        )
+
+    return render_template(
+        'home.html',
+        datasets=datasets,
+        leaderboards=leaderboards,
+        dataset_thumbs=dataset_thumbs,
+        leaderboard_thumbs=leaderboard_thumbs,
     )
 
 
