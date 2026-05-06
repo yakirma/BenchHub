@@ -1120,7 +1120,11 @@
 
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
             (item) => {
-                if (item.element) item.element.click();
+                // Update modal content directly. We can't fall back to
+                // item.element.click() — Bootstrap's data-bs-toggle no-ops
+                // when the target modal is already open, so the modality
+                // toggle in zoom-mode would silently break.
+                if (item.element) window.updateDatasetCustomFieldModalContent(item.element);
             },
             // Vertical Navigation Callback
             (direction, currentItem, currentIndex) => {
