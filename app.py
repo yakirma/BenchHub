@@ -335,6 +335,14 @@ class Dataset(db.Model):
     # server_default (not just `default`) so raw SQL INSERTs in the legacy
     # migration code don't trip the NOT NULL constraint.
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    # Phase 5: BenchHub-curated content marker. True for the seeded official
+    # datasets that should appear in the landing-page "Curated benchmarks"
+    # rail; populated by ensure_curated_seed() at startup.
+    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
+    # Phase 7: cached storage usage (bytes) summed across uploads/datasets/<id>.
+    # Updated alongside file writes/deletes so quota checks don't have to du
+    # the volume on every request.
+    storage_bytes = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
@@ -557,6 +565,8 @@ class Project(db.Model):
     # server_default (not just `default`) so raw SQL INSERTs in the legacy
     # migration code don't trip the NOT NULL constraint.
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')  # private | unlisted | public
+    # Phase 5: marks the auto-seeded BenchHub-Curated namespace.
+    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # Datasets are now global.
     # datasets = db.relationship('Dataset', backref='project', lazy=True, cascade="all, delete-orphan")
@@ -602,6 +612,28 @@ class User(db.Model):
     oauth_sub = db.Column(db.String(120), nullable=False)      # provider's user id
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime)
+
+    # Phase 7 quotas. Caps are server-side enforced before disk writes happen
+    # (so a malicious user can't fill the volume). Defaults below are the
+    # free-tier values; bump per-user when you launch a paid tier. NULL caps
+    # are allowed → "unlimited" (used for the `system` curated-content user).
+    quota_max_storage_bytes = db.Column(
+        db.BigInteger, nullable=False, default=200 * 1024 * 1024,
+        server_default=str(200 * 1024 * 1024),
+    )  # 200 MB
+    quota_max_datasets = db.Column(
+        db.Integer, nullable=False, default=5, server_default='5',
+    )
+    quota_max_submissions_per_day = db.Column(
+        db.Integer, nullable=False, default=50, server_default='50',
+    )
+
+    # Phase 5: curated-content system account. Marks the auto-created
+    # bookkeeping user that owns the BenchHub-Curated project. Excluded
+    # from public profile listings and from quota enforcement.
+    is_system = db.Column(
+        db.Boolean, nullable=False, default=False, server_default='0',
+    )
 
     __table_args__ = (
         db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
@@ -815,6 +847,8 @@ def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=No
                             custom_field = CustomField(name=field_name, field_type='scalar', value_float=value, sample_id=sample.id)
                         db.session.add(custom_field)
             
+            # Phase 7: cache the on-disk size so quota checks don't du.
+            new_dataset.storage_bytes = _path_size_bytes(dataset_dir)
             db.session.commit()
             return True, f"Uploaded '{new_dataset.name}' ({len(sample_names)} samples)", new_dataset.id
 
@@ -1467,6 +1501,116 @@ def visibility_required(model_cls, id_kwarg='id'):
     return decorator
 
 
+# ---------------------------------------------------------------------------
+# Phase 7: per-user quotas
+# ---------------------------------------------------------------------------
+# Why server-side caps (and not just an apologetic UI hint): without them,
+# a single user can fill the volume in minutes and brick the app for
+# everyone else. Each helper below is the source of truth for one cap;
+# enforce_quota_or_flash composes them at upload routes.
+
+def storage_used_bytes(user):
+    """Total bytes this user is currently consuming on the data volume.
+    Sums the cached `Dataset.storage_bytes` (set during dataset ingest)
+    over all of the user's datasets. Submission ZIPs are not counted
+    against the user's quota — the leaderboard owner pays for inbound
+    submissions. Treats NULL as 0."""
+    if user is None:
+        return 0
+    total = db.session.query(func.coalesce(func.sum(Dataset.storage_bytes), 0)).filter(
+        Dataset.owner_user_id == user.id
+    ).scalar()
+    return int(total or 0)
+
+
+def daily_submission_count(user):
+    """Submissions this user uploaded in the trailing 24h. Used for the
+    rate-limit cap; deliberately a rolling window not a calendar day so a
+    user can't dump 50 at 23:59 and another 50 at 00:01."""
+    if user is None:
+        return 0
+    cutoff = datetime.utcnow() - timedelta(days=1)
+    return db.session.query(func.count(Submission.id)).filter(
+        Submission.owner_user_id == user.id,
+        Submission.upload_date >= cutoff,
+    ).scalar() or 0
+
+
+def dataset_count(user):
+    if user is None:
+        return 0
+    return db.session.query(func.count(Dataset.id)).filter(
+        Dataset.owner_user_id == user.id
+    ).scalar() or 0
+
+
+def _format_bytes(n):
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or unit == 'GB':
+            return f"{n:.0f} {unit}" if unit == 'B' else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def check_quota(user, *, kind, incoming_bytes=0):
+    """Return (ok, message). `kind` is one of:
+       - 'dataset_create'  : count cap + storage cap (incoming_bytes)
+       - 'submission'      : daily rate cap
+
+    System users (`is_system=True`) bypass all checks — they own the
+    seeded curated content and shouldn't trip the free-tier caps.
+    """
+    if user is None:
+        return False, "Sign in required."
+    if getattr(user, 'is_system', False):
+        return True, None
+
+    if kind == 'dataset_create':
+        if dataset_count(user) >= user.quota_max_datasets:
+            return False, (
+                f"Dataset limit reached ({user.quota_max_datasets}). "
+                "Delete an existing dataset or contact us for a higher cap."
+            )
+        used = storage_used_bytes(user)
+        if used + incoming_bytes > user.quota_max_storage_bytes:
+            return False, (
+                f"Storage limit would be exceeded: "
+                f"{_format_bytes(used)} used + {_format_bytes(incoming_bytes)} new "
+                f"> {_format_bytes(user.quota_max_storage_bytes)} cap."
+            )
+        return True, None
+
+    if kind == 'submission':
+        if daily_submission_count(user) >= user.quota_max_submissions_per_day:
+            return False, (
+                f"Daily submission limit reached "
+                f"({user.quota_max_submissions_per_day}/24h). Try again later."
+            )
+        return True, None
+
+    return True, None
+
+
+def _path_size_bytes(path):
+    """Walk a directory, sum file sizes. Falls back to os.path.getsize for
+    a single file. Returns 0 on any error so a stat blip can't block an
+    upload that would otherwise succeed."""
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    total += os.path.getsize(fp)
+                except OSError:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
 @app.route('/login')
 def login():
     return render_template('login.html', next=request.args.get('next', ''))
@@ -1667,9 +1811,26 @@ def landing():
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
 
+    # Phase 5: curated benchmarks rail. Show up to 3 leaderboards in
+    # any project marked is_curated=True. Empty until the curated
+    # content is seeded.
+    curated_rows = (
+        db.session.query(Leaderboard, activity.c.recent_count)
+        .join(Project, Leaderboard.project_id == Project.id)
+        .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
+        .filter(Project.is_curated.is_(True))
+        .filter(Leaderboard.visibility == 'public')
+        .order_by(func.coalesce(activity.c.recent_count, 0).desc(),
+                  Leaderboard.upload_date.desc())
+        .limit(3)
+        .all()
+    )
+    curated = [(lb, int(c or 0)) for lb, c in curated_rows]
+
     return render_template(
         'landing.html',
         featured=featured_rows,
+        curated=curated,
     )
 
 
@@ -1688,6 +1849,8 @@ def explore():
     sort = request.args.get('sort', 'activity')
     if sort not in ('activity', 'recent', 'popular'):
         sort = 'activity'
+    # Phase 5: ?curated=1 narrows to BenchHub-curated content.
+    curated_only = request.args.get('curated') in ('1', 'true', 'yes')
 
     cutoff = datetime.utcnow() - timedelta(days=30)
 
@@ -1723,6 +1886,12 @@ def explore():
         .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
     )
 
+    if curated_only:
+        # Curated content lives in projects with is_curated=True.
+        base = base.join(Project, Leaderboard.project_id == Project.id).filter(
+            Project.is_curated.is_(True)
+        )
+
     if q:
         base = base.filter(Leaderboard.name.ilike(f'%{q}%'))
 
@@ -1748,6 +1917,7 @@ def explore():
         rows=rows,
         q=q,
         sort=sort,
+        curated_only=curated_only,
     )
 
 
@@ -1761,6 +1931,10 @@ def user_profile(user_id):
     """
     user = User.query.get(user_id)
     if user is None:
+        abort(404)
+    # System users (curated-content bookkeeping) aren't real people — no
+    # public profile. The curated content lives at /explore?curated=1.
+    if getattr(user, 'is_system', False):
         abort(404)
 
     viewer = getattr(g, 'current_user', None)
@@ -3840,6 +4014,18 @@ def upload_dataset(project_name):
         temp_zip_path = os.path.join(temp_dir, filename)
         file.save(temp_zip_path)
 
+        # Phase 7 quota gate: count + projected-bytes (the ZIP itself is a
+        # rough upper bound on the extracted size for the cap math).
+        incoming = _path_size_bytes(temp_zip_path)
+        ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=incoming)
+        if not ok:
+            try:
+                os.remove(temp_zip_path)
+            except OSError:
+                pass
+            flash(msg, "danger")
+            continue
+
         success, message, ds_id = process_dataset_zip(
             temp_zip_path, dataset_name, override=override,
             owner_user_id=g.current_user.id,
@@ -4171,6 +4357,13 @@ def upload_submission(project_name, leaderboard_id):
     submission_names_input = request.form.get('submission_name')
 
     if not files:
+        return redirect(url_for('leaderboard_view', leaderboard_id=leaderboard_id))
+
+    # Phase 7 quota gate: rolling 24h submission rate. Checked before the
+    # save loop, not inside it — bulk uploads count once at intake.
+    ok, msg = check_quota(g.current_user, kind='submission')
+    if not ok:
+        flash(msg, "danger")
         return redirect(url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
     # Handle explicitly provided names only if number matches
@@ -6771,6 +6964,18 @@ def check_and_migrate_db():
                     ("global_metric",        "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
                     ("global_visualization", "owner_user_id", "INTEGER"),
                     ("global_visualization", "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
+                    # Phase 5: curated-content marker.
+                    ("project",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
+                    ("dataset",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Phase 7: per-user quotas. Existing rows pick up the
+                    # free-tier defaults; bump per-row to grant a paid tier.
+                    ("user",                 "quota_max_storage_bytes",        f"BIGINT NOT NULL DEFAULT {200 * 1024 * 1024}"),
+                    ("user",                 "quota_max_datasets",             "INTEGER NOT NULL DEFAULT 5"),
+                    ("user",                 "quota_max_submissions_per_day",  "INTEGER NOT NULL DEFAULT 50"),
+                    ("user",                 "is_system",                      "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Phase 7: cached storage usage on the dataset itself —
+                    # cheaper than du'ing the volume on every upload.
+                    ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
                 ]
                 for tbl, col, coldef in _ownership_migrations:
                     cursor.execute(f"PRAGMA table_info({tbl})")
@@ -7322,6 +7527,56 @@ def download_submissions_full_bulk(leaderboard_id):
         return response
 
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions_full.zip")
+CURATED_SYSTEM_EMAIL = 'curated@benchhub.local'
+CURATED_PROJECT_NAME = 'benchhub-curated'
+
+
+def ensure_curated_seed():
+    """Phase 5: idempotently create the system user + curated project.
+
+    Surfaces:
+      - landing page renders a "Curated benchmarks" rail filtering on
+        leaderboard.project.is_curated == True.
+      - /explore?curated=1 narrows to curated content.
+      - the system user is excluded from /u/<id> and from /explore by the
+        is_system flag — it's bookkeeping, not a person.
+
+    Datasets and leaderboards are NOT seeded here — picking the actual
+    benchmark content is a data task. This helper only ensures the
+    namespace exists so a later seed script (or admin hand-curation)
+    can attach content to it.
+    """
+    user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
+    if user is None:
+        user = User(
+            email=CURATED_SYSTEM_EMAIL,
+            display_name='BenchHub Curated',
+            oauth_provider='system',
+            oauth_sub='curated',
+            is_system=True,
+        )
+        db.session.add(user)
+        db.session.flush()
+    elif not user.is_system:
+        # Existing row from before is_system existed — adopt it.
+        user.is_system = True
+
+    proj = Project.query.filter_by(name=CURATED_PROJECT_NAME).first()
+    if proj is None:
+        proj = Project(
+            name=CURATED_PROJECT_NAME,
+            description='Official BenchHub-curated benchmarks.',
+            owner_user_id=user.id,
+            visibility='public',
+            is_curated=True,
+        )
+        db.session.add(proj)
+    elif not proj.is_curated:
+        proj.is_curated = True
+
+    db.session.commit()
+
+
 def run_migrations():
     """Idempotent boot-time migration runner. Safe to call concurrently —
     SQLite WAL + 120s busy_timeout absorb the race, and both `db.create_all()`
@@ -7331,6 +7586,11 @@ def run_migrations():
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         check_and_migrate_db()
         db.create_all()
+        try:
+            ensure_curated_seed()
+        except Exception as e:
+            # Seed failure must not block boot — the rest of the app still works.
+            print(f"ensure_curated_seed failed (non-fatal): {e}")
 
 
 # Auto-run migrations at module import time when the env var is set. This is
