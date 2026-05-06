@@ -161,3 +161,100 @@ def test_footer_links_to_legal_pages(client):
     body = client.get('/').data
     assert b'href="/terms"' in body
     assert b'href="/privacy"' in body
+
+
+# ===========================================================================
+# Admin gate + curate endpoint
+# ===========================================================================
+
+
+@pytest.fixture
+def admin_user(db_session, monkeypatch):
+    monkeypatch.setenv('BENCHHUB_ADMIN_EMAILS', 'admin@example.com')
+    u = User(
+        email='admin@example.com',
+        display_name='Admin',
+        oauth_provider='github',
+        oauth_sub='admin-1',
+        api_token=generate_api_token(),
+    )
+    db.session.add(u); db.session.commit()
+    return u
+
+
+@pytest.fixture
+def non_admin_user(db_session):
+    u = User(
+        email='nobody@example.com',
+        display_name='Nobody',
+        oauth_provider='github',
+        oauth_sub='nobody-1',
+        api_token=generate_api_token(),
+    )
+    db.session.add(u); db.session.commit()
+    return u
+
+
+def test_admin_curate_requires_admin(client, db_session, non_admin_user, monkeypatch):
+    """Valid token but not on the admin allow-list → 403, not 200."""
+    monkeypatch.setenv('BENCHHUB_ADMIN_EMAILS', 'admin@example.com')
+    from app import Dataset, db as _db
+    ds = Dataset(name='dx')
+    _db.session.add(ds); _db.session.commit()
+
+    resp = client.post(
+        f'/api/admin/datasets/{ds.id}/curate',
+        headers={'Authorization': f'Bearer {non_admin_user.api_token}'},
+    )
+    assert resp.status_code == 403
+
+
+def test_admin_curate_flips_flag_and_reassigns_owner(client, db_session, admin_user):
+    """Admin token + existing dataset → is_curated=True, owner = system user."""
+    from app import Dataset, ensure_curated_seed, db as _db
+    ensure_curated_seed()  # so the system user/project exist
+    ds = Dataset(name='to_curate', visibility='public')
+    _db.session.add(ds); _db.session.commit()
+    ds_id = ds.id
+
+    resp = client.post(
+        f'/api/admin/datasets/{ds_id}/curate',
+        headers={'Authorization': f'Bearer {admin_user.api_token}'},
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['is_curated'] is True
+
+    refreshed = Dataset.query.get(ds_id)
+    assert refreshed.is_curated is True
+    sys_user = User.query.filter_by(email='curated@benchhub.local').first()
+    assert refreshed.owner_user_id == sys_user.id
+
+
+def test_admin_curate_404_for_unknown_dataset(client, db_session, admin_user):
+    resp = client.post(
+        '/api/admin/datasets/9999/curate',
+        headers={'Authorization': f'Bearer {admin_user.api_token}'},
+    )
+    assert resp.status_code == 404
+
+
+def test_admin_uncurate_flips_flag_back(client, db_session, admin_user):
+    from app import Dataset, db as _db
+    ds = Dataset(name='already_curated', is_curated=True)
+    _db.session.add(ds); _db.session.commit()
+
+    resp = client.post(
+        f'/api/admin/datasets/{ds.id}/uncurate',
+        headers={'Authorization': f'Bearer {admin_user.api_token}'},
+    )
+    assert resp.status_code == 200
+    refreshed = Dataset.query.get(ds.id)
+    assert refreshed.is_curated is False
+
+
+def test_admin_endpoint_no_token_returns_401(client, db_session):
+    """Anon (no Authorization header) → 401 from require_api_token,
+    not a 403 from require_admin. The two layers stack correctly."""
+    resp = client.post('/api/admin/datasets/1/curate')
+    assert resp.status_code == 401

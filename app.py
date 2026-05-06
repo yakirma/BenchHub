@@ -1650,6 +1650,31 @@ def require_api_token(view):
     return wrapped
 
 
+def _admin_emails():
+    """Allow-list of admin email addresses, env-var driven so we don't
+    need a DB migration to grant admin. Comma-separated. Empty by default
+    (no admins → /api/admin/* is locked down)."""
+    raw = os.environ.get('BENCHHUB_ADMIN_EMAILS', '') or ''
+    return {e.strip().lower() for e in raw.split(',') if e.strip()}
+
+
+def is_admin(user):
+    if user is None:
+        return False
+    return (user.email or '').strip().lower() in _admin_emails()
+
+
+def require_admin(view):
+    """Stack ON TOP of @require_api_token. Returns 403 if the
+    token's user isn't on the BENCHHUB_ADMIN_EMAILS allow-list."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not is_admin(getattr(g, 'current_user', None)):
+            return jsonify({'error': 'Admin access required'}), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def _path_size_bytes(path):
     """Walk a directory, sum file sizes. Falls back to os.path.getsize for
     a single file. Returns 0 on any error so a stat blip can't block an
@@ -6575,6 +6600,49 @@ def dataset_upload_api():
     finally:
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
+
+
+# --- Admin endpoints (Phase 5 — curated content management) ---
+
+
+@app.route('/api/admin/datasets/<int:dataset_id>/curate', methods=['POST'])
+@require_api_token
+@require_admin
+def admin_dataset_curate(dataset_id):
+    """Mark a dataset as BenchHub-curated and reassign ownership to the
+    system user. Idempotent: rerunning is a no-op. Use POST .../uncurate
+    to flip back."""
+    ds = Dataset.query.get(dataset_id)
+    if ds is None:
+        return jsonify({'error': 'Dataset not found'}), 404
+
+    sys_user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
+    if sys_user is None:
+        return jsonify({'error': 'Curated system user missing — call ensure_curated_seed()'}), 500
+
+    ds.is_curated = True
+    ds.owner_user_id = sys_user.id
+    ds.visibility = 'public'
+    db.session.commit()
+    return jsonify({
+        'dataset_id': ds.id,
+        'name': ds.name,
+        'is_curated': True,
+        'owner_user_id': sys_user.id,
+    }), 200
+
+
+@app.route('/api/admin/datasets/<int:dataset_id>/uncurate', methods=['POST'])
+@require_api_token
+@require_admin
+def admin_dataset_uncurate(dataset_id):
+    ds = Dataset.query.get(dataset_id)
+    if ds is None:
+        return jsonify({'error': 'Dataset not found'}), 404
+    ds.is_curated = False
+    db.session.commit()
+    return jsonify({'dataset_id': ds.id, 'is_curated': False}), 200
+
 
 @app.route('/api/leaderboard/<int:leaderboard_id>/info', methods=['GET'])
 def get_leaderboard_info_api(leaderboard_id):
