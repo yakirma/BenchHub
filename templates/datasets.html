@@ -104,86 +104,90 @@
             {% endif %}
         </div>
 
-        <!-- Upload Section -->
+        <!-- Upload Section (modernized: segmented source picker + drop zone +
+             collapsed Advanced. Stays sticky so it's reachable while scrolling
+             the dataset list on the left.) -->
         <div class="col-lg-5">
-            <div class="card shadow-sm border-0 bg-body-tertiary sticky-top" style="top: 100px; z-index: 900;">
+            <div class="card border-0 shadow-sm sticky-top" style="top: 100px; z-index: 900;">
                 <div class="card-body p-4">
-                    <h5 class="card-title text-body mb-3 fw-bold"><i class="bi bi-cloud-upload me-2"></i>Upload New
-                        Dataset</h5>
-                    <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
-                        <div class="mb-3">
-                            <label for="dataset_name" class="form-label text-body">Dataset Name (Optional)</label>
-                            <input type="text" class="form-control" id="dataset_name" name="dataset_name"
-                                placeholder="Auto-filled from filename">
-                        </div>
-                        <div class="mb-3">
-                            <label for="dataset_zip" class="form-label text-body">ZIP File(s)</label>
-                            <input type="file" class="form-control" id="dataset_zip" name="dataset_zip" accept=".zip"
-                                multiple required>
-                            <div class="form-text text-body-secondary">Select one or more .zip files. Structure: folders
-                                as samples.
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="override_dataset"
-                                    name="override_dataset" value="true">
-                                <label class="form-check-label text-body" for="override_dataset">
-                                    Override if exists
-                                </label>
-                                <div class="form-text text-body-secondary">If checked, replaces existing datasets with
-                                    same name.</div>
-                            </div>
-                        </div>
-                        <!-- Current Project Context Hidden Field: NOT NEEDED for global datasets, 
-                             but upload_dataset might look for redirect handling. 
-                             Usually upload redirects back to referrer or index. 
-                             Checked app.py: upload_dataset redirects to url_for('index') usually. 
-                             I should check upload_dataset return value. 
-                        -->
-                        <button type="submit" class="btn btn-primary w-100 py-2 fw-bold">Upload Dataset</button>
-                    </form>
+                    <h5 class="fw-bold mb-1">Add a dataset</h5>
+                    <p class="text-body-secondary small mb-3">
+                        Upload a ZIP or pull from a structured HuggingFace repo.
+                    </p>
 
-                    <hr class="my-4">
+                    {# ----- Source picker ----- #}
+                    <div class="btn-group w-100 mb-4" role="group" aria-label="Dataset source">
+                        <input type="radio" class="btn-check" name="source-tab" id="src-zip" autocomplete="off" checked>
+                        <label class="btn btn-outline-primary" for="src-zip">
+                            <i class="bi bi-file-earmark-zip me-1"></i>ZIP file
+                        </label>
+                        <input type="radio" class="btn-check" name="source-tab" id="src-hf" autocomplete="off">
+                        <label class="btn btn-outline-primary" for="src-hf">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>HuggingFace
+                        </label>
+                    </div>
 
-                    {# Phase 4: HuggingFace BYO. The HF repo must follow the
-                       BenchHub folder convention (metric_*/, hist_*/, raw_*/,
-                       image_*/) — this is *not* a generic HF Datasets importer. #}
-                    <h6 class="fw-bold mb-3">
-                        <i class="bi bi-cloud-arrow-down me-1"></i>Import from HuggingFace
-                    </h6>
-                    <form action="{{ url_for('import_from_hf') }}" method="post">
-                        <div class="mb-3">
-                            <label for="hf_repo_id" class="form-label small text-body">Repo ID</label>
-                            <input type="text" class="form-control form-control-sm font-monospace"
-                                id="hf_repo_id" name="hf_repo_id"
-                                placeholder="user/repo-name" required>
-                        </div>
-                        <div class="row g-2 mb-2">
-                            <div class="col-7">
-                                <label for="hf_dataset_name" class="form-label small text-body">Dataset name</label>
-                                <input type="text" class="form-control form-control-sm"
-                                    id="hf_dataset_name" name="dataset_name" placeholder="(repo name)">
-                            </div>
-                            <div class="col-5">
-                                <label for="hf_revision" class="form-label small text-body">Revision</label>
-                                <input type="text" class="form-control form-control-sm font-monospace"
-                                    id="hf_revision" name="hf_revision" placeholder="main">
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label for="hf_token" class="form-label small text-body">
-                                Access token <span class="text-body-secondary">(optional, for private repos)</span>
+                    {# ----- ZIP form (default) ----- #}
+                    <div id="form-zip" class="source-form">
+                        <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
+                            <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
+                                <i class="bi bi-cloud-arrow-up display-5 text-body-secondary d-block mb-2"></i>
+                                <span class="fw-semibold">Drop ZIP here or click to choose</span>
+                                <div class="small text-body-secondary mt-1">One or more .zip files</div>
+                                <div id="zip-filenames" class="small text-primary mt-2 d-none"></div>
                             </label>
-                            <input type="password" class="form-control form-control-sm font-monospace"
-                                id="hf_token" name="hf_token" autocomplete="off">
-                        </div>
-                        <p class="form-text text-body-secondary small mb-3">
-                            <i class="bi bi-exclamation-circle me-1"></i>The repo must follow BenchHub's
-                            folder convention (<code>metric_*/</code>, <code>hist_*/</code>, etc.).
-                        </p>
-                        <button type="submit" class="btn btn-outline-primary w-100">Import</button>
-                    </form>
+                            <input type="file" id="dataset_zip" name="dataset_zip" accept=".zip" multiple required class="d-none">
+
+                            <input type="text" class="form-control mb-3" id="dataset_name" name="dataset_name"
+                                placeholder="Name (auto from filename)" autocomplete="off">
+
+                            <details class="mb-3 small">
+                                <summary class="text-body-secondary user-select-none" style="cursor:pointer;">
+                                    Advanced
+                                </summary>
+                                <div class="form-check mt-2 ms-1">
+                                    <input class="form-check-input" type="checkbox"
+                                        id="override_dataset" name="override_dataset" value="true">
+                                    <label class="form-check-label" for="override_dataset">
+                                        Replace existing dataset with same name
+                                    </label>
+                                </div>
+                            </details>
+
+                            <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
+                        </form>
+                    </div>
+
+                    {# ----- HF form (hidden until tab is picked) ----- #}
+                    <div id="form-hf" class="source-form d-none">
+                        <form action="{{ url_for('import_from_hf') }}" method="post">
+                            <div class="mb-1">
+                                <input type="text" class="form-control form-control-lg font-monospace"
+                                    name="hf_repo_id" placeholder="user/repo" required autocomplete="off">
+                            </div>
+                            <div class="form-text small mb-3">
+                                <i class="bi bi-info-circle me-1"></i>Repo must follow BenchHub's folder convention.
+                            </div>
+
+                            <details class="mb-3 small">
+                                <summary class="text-body-secondary user-select-none" style="cursor:pointer;">
+                                    Advanced
+                                </summary>
+                                <div class="mt-2 vstack gap-2">
+                                    <input type="text" class="form-control form-control-sm" name="dataset_name"
+                                        placeholder="Dataset name (default: repo)" autocomplete="off">
+                                    <input type="text" class="form-control form-control-sm font-monospace"
+                                        name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
+                                    <input type="password" class="form-control form-control-sm font-monospace"
+                                        name="hf_token" placeholder="Access token (private repos only)" autocomplete="off">
+                                </div>
+                            </details>
+
+                            <button type="submit" class="btn btn-primary w-100 py-2">
+                                <i class="bi bi-cloud-arrow-down me-1"></i>Import
+                            </button>
+                        </form>
+                    </div>
                 </div>
             </div>
         </div>
@@ -203,14 +207,67 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+    .upload-dropzone {
+        background: var(--bs-body-bg);
+        border: 2px dashed var(--bs-border-color);
+        cursor: pointer;
+        transition: border-color 0.15s, background-color 0.15s;
+    }
+    .upload-dropzone:hover,
+    .upload-dropzone.dragover {
+        border-color: var(--bs-primary);
+        background: var(--bs-primary-bg-subtle);
+    }
+</style>
 <script>
-    document.getElementById('dataset_zip').addEventListener('change', function (e) {
-        var datasetNameInput = document.getElementById('dataset_name');
-        if (datasetNameInput.value === '') {
-            var fileNames = Array.from(e.target.files).map(file => file.name.replace(/\.zip$/, ''));
-            datasetNameInput.value = fileNames.join(', ');
+    (function () {
+        // ---- Source-tab switch (ZIP <-> HuggingFace) ----
+        const zipForm = document.getElementById('form-zip');
+        const hfForm = document.getElementById('form-hf');
+        document.getElementById('src-zip').addEventListener('change', () => {
+            zipForm.classList.remove('d-none');
+            hfForm.classList.add('d-none');
+        });
+        document.getElementById('src-hf').addEventListener('change', () => {
+            zipForm.classList.add('d-none');
+            hfForm.classList.remove('d-none');
+        });
+
+        // ---- ZIP drop zone ----
+        const dropzone = document.querySelector('.upload-dropzone');
+        const fileInput = document.getElementById('dataset_zip');
+        const filenamesDisplay = document.getElementById('zip-filenames');
+        const datasetNameInput = document.getElementById('dataset_name');
+
+        function reflectFiles(files) {
+            if (!files || !files.length) return;
+            const names = Array.from(files).map(f => f.name);
+            filenamesDisplay.textContent = names.join(', ');
+            filenamesDisplay.classList.remove('d-none');
+            // Preserve the auto-name behavior the page had before.
+            if (datasetNameInput.value === '') {
+                datasetNameInput.value = names.map(n => n.replace(/\.zip$/, '')).join(', ');
+            }
         }
-    });
+
+        fileInput.addEventListener('change', (e) => reflectFiles(e.target.files));
+
+        ['dragenter', 'dragover'].forEach(ev =>
+            dropzone.addEventListener(ev, (e) => {
+                e.preventDefault();
+                dropzone.classList.add('dragover');
+            }));
+        ['dragleave', 'drop'].forEach(ev =>
+            dropzone.addEventListener(ev, () => dropzone.classList.remove('dragover')));
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer && e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                reflectFiles(e.dataTransfer.files);
+            }
+        });
+    })();
 </script>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
 <script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
