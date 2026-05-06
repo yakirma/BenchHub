@@ -6714,28 +6714,39 @@ def check_and_migrate_db():
                         print(f"Failed to add {tbl}.{col}: {e}")
 
                 # Stage 2 — projects + curated removal teardown.
-                # All wrapped in try/except so reruns and fresh installs are no-ops.
-                for tbl, col in [
-                    ('leaderboard', 'project_id'),
-                    ('leaderboard', 'is_curated'),
-                    ('dataset', 'is_curated'),
-                    ('global_visualization', 'project_id'),
-                ]:
-                    try:
-                        cursor.execute(f"PRAGMA table_info({tbl})")
-                        cols = {row[1] for row in cursor.fetchall()}
-                        if col in cols:
-                            cursor.execute(f"ALTER TABLE {tbl} DROP COLUMN {col}")
-                            conn.commit()
-                            print(f"Dropped {tbl}.{col}.")
-                    except Exception as e:
-                        print(f"Could not drop {tbl}.{col} (will retry next boot): {e}")
+                # ALTER TABLE DROP COLUMN with a foreign-key column trips
+                # SQLite's FK validation ("unknown column ... in foreign key
+                # definition") because the FK metadata still references the
+                # dropped target table. legacy_alter_table=ON skips that
+                # validation, which is what we want here — the FK target is
+                # gone and we're tearing the column out anyway.
                 try:
-                    cursor.execute("DROP TABLE IF EXISTS project")
-                    conn.commit()
-                    print("Dropped project table.")
-                except Exception as e:
-                    print(f"Could not drop project table: {e}")
+                    cursor.execute("PRAGMA legacy_alter_table = ON")
+                    cursor.execute("PRAGMA foreign_keys = OFF")
+                    for tbl, col in [
+                        ('leaderboard', 'project_id'),
+                        ('leaderboard', 'is_curated'),
+                        ('dataset', 'is_curated'),
+                        ('global_visualization', 'project_id'),
+                    ]:
+                        try:
+                            cursor.execute(f"PRAGMA table_info({tbl})")
+                            cols = {row[1] for row in cursor.fetchall()}
+                            if col in cols:
+                                cursor.execute(f"ALTER TABLE {tbl} DROP COLUMN {col}")
+                                conn.commit()
+                                print(f"Dropped {tbl}.{col}.")
+                        except Exception as e:
+                            print(f"Could not drop {tbl}.{col} (will retry next boot): {e}")
+                    try:
+                        cursor.execute("DROP TABLE IF EXISTS project")
+                        conn.commit()
+                        print("Dropped project table.")
+                    except Exception as e:
+                        print(f"Could not drop project table: {e}")
+                finally:
+                    cursor.execute("PRAGMA legacy_alter_table = OFF")
+                    cursor.execute("PRAGMA foreign_keys = ON")
 
                 conn.close()
 

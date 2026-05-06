@@ -53,7 +53,7 @@ primary_region = 'iad'
     timeout = '5s'
     grace_period = '30s'
     method = 'GET'
-    path = '/projects'
+    path = '/'
     protocol = 'http'
 
 [[vm]]
