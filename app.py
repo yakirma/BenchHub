@@ -1255,6 +1255,8 @@ def load_project_context():
                         'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
                         # Auth routes — must be reachable without a project context.
                         'login', 'login_github', 'oauth_callback_github', 'logout',
+                        # Public landing page (Phase 6).
+                        'landing',
                         # Project-mutation routes use project_id from URL, not g.current_project.
                         'rename_project', 'clone_project', 'delete_project',
                         # Datasets are global, not project-scoped — see CLAUDE.md.
@@ -1610,10 +1612,54 @@ def rename_project(project_id):
 
 
 @app.route('/')
-def root_redirect():
-    if hasattr(g, 'current_project'):
-        return redirect(url_for('index', project_name=g.current_project.name))
-    return redirect(url_for('list_projects'))
+def landing():
+    """Public marketing landing page (Phase 6 Slice 1).
+
+    Replaces the old `redirect('/projects')` so anonymous visitors see
+    a real homepage. Logged-in users see the same page but with a
+    "Go to dashboard" CTA instead of "Log in".
+
+    Featured leaderboards: top public leaderboards by submission activity
+    in the last 30 days. Visibility filter excludes private + unlisted —
+    same rules as /explore (when that lands).
+    """
+    cutoff = datetime.utcnow() - timedelta(days=30)
+
+    # Subquery: count submissions per leaderboard in the activity window.
+    # Use SQLAlchemy func.count + group_by so the DB does the work.
+    activity = (
+        db.session.query(
+            Submission.leaderboard_id.label('lb_id'),
+            func.count(Submission.id).label('recent_count'),
+        )
+        .filter(Submission.upload_date >= cutoff, Submission.is_archived.is_(False))
+        .group_by(Submission.leaderboard_id)
+        .subquery()
+    )
+
+    featured = (
+        db.session.query(Leaderboard, activity.c.recent_count)
+        .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
+        # Only public lists; pre-Phase-1 NULL-owner rows fall through the
+        # same branch as 'public' per visible_in_list semantics.
+        .filter(or_(
+            Leaderboard.visibility == 'public',
+            Leaderboard.owner_user_id.is_(None),
+        ))
+        # Order by recent activity (NULL = no submissions in window → 0).
+        .order_by(func.coalesce(activity.c.recent_count, 0).desc(),
+                  Leaderboard.upload_date.desc())
+        .limit(3)
+        .all()
+    )
+
+    # Render-friendly wrapper: list of (leaderboard, recent_count_int).
+    featured_rows = [(lb, int(c or 0)) for lb, c in featured]
+
+    return render_template(
+        'landing.html',
+        featured=featured_rows,
+    )
 
 # --- Legacy Redirects (Backward Compatibility) ---
 def get_fallback_project_name():

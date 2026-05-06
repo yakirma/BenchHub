@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}BenchHub — Benchmark your model in 60 seconds{% endblock %}
+
+{% block flash_messages %}{% endblock %}
+
+{% block content %}
+<style>
+    .hero-bg {
+        background:
+            radial-gradient(circle at 20% -10%, rgba(13, 110, 253, 0.10), transparent 60%),
+            radial-gradient(circle at 90% 10%, rgba(255, 193, 7, 0.10), transparent 50%);
+    }
+    .feature-icon {
+        width: 3rem; height: 3rem;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 0.75rem;
+        background-color: var(--bs-primary-bg-subtle);
+        color: var(--bs-primary);
+        font-size: 1.5rem;
+    }
+    .leaderboard-card {
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .leaderboard-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.08);
+    }
+</style>
+
+<!-- ===================== Hero ===================== -->
+<section class="hero-bg py-5 mb-5">
+    <div class="container py-md-4">
+        <div class="row align-items-center justify-content-center text-center">
+            <div class="col-lg-8">
+                <h1 class="display-3 fw-bold mb-3">
+                    Benchmark your model
+                    <span class="text-primary">in 60 seconds.</span>
+                </h1>
+                <p class="lead text-body-secondary mb-4">
+                    Pick a dataset, define your metrics in Python, upload predictions,
+                    and see how your model ranks. Open-source. No credit card.
+                </p>
+
+                <div class="d-flex flex-wrap gap-3 justify-content-center">
+                    {% if current_user %}
+                    <a href="{{ url_for('list_projects') }}" class="btn btn-primary btn-lg px-4">
+                        <i class="bi bi-speedometer2 me-2"></i>Go to your dashboard
+                    </a>
+                    <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary btn-lg px-4">
+                        <i class="bi bi-database me-2"></i>Browse datasets
+                    </a>
+                    {% else %}
+                    <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg px-4">
+                        <i class="bi bi-github me-2"></i>Get started with GitHub
+                    </a>
+                    <a href="#featured" class="btn btn-outline-secondary btn-lg px-4">
+                        <i class="bi bi-eye me-2"></i>See the leaderboards
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===================== How it works ===================== -->
+<section class="container mb-5 pb-3">
+    <div class="row text-center mb-4">
+        <div class="col">
+            <h2 class="fw-bold">How it works</h2>
+            <p class="text-body-secondary">Three steps from idea to ranked leaderboard.</p>
+        </div>
+    </div>
+
+    <div class="row row-cols-1 row-cols-md-3 g-4">
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body p-4 text-center">
+                    <div class="feature-icon mb-3">
+                        <i class="bi bi-database-fill-up"></i>
+                    </div>
+                    <h5 class="fw-semibold mb-2">1. Pick a dataset</h5>
+                    <p class="text-body-secondary small mb-0">
+                        Upload a ZIP of your ground-truth samples or pick one
+                        from the public catalog. Folder conventions auto-detect
+                        images, scalars, histograms, and depth maps.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body p-4 text-center">
+                    <div class="feature-icon mb-3">
+                        <i class="bi bi-code-square"></i>
+                    </div>
+                    <h5 class="fw-semibold mb-2">2. Define metrics in Python</h5>
+                    <p class="text-body-secondary small mb-0">
+                        Bring your own scoring code — any function that takes
+                        ground truth + prediction and returns a number. Per-sample
+                        or aggregated. No DSL to learn.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body p-4 text-center">
+                    <div class="feature-icon mb-3">
+                        <i class="bi bi-trophy-fill"></i>
+                    </div>
+                    <h5 class="fw-semibold mb-2">3. Submit, get ranked</h5>
+                    <p class="text-body-secondary small mb-0">
+                        Upload a predictions ZIP, BenchHub runs your metrics
+                        in a sandbox, and your run lands on the leaderboard
+                        next to everyone else's.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===================== Featured leaderboards ===================== -->
+<section id="featured" class="container mb-5 pb-3">
+    <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-2">
+        <div>
+            <h2 class="fw-bold mb-1">Active leaderboards</h2>
+            <p class="text-body-secondary mb-0">Most submissions in the last 30 days.</p>
+        </div>
+    </div>
+
+    {% if featured %}
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+        {% for lb, recent_count in featured %}
+        <div class="col">
+            <div class="card leaderboard-card h-100 border-0 shadow-sm">
+                <div class="card-body p-4 d-flex flex-column">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <h5 class="card-title fw-semibold mb-0 text-truncate" title="{{ lb.name }}">
+                            {{ lb.name }}
+                        </h5>
+                        <span class="badge text-bg-light ms-2 flex-shrink-0">
+                            <i class="bi bi-arrow-up-right me-1"></i>{{ recent_count }}
+                        </span>
+                    </div>
+
+                    {% if lb.project %}
+                    <p class="text-body-secondary small mb-3">
+                        <i class="bi bi-folder me-1"></i>{{ lb.project.name }}
+                    </p>
+                    {% endif %}
+
+                    <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
+                        <span><i class="bi bi-people me-1"></i>{{ lb.submissions|length }} submissions</span>
+                        <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
+                    </div>
+
+                    {% if lb.project %}
+                    <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+                       class="stretched-link" aria-label="Open {{ lb.name }}"></a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-center py-5 text-body-secondary">
+        <i class="bi bi-trophy display-5 d-block mb-3 opacity-50"></i>
+        <p class="mb-3">No public leaderboards yet — be the first.</p>
+        {% if current_user %}
+        <a href="{{ url_for('list_projects') }}" class="btn btn-primary">
+            <i class="bi bi-plus-circle me-1"></i>Create one
+        </a>
+        {% else %}
+        <a href="{{ url_for('login') }}" class="btn btn-primary">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Log in to create
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
+</section>
+
+<!-- ===================== Final CTA ===================== -->
+{% if not current_user %}
+<section class="container mb-5 py-4">
+    <div class="card border-0 shadow-sm bg-body-tertiary">
+        <div class="card-body p-5 text-center">
+            <h3 class="fw-bold mb-2">Ready to benchmark?</h3>
+            <p class="text-body-secondary mb-4">
+                One click sign-in. We only ask GitHub for your name, email, and avatar.
+            </p>
+            <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg px-4">
+                <i class="bi bi-github me-2"></i>Continue with GitHub
+            </a>
+        </div>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

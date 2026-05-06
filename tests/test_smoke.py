@@ -33,10 +33,12 @@ def test_db_session_isolated_between_tests_part_2(app, db_session):
     assert Project.query.count() == 0
 
 
-def test_client_redirects_root_when_no_project(client):
+def test_root_renders_landing_page(client):
+    """Replaces the old `/projects` redirect — Phase 6 made `/` a real
+    public marketing page that anonymous visitors can hit."""
     resp = client.get("/", follow_redirects=False)
-    assert resp.status_code in (301, 302)
-    assert "/projects" in resp.headers.get("Location", "")
+    assert resp.status_code == 200
+    assert b"Benchmark your model" in resp.data
 
 
 def test_celery_is_eager(app):
