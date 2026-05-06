@@ -6,6 +6,13 @@ import traceback
 
 import numpy as np
 
+# `requests` is in requirements.txt for the OAuth flow; reuse it here
+# rather than pulling stdlib urllib for the HTTP sandbox path.
+try:
+    import requests as _requests
+except ImportError:  # pragma: no cover — dependency-pin guarantees it's there
+    _requests = None
+
 def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
     """
     Evaluates a GlobalMetric's python_code against the provided context.
@@ -121,42 +128,48 @@ def _build_kwargs(arg_mappings, context):
     return call_kwargs
 
 
-def evaluate_in_sandbox(
-    global_metric,
-    contexts,
-    arg_mappings_json,
-    *,
-    image=None,
-    timeout_seconds=60,
-    memory='512m',
-    cpus='1',
-    docker_path='docker',
-):
-    """Run a metric across many sample contexts inside a docker container.
-
-    Returns a list of (value, error) tuples — one per context — matching the
-    shape of repeated calls to evaluate_dynamic_metric().
-
-    On fatal failures (image missing, json parse error, container crash)
-    every context gets the same fatal error. That's intentional: tasks.py
-    treats per-sample errors per-row, and a fatal here is a per-metric
-    failure that should propagate to every row.
-    """
-    image = image or os.environ.get('BENCHHUB_SANDBOX_IMAGE') or _DEFAULT_SANDBOX_IMAGE
-
+def _build_job(global_metric, contexts, arg_mappings_json):
+    """Shared by both backends: turn (metric, contexts, mapping_json) into
+    the JSON job dict that runner/harness.run_job consumes."""
     try:
         arg_mappings = json.loads(arg_mappings_json) if arg_mappings_json else {}
     except (TypeError, json.JSONDecodeError):
         arg_mappings = {}
 
     kwargs_list = [_build_kwargs(arg_mappings, ctx or {}) for ctx in contexts]
-
-    job = {
+    return {
         'code': global_metric.python_code,
         'kwargs_list': kwargs_list,
         'include_numpy': True,
     }
 
+
+def _shape_results(payload_or_fatal, n_contexts):
+    """Turn the harness payload (or a fatal-string sentinel) into the
+    per-context tuple list callers expect.
+
+    payload_or_fatal:
+        - dict (harness output) → use payload['results'], pad if short
+        - str → fatal; every context gets (None, str)
+    """
+    if isinstance(payload_or_fatal, str):
+        return [(None, payload_or_fatal)] * n_contexts
+
+    payload = payload_or_fatal
+    if payload.get('fatal'):
+        return [(None, payload['fatal'])] * n_contexts
+
+    results = payload.get('results') or []
+    out = []
+    for i in range(n_contexts):
+        r = results[i] if i < len(results) else {"value": None, "error": "missing result"}
+        out.append((r.get('value'), r.get('error')))
+    return out
+
+
+def _run_via_docker(job, *, image, timeout_seconds, memory, cpus, docker_path):
+    """Subprocess path: spawn a one-shot container, pipe job in, parse stdout.
+    Returns either the harness payload dict or a fatal-string sentinel."""
     cmd = [
         docker_path, 'run', '--rm', '-i',
         '--network=none',
@@ -166,10 +179,12 @@ def evaluate_in_sandbox(
         f'--cpus={cpus}',
         '--security-opt', 'no-new-privileges',
         image,
+        # Override the image's default CMD (gunicorn server) and run the
+        # CLI harness directly. The HTTP server path uses _run_via_http;
+        # this branch is for local dev / docker-on-host deploys.
+        'python', '/app/harness.py',
     ]
 
-    fatal = None
-    raw_stdout = ''
     try:
         proc = subprocess.run(
             cmd,
@@ -180,40 +195,110 @@ def evaluate_in_sandbox(
             check=False,
         )
     except FileNotFoundError:
-        fatal = f"docker not found (looked for {docker_path!r})"
+        return f"docker not found (looked for {docker_path!r})"
     except subprocess.TimeoutExpired:
-        fatal = f"sandbox timed out after {timeout_seconds}s"
-    else:
-        if proc.returncode != 0 and not proc.stdout:
-            # Container exited non-zero AND wrote nothing — surface stderr so
-            # operators can see why (likely image missing or OOM-killed).
-            stderr_excerpt = (proc.stderr or '').strip().splitlines()
-            tail = ' / '.join(stderr_excerpt[-3:]) if stderr_excerpt else 'no stderr'
-            fatal = f"sandbox exited rc={proc.returncode}: {tail}"
-        raw_stdout = proc.stdout
+        return f"sandbox timed out after {timeout_seconds}s"
 
-    if fatal is None:
+    if proc.returncode != 0 and not proc.stdout:
+        stderr_excerpt = (proc.stderr or '').strip().splitlines()
+        tail = ' / '.join(stderr_excerpt[-3:]) if stderr_excerpt else 'no stderr'
+        return f"sandbox exited rc={proc.returncode}: {tail}"
+
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        return f"sandbox returned non-JSON: {e}"
+
+
+def _run_via_http(job, *, url, timeout_seconds):
+    """HTTP path: POST the job to a runner-as-separate-Fly-app instance.
+    Returns either the harness payload dict or a fatal-string sentinel."""
+    if _requests is None:
+        return "requests library not available"
+
+    try:
+        resp = _requests.post(
+            url,
+            json=job,
+            timeout=timeout_seconds,
+            headers={'Content-Type': 'application/json'},
+        )
+    except _requests.exceptions.Timeout:
+        return f"sandbox timed out after {timeout_seconds}s"
+    except _requests.exceptions.ConnectionError as e:
+        return f"sandbox unreachable at {url}: {e}"
+    except Exception as e:  # pragma: no cover — defensive
+        return f"sandbox HTTP error: {e}"
+
+    # Server returns 4xx/5xx with JSON body when it can; surface the body
+    # if present, the status otherwise.
+    if resp.status_code >= 400:
         try:
-            payload = json.loads(raw_stdout)
-        except json.JSONDecodeError as e:
-            fatal = f"sandbox returned non-JSON: {e}"
-        else:
-            if payload.get('fatal'):
-                fatal = payload['fatal']
-            else:
-                results = payload.get('results') or []
-                # Trust the harness ordering: results[i] corresponds to
-                # contexts[i]. If lengths mismatch (shouldn't happen unless
-                # the harness misbehaves), pad/truncate so callers don't
-                # crash on a zip.
-                out = []
-                for i in range(len(contexts)):
-                    r = results[i] if i < len(results) else {"value": None, "error": "missing result"}
-                    out.append((r.get('value'), r.get('error')))
-                return out
+            body = resp.json()
+        except ValueError:
+            return f"sandbox HTTP {resp.status_code}: {resp.text[:200]}"
+        if isinstance(body, dict) and body.get('fatal'):
+            return body['fatal']
+        return f"sandbox HTTP {resp.status_code}"
 
-    # Fatal path: every context inherits the same error message.
-    return [(None, fatal) for _ in contexts]
+    try:
+        return resp.json()
+    except ValueError as e:
+        return f"sandbox returned non-JSON: {e}"
+
+
+def evaluate_in_sandbox(
+    global_metric,
+    contexts,
+    arg_mappings_json,
+    *,
+    url=None,
+    image=None,
+    timeout_seconds=60,
+    memory='512m',
+    cpus='1',
+    docker_path='docker',
+):
+    """Run a metric across many sample contexts inside a hardened sandbox.
+
+    Backends, in priority order:
+
+    1. **HTTP** — when ``url`` is passed or ``BENCHHUB_SANDBOX_URL`` is set,
+       POST the job to a runner-as-separate-Fly-app instance. This is the
+       production path once the runner has been deployed (see
+       runner/fly.toml + DEPLOY.md § 9).
+
+    2. **Docker subprocess** — fall back to spawning a one-shot container
+       locally. Useful for development, the integration test suite, and
+       single-VM deploys where the runner image lives next to the app.
+
+    Returns a list of (value, error) tuples — one per context — matching
+    the shape of repeated calls to evaluate_dynamic_metric().
+
+    Fatal failures (image missing, container crash, network error,
+    malformed response) propagate the same error to every context. That
+    matches tasks.py's expectation: a per-metric fatal should mark every
+    sample, not silently drop them.
+    """
+    job = _build_job(global_metric, contexts, arg_mappings_json)
+    url = url or os.environ.get('BENCHHUB_SANDBOX_URL')
+
+    if url:
+        payload_or_fatal = _run_via_http(
+            job, url=url, timeout_seconds=timeout_seconds,
+        )
+    else:
+        image = image or os.environ.get('BENCHHUB_SANDBOX_IMAGE') or _DEFAULT_SANDBOX_IMAGE
+        payload_or_fatal = _run_via_docker(
+            job,
+            image=image,
+            timeout_seconds=timeout_seconds,
+            memory=memory,
+            cpus=cpus,
+            docker_path=docker_path,
+        )
+
+    return _shape_results(payload_or_fatal, len(contexts))
 
 
 def sandbox_evaluate_one(global_metric, context, arg_mappings_json, **kwargs):

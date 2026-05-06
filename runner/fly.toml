@@ -1,0 +1,57 @@
+# Fly.io config for the BenchHub sandbox runner.
+#
+# Deployed as a SEPARATE app from the main BenchHub web/worker. The
+# isolation story is "different VM, no DB, no volume" — see DEPLOY.md § 9
+# for the threat model. The main app reaches this one via
+# `http://benchhub-runner.internal:8080/run` (Fly's internal DNS for
+# private apps). It MUST NOT be exposed publicly: no [http_service]
+# block, no [[services]] with port 80/443.
+#
+# Update `app = "benchhub-runner"` to whatever name `fly launch --no-deploy`
+# picked / you registered.
+
+app = "benchhub-runner"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# No persistent state. No secrets needed (the runner doesn't talk to
+# anything but the requesting BenchHub instance).
+[env]
+  PORT = "8080"
+
+# Internal-only TCP service. `internal_port = 8080` + no [[services.ports]]
+# entries means the runner is reachable from other Fly apps via
+# `<app>.internal:8080` but NOT from the public internet. flyctl exposes
+# this as a 6PN-only listener by default.
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+  # Healthcheck against /health. Server returns immediately, no work.
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+
+# Modest VM. Bump memory if metric jobs OOM (matplotlib + scipy can
+# spike during a batch). Keep CPU at shared-cpu-1x for the v1 — runner
+# work is request-bound, not steady-state.
+[[vm]]
+  size = "shared-cpu-1x"
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 1024
+
+# Auto-stop when idle, auto-start on first request. Runner is hit only
+# during submission processing; let Fly suspend it the rest of the time.
+[experimental]
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0

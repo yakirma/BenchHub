@@ -234,15 +234,66 @@ inside the BenchHub web/worker container fails. Four ways to solve it:
 | **C: bubblewrap / landlock on the BenchHub VM** | Replace `docker run` with `bwrap` or a `landlock`-restricted `subprocess.Popen` in the same container. Linux-only. | No external service. Per-job isolation. | Different code path than your local Docker tests — you'd lose the integration tests' value. Linux-syscall-level config is fiddly to get right; one wrong flag and you've left a hole. | Skip. Too easy to misconfigure. |
 | **D: gVisor or Firecracker** | Run user code under a user-space kernel. | Strongest practical isolation short of separate VMs. | Major engineering. Distribution / packaging is hairy. | Skip unless this is your job. |
 
-**The recommended path** is **Option A** for the v1 of "going public":
-deploy `runner/` as a separate Fly app, swap `evaluate_in_sandbox` to POST
-to it over `runner.internal`, and accept the soft boundary while traffic
-is small. Revisit if anything ever justifies Option B.
+**Option A is now the default deploy path.** The runner repo path
+includes:
 
-When you're ready: a follow-up slice will (1) add an HTTP wrapper around
-`runner/harness.py`, (2) add a second `fly.toml` (or sub-app) for the
-runner, and (3) replace `subprocess.run(['docker', ...])` in
-`evaluate_in_sandbox` with a `requests.post('http://runner.internal/run', ...)`.
+- `runner/server.py` — Flask wrapper: `POST /run` for jobs, `GET /health`
+  for Fly. Calls `harness.run_job` in-process; gunicorn `--max-requests=100`
+  recycles the worker periodically so leaked state can't accumulate.
+- `runner/Dockerfile` — same image as the local CLI tests; default CMD is
+  the gunicorn server, but the image still supports `python /app/harness.py`
+  for the Docker-subprocess path.
+- `runner/fly.toml` — single internal-only TCP service on port 8080. No
+  volume, no DB, no public ports. Auto-stops when idle.
+
+### 9.1 Deploy the runner
+
+From the repo root:
+
+```bash
+cd runner
+fly launch --no-deploy        # name it benchhub-runner; same primary_region as the main app
+fly deploy
+cd ..
+```
+
+Confirm the runner is up via Fly's internal DNS from the main app:
+
+```bash
+fly ssh console -a benchhub
+# inside:
+curl http://benchhub-runner.internal:8080/health
+# {"ok": true}
+```
+
+### 9.2 Point the main app at the runner
+
+```bash
+fly secrets set \
+    BENCHHUB_SANDBOX_URL=http://benchhub-runner.internal:8080/run \
+  -a benchhub
+fly deploy -a benchhub      # picks up the new env var
+```
+
+`metric_engine.evaluate_in_sandbox` checks `BENCHHUB_SANDBOX_URL` first; when set, it POSTs the job there and skips the docker-subprocess fallback. `tasks._eval_metric_batch` is gated by the older `BENCHHUB_SANDBOX_METRICS=1` flag — set both, or fold the URL flag's presence into the dispatch (current code requires both, so set them together):
+
+```bash
+fly secrets set BENCHHUB_SANDBOX_METRICS=1 -a benchhub
+```
+
+### 9.3 Verify with a real submission
+
+Upload any submission with at least one per-sample metric. In the runner's logs (`fly logs -a benchhub-runner`) you should see one POST per metric — *not* one per sample. The main app batches every sample's context into a single job. If you see N requests for an N-sample submission, something's reverted to the per-call path.
+
+### 9.4 Drop Cloudflare Access
+
+Once 9.3 is clean and you've sat with it for a day or two:
+
+1. In Cloudflare → Zero Trust → Access → Applications, **delete** (or set Action: Bypass) the application that fronts BenchHub.
+2. Update DNS so the public hostname routes directly to Fly.
+3. Hard-refresh the site logged-out — confirm you can reach `/login` without an Access prompt.
+
+The metric engine's `exec()` now runs in the runner VM, not the web/worker VM. The "soft boundary" cost remains: a leaky metric can affect *other metrics' jobs* in the same gunicorn worker until it recycles. If that turns out to matter — i.e. you find a metric that legitimately needs to be isolated from sibling jobs — switch to Option B (machine-per-job via the Fly Machines API).
 
 ## What this deployment **doesn't** do
 

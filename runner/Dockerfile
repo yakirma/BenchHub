@@ -1,19 +1,18 @@
 # Sandbox runner image for user-supplied metric / visualization code.
 #
-# This image is designed to be run with:
-#   docker run --rm
-#       --network=none
-#       --read-only
-#       --tmpfs /tmp:size=64m
-#       --memory=512m --cpus=1
-#       -i benchhub-runner
+# Two ways to use this image:
 #
-# stdin: a single JSON job (see runner/harness.py for the schema).
-# stdout: a single JSON line of results.
+# 1. CLI (one-shot, used by the docker-subprocess path in
+#    metric_engine.evaluate_in_sandbox locally):
+#       docker run --rm --network=none --read-only --tmpfs /tmp:size=64m
+#           --memory=512m --cpus=1 -i benchhub-runner python /app/harness.py
+#       (writes JSON job on stdin, reads result on stdout)
 #
-# The container has no network, no writable filesystem outside /tmp, and a
-# small memory cap. Caller is responsible for setting a wall-clock timeout
-# (subprocess.run(..., timeout=60)).
+# 2. HTTP server (used by the runner-as-separate-Fly-app deploy — see
+#    runner/fly.toml). This is the default CMD: gunicorn serves
+#    runner/server.py which wraps harness.run_job. Boundary is the
+#    separate VM (no DB, no /data); per-request interpreter freshness
+#    comes from --max-requests=100 worker recycling.
 
 FROM python:3.13-slim
 
@@ -34,14 +33,18 @@ RUN apt-get update \
 
 # Pre-install the canonical scientific-python stack so user code can import
 # them without needing internet (the container runs with --network=none).
+# Flask + gunicorn for the HTTP server mode.
 RUN pip install \
         'numpy>=1.26' \
         'scipy>=1.11' \
         'matplotlib>=3.8' \
-        'Pillow>=10'
+        'Pillow>=10' \
+        'Flask>=3,<4' \
+        'gunicorn>=22'
 
 WORKDIR /app
 COPY harness.py /app/harness.py
+COPY server.py /app/server.py
 
 # matplotlib's font cache wants a writable home; --read-only at runtime
 # blocks /home/runner, so point HOME at /tmp (which we'll mount tmpfs).
@@ -50,6 +53,20 @@ RUN useradd --create-home --uid 1000 runner \
 USER runner
 ENV HOME=/tmp \
     XDG_CACHE_HOME=/tmp/.cache \
-    MPLCONFIGDIR=/tmp/.matplotlib
+    MPLCONFIGDIR=/tmp/.matplotlib \
+    PORT=8080
 
-ENTRYPOINT ["python", "/app/harness.py"]
+EXPOSE 8080
+
+# Default = HTTP server. CLI mode is `... python /app/harness.py`.
+# --max-requests recycles each worker after 100 jobs so leaked state
+# (sys.modules pollution, dangling threads) can't accumulate forever.
+# --timeout 60 matches metric_engine.evaluate_in_sandbox's caller-side
+# timeout default; gunicorn kills the worker if a single job takes longer.
+CMD ["gunicorn", \
+     "-b", "0.0.0.0:8080", \
+     "--workers", "2", \
+     "--max-requests", "100", \
+     "--max-requests-jitter", "20", \
+     "--timeout", "60", \
+     "server:app"]

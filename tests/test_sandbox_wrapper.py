@@ -92,8 +92,11 @@ def test_command_uses_required_hardening_flags():
     # tmpfs at /tmp so matplotlib / numpy can write caches even under --read-only.
     tmpfs_idx = cmd.index('--tmpfs')
     assert cmd[tmpfs_idx + 1].startswith('/tmp')
-    # Last arg is the image name (default benchhub-runner).
-    assert cmd[-1] == 'benchhub-runner'
+    # The image must appear in the command line. The arguments after it
+    # (`python /app/harness.py`) override the image's default CMD which
+    # is now gunicorn (HTTP server mode).
+    assert 'benchhub-runner' in cmd
+    assert cmd[-2:] == ['python', '/app/harness.py']
 
 
 def test_passes_job_json_on_stdin():
@@ -112,18 +115,20 @@ def test_passes_job_json_on_stdin():
 
 
 def test_image_overridable_via_kwarg_and_env(monkeypatch):
+    # Make sure no leftover URL routes us to the HTTP backend.
+    monkeypatch.delenv('BENCHHUB_SANDBOX_URL', raising=False)
     payload = {'fatal': None, 'results': [{'value': 1.0, 'error': None}]}
 
     # Explicit kwarg wins.
     with patch('metric_engine.subprocess.run', return_value=fake_proc(stdout=json.dumps(payload))) as mock_run:
         evaluate_in_sandbox(make_metric(), [{}], '{}', image='custom/runner:42')
-    assert mock_run.call_args.args[0][-1] == 'custom/runner:42'
+    assert 'custom/runner:42' in mock_run.call_args.args[0]
 
     # Falls back to env var.
     monkeypatch.setenv('BENCHHUB_SANDBOX_IMAGE', 'env/runner:9')
     with patch('metric_engine.subprocess.run', return_value=fake_proc(stdout=json.dumps(payload))) as mock_run:
         evaluate_in_sandbox(make_metric(), [{}], '{}')
-    assert mock_run.call_args.args[0][-1] == 'env/runner:9'
+    assert 'env/runner:9' in mock_run.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------
