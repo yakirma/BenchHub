@@ -6,7 +6,6 @@ Two layers:
 2. Leaderboard metrics (link table): add / edit / delete with arg-mapping form,
    summary_metrics auto-update, recalculation dispatch.
 """
-import base64
 
 import pytest
 
@@ -77,23 +76,6 @@ def test_create_metric_persists_to_db(auth_client, project, logged_in_user):
     assert gm is not None
     assert gm.python_code.strip() == code.strip()
     assert gm.owner_user_id == logged_in_user.id
-
-
-def test_create_metric_decodes_dlp_base64_payload(auth_client, project):
-    raw = "def m():\n    return 42\n"
-    encoded = "BASE64:" + base64.b64encode(raw.encode()).decode()
-
-    resp = auth_client.post(
-        "/metrics/create",
-        data={"name": "encoded_m", "python_code": encoded},
-    )
-    assert resp.status_code == 302
-
-    gm = GlobalMetric.query.filter_by(name="encoded_m").first()
-    assert gm is not None
-    # The handler decoded BASE64: → original code is what's stored.
-    assert "return 42" in gm.python_code
-    assert "BASE64:" not in gm.python_code
 
 
 def test_create_metric_blocks_zip_placeholder(auth_client, project):

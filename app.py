@@ -1080,7 +1080,7 @@ class GlobalSettings:
         self.defaults = {
             'scalar_width': '150px',
             'image_width': '300px',
-            'theme_mode': 'light'
+            'theme_mode': 'dark'
         }
         self.settings = self.load_settings()
 
@@ -1125,7 +1125,7 @@ class GlobalSettings:
 
     @property
     def theme_mode(self):
-        return self.settings.get('theme_mode', 'light')
+        return self.settings.get('theme_mode', 'dark')
 
 global_settings = GlobalSettings()
 
@@ -1150,7 +1150,7 @@ def inject_settings():
 @app.route('/app-settings', methods=['GET', 'POST'])
 def app_settings():
     if request.method == 'POST':
-        theme_mode = request.form.get('theme_mode', 'light')
+        theme_mode = request.form.get('theme_mode', 'dark')
         scalar_width = request.form.get('scalar_width', '150px')
         image_width = request.form.get('image_width', '300px')
         metric_chart_width = request.form.get('metric_chart_width', '300px')
@@ -2802,30 +2802,6 @@ def create_error_image(error_text):
     return send_file(img_io, mimetype='image/png')
 
 
-# Helper for DLP-safe Base64 decoding
-def handle_dlp_safe_code(code_str):
-    """Detect and decode Base64 obfuscated code"""
-    if not code_str:
-        return code_str
-    
-    code_str = code_str.strip()
-    if code_str.startswith('BASE64:'):
-        import base64
-        try:
-            # Remove prefix and decode
-            encoded_part = code_str[7:]
-            decoded_bytes = base64.b64decode(encoded_part)
-            # Try decoding as utf-8, fallback to latin-1
-            try:
-                return decoded_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                return decoded_bytes.decode('latin-1')
-        except Exception as e:
-            app.logger.error(f"DLP Decoding Error: {e}")
-            # If decoding fails, return as is or maybe flash warning
-    return code_str
-
-
 @app.route('/metrics')
 def metrics_view():
     metrics = (
@@ -2884,7 +2860,7 @@ def extract_code_from_file(file_storage):
             
             if text_content:
                 # Apply DLP decoding to the text content (handles obfuscated .txt files)
-                return handle_dlp_safe_code(text_content)
+                return text_content
     except Exception as e:
         print(f"File Storage Error: {e}")
     
@@ -2896,7 +2872,7 @@ def create_global_metric():
     try:
         name = request.form.get('name')
         description = request.form.get('description')
-        python_code = handle_dlp_safe_code(request.form.get('python_code', '').strip())
+        python_code = request.form.get('python_code', ''.strip())
         is_aggregated = 'is_aggregated' in request.form
         accepts_aggregated_inputs = 'accepts_aggregated_inputs' in request.form
 
@@ -2941,7 +2917,7 @@ def edit_global_metric(metric_id):
     try:
         name = request.form.get('name')
         description = request.form.get('description')
-        python_code = handle_dlp_safe_code(request.form.get('python_code', '').strip())
+        python_code = request.form.get('python_code', ''.strip())
         
         # Handle file upload if present
         metric_file = request.files.get('metric_file')
@@ -3022,7 +2998,7 @@ def create_visualization():
     try:
         name = request.form.get('name')
         description = request.form.get('description')
-        python_code = handle_dlp_safe_code(request.form.get('python_code', '').strip())
+        python_code = request.form.get('python_code', ''.strip())
         
         # Handle file upload if present
         viz_file = request.files.get('visualization_file')
@@ -3067,7 +3043,7 @@ def edit_visualization(viz_id):
     try:
         name = request.form.get('name')
         description = request.form.get('description')
-        python_code = handle_dlp_safe_code(request.form.get('python_code', '').strip())
+        python_code = request.form.get('python_code', ''.strip())
         
         # Handle file upload if present
         viz_file = request.files.get('visualization_file')
@@ -5201,179 +5177,6 @@ def datasets_list():
     datasets.sort(key=lambda x: x.last_associated_activity, reverse=True)
             
     return render_template('datasets.html', datasets=datasets)
-
-@app.route('/users')
-@app.route('/users_list')
-def users_list():
-    # Gather all raw usernames
-    dataset_authors = db.session.query(Dataset.git_author).distinct().all()
-    submission_authors = db.session.query(Submission.git_author).distinct().all()
-    
-    raw_usernames = set(a for (a,) in dataset_authors if a) | set(a for (a,) in submission_authors if a)
-    
-    profiles = {p.username: p for p in AuthorProfile.query.all()}
-
-    canonical_users = {} # canonical_name -> {stats}
-    
-    for raw in raw_usernames:
-        canonical = get_canonical_username(raw, profiles)
-        if canonical not in canonical_users:
-            canonical_users[canonical] = {
-                'username': canonical,
-                'aliases': [],
-                'datasets': 0,
-                'submissions': 0,
-                'last_activity': None
-            }
-        
-        if raw != canonical:
-            canonical_users[canonical]['aliases'].append(raw)
-            
-        ds_count = Dataset.query.filter_by(git_author=raw).count()
-        sub_count = Submission.query.filter_by(git_author=raw).count()
-        
-        canonical_users[canonical]['datasets'] += ds_count
-        canonical_users[canonical]['submissions'] += sub_count
-        
-        latest_ds = Dataset.query.filter_by(git_author=raw).order_by(Dataset.upload_date.desc()).first()
-        latest_sub = Submission.query.filter_by(git_author=raw).order_by(Submission.upload_date.desc()).first()
-        
-        raw_last = None
-        if latest_ds and latest_sub:
-            raw_last = max(latest_ds.upload_date, latest_sub.upload_date)
-        elif latest_ds:
-            raw_last = latest_ds.upload_date
-        elif latest_sub:
-            raw_last = latest_sub.upload_date
-            
-        if raw_last:
-            if not canonical_users[canonical]['last_activity'] or raw_last > canonical_users[canonical]['last_activity']:
-                canonical_users[canonical]['last_activity'] = raw_last
-
-    user_list = sorted(canonical_users.values(), key=lambda x: x['last_activity'] if x['last_activity'] else datetime.min, reverse=True)
-    return render_template('users.html', users=user_list)
-
-@app.route('/api/user/<username>/stats')
-def get_user_stats(username):
-    # Resolve canonical identity for stats
-    profiles = {p.username: p for p in AuthorProfile.query.all()}
-        
-    canonical = get_canonical_username(username, profiles)
-    
-    # Find all identities that merge into this canonical user
-    identities = [canonical]
-    for p_name, p in profiles.items():
-        if p_name != canonical and get_canonical_username(p_name, profiles) == canonical:
-            identities.append(p_name)
-    
-    # Datasets
-    user_datasets = Dataset.query.filter(Dataset.git_author.in_(identities)).all()
-    # Submissions
-    user_submissions = Submission.query.filter(Submission.git_author.in_(identities)).all()
-    
-    activity = {}
-    now = datetime.utcnow()
-    one_year_ago = now - timedelta(days=365)
-    
-    for ds in user_datasets:
-        if ds.upload_date > one_year_ago:
-            date_str = ds.upload_date.strftime('%Y-%m-%d')
-            activity[date_str] = activity.get(date_str, 0) + 1
-            
-    for sub in user_submissions:
-        if sub.upload_date > one_year_ago:
-            date_str = sub.upload_date.strftime('%Y-%m-%d')
-            activity[date_str] = activity.get(date_str, 0) + 1
-            
-    # LBs used
-    lbs = db.session.query(Leaderboard.name, Leaderboard.id).join(Submission).filter(
-        Submission.git_author.in_(identities)
-    ).distinct().all()
-    lb_info = [{'name': r[0], 'id': r[1]} for r in lbs]
-
-    # Recent submissions
-    recent = []
-    for s in Submission.query.filter(Submission.git_author.in_(identities)).order_by(Submission.upload_date.desc()).limit(10).all():
-        recent.append({
-            'name': s.name,
-            'date': s.upload_date.strftime('%Y-%m-%d %H:%M'),
-            'lb': s.leaderboard.name,
-            'lb_id': s.leaderboard_id,
-        })
-        
-    return jsonify({
-        'username': canonical,
-        'identities_merged': identities if len(identities) > 1 else [],
-        'dataset_count': len(user_datasets),
-        'submission_count': len(user_submissions),
-        'activity': activity,
-        'leaderboards': lb_info,
-        'recent_submissions': recent
-    })
-
-@app.route('/api/user/merge', methods=['POST'])
-def merge_users():
-    source_username = request.form.get('source_username')
-    target_username = request.form.get('target_username')
-    
-    if not source_username or not target_username:
-        return jsonify({'success': False, 'message': 'Both source and target required'}), 400
-        
-    if source_username == target_username:
-        return jsonify({'success': False, 'message': 'Cannot merge user into itself'}), 400
-        
-    profile = AuthorProfile.query.filter_by(username=source_username).first()
-    if not profile:
-        profile = AuthorProfile(username=source_username)
-        db.session.add(profile)
-        
-    profile.merged_into_username = target_username
-    db.session.commit()
-    return jsonify({'success': True})
-
-@app.route('/api/user/unmerge', methods=['POST'])
-def unmerge_users():
-    username = request.form.get('username')
-    
-    if not username:
-        return jsonify({'success': False, 'message': 'Username required'}), 400
-        
-    profile = AuthorProfile.query.filter_by(username=username).first()
-    if not profile:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
-        
-    profile.merged_into_username = None
-    db.session.commit()
-    return jsonify({'success': True})
-
-@app.route('/api/user/update_profile', methods=['POST'])
-def update_user_profile():
-    username = request.form.get('username')
-    display_name = request.form.get('display_name')
-    avatar_file = request.files.get('avatar')
-    
-    if not username:
-        return jsonify({'success': False, 'message': 'Username required'}), 400
-        
-    profile = AuthorProfile.query.filter_by(username=username).first()
-    if not profile:
-        profile = AuthorProfile(username=username)
-        db.session.add(profile)
-        
-    if display_name:
-        profile.display_name = display_name
-        
-    if avatar_file and avatar_file.filename:
-        avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
-        os.makedirs(avatar_dir, exist_ok=True)
-        
-        filename = secure_filename(f"{username}_{avatar_file.filename}")
-        avatar_path = os.path.join(avatar_dir, filename)
-        avatar_file.save(avatar_path)
-        profile.avatar_filename = filename
-        
-    db.session.commit()
-    return jsonify({'success': True})
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):

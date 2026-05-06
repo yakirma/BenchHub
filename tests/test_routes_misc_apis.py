@@ -166,55 +166,6 @@ def test_metrics_status_400_with_no_ids(client, lb_with_subs):
 
 
 # ---------------------------------------------------------------------------
-# User merge / unmerge
-# ---------------------------------------------------------------------------
-
-
-def test_user_merge_creates_profile_and_sets_redirect(client):
-    resp = client.post(
-        "/api/user/merge",
-        data={"source_username": "alice", "target_username": "alice_canonical"},
-    )
-    assert resp.status_code == 200
-    assert resp.get_json()["success"] is True
-
-    profile = AuthorProfile.query.filter_by(username="alice").first()
-    assert profile is not None
-    assert profile.merged_into_username == "alice_canonical"
-
-
-def test_user_merge_rejects_self_merge(client):
-    resp = client.post(
-        "/api/user/merge",
-        data={"source_username": "x", "target_username": "x"},
-    )
-    assert resp.status_code == 400
-
-
-def test_user_merge_rejects_missing_fields(client):
-    resp = client.post("/api/user/merge", data={"source_username": "x"})
-    assert resp.status_code == 400
-
-
-def test_user_unmerge_clears_redirect(client):
-    p = AuthorProfile(username="bob", merged_into_username="bob_canonical")
-    db.session.add(p)
-    db.session.commit()
-
-    resp = client.post("/api/user/unmerge", data={"username": "bob"})
-    assert resp.status_code == 200
-
-    db.session.expire_all()
-    fresh = AuthorProfile.query.filter_by(username="bob").first()
-    assert fresh.merged_into_username is None
-
-
-def test_user_unmerge_404_for_unknown(client):
-    resp = client.post("/api/user/unmerge", data={"username": "ghost"})
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
 # DB migrations
 # ---------------------------------------------------------------------------
 
