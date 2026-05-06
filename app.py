@@ -19,6 +19,7 @@ from scipy.optimize import curve_fit
 from sqlalchemy import or_, and_, not_, func
 import io
 import csv
+import secrets
 import warnings
 import matplotlib
 matplotlib.use('Agg')
@@ -634,6 +635,13 @@ class User(db.Model):
     is_system = db.Column(
         db.Boolean, nullable=False, default=False, server_default='0',
     )
+
+    # Phase 8: API token for programmatic access. Stored verbatim (not
+    # hashed) — by design: the user views/copies it from the settings
+    # page, so we need to be able to display it. Treat the DB as
+    # secret-bearing. Rotate via the regenerate endpoint, which writes
+    # a new value and invalidates the old one (no grace window).
+    api_token = db.Column(db.String(64), unique=True, nullable=True, index=True)
 
     __table_args__ = (
         db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
@@ -1291,6 +1299,10 @@ def load_project_context():
                         'login', 'login_github', 'oauth_callback_github', 'logout',
                         # Public landing + discoverability (Phase 6).
                         'landing', 'explore', 'user_profile',
+                        # Phase 8: legal stubs reachable from the global footer.
+                        'terms', 'privacy',
+                        # Phase 8: settings (login_required handles auth itself).
+                        'api_tokens', 'api_tokens_regenerate', 'api_tokens_revoke',
                         # Project-mutation routes use project_id from URL, not g.current_project.
                         'rename_project', 'clone_project', 'delete_project',
                         # Datasets are global, not project-scoped — see CLAUDE.md.
@@ -1591,6 +1603,51 @@ def check_quota(user, *, kind, incoming_bytes=0):
     return True, None
 
 
+# ---------------------------------------------------------------------------
+# Phase 8: API token authentication
+# ---------------------------------------------------------------------------
+# Anon /api/* endpoints predate OAuth and are about to be exposed to the
+# open internet. Add a Bearer-token gate so headless callers (CI, scripts)
+# can keep working but anonymous strangers can't.
+
+def generate_api_token():
+    """Cryptographically random URL-safe token. 32 bytes of entropy →
+    ~43 chars. Stored verbatim; treat the DB as secret-bearing."""
+    return secrets.token_urlsafe(32)
+
+
+def _bearer_token_from_request():
+    """Extract a token from the Authorization header. Accepts both
+    'Bearer <token>' (recommended) and a bare token (lenient — some
+    older client scripts already send it that way)."""
+    h = request.headers.get('Authorization', '')
+    if not h:
+        return None
+    if h.lower().startswith('bearer '):
+        return h[7:].strip()
+    return h.strip()
+
+
+def require_api_token(view):
+    """Authenticate by Authorization: Bearer <token>; populate g.current_user.
+
+    Use on programmatic /api/* endpoints. Returns 401 JSON on missing
+    or invalid token. Inside the view, g.current_user is the row that
+    owns the token, so quota helpers and owner_user_id assignments
+    work the same as on cookie-authed routes."""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        token = _bearer_token_from_request()
+        if not token:
+            return jsonify({'error': 'API token required (Authorization: Bearer <token>)'}), 401
+        user = User.query.filter_by(api_token=token).first()
+        if user is None:
+            return jsonify({'error': 'Invalid API token'}), 401
+        g.current_user = user
+        return view(*args, **kwargs)
+    return wrapped
+
+
 def _path_size_bytes(path):
     """Walk a directory, sum file sizes. Falls back to os.path.getsize for
     a single file. Returns 0 on any error so a stat blip can't block an
@@ -1692,6 +1749,51 @@ def logout():
     session.pop('oauth_next', None)
     flash("Logged out.", "info")
     return redirect(url_for('login'))
+
+
+# ===================== Settings: API tokens (Phase 8) =====================
+
+@app.route('/settings/api_tokens', methods=['GET'])
+@login_required
+def api_tokens():
+    return render_template('api_tokens.html', token=g.current_user.api_token)
+
+
+@app.route('/settings/api_tokens/regenerate', methods=['POST'])
+@login_required
+def api_tokens_regenerate():
+    """Generate (or rotate) the user's API token. Old token is invalidated
+    immediately — no grace window. Display once on the resulting page;
+    we keep it server-side so the user can revisit /settings/api_tokens
+    to grab it again, but rotating produces a new value."""
+    g.current_user.api_token = generate_api_token()
+    db.session.commit()
+    flash("New API token generated. Update any scripts that use the old one.", "success")
+    return redirect(url_for('api_tokens'))
+
+
+@app.route('/settings/api_tokens/revoke', methods=['POST'])
+@login_required
+def api_tokens_revoke():
+    g.current_user.api_token = None
+    db.session.commit()
+    flash("API token revoked.", "warning")
+    return redirect(url_for('api_tokens'))
+
+
+# ===================== Legal stubs (Phase 8) =====================
+# Placeholder content. Treating these as real legal documents will require
+# actual lawyer review before public launch — this is a launch-blocker
+# checkbox, not the final wording.
+
+@app.route('/terms')
+def terms():
+    return render_template('legal_terms.html')
+
+
+@app.route('/privacy')
+def privacy():
+    return render_template('legal_privacy.html')
 
 
 # ===================== Project routes =====================
@@ -6269,34 +6371,43 @@ def apply_tag_filters(query, args):
 
 
 @app.route('/api/dataset/upload', methods=['POST'])
+@require_api_token
 def dataset_upload_api():
-    """Programmatic dataset upload API.
-
-    TODO(phase-1): no auth here yet because this endpoint serves headless
-    scripts that pre-date the OAuth flow. Cloudflare Access still gates the
-    entire app. When CF Access is removed (or a public tier is enabled),
-    swap to API tokens (stored on User) before this endpoint goes public.
-    """
+    """Programmatic dataset upload API. Authenticated via Bearer token
+    (see /settings/api_tokens). Owner of the new Dataset is the token's
+    user; quotas apply same as the interactive upload."""
     if 'dataset_zip' not in request.files:
         return jsonify({'error': 'No dataset_zip file provided'}), 400
-    
+
     file = request.files['dataset_zip']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
     dataset_name = request.form.get('dataset_name', file.filename.replace('.zip', ''))
-    # project_id logic removed (Global Datasets)
     override = request.form.get('override', 'false').lower() == 'true'
-    
+
     filename = secure_filename(file.filename)
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_api_pre')
     os.makedirs(temp_dir, exist_ok=True)
     temp_zip_path = os.path.join(temp_dir, filename)
     file.save(temp_zip_path)
 
+    # Phase 7 quota gate (now possible because the request is authenticated).
+    incoming = _path_size_bytes(temp_zip_path)
+    ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=incoming)
+    if not ok:
+        try:
+            os.remove(temp_zip_path)
+        except OSError:
+            pass
+        return jsonify({'error': msg}), 429
+
     try:
-        success, message, ds_id = process_dataset_zip(temp_zip_path, dataset_name, override=override)
-        
+        success, message, ds_id = process_dataset_zip(
+            temp_zip_path, dataset_name, override=override,
+            owner_user_id=g.current_user.id,
+        )
+
         if success:
             return jsonify({'message': message, 'dataset_id': ds_id}), 201
         else:
@@ -6429,25 +6540,34 @@ def api_download_dataset(project_name, dataset_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/<project_name>/api/leaderboard/<int:leaderboard_id>/submission/upload', methods=['POST'])
+@require_api_token
 def submission_upload_api(project_name, leaderboard_id):
-    """Programmatic submission upload API"""
+    """Programmatic submission upload API. Bearer-token authenticated;
+    owner_user_id of the resulting Submission is the token's user."""
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     if 'submission_zip' not in request.files:
         return jsonify({'error': 'No submission_zip provided'}), 400
-        
+
     file = request.files['submission_zip']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
+    # Phase 7 daily-rate quota.
+    ok, msg = check_quota(g.current_user, kind='submission')
+    if not ok:
+        return jsonify({'error': msg}), 429
+
     submission_name = request.form.get('submission_name', file.filename.replace('.zip', ''))
-    
-    # Process
+
     temp_zip_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_upload_zip', secure_filename(file.filename))
     os.makedirs(os.path.dirname(temp_zip_path), exist_ok=True)
     file.save(temp_zip_path)
-    
+
     try:
-        success, error = process_submission_zip(leaderboard.id, submission_name, temp_zip_path)
+        success, error = process_submission_zip(
+            leaderboard.id, submission_name, temp_zip_path,
+            owner_user_id=g.current_user.id,
+        )
         if success:
              return jsonify({'success': True, 'message': 'Submission queued'})
         else:
@@ -6973,6 +7093,9 @@ def check_and_migrate_db():
                     ("user",                 "quota_max_datasets",             "INTEGER NOT NULL DEFAULT 5"),
                     ("user",                 "quota_max_submissions_per_day",  "INTEGER NOT NULL DEFAULT 50"),
                     ("user",                 "is_system",                      "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Phase 8: programmatic-access token. Nullable; users
+                    # opt-in by clicking "Generate" in /settings/api_tokens.
+                    ("user",                 "api_token",                      "VARCHAR(64)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

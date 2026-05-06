@@ -10,7 +10,23 @@ import os
 
 import pytest
 
-from app import Dataset, Sample, app, db
+from app import Dataset, Sample, User, app, db, generate_api_token
+
+
+@pytest.fixture
+def api_token_headers(db_session):
+    """Phase 8: /api/dataset/upload now requires a Bearer token. Tests
+    that hit it use this fixture to mint a User with a token and pass
+    the header in."""
+    u = User(
+        email='api-tok@example.com',
+        display_name='API Tester',
+        oauth_provider='github',
+        oauth_sub='api-tok-1',
+        api_token=generate_api_token(),
+    )
+    db.session.add(u); db.session.commit()
+    return {'Authorization': f'Bearer {u.api_token}'}
 
 
 @pytest.fixture
@@ -94,13 +110,14 @@ def test_web_upload_with_blank_name_uses_filename(auth_client, project_ctx, make
 # ---------------------------------------------------------------------------
 
 
-def test_api_upload_returns_201_and_dataset_id(client, make_zip):
+def test_api_upload_returns_201_and_dataset_id(client, make_zip, api_token_headers):
     zip_path = make_zip(
         "api.zip", {"config/s1.json": '{"k":1}'}, root_folder="api_ds"
     )
     with open(zip_path, "rb") as f:
         resp = client.post(
             "/api/dataset/upload",
+            headers=api_token_headers,
             data={"dataset_name": "api_ds", "dataset_zip": (f, "api.zip")},
             content_type="multipart/form-data",
         )
@@ -110,19 +127,25 @@ def test_api_upload_returns_201_and_dataset_id(client, make_zip):
     assert "Uploaded" in body["message"]
 
 
-def test_api_upload_missing_file_returns_400(client):
-    resp = client.post("/api/dataset/upload", data={}, content_type="multipart/form-data")
+def test_api_upload_missing_file_returns_400(client, api_token_headers):
+    resp = client.post(
+        "/api/dataset/upload",
+        headers=api_token_headers,
+        data={},
+        content_type="multipart/form-data",
+    )
     assert resp.status_code == 400
     assert "error" in resp.get_json()
 
 
-def test_api_upload_collision_without_override_returns_400(client, seeded_dataset, make_zip):
+def test_api_upload_collision_without_override_returns_400(client, seeded_dataset, make_zip, api_token_headers):
     zip_path = make_zip(
         "dup.zip", {"config/s1.json": '{"k":1}'}, root_folder="seed_ds"
     )
     with open(zip_path, "rb") as f:
         resp = client.post(
             "/api/dataset/upload",
+            headers=api_token_headers,
             data={"dataset_name": "seed_ds", "dataset_zip": (f, "dup.zip")},
             content_type="multipart/form-data",
         )
@@ -130,13 +153,14 @@ def test_api_upload_collision_without_override_returns_400(client, seeded_datase
     assert "already exists" in resp.get_json()["error"]
 
 
-def test_api_upload_with_override_replaces_existing(client, seeded_dataset, make_zip):
+def test_api_upload_with_override_replaces_existing(client, seeded_dataset, make_zip, api_token_headers):
     layout = {"config/sa.json": '{"k":99}'}
     zip_path = make_zip("over.zip", layout, root_folder="seed_ds")
 
     with open(zip_path, "rb") as f:
         resp = client.post(
             "/api/dataset/upload",
+            headers=api_token_headers,
             data={
                 "dataset_name": "seed_ds",
                 "override": "true",

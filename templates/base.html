@@ -368,19 +368,19 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="text-center py-4 mt-auto">
+    <footer class="text-center py-4 mt-auto border-top">
         <div class="container">
             <div class="row align-items-center justify-content-center">
                 <div class="col-md-auto text-center">
                     <p class="mb-0 text-muted small">
-                        Bench-Hub &copy; {{ now.year if now else '2026' }} |
-                        <span class="version-info fw-bold">v{{ version }}</span> |
-                        <a href="http://gitlab-srv/tof/dtof_benchmarking" target="_blank"
-                            class="link-secondary text-decoration-none" title="Git Repository"><i
-                                class="bi bi-git me-1"></i> Git Repo</a> |
-                        <a href="http://gitlab-srv/tof/dtof_benchmarking/-/boards" target="_blank"
-                            class="link-secondary text-decoration-none"><i class="bi bi-bug me-1"></i> Feature Request /
-                            Report a Bug</a>
+                        BenchHub &copy; {{ now.year if now else '2026' }} ·
+                        <span class="version-info fw-bold">v{{ version }}</span> ·
+                        <a href="{{ url_for('explore') }}" class="link-secondary text-decoration-none">Explore</a> ·
+                        <a href="{{ url_for('terms') }}" class="link-secondary text-decoration-none">Terms</a> ·
+                        <a href="{{ url_for('privacy') }}" class="link-secondary text-decoration-none">Privacy</a>
+                        {% if current_user %}
+                            · <a href="{{ url_for('api_tokens') }}" class="link-secondary text-decoration-none">API tokens</a>
+                        {% endif %}
                     </p>
                 </div>
             </div>

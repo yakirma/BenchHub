@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}API tokens — BenchHub{% endblock %}
+
+{% set meta_title = 'API tokens — BenchHub' %}
+{% set meta_description = 'Manage your BenchHub API tokens for programmatic dataset and submission uploads.' %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+    <h1 class="h3 fw-bold mb-1">API tokens</h1>
+    <p class="text-body-secondary mb-4">
+        Authenticate programmatic uploads with the
+        <code>Authorization: Bearer &lt;token&gt;</code> header.
+    </p>
+
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            {% if token %}
+            <label class="form-label fw-semibold small text-uppercase text-body-secondary">Your token</label>
+            <div class="input-group mb-3">
+                <input type="text" id="api-token" class="form-control font-monospace"
+                    value="{{ token }}" readonly>
+                <button class="btn btn-outline-secondary" type="button" onclick="copyToken()">
+                    <i class="bi bi-clipboard me-1"></i>Copy
+                </button>
+            </div>
+            <p class="text-body-secondary small mb-3">
+                Treat this like a password. Anyone with it can upload datasets
+                and submissions on your behalf, subject to your quotas.
+            </p>
+
+            <div class="d-flex gap-2">
+                <form method="POST" action="{{ url_for('api_tokens_regenerate') }}">
+                    <button type="submit" class="btn btn-outline-primary"
+                        onclick="return confirm('Generate a new token? Your old token will stop working immediately.');">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Regenerate
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('api_tokens_revoke') }}">
+                    <button type="submit" class="btn btn-outline-danger"
+                        onclick="return confirm('Revoke this token? Programmatic uploads will fail until you generate a new one.');">
+                        <i class="bi bi-x-circle me-1"></i>Revoke
+                    </button>
+                </form>
+            </div>
+            {% else %}
+            <p class="mb-3">You don't have an API token yet.</p>
+            <form method="POST" action="{{ url_for('api_tokens_regenerate') }}">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-key me-1"></i>Generate token
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    <h2 class="h5 fw-semibold mb-2">Example: upload a dataset</h2>
+    <pre class="bg-body-tertiary p-3 rounded small"><code>curl -X POST \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "dataset_zip=@my_dataset.zip" \
+  -F "dataset_name=my_dataset" \
+  https://&lt;your-host&gt;/api/dataset/upload</code></pre>
+</div>
+
+<script>
+function copyToken() {
+    const el = document.getElementById('api-token');
+    el.select();
+    navigator.clipboard.writeText(el.value);
+}
+</script>
+{% endblock %}

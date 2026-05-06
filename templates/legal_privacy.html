@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy Policy — BenchHub{% endblock %}
+
+{% set meta_title = 'Privacy Policy — BenchHub' %}
+{% set meta_description = 'How BenchHub collects, uses, and stores your data.' %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <h1 class="h3 fw-bold mb-1">Privacy Policy</h1>
+    <p class="text-body-secondary small mb-4">Last updated: 2026-05-06 · Draft — review with counsel before launch.</p>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">What we collect</h2>
+        <ul>
+            <li><strong>Account info from your OAuth provider:</strong> name, email, avatar URL, and the provider's user ID. We use this to identify your account.</li>
+            <li><strong>Content you upload:</strong> datasets, predictions, metric code, leaderboards, and metadata. Visibility settings on each item determine who else can see them.</li>
+            <li><strong>Operational data:</strong> upload timestamps, processing status, quota usage. Used to operate the Service and enforce fair-use limits.</li>
+            <li><strong>Server logs:</strong> request paths, status codes, IP addresses, user agents. Retained briefly for debugging and abuse prevention.</li>
+        </ul>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">How we use it</h2>
+        <ul>
+            <li>To provide the Service: render leaderboards, run metrics, attribute uploads to your account.</li>
+            <li>To enforce quotas and detect abuse.</li>
+            <li>To send transactional notices about your account or content (when notification features are enabled).</li>
+        </ul>
+        <p>We don't sell your data. We don't run third-party advertising trackers.</p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">What we share</h2>
+        <p>
+            Public-visibility content is, by definition, visible to anyone
+            on the internet — including your display name and avatar
+            attached to leaderboard entries. Private and unlisted content
+            is not surfaced in catalogs or search.
+        </p>
+        <p>
+            We may share data when legally required (subpoenas, court orders).
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">Cookies</h2>
+        <p>
+            We use a small number of cookies that are necessary for the
+            Service to function: a session cookie holding your login
+            state, and an <code>active_project_id</code> cookie remembering
+            which project you have selected. We do not set advertising or
+            cross-site tracking cookies.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">Your choices</h2>
+        <ul>
+            <li>You can delete content you uploaded at any time.</li>
+            <li>You can revoke API tokens at any time from <a href="{{ url_for('api_tokens') }}">your settings</a>.</li>
+            <li>You can request account deletion by contacting the project maintainer.</li>
+        </ul>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">Security</h2>
+        <p>
+            We take reasonable measures to protect your data, but no system
+            is perfectly secure. API tokens are stored in our database; if
+            you suspect a token has been exposed, regenerate it
+            immediately.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">Changes</h2>
+        <p>
+            We may update this Policy. Material changes will be flagged on
+            the landing page or via email when notification features are
+            available.
+        </p>
+    </section>
+
+    <p class="text-body-secondary small mt-5">
+        Questions: open an issue in the repository or contact the project maintainer.
+    </p>
+</div>
+{% endblock %}

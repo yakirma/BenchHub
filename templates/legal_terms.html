@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Terms of Service — BenchHub{% endblock %}
+
+{% set meta_title = 'Terms of Service — BenchHub' %}
+{% set meta_description = 'Terms of Service for using BenchHub.' %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <h1 class="h3 fw-bold mb-1">Terms of Service</h1>
+    <p class="text-body-secondary small mb-4">Last updated: 2026-05-06 · Draft — review with counsel before launch.</p>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">1. Acceptance</h2>
+        <p>
+            By using BenchHub ("the Service") you agree to these Terms. If
+            you do not agree, do not use the Service.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">2. Account and access</h2>
+        <p>
+            Sign-in is via OAuth (currently GitHub). You're responsible for
+            keeping your account secure, including any API tokens you
+            generate. We may suspend accounts that abuse the Service or
+            violate these Terms.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">3. Content you upload</h2>
+        <p>
+            You retain ownership of datasets, predictions, metric code, and
+            other content you upload. By uploading public-visibility
+            content, you grant other Service users a license to view and
+            evaluate against it. You're responsible for ensuring you have
+            the rights to upload anything you upload.
+        </p>
+        <p>
+            Don't upload content that's illegal, infringing, malicious, or
+            that violates someone's privacy. We may remove content that we
+            reasonably believe violates this section.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">4. Metric code execution</h2>
+        <p>
+            BenchHub executes user-supplied Python code as part of metric
+            evaluation. We sandbox this execution but make no guarantee of
+            absolute isolation. Don't run untrusted metric code against
+            your own private data unless you've reviewed it.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">5. Quotas and fair use</h2>
+        <p>
+            Free-tier accounts have storage, dataset count, and submission
+            rate limits. We may adjust quotas to keep the Service usable
+            for everyone. Repeated attempts to evade quotas (multiple
+            accounts, automated upload floods) may result in suspension.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">6. Service availability</h2>
+        <p>
+            The Service is provided "as is," without warranty. We may
+            change, suspend, or discontinue any part of it at any time.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">7. Liability</h2>
+        <p>
+            To the maximum extent permitted by law, BenchHub and its
+            contributors are not liable for indirect, incidental, or
+            consequential damages arising from your use of the Service.
+        </p>
+    </section>
+
+    <section class="mb-4">
+        <h2 class="h5 fw-semibold">8. Changes</h2>
+        <p>
+            We may update these Terms. Continued use of the Service after
+            changes are posted constitutes acceptance of the updated Terms.
+        </p>
+    </section>
+
+    <p class="text-body-secondary small mt-5">
+        Questions: open an issue in the repository or contact the project maintainer.
+    </p>
+</div>
+{% endblock %}
