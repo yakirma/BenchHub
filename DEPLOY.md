@@ -187,6 +187,63 @@ ends at status `Processed` (the worker is doing its job).
 | Back up the SQLite DB | `fly ssh console -C "sqlite3 /data/database.db .backup /data/snapshots/$(date +%F).db"` then `fly sftp shell` to pull |
 | Rotate `SECRET_KEY` | `fly secrets set SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')` (logs everyone out) |
 
+## 9. Sandboxed metric execution (optional, required before opening to the public)
+
+`metric_engine.py` `exec()`s user-supplied Python in-process by default.
+That's fine while Cloudflare Access keeps strangers out. If you want to
+*remove* the Access gate (open public sign-up), you must run user code in
+a hardened container instead. The repo includes that container at
+`runner/`, behind an env flag.
+
+### Building the runner image locally
+
+Verify it builds + the integration tests pass on your machine before
+worrying about deploy:
+
+```bash
+make runner-image          # builds benchhub-runner:local
+make test-docker           # runs tests/test_sandbox_docker_integration.py
+```
+
+The integration tests exercise the real container: happy path, numpy
+injection, `--network=none` blocking outbound traffic, `--read-only`
+blocking writes outside `/tmp`. They're slow (~30s first run) and skipped
+by `make test`; only `make test-docker` runs them.
+
+### Toggling the sandbox at runtime
+
+```bash
+fly secrets set BENCHHUB_SANDBOX_METRICS=1
+```
+
+`tasks._eval_metric_batch` reads this on every metric job and routes to
+`evaluate_in_sandbox` (one container spawn per metric × submission, with
+all sample contexts batched into a single JSON job — see Slice 2 commit).
+Unset or any value other than the literal `1` keeps the in-process path.
+
+### The Fly-machines-don't-have-a-Docker-socket problem
+
+Here's the one open design decision before this can ship: Fly machines
+don't expose `/var/run/docker.sock`, so `subprocess.run(['docker', 'run', ...])`
+inside the BenchHub web/worker container fails. Four ways to solve it:
+
+| Option | Shape | Pros | Cons | Recommendation |
+|---|---|---|---|---|
+| **A: Runner as a separate Fly app** | Deploy `runner/` as its own Fly app exposing an HTTP endpoint that wraps the harness. The web app POSTs the JSON job over `*.internal` Fly DNS. | Cleanest separation. Runner can run with no volume, no DB access, on a smaller VM. Easy to scale separately. The "container" is one persistent process, not per-job — no startup cost. | Adds an HTTP layer. The runner is a long-running process with all jobs sharing a Python interpreter — you lose the per-job isolation that was the whole point. Can be partially fixed by running the runner with low concurrency + pre-fork worker recycling, but it's a softer boundary than fresh containers. | **Pick this** for the cheap public launch. Tighten later. |
+| **B: Fly Machines API per job** | Web app calls `flyctl machines run` (or the HTTP API equivalent) per metric to spin up an ephemeral machine, pipe the job in, read the result, destroy the machine. | Strongest isolation: real fresh VM per metric. Matches the "Docker-per-job" semantics this code was designed for. | Slow (~5-10s per spawn), nontrivial cost, complex orchestration code (auth, polling, error handling). | Defer. Worth it only if option A's shared-process risk turns out to matter. |
+| **C: bubblewrap / landlock on the BenchHub VM** | Replace `docker run` with `bwrap` or a `landlock`-restricted `subprocess.Popen` in the same container. Linux-only. | No external service. Per-job isolation. | Different code path than your local Docker tests — you'd lose the integration tests' value. Linux-syscall-level config is fiddly to get right; one wrong flag and you've left a hole. | Skip. Too easy to misconfigure. |
+| **D: gVisor or Firecracker** | Run user code under a user-space kernel. | Strongest practical isolation short of separate VMs. | Major engineering. Distribution / packaging is hairy. | Skip unless this is your job. |
+
+**The recommended path** is **Option A** for the v1 of "going public":
+deploy `runner/` as a separate Fly app, swap `evaluate_in_sandbox` to POST
+to it over `runner.internal`, and accept the soft boundary while traffic
+is small. Revisit if anything ever justifies Option B.
+
+When you're ready: a follow-up slice will (1) add an HTTP wrapper around
+`runner/harness.py`, (2) add a second `fly.toml` (or sub-app) for the
+runner, and (3) replace `subprocess.run(['docker', ...])` in
+`evaluate_in_sandbox` with a `requests.post('http://runner.internal/run', ...)`.
+
 ## What this deployment **doesn't** do
 
 - **No Postgres.** SQLite on a volume is fine for one web instance; if you
@@ -197,10 +254,11 @@ ends at status `Processed` (the worker is doing its job).
   `process_submission_zip` to S3-compatible storage and update the
   `download_*` routes — touched code paths are in `app.py` around the
   `app.config["UPLOAD_FOLDER"]` references.
-- **No real metric sandboxing.** Cloudflare Access keeps anonymous users
-  out, but anyone with an email matching your Access policy can still
-  upload Python that runs server-side. If you ever open the policy beyond
-  trusted teammates, do the Docker-per-job sandbox refactor first.
+- **No real metric sandboxing in production yet.** Cloudflare Access keeps
+  anonymous users out, but anyone with an email matching your Access
+  policy can still upload Python that runs server-side. The container in
+  `runner/` is built and tested; section 9 above is the runbook for
+  switching it on.
 - **No CI deploys.** `fly deploy` is run manually. The `.github/workflows/test.yml` pipeline runs tests on push but doesn't deploy on green. Add a
   `fly-deploy.yml` workflow with `flyctl deploy --remote-only` and a
   `FLY_API_TOKEN` GitHub secret if you want push-to-deploy.

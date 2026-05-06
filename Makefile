@@ -11,14 +11,16 @@ PYTEST := $(PY) -m pytest
 # Bump this when you raise coverage; do not lower it.
 COV_FAIL_UNDER := 50
 
-.PHONY: help test test-fast cov cov-html clean dev worker redis-check
+.PHONY: help test test-fast test-docker cov cov-html clean dev worker redis-check runner-image
 
 help:
 	@echo "Targets:"
-	@echo "  test         Run the full test suite."
+	@echo "  test         Run the full test suite (skips docker-marked tests)."
 	@echo "  test-fast    Stop on first failure, no captured output."
+	@echo "  test-docker  Run the docker-marked integration tests (requires docker)."
 	@echo "  cov          Run with coverage; fails if below $(COV_FAIL_UNDER)%."
 	@echo "  cov-html     Coverage report as browsable HTML in .coverage_html/."
+	@echo "  runner-image Build the sandbox runner image (benchhub-runner:local)."
 	@echo "  dev          Start the Flask app on :6060 (assumes Redis is running)."
 	@echo "  worker       Start a Celery worker (logs to stdout)."
 	@echo "  redis-check  Verify Redis is reachable on the default port."
@@ -30,8 +32,14 @@ test:
 test-fast:
 	$(PYTEST) -x -s
 
+test-docker:
+	$(PYTEST) -m docker --no-cov
+
 cov:
 	$(PYTEST) --cov --cov-report=term --cov-fail-under=$(COV_FAIL_UNDER)
+
+runner-image:
+	docker build -t benchhub-runner:local runner/
 
 cov-html:
 	$(PYTEST) --cov --cov-report=html
