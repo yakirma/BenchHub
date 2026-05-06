@@ -552,6 +552,9 @@ class Leaderboard(db.Model):
     # server_default (not just `default`) so raw SQL INSERTs in the legacy
     # migration code don't trip the NOT NULL constraint.
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    # Phase 5 (relocated from Project): marks BenchHub-curated leaderboards.
+    # Surfaced on the landing rail and via /explore?curated=1.
+    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
@@ -2030,14 +2033,13 @@ def landing():
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
 
-    # Phase 5: curated benchmarks rail. Show up to 3 leaderboards in
-    # any project marked is_curated=True. Empty until the curated
-    # content is seeded.
+    # Phase 5: curated benchmarks rail. is_curated lives directly on
+    # Leaderboard (relocated from Project as part of the projects-removal
+    # refactor); the join through Project is gone.
     curated_rows = (
         db.session.query(Leaderboard, activity.c.recent_count)
-        .join(Project, Leaderboard.project_id == Project.id)
         .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
-        .filter(Project.is_curated.is_(True))
+        .filter(Leaderboard.is_curated.is_(True))
         .filter(Leaderboard.visibility == 'public')
         .order_by(func.coalesce(activity.c.recent_count, 0).desc(),
                   Leaderboard.upload_date.desc())
@@ -2106,10 +2108,7 @@ def explore():
     )
 
     if curated_only:
-        # Curated content lives in projects with is_curated=True.
-        base = base.join(Project, Leaderboard.project_id == Project.id).filter(
-            Project.is_curated.is_(True)
-        )
+        base = base.filter(Leaderboard.is_curated.is_(True))
 
     if q:
         base = base.filter(Leaderboard.name.ilike(f'%{q}%'))
@@ -6700,6 +6699,7 @@ def admin_leaderboard_create():
         summary_metrics=summary_metrics,
         owner_user_id=sys_user.id,
         visibility='public',
+        is_curated=True,  # Stage 1: curated state lives directly on the leaderboard.
     )
     if dataset_ids:
         datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()
@@ -7388,6 +7388,9 @@ def check_and_migrate_db():
                     # Phase 5: curated-content marker.
                     ("project",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
                     ("dataset",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Phase 5 relocation: curated state moves from Project
+                    # to Leaderboard (Project itself is being deleted).
+                    ("leaderboard",          "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
                     # Phase 7: per-user quotas. Existing rows pick up the
                     # free-tier defaults; bump per-row to grant a paid tier.
                     ("user",                 "quota_max_storage_bytes",        f"BIGINT NOT NULL DEFAULT {200 * 1024 * 1024}"),
@@ -7418,6 +7421,29 @@ def check_and_migrate_db():
                         print(f"Added {tbl}.{col}.")
                     except Exception as e:
                         print(f"Failed to add {tbl}.{col}: {e}")
+
+                # One-shot backfill: any leaderboard whose project is
+                # is_curated=True inherits is_curated=True. Idempotent
+                # because the second run finds no project.is_curated=1
+                # rows that aren't already reflected on leaderboard.
+                # Wrapped in try/except so a fresh install (no project
+                # table yet) doesn't choke.
+                try:
+                    cursor.execute("""
+                        UPDATE leaderboard
+                           SET is_curated = 1
+                         WHERE is_curated = 0
+                           AND project_id IN (
+                               SELECT id FROM project WHERE is_curated = 1
+                           )
+                    """)
+                    if cursor.rowcount:
+                        print(f"Backfilled {cursor.rowcount} leaderboard.is_curated rows from project.is_curated.")
+                    conn.commit()
+                except Exception as e:
+                    # Expected on a fresh install where project.is_curated
+                    # doesn't exist yet, or after Stage 2 drops the table.
+                    print(f"is_curated backfill skipped: {e}")
 
                 conn.close()
 

@@ -283,7 +283,7 @@ def test_admin_leaderboard_create_in_curated_project(client, db_session, admin_u
     sys_user = User.query.filter_by(email='curated@benchhub.local').first()
     assert lb.owner_user_id == sys_user.id
     assert lb.visibility == 'public'
-    assert lb.project.name == 'benchhub-curated'
+    assert lb.is_curated is True
 
 
 def test_admin_leaderboard_create_is_idempotent(client, db_session, admin_user):

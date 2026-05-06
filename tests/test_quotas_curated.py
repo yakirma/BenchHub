@@ -250,7 +250,7 @@ def test_ensure_curated_seed_is_idempotent(db_session):
 
 
 def test_explore_curated_filter_only_shows_curated(client, db_session):
-    """?curated=1 narrows results to projects with is_curated=True."""
+    """?curated=1 narrows results to leaderboards with is_curated=True."""
     ensure_curated_seed()
     curated_proj = Project.query.filter_by(name='benchhub-curated').first()
     other_proj = Project(name='other_p', visibility='public')
@@ -260,7 +260,7 @@ def test_explore_curated_filter_only_shows_curated(client, db_session):
     db.session.add(ds); db.session.flush()
 
     cur_lb = Leaderboard(name='curated_only_lb', project_id=curated_proj.id,
-                         summary_metrics='')
+                         summary_metrics='', is_curated=True)
     cur_lb.datasets.append(ds)
     other_lb = Leaderboard(name='regular_lb', project_id=other_proj.id,
                            summary_metrics='')
@@ -285,7 +285,7 @@ def test_landing_renders_curated_section_when_present(client, db_session):
     ds = Dataset(name='cur_ds_landing')
     db.session.add(ds); db.session.flush()
     lb = Leaderboard(name='hero_curated_lb', project_id=curated_proj.id,
-                     summary_metrics='', visibility='public')
+                     summary_metrics='', visibility='public', is_curated=True)
     lb.datasets.append(ds)
     db.session.add(lb); db.session.commit()
 
