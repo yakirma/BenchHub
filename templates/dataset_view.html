@@ -640,18 +640,49 @@
                         Next Sample <i class="bi bi-arrow-down"></i>
                     </button>
                 </div>
+                {# Overlay toggle: when ON, clicking a gallery thumb sets it
+                   as a translucent overlay instead of replacing the base. #}
+                <div class="form-check form-switch ms-3 me-2">
+                    <input class="form-check-input" type="checkbox" id="overlay-mode-toggle">
+                    <label class="form-check-label small" for="overlay-mode-toggle"
+                        title="Click a thumbnail with this on to overlay it on the current image.">
+                        Overlay
+                    </label>
+                </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center" style="position: relative;">
                 <div id="modal-content-wrapper"
                     style="width: 100%; height: 100%; min-height: 500px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
                     <div id="modal-error-container" style="display: none; width: 100%;"></div>
-                    <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
+                    {# Base + overlay layered. The overlay is positioned to
+                       exactly cover the base, with adjustable opacity. #}
+                    <div id="modal-image-stack" style="position: relative; display: inline-block;">
+                        <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
+                        <img id="modal-overlay-img" src=""
+                            style="display: none; position: absolute; top: 0; left: 0;
+                                   width: 100%; height: 100%; opacity: 0.5;
+                                   pointer-events: none;">
+                    </div>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
                         style="display: none;">
                         <span class="visually-hidden">Loading...</span>
                     </div>
+                </div>
+                {# Overlay opacity control + clear button. Hidden until an
+                   overlay is set. #}
+                <div id="overlay-controls" class="d-flex align-items-center justify-content-center gap-3 mt-2"
+                    style="display: none !important;">
+                    <label class="small text-body-secondary mb-0" for="overlay-opacity">
+                        Overlay opacity:
+                    </label>
+                    <input type="range" id="overlay-opacity" min="0" max="100" value="50"
+                        class="form-range" style="width: 240px;">
+                    <span id="overlay-opacity-value" class="small text-body-secondary" style="width: 3em;">50%</span>
+                    <button type="button" id="overlay-clear-btn" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-x-lg me-1"></i>Clear overlay
+                    </button>
                 </div>
                 <div id="custom-field-gallery-footer" class="gallery-footer-container"></div>
             </div>
@@ -1120,11 +1151,16 @@
 
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
             (item) => {
-                // Update modal content directly. We can't fall back to
-                // item.element.click() — Bootstrap's data-bs-toggle no-ops
-                // when the target modal is already open, so the modality
-                // toggle in zoom-mode would silently break.
-                if (item.element) window.updateDatasetCustomFieldModalContent(item.element);
+                if (!item.element) return;
+                // Overlay-mode: set this modality as the overlay layer
+                // instead of replacing the base. Direct call (not .click())
+                // because Bootstrap no-ops show() on an already-open modal.
+                const overlayMode = document.getElementById('overlay-mode-toggle');
+                if (overlayMode && overlayMode.checked) {
+                    window.setCustomFieldOverlay(item.element);
+                } else {
+                    window.updateDatasetCustomFieldModalContent(item.element);
+                }
             },
             // Vertical Navigation Callback
             (direction, currentItem, currentIndex) => {
@@ -1185,6 +1221,59 @@
                 }
             }
         );
+
+        // Overlay machinery: layer a second modality on top of the base
+        // image at adjustable opacity. Both layers go through the same
+        // /custom_field_image endpoint (which renders depth fields to PNG),
+        // so any image/depth modality can act as either layer.
+        window.setCustomFieldOverlay = function (button) {
+            const visType = button.getAttribute('data-vis-type');
+            const imgUrl = button.getAttribute('data-img-url');
+            // Plotly heatmap can't be overlaid trivially. Re-fetch the
+            // matplotlib-rendered PNG version of the depth field instead.
+            const pngUrl = (visType === 'depth')
+                ? imgUrl.replace('/api/custom_field_depth_data/', '/custom_field_image/')
+                : imgUrl;
+            const overlayImg = document.getElementById('modal-overlay-img');
+            const controls = document.getElementById('overlay-controls');
+            if (!overlayImg || !controls) return;
+            overlayImg.src = pngUrl;
+            overlayImg.style.display = 'block';
+            controls.style.display = 'flex';
+        };
+
+        window.clearCustomFieldOverlay = function () {
+            const overlayImg = document.getElementById('modal-overlay-img');
+            const controls = document.getElementById('overlay-controls');
+            if (overlayImg) {
+                overlayImg.src = '';
+                overlayImg.style.display = 'none';
+            }
+            if (controls) controls.style.display = 'none';
+        };
+
+        // Wire up overlay controls.
+        const opacitySlider = document.getElementById('overlay-opacity');
+        const opacityLabel = document.getElementById('overlay-opacity-value');
+        const clearBtn = document.getElementById('overlay-clear-btn');
+        const overlayToggle = document.getElementById('overlay-mode-toggle');
+        if (opacitySlider) {
+            opacitySlider.addEventListener('input', (e) => {
+                const v = e.target.value;
+                const overlayImg = document.getElementById('modal-overlay-img');
+                if (overlayImg) overlayImg.style.opacity = (v / 100).toString();
+                if (opacityLabel) opacityLabel.textContent = `${v}%`;
+            });
+        }
+        if (clearBtn) clearBtn.addEventListener('click', window.clearCustomFieldOverlay);
+        // Closing the modal resets overlay state.
+        const customFieldModalEl = document.getElementById('custom-field-modal');
+        if (customFieldModalEl) {
+            customFieldModalEl.addEventListener('hidden.bs.modal', () => {
+                window.clearCustomFieldOverlay();
+                if (overlayToggle) overlayToggle.checked = false;
+            });
+        }
 
         window.updateDatasetCustomFieldModalContent = function (button) {
             const customFieldModal = document.getElementById('custom-field-modal');
