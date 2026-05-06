@@ -1,7 +1,10 @@
-import traceback
 import json
-import numpy as np
 import os
+import shlex
+import subprocess
+import traceback
+
+import numpy as np
 
 def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
     """
@@ -71,6 +74,155 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
     except Exception as e:
         print(f"DEBUG: Error evaluating metric {global_metric.name}: {e}")
         return None, traceback.format_exc()
+
+
+# ---------------------------------------------------------------------------
+# Sandboxed metric execution (Phase 2)
+# ---------------------------------------------------------------------------
+#
+# evaluate_dynamic_metric (above) exec()s untrusted Python in-process. That's
+# fine for trusted-LAN deployments but a remote-code-execution invitation on
+# any public site. The path below shells out to a locked-down docker
+# container instead. It's gated by the BENCHHUB_SANDBOX_METRICS env var and
+# defaults OFF — production keeps the in-process path until we flip the
+# switch and prove the container is healthy in a staging deploy.
+#
+# Batched on purpose: container start-up is ~1-2s, so per-call invocation
+# would dominate runtime. Instead we send N kwargs dicts in one job and the
+# container returns N results.
+
+_DEFAULT_SANDBOX_IMAGE = 'benchhub-runner'
+
+
+def _sandbox_enabled():
+    """One central toggle so callers don't have to re-check the env var."""
+    return os.environ.get('BENCHHUB_SANDBOX_METRICS') == '1'
+
+
+def _build_kwargs(arg_mappings, context):
+    """Turn the leaderboard-metric arg_mappings + a sample context into the
+    actual function kwargs. Same logic as the in-process path so behavior
+    matches when callers swap one for the other."""
+    call_kwargs = {}
+    for arg, mapping_key in arg_mappings.items():
+        if mapping_key.startswith('SCALAR:'):
+            val_str = mapping_key[7:]
+            try:
+                v = float(val_str)
+                if v.is_integer():
+                    v = int(v)
+                call_kwargs[arg] = v
+            except ValueError:
+                call_kwargs[arg] = val_str
+        elif mapping_key not in context:
+            call_kwargs[arg] = None
+        else:
+            call_kwargs[arg] = context[mapping_key]
+    return call_kwargs
+
+
+def evaluate_in_sandbox(
+    global_metric,
+    contexts,
+    arg_mappings_json,
+    *,
+    image=None,
+    timeout_seconds=60,
+    memory='512m',
+    cpus='1',
+    docker_path='docker',
+):
+    """Run a metric across many sample contexts inside a docker container.
+
+    Returns a list of (value, error) tuples — one per context — matching the
+    shape of repeated calls to evaluate_dynamic_metric().
+
+    On fatal failures (image missing, json parse error, container crash)
+    every context gets the same fatal error. That's intentional: tasks.py
+    treats per-sample errors per-row, and a fatal here is a per-metric
+    failure that should propagate to every row.
+    """
+    image = image or os.environ.get('BENCHHUB_SANDBOX_IMAGE') or _DEFAULT_SANDBOX_IMAGE
+
+    try:
+        arg_mappings = json.loads(arg_mappings_json) if arg_mappings_json else {}
+    except (TypeError, json.JSONDecodeError):
+        arg_mappings = {}
+
+    kwargs_list = [_build_kwargs(arg_mappings, ctx or {}) for ctx in contexts]
+
+    job = {
+        'code': global_metric.python_code,
+        'kwargs_list': kwargs_list,
+        'include_numpy': True,
+    }
+
+    cmd = [
+        docker_path, 'run', '--rm', '-i',
+        '--network=none',
+        '--read-only',
+        '--tmpfs', '/tmp:size=64m,exec',
+        f'--memory={memory}',
+        f'--cpus={cpus}',
+        '--security-opt', 'no-new-privileges',
+        image,
+    ]
+
+    fatal = None
+    raw_stdout = ''
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(job),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError:
+        fatal = f"docker not found (looked for {docker_path!r})"
+    except subprocess.TimeoutExpired:
+        fatal = f"sandbox timed out after {timeout_seconds}s"
+    else:
+        if proc.returncode != 0 and not proc.stdout:
+            # Container exited non-zero AND wrote nothing — surface stderr so
+            # operators can see why (likely image missing or OOM-killed).
+            stderr_excerpt = (proc.stderr or '').strip().splitlines()
+            tail = ' / '.join(stderr_excerpt[-3:]) if stderr_excerpt else 'no stderr'
+            fatal = f"sandbox exited rc={proc.returncode}: {tail}"
+        raw_stdout = proc.stdout
+
+    if fatal is None:
+        try:
+            payload = json.loads(raw_stdout)
+        except json.JSONDecodeError as e:
+            fatal = f"sandbox returned non-JSON: {e}"
+        else:
+            if payload.get('fatal'):
+                fatal = payload['fatal']
+            else:
+                results = payload.get('results') or []
+                # Trust the harness ordering: results[i] corresponds to
+                # contexts[i]. If lengths mismatch (shouldn't happen unless
+                # the harness misbehaves), pad/truncate so callers don't
+                # crash on a zip.
+                out = []
+                for i in range(len(contexts)):
+                    r = results[i] if i < len(results) else {"value": None, "error": "missing result"}
+                    out.append((r.get('value'), r.get('error')))
+                return out
+
+    # Fatal path: every context inherits the same error message.
+    return [(None, fatal) for _ in contexts]
+
+
+def sandbox_evaluate_one(global_metric, context, arg_mappings_json, **kwargs):
+    """Single-context convenience wrapper, matches evaluate_dynamic_metric's
+    return shape (value, error)."""
+    results = evaluate_in_sandbox(
+        global_metric, [context], arg_mappings_json, **kwargs
+    )
+    return results[0] if results else (None, "sandbox returned no result")
 
 
 def get_metric_context(sample, sub=None, submission_folder=None):
