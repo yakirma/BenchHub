@@ -2,6 +2,11 @@
 
 {% block title %}BenchHub — Benchmark your model in 60 seconds{% endblock %}
 
+{# SEO override (Phase 6). Title is the hero pitch; description matches the
+   sub-headline so search-result snippets read sensibly. #}
+{% set meta_title = 'BenchHub — Benchmark your model in 60 seconds' %}
+{% set meta_description = 'Open-source benchmarking platform: pick a dataset, define metrics in Python, upload predictions, see how your model ranks. No credit card.' %}
+
 {% block flash_messages %}{% endblock %}
 
 {% block content %}

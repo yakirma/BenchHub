@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Explore leaderboards — BenchHub{% endblock %}
+
+{% set meta_title = 'Explore leaderboards — BenchHub' %}
+{% set meta_description = 'Browse public benchmarking leaderboards on BenchHub. Filter by name, sort by activity, find communities benchmarking models against shared datasets.' %}
+
+{% block flash_messages %}{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="d-flex flex-wrap justify-content-between align-items-end mb-4 gap-3">
+        <div>
+            <h1 class="h3 fw-bold mb-1">Explore leaderboards</h1>
+            <p class="text-body-secondary mb-0">
+                {% if rows %}
+                {{ rows|length }} public leaderboard{{ '' if rows|length == 1 else 's' }}.
+                {% else %}
+                Nothing matches your filters yet.
+                {% endif %}
+            </p>
+        </div>
+    </div>
+
+    {# ---- Filters ---- #}
+    <form method="GET" action="{{ url_for('explore') }}" class="mb-4">
+        <div class="row g-2">
+            <div class="col-md-7">
+                <input type="search" name="q" value="{{ q }}"
+                    class="form-control form-control-lg"
+                    placeholder="Search by leaderboard name…"
+                    autocomplete="off">
+            </div>
+            <div class="col-md-3">
+                <select name="sort" class="form-select form-select-lg" onchange="this.form.submit()">
+                    <option value="activity" {{ 'selected' if sort=='activity' }}>Sort: Most active (30d)</option>
+                    <option value="recent"   {{ 'selected' if sort=='recent'   }}>Sort: Newest</option>
+                    <option value="popular"  {{ 'selected' if sort=='popular'  }}>Sort: Most submissions</option>
+                </select>
+            </div>
+            <div class="col-md-2 d-grid">
+                <button type="submit" class="btn btn-primary btn-lg">
+                    <i class="bi bi-search me-1"></i>Search
+                </button>
+            </div>
+        </div>
+    </form>
+
+    {# ---- Results grid ---- #}
+    {% if rows %}
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+        {% for row in rows %}
+        {% set lb = row.lb %}
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body p-4 d-flex flex-column">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <h5 class="card-title fw-semibold mb-0 text-truncate" title="{{ lb.name }}">
+                            {{ lb.name }}
+                        </h5>
+                        {% if row.recent > 0 %}
+                        <span class="badge text-bg-light ms-2 flex-shrink-0" title="Submissions in the last 30 days">
+                            <i class="bi bi-arrow-up-right me-1"></i>{{ row.recent }}
+                        </span>
+                        {% endif %}
+                    </div>
+
+                    {% if lb.project %}
+                    <p class="text-body-secondary small mb-3">
+                        <i class="bi bi-folder me-1"></i>{{ lb.project.name }}
+                    </p>
+                    {% endif %}
+
+                    <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
+                        <span><i class="bi bi-people me-1"></i>{{ row.total }} submission{{ '' if row.total == 1 else 's' }}</span>
+                        <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
+                    </div>
+
+                    {% if lb.project %}
+                    <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+                        class="stretched-link" aria-label="Open {{ lb.name }}"></a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-center py-5 text-body-secondary">
+        <i class="bi bi-funnel display-5 d-block mb-3 opacity-50"></i>
+        <p class="mb-1">No public leaderboards match those filters.</p>
+        {% if q %}
+        <p class="small mb-0">
+            <a href="{{ url_for('explore') }}" class="link-secondary">Clear filters</a>
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

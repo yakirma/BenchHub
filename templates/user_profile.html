@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+
+{% block title %}{{ profile_user.display_name }} — BenchHub{% endblock %}
+
+{% set meta_title = profile_user.display_name ~ ' on BenchHub' %}
+{% set meta_description = profile_user.display_name ~ "'s public datasets, leaderboards, and submissions on BenchHub." %}
+{% set meta_image = profile_user.avatar_url %}
+
+{% block flash_messages %}{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+
+    {# ---- Profile header ---- #}
+    <div class="d-flex align-items-center gap-3 mb-4 pb-3 border-bottom">
+        {% if profile_user.avatar_url %}
+        <img src="{{ profile_user.avatar_url }}" alt=""
+            class="rounded-circle" width="64" height="64">
+        {% else %}
+        <i class="bi bi-person-circle display-4 text-body-secondary"></i>
+        {% endif %}
+        <div class="flex-grow-1 min-w-0">
+            <h1 class="h3 fw-bold mb-1 text-truncate">{{ profile_user.display_name }}</h1>
+            <div class="text-body-secondary small d-flex flex-wrap gap-3">
+                <span><i class="bi bi-calendar-event me-1"></i>Joined
+                    {{ profile_user.created_at.strftime('%b %Y') if profile_user.created_at else '—' }}
+                </span>
+                <span><i class="bi bi-{{ 'github' if profile_user.oauth_provider == 'github' else 'shield-check' }} me-1"></i>{{ profile_user.oauth_provider|title }}</span>
+            </div>
+        </div>
+        {% if viewer_is_owner %}
+        <a href="{{ url_for('list_projects') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-pencil me-1"></i>Edit in dashboard
+        </a>
+        {% endif %}
+    </div>
+
+    {# ---- Datasets ---- #}
+    <section class="mb-5">
+        <h2 class="h5 fw-semibold mb-3">
+            <i class="bi bi-database me-2 text-body-secondary"></i>Public datasets
+            <span class="text-body-secondary fw-normal">({{ datasets|length }})</span>
+        </h2>
+        {% if datasets %}
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+            {% for ds in datasets %}
+            <div class="col">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body p-3">
+                        <h6 class="card-title fw-semibold mb-1 text-truncate" title="{{ ds.name }}">
+                            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                                class="text-decoration-none stretched-link text-body">
+                                {{ ds.name }}
+                            </a>
+                        </h6>
+                        <p class="text-body-secondary small mb-0">
+                            <i class="bi bi-clock me-1"></i>{{ ds.upload_date.strftime('%Y-%m-%d') if ds.upload_date else '—' }}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-body-secondary small mb-0">No public datasets yet.</p>
+        {% endif %}
+    </section>
+
+    {# ---- Leaderboards ---- #}
+    <section class="mb-5">
+        <h2 class="h5 fw-semibold mb-3">
+            <i class="bi bi-trophy me-2 text-body-secondary"></i>Public leaderboards
+            <span class="text-body-secondary fw-normal">({{ leaderboards|length }})</span>
+        </h2>
+        {% if leaderboards %}
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+            {% for lb in leaderboards %}
+            <div class="col">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body p-3">
+                        <h6 class="card-title fw-semibold mb-1 text-truncate" title="{{ lb.name }}">
+                            {% if lb.project %}
+                            <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+                                class="text-decoration-none stretched-link text-body">
+                                {{ lb.name }}
+                            </a>
+                            {% else %}
+                            {{ lb.name }}
+                            {% endif %}
+                        </h6>
+                        {% if lb.project %}
+                        <p class="text-body-secondary small mb-0">
+                            <i class="bi bi-folder me-1"></i>{{ lb.project.name }}
+                        </p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-body-secondary small mb-0">No public leaderboards yet.</p>
+        {% endif %}
+    </section>
+
+    {# ---- Recent submissions ---- #}
+    <section class="mb-3">
+        <h2 class="h5 fw-semibold mb-3">
+            <i class="bi bi-arrow-up-right-circle me-2 text-body-secondary"></i>Recent submissions
+        </h2>
+        {% if recent_subs %}
+        <ul class="list-group list-group-flush">
+            {% for sub, lb in recent_subs %}
+            <li class="list-group-item px-0 d-flex justify-content-between align-items-center">
+                <div class="min-w-0 me-2">
+                    <div class="fw-semibold text-truncate">{{ sub.name }}</div>
+                    <div class="small text-body-secondary text-truncate">
+                        {% if lb.project %}
+                        <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+                            class="link-secondary text-decoration-none">
+                            {{ lb.project.name }}/{{ lb.name }}
+                        </a>
+                        {% else %}
+                        {{ lb.name }}
+                        {% endif %}
+                    </div>
+                </div>
+                <span class="text-body-secondary small flex-shrink-0">
+                    {{ sub.upload_date.strftime('%Y-%m-%d') if sub.upload_date else '—' }}
+                </span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-body-secondary small mb-0">No submissions to public leaderboards yet.</p>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

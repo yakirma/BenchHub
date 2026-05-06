@@ -2,6 +2,9 @@
 
 {% block title %}{{ leaderboard.name }} - Leaderboard{% endblock %}
 
+{% set meta_title = leaderboard.name ~ ' — BenchHub leaderboard' %}
+{% set meta_description = 'Public benchmarking leaderboard "' ~ leaderboard.name ~ '" with ' ~ leaderboard.submissions|length ~ ' submission' ~ ('' if leaderboard.submissions|length == 1 else 's') ~ ' on BenchHub.' %}
+
 {% block content %}
 <style>
     /* Prevent table-responsive from clipping dropdowns */

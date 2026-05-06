@@ -2,6 +2,9 @@
 
 {% block title %}Dataset: {{ dataset.name }}{% endblock %}
 
+{% set meta_title = 'Dataset: ' ~ dataset.name ~ ' — BenchHub' %}
+{% set meta_description = 'BenchHub dataset "' ~ dataset.name ~ '". ' ~ ((dataset.git_message or '')[:160]) %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div class="d-flex align-items-center gap-3">

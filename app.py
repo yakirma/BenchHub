@@ -1255,8 +1255,8 @@ def load_project_context():
                         'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
                         # Auth routes — must be reachable without a project context.
                         'login', 'login_github', 'oauth_callback_github', 'logout',
-                        # Public landing page (Phase 6).
-                        'landing',
+                        # Public landing + discoverability (Phase 6).
+                        'landing', 'explore', 'user_profile',
                         # Project-mutation routes use project_id from URL, not g.current_project.
                         'rename_project', 'clone_project', 'delete_project',
                         # Datasets are global, not project-scoped — see CLAUDE.md.
@@ -1265,17 +1265,28 @@ def load_project_context():
                         'update_dataset_metrics']
     if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
         # Public endpoint — skip the redirect-when-no-project guard, but
-        # still populate g.current_project from the cookie so url_for(...)
-        # can auto-inject project_name into project-scoped URLs that the
-        # rendered template might build (e.g. an "Upload" button on /datasets).
+        # still populate g.current_project so url_for(...) can auto-inject
+        # project_name into project-scoped URLs that the rendered template
+        # might build (e.g. an "Upload" button on /datasets, the per-sample
+        # download dropdown on /dataset/<id>).
+        #
+        # Order: cookie first (preserve the user's selected context), then
+        # fall back to the oldest Project so anonymous visitors with no
+        # cookie don't trip a BuildError in templates that assume project
+        # context. Static (no-project) sites would set this to None and
+        # the templates would need to guard each url_for — not worth it
+        # for the v1.
         project_id = request.cookies.get('active_project_id')
+        p = None
         if project_id:
             try:
                 p = Project.query.get(int(project_id))
-                if p:
-                    g.current_project = p
             except (ValueError, TypeError):
-                pass
+                p = None
+        if p is None:
+            p = Project.query.order_by(Project.created_at).first()
+        if p is not None:
+            g.current_project = p
         return
 
     # Programmatic API access should skip redirection
@@ -1660,6 +1671,148 @@ def landing():
         'landing.html',
         featured=featured_rows,
     )
+
+
+@app.route('/explore')
+def explore():
+    """Public catalog of leaderboards (Phase 6 Slice 2).
+
+    Visible to everyone (anonymous or signed-in). Filtering/sorting via
+    query string:
+        ?q=<text>     — case-insensitive name match
+        ?sort=activity  (default) recent submissions in last 30 days, then upload_date
+              recent  newest leaderboards first
+              popular total submissions across all time
+    """
+    q = (request.args.get('q') or '').strip()
+    sort = request.args.get('sort', 'activity')
+    if sort not in ('activity', 'recent', 'popular'):
+        sort = 'activity'
+
+    cutoff = datetime.utcnow() - timedelta(days=30)
+
+    # Two activity counts: recent (for default sort + display) and total
+    # (for the "popular" sort + the "N submissions" badge).
+    recent_activity = (
+        db.session.query(
+            Submission.leaderboard_id.label('lb_id'),
+            func.count(Submission.id).label('recent_count'),
+        )
+        .filter(Submission.upload_date >= cutoff, Submission.is_archived.is_(False))
+        .group_by(Submission.leaderboard_id)
+        .subquery()
+    )
+    total_activity = (
+        db.session.query(
+            Submission.leaderboard_id.label('lb_id'),
+            func.count(Submission.id).label('total_count'),
+        )
+        .filter(Submission.is_archived.is_(False))
+        .group_by(Submission.leaderboard_id)
+        .subquery()
+    )
+
+    base = (
+        db.session.query(
+            Leaderboard,
+            func.coalesce(recent_activity.c.recent_count, 0).label('recent_count'),
+            func.coalesce(total_activity.c.total_count, 0).label('total_count'),
+        )
+        .outerjoin(recent_activity, Leaderboard.id == recent_activity.c.lb_id)
+        .outerjoin(total_activity, Leaderboard.id == total_activity.c.lb_id)
+        .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
+    )
+
+    if q:
+        base = base.filter(Leaderboard.name.ilike(f'%{q}%'))
+
+    if sort == 'recent':
+        base = base.order_by(Leaderboard.upload_date.desc())
+    elif sort == 'popular':
+        base = base.order_by(
+            func.coalesce(total_activity.c.total_count, 0).desc(),
+            Leaderboard.upload_date.desc(),
+        )
+    else:  # activity
+        base = base.order_by(
+            func.coalesce(recent_activity.c.recent_count, 0).desc(),
+            Leaderboard.upload_date.desc(),
+        )
+
+    rows = [
+        {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0)}
+        for lb, r, t in base.limit(60).all()
+    ]
+    return render_template(
+        'explore.html',
+        rows=rows,
+        q=q,
+        sort=sort,
+    )
+
+
+@app.route('/u/<int:user_id>')
+def user_profile(user_id):
+    """Public profile page (Phase 6 Slice 2).
+
+    Lists the user's PUBLIC datasets, leaderboards, and recent
+    submissions. Private + unlisted rows aren't surfaced here even when
+    the viewer is the profile owner — those live in their own dashboard.
+    """
+    user = User.query.get(user_id)
+    if user is None:
+        abort(404)
+
+    viewer = getattr(g, 'current_user', None)
+
+    # On the public profile we want the *publicly visible* slice of the
+    # user's stuff, regardless of who's looking. Build a stricter filter
+    # than visible_in_list (which would also include the viewer's private
+    # rows belonging to *that* viewer — irrelevant on someone else's page).
+    def public_only_filter(model_cls):
+        return or_(
+            model_cls.visibility == 'public',
+            model_cls.owner_user_id.is_(None),
+        )
+
+    datasets = (
+        Dataset.query
+        .filter(Dataset.owner_user_id == user.id, public_only_filter(Dataset))
+        .order_by(Dataset.upload_date.desc())
+        .limit(12)
+        .all()
+    )
+    leaderboards = (
+        Leaderboard.query
+        .filter(Leaderboard.owner_user_id == user.id, public_only_filter(Leaderboard))
+        .order_by(Leaderboard.upload_date.desc())
+        .limit(12)
+        .all()
+    )
+    # Submissions: show recent ones whose leaderboard is public (don't
+    # leak that a user submitted to a private leaderboard).
+    recent_subs = (
+        db.session.query(Submission, Leaderboard)
+        .join(Leaderboard, Submission.leaderboard_id == Leaderboard.id)
+        .filter(
+            Submission.owner_user_id == user.id,
+            Submission.is_archived.is_(False),
+            public_only_filter(Leaderboard),
+        )
+        .order_by(Submission.upload_date.desc())
+        .limit(10)
+        .all()
+    )
+
+    return render_template(
+        'user_profile.html',
+        profile_user=user,
+        viewer_is_owner=(viewer is not None and viewer.id == user.id),
+        datasets=datasets,
+        leaderboards=leaderboards,
+        recent_subs=recent_subs,
+    )
+
 
 # --- Legacy Redirects (Backward Compatibility) ---
 def get_fallback_project_name():
