@@ -2,11 +2,37 @@ import logging
 import json
 import os
 from app import celery, db, Submission, LeaderboardMetric, MetricResult, Sample, app, CustomField
-from metric_engine import evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency
+from metric_engine import (
+    evaluate_dynamic_metric,
+    evaluate_in_sandbox,
+    get_metric_context,
+    sort_metrics_by_dependency,
+    _sandbox_enabled,
+)
 import numpy as np
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _eval_metric_batch(global_metric, contexts, arg_mappings_json):
+    """Single dispatch point for evaluating a metric across many contexts.
+
+    Returns a list of (value, error) tuples — one per context.
+
+    When BENCHHUB_SANDBOX_METRICS=1, the work happens in a hardened docker
+    container (one spawn for the whole batch — see metric_engine.evaluate_in_sandbox).
+    Otherwise it falls back to the in-process exec path.
+
+    The shape is identical for both backends so callers can treat them
+    interchangeably."""
+    if _sandbox_enabled():
+        return evaluate_in_sandbox(global_metric, contexts, arg_mappings_json)
+    return [
+        evaluate_dynamic_metric(global_metric, ctx, arg_mappings_json)
+        for ctx in contexts
+    ]
+
 
 def _process_submission_impl(submission_id, sample_filters=None, task_instance=None):
     # Force remove any existing session to avoid issues in some Celery environments
@@ -173,7 +199,9 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                                 vals.append(ctx.get(key, None)) 
                             agg_context[key] = vals
 
-                    value, error = evaluate_dynamic_metric(global_metric, agg_context, arg_mappings_json)
+                    # Aggregated metrics: single context, single result.
+                    agg_results = _eval_metric_batch(global_metric, [agg_context], arg_mappings_json)
+                    value, error = agg_results[0] if agg_results else (None, "no result")
                     logger.info(f"  [Metric: {metric_out_name}] Aggregated calculation. Value: {value}")
                     if value is not None:
                         # Update ALL samples with the aggregated value for this metric
@@ -190,12 +218,21 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                          name=metric_out_name
                     ).delete(synchronize_session=False)
 
-                    for i_ctx, ctx in enumerate(current_metric_ctx):
-                        val, err = evaluate_dynamic_metric(global_metric, ctx, arg_mappings_json)
+                    # Per-sample metrics: batch evaluate once. With the
+                    # in-process backend this is N exec() calls; with the
+                    # sandbox backend it's a single docker spawn for the
+                    # whole submission's worth of contexts. Same shape
+                    # either way (a list of (value, error) tuples).
+                    per_sample_results = _eval_metric_batch(
+                        global_metric, current_metric_ctx, arg_mappings_json
+                    )
+
+                    for i_ctx, (val, err) in enumerate(per_sample_results):
+                        ctx = current_metric_ctx[i_ctx]
                         if val is not None:
                             sample_values.append(val)
                             ctx[metric_out_name] = val
-                            
+
                             # Persist to CustomField for Visualization
                             try:
                                 current_sample = current_metric_samples[i_ctx]
