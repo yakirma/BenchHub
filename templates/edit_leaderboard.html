@@ -193,7 +193,7 @@
                                     <option value="" disabled selected>Select source...</option>
                                     {% for project in all_projects %}
                                     {% if project.leaderboards %}
-                                    <optgroup label="{{ project.name }}">
+                                    <optgroup label="Datasets">
                                         {% for lb in project.leaderboards %}
                                         <option value="{{ lb.id }}" {{ 'disabled' if lb.id==leaderboard.id }}>
                                             {{ lb.name }}
@@ -230,8 +230,8 @@
                             arguments to your dataset/submissions.</p>
 
                         <form
-                            action="{{ url_for('add_leaderboard_metric', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
-                            data-base-action="{{ url_for('add_leaderboard_metric', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            action="{{ url_for('add_leaderboard_metric', leaderboard_id=leaderboard.id) }}"
+                            data-base-action="{{ url_for('add_leaderboard_metric', leaderboard_id=leaderboard.id) }}"
                             method="post" id="metric-form">
                             <div class="row">
                                 <div class="col-md-6">
@@ -508,8 +508,8 @@
                             leaderboard.</p>
 
                         <form
-                            action="{{ url_for('add_leaderboard_visualization', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
-                            data-base-action="{{ url_for('add_leaderboard_visualization', project_name=leaderboard.project.name, leaderboard_id=leaderboard.id) }}"
+                            action="{{ url_for('add_leaderboard_visualization', leaderboard_id=leaderboard.id) }}"
+                            data-base-action="{{ url_for('add_leaderboard_visualization', leaderboard_id=leaderboard.id) }}"
                             method="post" id="viz-form">
                             <div class="row">
                                 <div class="col-md-6">
@@ -529,7 +529,7 @@
                                                 </option>
                                                 {% endfor %}
                                             </select>
-                                            <a href="{{ url_for('visualizations_view', project_name=leaderboard.project.name) }}"
+                                            <a href="{{ url_for('visualizations_view') }}"
                                                 class="btn btn-outline-secondary" target="_blank"
                                                 title="Manage Global Visualizations"><i
                                                     class="bi bi-collection-play"></i></a>
@@ -935,8 +935,7 @@
             if (mode === 'edit') {
                 metricTitle.textContent = 'Edit Metric Mappings: ' + metricName;
                 const lbId = "{{ leaderboard.id }}";
-                const projectName = "{{ leaderboard.project.name }}";
-                metricForm.action = `/${projectName}/leaderboard/${lbId}/leaderboard_metric/${metricId}/edit`;
+                metricForm.action = `/leaderboard/${lbId}/leaderboard_metric/${metricId}/edit`;
                 submitBtn.textContent = 'Update Mappings';
                 submitBtn.classList.remove('btn-success');
                 submitBtn.classList.add('btn-primary');
@@ -1260,8 +1259,7 @@
 
                 vizTitle.textContent = 'Edit Visualization: ' + vizName;
                 const lbId = "{{ leaderboard.id }}";
-                const projectName = "{{ leaderboard.project.name }}";
-                vizForm.action = `/${projectName}/leaderboard/${lbId}/leaderboard_visualization/${vizId}/edit`;
+                vizForm.action = `/leaderboard/${lbId}/leaderboard_visualization/${vizId}/edit`;
 
                 submitVizBtn.textContent = 'Update Visualization';
                 submitVizBtn.classList.remove('btn-success');

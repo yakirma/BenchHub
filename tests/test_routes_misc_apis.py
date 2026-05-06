@@ -18,7 +18,6 @@ from app import (
     Leaderboard,
     LeaderboardMetric,
     MetricResult,
-    Project,
     Sample,
     Submission,
     check_and_migrate_db,
@@ -28,18 +27,13 @@ from app import (
 
 @pytest.fixture
 def lb_with_subs(db_session, client):
-    proj = Project(name="api_proj")
-    db.session.add(proj)
-    db.session.flush()
-    client.set_cookie("active_project_id", str(proj.id))
-
     ds = Dataset(name="api_ds")
     db.session.add(ds)
     db.session.flush()
     db.session.add(Sample(dataset_id=ds.id, name="s1"))
     db.session.flush()
 
-    lb = Leaderboard(name="api_lb", project_id=proj.id, summary_metrics="")
+    lb = Leaderboard(name="api_lb", summary_metrics="")
     lb.datasets.append(ds)
     db.session.add(lb)
     db.session.flush()
@@ -96,11 +90,10 @@ def test_recalculate_async_only_dispatches_for_matching_leaderboard(
     lb_id = lb_with_subs["lb"].id
 
     # Build a second leaderboard with one submission.
-    proj = Project.query.first()
     other_ds = Dataset(name="other_api_ds")
     db.session.add(other_ds)
     db.session.flush()
-    other_lb = Leaderboard(name="other_lb", project_id=proj.id, summary_metrics="")
+    other_lb = Leaderboard(name="other_lb", summary_metrics="")
     other_lb.datasets.append(other_ds)
     db.session.add(other_lb)
     db.session.flush()

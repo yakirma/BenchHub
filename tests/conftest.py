@@ -83,19 +83,14 @@ def client(app, db_session):
 
 @pytest.fixture
 def project_ctx(app, db_session, client):
-    """Create a Project and pin it as the active one via cookie.
-
-    Most non-API routes require a project context (the `load_project_context`
-    middleware redirects to /projects otherwise). Tests that don't care which
-    project they target can use this fixture to satisfy the middleware.
+    """Vestigial — the project concept was removed. Returns a stub with
+    a `.name` so tests that built URLs as "/..." can
+    still build something (which is now the wrong URL — they need to drop
+    the prefix). Kept so old tests fail with route-not-found, not with
+    AttributeError, until they're rewritten.
     """
-    from app import Project, db
-
-    p = Project(name="ctx_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name="ctx_proj")
 
 
 @pytest.fixture

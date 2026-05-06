@@ -33,8 +33,8 @@
 <ul class="list-inline">
     {% for lb in dataset.leaderboards %}
     <li class="list-inline-item">
-        {% if lb.project %}
-        <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+        {% if lb %}
+        <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
             class="btn btn-sm btn-outline-primary">{{ lb.name }}</a>
         {% else %}
         <span class="btn btn-sm btn-outline-secondary disabled" title="Orphaned Leaderboard">{{ lb.name }} (No

@@ -15,18 +15,14 @@ from app import (
     GlobalMetric,
     Leaderboard,
     LeaderboardMetric,
-    Project,
     db,
 )
 
 
 @pytest.fixture
 def project(db_session, client):
-    p = Project(name="metric_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name='legacy')
 
 
 @pytest.fixture
@@ -47,7 +43,7 @@ def leaderboard(db_session, project):
     ds = Dataset(name="metric_ds")
     db.session.add(ds)
     db.session.flush()
-    lb = Leaderboard(name="metric_lb", project_id=project.id, summary_metrics="")
+    lb = Leaderboard(name="metric_lb", summary_metrics="")
     lb.datasets.append(ds)
     db.session.add(lb)
     db.session.commit()
@@ -60,7 +56,7 @@ def leaderboard(db_session, project):
 
 
 def test_metrics_view_renders(client, project, metric):
-    resp = client.get(f"/{project.name}/metrics")
+    resp = client.get("/metrics")
     assert resp.status_code == 200
     assert b"abs_err" in resp.data
 
@@ -68,7 +64,7 @@ def test_metrics_view_renders(client, project, metric):
 def test_create_metric_persists_to_db(auth_client, project, logged_in_user):
     code = "def m(x):\n    return x * 2\n"
     resp = auth_client.post(
-        f"/{project.name}/metrics/create",
+        "/metrics/create",
         data={
             "name": "doubler",
             "description": "doubles input",
@@ -88,7 +84,7 @@ def test_create_metric_decodes_dlp_base64_payload(auth_client, project):
     encoded = "BASE64:" + base64.b64encode(raw.encode()).decode()
 
     resp = auth_client.post(
-        f"/{project.name}/metrics/create",
+        "/metrics/create",
         data={"name": "encoded_m", "python_code": encoded},
     )
     assert resp.status_code == 302
@@ -102,7 +98,7 @@ def test_create_metric_decodes_dlp_base64_payload(auth_client, project):
 
 def test_create_metric_blocks_zip_placeholder(auth_client, project):
     resp = auth_client.post(
-        f"/{project.name}/metrics/create",
+        "/metrics/create",
         data={
             "name": "bad",
             "python_code": "Implementation will be loaded from ZIP",
@@ -114,7 +110,7 @@ def test_create_metric_blocks_zip_placeholder(auth_client, project):
 
 def test_create_metric_blocks_blank_code(auth_client, project):
     resp = auth_client.post(
-        f"/{project.name}/metrics/create",
+        "/metrics/create",
         data={"name": "empty", "python_code": ""},
     )
     assert resp.status_code == 302
@@ -123,7 +119,7 @@ def test_create_metric_blocks_blank_code(auth_client, project):
 
 def test_edit_metric_updates_fields(auth_client, project, metric):
     resp = auth_client.post(
-        f"/{project.name}/metrics/{metric.id}/edit",
+        f"/metrics/{metric.id}/edit",
         data={
             "name": "renamed",
             "description": "new description",
@@ -143,7 +139,7 @@ def test_edit_metric_updates_fields(auth_client, project, metric):
 
 def test_edit_metric_404_unknown(auth_client, project):
     resp = auth_client.post(
-        f"/{project.name}/metrics/9999/edit",
+        "/metrics/9999/edit",
         data={"name": "x", "python_code": "def x(): return 1"},
     )
     assert resp.status_code == 404
@@ -152,14 +148,14 @@ def test_edit_metric_404_unknown(auth_client, project):
 def test_delete_metric_removes_row(auth_client, project, metric):
     metric_id = metric.id
 
-    resp = auth_client.post(f"/{project.name}/metrics/{metric_id}/delete")
+    resp = auth_client.post(f"/metrics/{metric_id}/delete")
     assert resp.status_code == 302
 
     assert GlobalMetric.query.get(metric_id) is None
 
 
 def test_download_metric_returns_python_text(client, project, metric):
-    resp = client.get(f"/{project.name}/metrics/{metric.id}/download")
+    resp = client.get(f"/metrics/{metric.id}/download")
     assert resp.status_code == 200
     assert resp.headers["Content-Type"].startswith("text/plain")
     assert b"def abs_err" in resp.data
@@ -175,7 +171,7 @@ def test_add_leaderboard_metric_creates_link_with_arg_mappings(
 ):
     proj_name, lb_id = project.name, leaderboard.id
     resp = client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_metric/add",
+        f"/leaderboard/{lb_id}/leaderboard_metric/add",
         data={
             "global_metric_id": str(metric.id),
             "arg_name[]": ["pred", "target"],
@@ -203,7 +199,7 @@ def test_add_leaderboard_metric_appends_lm_id_to_summary_metrics(
 ):
     proj_name, lb_id = project.name, leaderboard.id
     client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_metric/add",
+        f"/leaderboard/{lb_id}/leaderboard_metric/add",
         data={
             "global_metric_id": str(metric.id),
             "arg_name[]": ["x"],
@@ -227,7 +223,7 @@ def test_add_leaderboard_metric_supports_scalar_literal_argument(
     rather than a context lookup. Pin the wiring."""
     proj_name, lb_id = project.name, leaderboard.id
     client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_metric/add",
+        f"/leaderboard/{lb_id}/leaderboard_metric/add",
         data={
             "global_metric_id": str(metric.id),
             "arg_name[]": ["pred", "threshold"],
@@ -262,7 +258,7 @@ def test_delete_leaderboard_metric_removes_link_and_prunes_summary(
     proj_name, lb_id, lm_id = project.name, leaderboard.id, lm.id
 
     resp = client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_metric/{lm_id}/delete"
+        f"/leaderboard/{lb_id}/leaderboard_metric/{lm_id}/delete"
     )
     assert resp.status_code == 302
 
@@ -281,7 +277,7 @@ def test_delete_leaderboard_metric_403_for_wrong_leaderboard_id(
     other_ds = Dataset(name="other_ds")
     db.session.add(other_ds)
     db.session.flush()
-    other_lb = Leaderboard(name="other_lb", project_id=project.id, summary_metrics="")
+    other_lb = Leaderboard(name="other_lb", summary_metrics="")
     other_lb.datasets.append(other_ds)
     db.session.add(other_lb)
     db.session.flush()
@@ -297,6 +293,6 @@ def test_delete_leaderboard_metric_403_for_wrong_leaderboard_id(
 
     proj_name, wrong_lb_id, lm_id = project.name, other_lb.id, lm.id
     resp = client.post(
-        f"/{proj_name}/leaderboard/{wrong_lb_id}/leaderboard_metric/{lm_id}/delete"
+        f"/leaderboard/{wrong_lb_id}/leaderboard_metric/{lm_id}/delete"
     )
     assert resp.status_code == 403

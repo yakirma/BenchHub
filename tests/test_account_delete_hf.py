@@ -11,7 +11,6 @@ from app import (
     GlobalMetric,
     GlobalVisualization,
     Leaderboard,
-    Project,
     Sample,
     Submission,
     User,
@@ -50,11 +49,10 @@ def test_account_delete_with_correct_email_removes_user(auth_client, logged_in_u
 def test_account_delete_cascades_owned_content(auth_client, logged_in_user, db_session):
     """Owned project + dataset + leaderboard + submission + global metric
     all go away. Files-on-disk for the dataset folder also go."""
-    p = Project(name='my_proj', owner_user_id=logged_in_user.id)
     ds = Dataset(name='my_ds', owner_user_id=logged_in_user.id)
-    db.session.add_all([p, ds]); db.session.flush()
+    db.session.add_all([ds]); db.session.flush()
 
-    lb = Leaderboard(name='my_lb', project_id=p.id, summary_metrics='',
+    lb = Leaderboard(name='my_lb', summary_metrics='',
                      owner_user_id=logged_in_user.id)
     lb.datasets.append(ds)
     db.session.add(lb); db.session.flush()
@@ -67,7 +65,7 @@ def test_account_delete_cascades_owned_content(auth_client, logged_in_user, db_s
                              owner_user_id=logged_in_user.id)
     db.session.add_all([sub, gm, gv]); db.session.commit()
 
-    p_id, ds_id, lb_id, sub_id, gm_id, gv_id = p.id, ds.id, lb.id, sub.id, gm.id, gv.id
+    ds_id, lb_id, sub_id, gm_id, gv_id = ds.id, lb.id, sub.id, gm.id, gv.id
 
     resp = auth_client.post(
         '/settings/account/delete',
@@ -76,7 +74,6 @@ def test_account_delete_cascades_owned_content(auth_client, logged_in_user, db_s
     )
     assert resp.status_code == 302
 
-    assert Project.query.get(p_id) is None
     assert Dataset.query.get(ds_id) is None
     assert Leaderboard.query.get(lb_id) is None
     assert Submission.query.get(sub_id) is None
@@ -95,12 +92,10 @@ def test_account_delete_detaches_submissions_in_other_users_leaderboards(
         oauth_provider='github', oauth_sub='other-1',
     )
     db.session.add(other); db.session.flush()
-
-    p = Project(name='others_proj', owner_user_id=other.id)
     ds = Dataset(name='others_ds', owner_user_id=other.id)
-    db.session.add_all([p, ds]); db.session.flush()
+    db.session.add_all([ds]); db.session.flush()
 
-    lb = Leaderboard(name='others_lb', project_id=p.id, summary_metrics='',
+    lb = Leaderboard(name='others_lb', summary_metrics='',
                      owner_user_id=other.id)
     lb.datasets.append(ds)
     db.session.add(lb); db.session.flush()
@@ -137,7 +132,7 @@ def test_account_settings_page_requires_login(client):
 
 def test_hf_import_route_requires_login(client, project_ctx):
     resp = client.post(
-        f'/{project_ctx.name}/import_from_hf',
+        '/import_from_hf',
         data={'hf_repo_id': 'user/repo'},
         follow_redirects=False,
     )
@@ -147,7 +142,7 @@ def test_hf_import_route_requires_login(client, project_ctx):
 
 def test_hf_import_with_blank_repo_flashes_error(auth_client, project_ctx, db_session):
     resp = auth_client.post(
-        f'/{project_ctx.name}/import_from_hf',
+        '/import_from_hf',
         data={'hf_repo_id': '', 'dataset_name': 'whatever'},
         follow_redirects=True,
     )
@@ -184,7 +179,7 @@ def test_hf_import_calls_snapshot_download_and_creates_dataset(
     fake_hub.snapshot_download = fake_snapshot_download
     with patch.dict(sys.modules, {'huggingface_hub': fake_hub}):
         resp = auth_client.post(
-            f'/{project_ctx.name}/import_from_hf',
+            '/import_from_hf',
             data={
                 'hf_repo_id': 'fake-org/fake-dataset',
                 'dataset_name': 'hf_imported_ds',
@@ -208,7 +203,7 @@ def test_hf_import_quota_blocks_when_dataset_count_at_cap(
     db.session.commit()
 
     resp = auth_client.post(
-        f'/{project_ctx.name}/import_from_hf',
+        '/import_from_hf',
         data={'hf_repo_id': 'org/ds', 'dataset_name': 'over_cap'},
         follow_redirects=True,
     )

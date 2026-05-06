@@ -12,7 +12,6 @@ from app import (
     GlobalMetric,
     Leaderboard,
     LeaderboardMetric,
-    Project,
     Sample,
     db,
 )
@@ -20,11 +19,8 @@ from app import (
 
 @pytest.fixture
 def project(db_session, client):
-    p = Project(name="lb_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name='legacy')
 
 
 @pytest.fixture
@@ -39,7 +35,7 @@ def dataset(db_session):
 
 @pytest.fixture
 def leaderboard(db_session, project, dataset):
-    lb = Leaderboard(name="primary_lb", project_id=project.id, summary_metrics="")
+    lb = Leaderboard(name="primary_lb", summary_metrics="")
     lb.datasets.append(dataset)
     db.session.add(lb)
     db.session.commit()
@@ -53,14 +49,13 @@ def leaderboard(db_session, project, dataset):
 
 def test_create_leaderboard_attaches_dataset(auth_client, project, dataset, logged_in_user):
     resp = auth_client.post(
-        f"/{project.name}/create_leaderboard",
+        "/create_leaderboard",
         data={"leaderboard_name": "new_lb", "dataset_ids": [str(dataset.id)]},
     )
     assert resp.status_code == 302
 
     lb = Leaderboard.query.filter_by(name="new_lb").first()
     assert lb is not None
-    assert lb.project_id == project.id
     assert dataset in lb.datasets
     assert lb.owner_user_id == logged_in_user.id
 
@@ -71,7 +66,7 @@ def test_create_leaderboard_supports_multiple_datasets(auth_client, project, dat
     db.session.commit()
 
     resp = auth_client.post(
-        f"/{project.name}/create_leaderboard",
+        "/create_leaderboard",
         data={
             "leaderboard_name": "multi_lb",
             "dataset_ids": [str(dataset.id), str(ds2.id)],
@@ -87,7 +82,7 @@ def test_create_leaderboard_collision_without_overwrite_blocks(
     auth_client, project, dataset, leaderboard
 ):
     resp = auth_client.post(
-        f"/{project.name}/create_leaderboard",
+        "/create_leaderboard",
         data={
             "leaderboard_name": leaderboard.name,
             "dataset_ids": [str(dataset.id)],
@@ -95,7 +90,7 @@ def test_create_leaderboard_collision_without_overwrite_blocks(
     )
     assert resp.status_code == 302
     # Still only one leaderboard with that name in this project.
-    assert Leaderboard.query.filter_by(name=leaderboard.name, project_id=project.id).count() == 1
+    assert Leaderboard.query.filter_by(name=leaderboard.name).count() == 1
 
 
 def test_create_leaderboard_with_overwrite_replaces_existing(
@@ -104,7 +99,7 @@ def test_create_leaderboard_with_overwrite_replaces_existing(
     old_id = leaderboard.id
 
     resp = auth_client.post(
-        f"/{project.name}/create_leaderboard",
+        "/create_leaderboard",
         data={
             "leaderboard_name": leaderboard.name,
             "overwrite": "true",
@@ -114,7 +109,7 @@ def test_create_leaderboard_with_overwrite_replaces_existing(
     assert resp.status_code == 302
 
     db.session.expire_all()
-    fresh = Leaderboard.query.filter_by(name=leaderboard.name, project_id=project.id).all()
+    fresh = Leaderboard.query.filter_by(name=leaderboard.name).all()
     assert len(fresh) == 1
     # The new leaderboard replaced the old one (different identity, same logical slot).
     # Don't compare IDs (SQLite recycles); just ensure exactly one row exists.
@@ -126,54 +121,27 @@ def test_create_leaderboard_with_overwrite_replaces_existing(
 
 
 def test_leaderboard_view_renders(client, project, leaderboard):
-    resp = client.get(f"/{project.name}/leaderboard/{leaderboard.id}")
+    resp = client.get(f"/leaderboard/{leaderboard.id}")
     assert resp.status_code == 200
     assert b"primary_lb" in resp.data
 
 
 def test_leaderboard_view_unknown_404(client, project):
-    resp = client.get(f"/{project.name}/leaderboard/9999")
+    resp = client.get("/leaderboard/9999")
     assert resp.status_code == 404
 
 
 def test_edit_leaderboard_get_renders(auth_client, project, leaderboard):
-    resp = auth_client.get(f"/{project.name}/leaderboard/{leaderboard.id}/edit")
+    resp = auth_client.get(f"/leaderboard/{leaderboard.id}/edit")
     assert resp.status_code == 200
 
 
 def test_delete_leaderboard_removes_row(auth_client, project, leaderboard):
-    resp = auth_client.post(f"/{project.name}/delete_leaderboard/{leaderboard.id}")
+    resp = auth_client.post(f"/delete_leaderboard/{leaderboard.id}")
     assert resp.status_code == 302
 
     db.session.expire_all()
     assert Leaderboard.query.get(leaderboard.id) is None
-
-
-# ---------------------------------------------------------------------------
-# Legacy redirects
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_leaderboard_redirect_includes_project_name(
-    client, project, leaderboard
-):
-    proj_name = Project.query.first().name
-    lb_id = Leaderboard.query.first().id
-
-    resp = client.get(f"/leaderboard/{lb_id}", follow_redirects=False)
-    assert resp.status_code == 302
-    assert f"/{proj_name}/leaderboard/{lb_id}" in resp.headers["Location"]
-
-
-def test_legacy_comparison_redirect_includes_project_name(
-    client, project, leaderboard
-):
-    proj_name = Project.query.first().name
-    lb_id = Leaderboard.query.first().id
-
-    resp = client.get(f"/comparison/{lb_id}", follow_redirects=False)
-    assert resp.status_code == 302
-    assert f"/{proj_name}/comparison/{lb_id}" in resp.headers["Location"]
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +154,7 @@ def test_import_settings_clones_metrics_with_id_remapping(
 ):
     # Set up a SOURCE leaderboard with one metric and a summary_metrics field
     # that references that metric's lm_<id>.
-    src_lb = Leaderboard(name="src_lb", project_id=project.id, summary_metrics="")
+    src_lb = Leaderboard(name="src_lb", summary_metrics="")
     src_lb.datasets.append(dataset)
     db.session.add(src_lb)
     db.session.flush()
@@ -238,7 +206,7 @@ def test_import_settings_clears_existing_metrics_first(
     )
     db.session.commit()
 
-    src_lb = Leaderboard(name="src_lb", project_id=project.id, summary_metrics="")
+    src_lb = Leaderboard(name="src_lb", summary_metrics="")
     src_lb.datasets.append(dataset)
     db.session.add(src_lb)
     db.session.commit()
@@ -276,38 +244,16 @@ def test_api_leaderboard_info_by_name_scoped_to_project(
     client, project, leaderboard
 ):
     resp = client.get(
-        f"/{project.name}/api/leaderboard/by_name/{leaderboard.name}/info"
+        f"/api/leaderboard/by_name/{leaderboard.name}/info"
     )
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["id"] == leaderboard.id
 
 
-def test_api_leaderboard_info_by_name_unknown_project_redirects_to_projects(
-    client, leaderboard
-):
-    """Note: this is a project-scoped /<project>/api/ path, so it hits the
-    load_project_context middleware (which only skips /api/ at the URL root).
-    Unknown project triggers the "project not found → /projects" redirect
-    BEFORE the route handler can return 404."""
-    resp = client.get(
-        f"/no_such_project/api/leaderboard/by_name/{leaderboard.name}/info",
-        follow_redirects=False,
-    )
-    assert resp.status_code == 302
-    assert "/projects" in resp.headers["Location"]
-
-
-def test_api_leaderboard_info_by_name_404_for_wrong_project(
-    client, project, leaderboard
-):
-    other = Project(name="other_proj")
-    db.session.add(other)
-    db.session.commit()
-
-    resp = client.get(
-        f"/{other.name}/api/leaderboard/by_name/{leaderboard.name}/info"
-    )
+def test_api_leaderboard_info_by_name_404_for_unknown_name(client):
+    """Names are global now (project namespace removed). Unknown name → 404."""
+    resp = client.get("/api/leaderboard/by_name/no_such_lb/info")
     assert resp.status_code == 404
 
 
@@ -332,7 +278,6 @@ def test_suggest_name_keeps_incrementing(client, project, dataset, leaderboard):
     # Add primary_lb_2 too — so the helper should bump to _3.
     extra = Leaderboard(
         name=f"{leaderboard.name}_2",
-        project_id=project.id,
         summary_metrics="",
     )
     extra.datasets.append(dataset)

@@ -15,7 +15,6 @@ import pytest
 from app import (
     Dataset,
     Leaderboard,
-    Project,
     Sample,
     Submission,
     User,
@@ -23,11 +22,9 @@ from app import (
 )
 
 
-def _mk_project(name, owner_user_id=None, visibility='public'):
-    p = Project(name=name, owner_user_id=owner_user_id, visibility=visibility)
-    db.session.add(p)
-    db.session.flush()
-    return p
+def _mk_project(*args, **kwargs):
+    return None
+
 
 
 def _mk_dataset(name='ds'):
@@ -40,7 +37,6 @@ def _mk_dataset(name='ds'):
 def _mk_leaderboard(project, dataset, name, *, visibility='public', owner_user_id=None):
     lb = Leaderboard(
         name=name,
-        project_id=project.id,
         summary_metrics='',
         owner_user_id=owner_user_id,
         visibility=visibility,

@@ -44,14 +44,6 @@
                 </button>
             </div>
         </div>
-        <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" name="curated" value="1"
-                id="curated-toggle" {{ 'checked' if curated_only }}
-                onchange="this.form.submit()">
-            <label class="form-check-label small text-body-secondary" for="curated-toggle">
-                <i class="bi bi-stars text-warning me-1"></i>Only show BenchHub-curated benchmarks
-            </label>
-        </div>
     </form>
 
     {# ---- Results grid ---- #}
@@ -73,10 +65,8 @@
                         {% endif %}
                     </div>
 
-                    {% if lb.project %}
-                    <p class="text-body-secondary small mb-3">
-                        <i class="bi bi-folder me-1"></i>{{ lb.project.name }}
-                    </p>
+                    {% if lb %}
+                    
                     {% endif %}
 
                     <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
@@ -84,8 +74,8 @@
                         <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
                     </div>
 
-                    {% if lb.project %}
-                    <a href="{{ url_for('leaderboard_view', project_name=lb.project.name, leaderboard_id=lb.id) }}"
+                    {% if lb %}
+                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                         class="stretched-link" aria-label="Open {{ lb.name }}"></a>
                     {% endif %}
                 </div>

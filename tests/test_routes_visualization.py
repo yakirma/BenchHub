@@ -14,18 +14,14 @@ from app import (
     GlobalVisualization,
     Leaderboard,
     LeaderboardVisualization,
-    Project,
     db,
 )
 
 
 @pytest.fixture
 def project(db_session, client):
-    p = Project(name="viz_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name='legacy')
 
 
 @pytest.fixture
@@ -46,7 +42,7 @@ def leaderboard(db_session, project):
     ds = Dataset(name="viz_ds")
     db.session.add(ds)
     db.session.flush()
-    lb = Leaderboard(name="viz_lb", project_id=project.id, summary_metrics="")
+    lb = Leaderboard(name="viz_lb", summary_metrics="")
     lb.datasets.append(ds)
     db.session.add(lb)
     db.session.commit()
@@ -59,14 +55,14 @@ def leaderboard(db_session, project):
 
 
 def test_visualizations_view_renders(client, project, viz):
-    resp = client.get(f"/{project.name}/visualizations")
+    resp = client.get("/visualizations")
     assert resp.status_code == 200
     assert b"line_plot" in resp.data
 
 
 def test_create_visualization_persists(auth_client, project, logged_in_user):
     resp = auth_client.post(
-        f"/{project.name}/create_visualization",
+        "/create_visualization",
         data={
             "name": "scatter",
             "description": "Scatter plot",
@@ -82,7 +78,7 @@ def test_create_visualization_persists(auth_client, project, logged_in_user):
 
 def test_create_visualization_blocks_blank_code(auth_client, project):
     resp = auth_client.post(
-        f"/{project.name}/create_visualization",
+        "/create_visualization",
         data={"name": "empty", "python_code": ""},
     )
     assert resp.status_code == 302
@@ -91,7 +87,7 @@ def test_create_visualization_blocks_blank_code(auth_client, project):
 
 def test_edit_visualization_updates_fields(auth_client, project, viz):
     resp = auth_client.post(
-        f"/{project.name}/visualizations/{viz.id}/edit",
+        f"/visualizations/{viz.id}/edit",
         data={
             "name": "renamed_viz",
             "description": "updated",
@@ -109,13 +105,13 @@ def test_edit_visualization_updates_fields(auth_client, project, viz):
 
 def test_delete_visualization_removes_row(auth_client, project, viz):
     viz_id = viz.id
-    resp = auth_client.post(f"/{project.name}/visualizations/{viz_id}/delete")
+    resp = auth_client.post(f"/visualizations/{viz_id}/delete")
     assert resp.status_code == 302
     assert GlobalVisualization.query.get(viz_id) is None
 
 
 def test_download_visualization_returns_python_text(client, project, viz):
-    resp = client.get(f"/{project.name}/visualizations/{viz.id}/download")
+    resp = client.get(f"/visualizations/{viz.id}/download")
     assert resp.status_code == 200
     assert resp.headers["Content-Type"].startswith("text/plain")
     assert b"def line_plot" in resp.data
@@ -131,7 +127,7 @@ def test_add_leaderboard_visualization_creates_link_with_arg_mappings(
 ):
     proj_name, lb_id = project.name, leaderboard.id
     resp = client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_visualization/add",
+        f"/leaderboard/{lb_id}/leaderboard_visualization/add",
         data={
             "global_visualization_id": str(viz.id),
             "viz_arg_name[]": ["x", "y"],
@@ -161,7 +157,7 @@ def test_add_leaderboard_visualization_auto_disambiguates_duplicate_name(
 
     # First add — claims name "MyPlot".
     client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_visualization/add",
+        f"/leaderboard/{lb_id}/leaderboard_visualization/add",
         data={
             "global_visualization_id": str(viz.id),
             "display_name": "MyPlot",
@@ -169,7 +165,7 @@ def test_add_leaderboard_visualization_auto_disambiguates_duplicate_name(
     )
     # Second add with the same name — should land as MyPlot_1.
     client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_visualization/add",
+        f"/leaderboard/{lb_id}/leaderboard_visualization/add",
         data={
             "global_visualization_id": str(viz.id),
             "display_name": "MyPlot",
@@ -198,7 +194,7 @@ def test_edit_leaderboard_visualization_updates_mappings(
 
     proj_name, lb_id, lv_id = project.name, leaderboard.id, lv.id
     client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_visualization/{lv_id}/edit",
+        f"/leaderboard/{lb_id}/leaderboard_visualization/{lv_id}/edit",
         data={
             "viz_arg_name[]": ["x"],
             "viz_source[]": ["sub"],
@@ -228,7 +224,7 @@ def test_delete_leaderboard_visualization_removes_row(
 
     proj_name, lb_id, lv_id = project.name, leaderboard.id, lv.id
     resp = client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/leaderboard_visualization/{lv_id}/delete"
+        f"/leaderboard/{lb_id}/leaderboard_visualization/{lv_id}/delete"
     )
     assert resp.status_code == 302
     assert LeaderboardVisualization.query.get(lv_id) is None

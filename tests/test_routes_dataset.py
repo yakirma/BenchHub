@@ -78,7 +78,7 @@ def test_web_upload_creates_dataset(auth_client, project_ctx, make_zip, logged_i
 
     with open(zip_path, "rb") as f:
         resp = auth_client.post(
-            f"/{project_ctx.name}/upload_dataset",
+            "/upload_dataset",
             data={"dataset_name": "web_ds", "dataset_zip": (f, "web.zip")},
             content_type="multipart/form-data",
         )
@@ -95,7 +95,7 @@ def test_web_upload_with_blank_name_uses_filename(auth_client, project_ctx, make
 
     with open(zip_path, "rb") as f:
         resp = auth_client.post(
-            f"/{project_ctx.name}/upload_dataset",
+            "/upload_dataset",
             data={"dataset_name": "", "dataset_zip": (f, "auto_named.zip")},
             content_type="multipart/form-data",
         )
@@ -182,7 +182,7 @@ def test_api_upload_with_override_replaces_existing(client, seeded_dataset, make
 
 
 def test_download_dataset_returns_zip(client, project_ctx, seeded_dataset):
-    resp = client.get(f"/{project_ctx.name}/dataset/{seeded_dataset.id}/download")
+    resp = client.get(f"/dataset/{seeded_dataset.id}/download")
     assert resp.status_code == 200
     assert resp.headers["Content-Type"] in ("application/zip", "application/x-zip-compressed")
     # File starts with PK (zip signature).

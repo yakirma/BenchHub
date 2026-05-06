@@ -11,7 +11,6 @@ import pytest
 from app import (
     Dataset,
     Leaderboard,
-    Project,
     Sample,
     Submission,
     User,
@@ -37,11 +36,9 @@ def stranger(db_session):
     return u
 
 
-def _mk_proj(name, owner_user_id=None):
-    p = Project(name=name, owner_user_id=owner_user_id, visibility='public')
-    db.session.add(p)
-    db.session.flush()
-    return p
+def _mk_proj(*args, **kwargs):
+    return None
+
 
 
 def _mk_dataset(name, *, owner_user_id=None, visibility='public'):
@@ -55,7 +52,7 @@ def _mk_dataset(name, *, owner_user_id=None, visibility='public'):
 
 def _mk_lb(project, dataset, name, *, owner_user_id=None, visibility='public'):
     lb = Leaderboard(
-        name=name, project_id=project.id, summary_metrics='',
+        name=name, summary_metrics='',
         owner_user_id=owner_user_id, visibility=visibility,
     )
     lb.datasets.append(dataset)

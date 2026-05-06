@@ -339,8 +339,6 @@ class Dataset(db.Model):
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
     # Phase 5: BenchHub-curated content marker. True for the seeded official
     # datasets that should appear in the landing-page "Curated benchmarks"
-    # rail; populated by ensure_curated_seed() at startup.
-    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
     # Phase 7: cached storage usage (bytes) summed across uploads/datasets/<id>.
     # Updated alongside file writes/deletes so quota checks don't have to du
     # the volume on every request.
@@ -491,7 +489,6 @@ class GlobalVisualization(db.Model):
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)  # True: single image, False: per-sample
     accepts_aggregated_inputs = db.Column(db.Boolean, default=False)
     upload_date = db.Column(db.DateTime, default=datetime.utcnow)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
     # Phase 1 Slice 4 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
@@ -544,38 +541,13 @@ class Leaderboard(db.Model):
     scalar_width = db.Column(db.String(50), nullable=True) # Override for scalar column width
     image_width = db.Column(db.String(50), nullable=True) # Override for image column width
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON string: store last used filter settings
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True) # Added for Project Refactor (Migrated)
-    # Phase 1 multi-tenancy. Inheriting visibility from project would be
-    # cleaner but requires more schema work; for now leaderboards have their
-    # own visibility so a public leaderboard can live in a private project.
+    # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
-    # server_default (not just `default`) so raw SQL INSERTs in the legacy
-    # migration code don't trip the NOT NULL constraint.
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
-    # Phase 5 (relocated from Project): marks BenchHub-curated leaderboards.
-    # Surfaced on the landing rail and via /explore?curated=1.
-    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
 
-class Project(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), unique=True, nullable=False)
-    description = db.Column(db.String(255))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    # Phase 1 multi-tenancy. owner_user_id is nullable so legacy rows survive
-    # the migration; new rows get it populated by the create routes.
-    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
-    # server_default (not just `default`) so raw SQL INSERTs in the legacy
-    # migration code don't trip the NOT NULL constraint.
-    visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')  # private | unlisted | public
-    # Phase 5: marks the auto-seeded BenchHub-Curated namespace.
-    is_curated = db.Column(db.Boolean, nullable=False, default=False, server_default='0', index=True)
-    owner = db.relationship('User', foreign_keys=[owner_user_id])
-    # Datasets are now global.
-    # datasets = db.relationship('Dataset', backref='project', lazy=True, cascade="all, delete-orphan")
-    leaderboards = db.relationship('Leaderboard', backref='project', lazy=True, cascade="all, delete-orphan")
 
 class Submission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -631,13 +603,6 @@ class User(db.Model):
     )
     quota_max_submissions_per_day = db.Column(
         db.Integer, nullable=False, default=50, server_default='50',
-    )
-
-    # Phase 5: curated-content system account. Marks the auto-created
-    # bookkeeping user that owns the BenchHub-Curated project. Excluded
-    # from public profile listings and from quota enforcement.
-    is_system = db.Column(
-        db.Boolean, nullable=False, default=False, server_default='0',
     )
 
     # Phase 8: API token for programmatic access. Stored verbatim (not
@@ -1165,15 +1130,6 @@ class GlobalSettings:
 global_settings = GlobalSettings()
 
 @app.context_processor
-def inject_projects():
-    if g.get('current_project'):
-        # Just optimization: if we are in a project, we might want to list others.
-        # But actually we want the list always available if we show the dropdown.
-        # We'll just fetch all. It's usually small.
-        return dict(all_projects=Project.query.order_by(Project.name).all())
-    return dict(all_projects=[])
-
-@app.context_processor
 def inject_settings():
     # Per-user theme preference from cookie
     user_theme = request.cookies.get('theme_mode')
@@ -1231,169 +1187,15 @@ def app_settings():
     }
     return render_template('app_settings.html', settings=settings)
 
-@app.route('/<project_name>/settings', methods=['GET', 'POST'])
-def settings_page(project_name):
-    if request.method == 'POST':
-        try:
-            # Handle Project Renaming & Description
-            if hasattr(g, 'current_project') and g.current_project:
-                changes_made = False
-                
-                # Update Name
-                new_project_name = request.form.get('project_name')
-                if new_project_name and new_project_name != g.current_project.name:
-                    # Check for uniqueness
-                    existing = Project.query.filter_by(name=new_project_name).first()
-                    if existing:
-                        flash(f'Project name "{new_project_name}" is already taken.', 'danger')
-                    else:
-                        g.current_project.name = new_project_name
-                        changes_made = True
-                        
-                # Update Description
-                new_description = request.form.get('project_description')
-                if new_description is not None and new_description != (g.current_project.description or ''):
-                    g.current_project.description = new_description
-                    changes_made = True
-
-                if changes_made:
-                    db.session.commit()
-                    flash('Project settings updated successfully.', 'success')
-
-
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Error: {str(e)}', 'danger')
-        return redirect(url_for('settings_page'))
-    
-    # If no current project, redirect to dashboard
-    if not hasattr(g, 'current_project') or not g.current_project:
-        return redirect(url_for('list_projects'))
-
-    return render_template('settings.html')
-
 
 # --- End Global Settings ---
 
-# --- Project Management Logic ---
-
-@app.url_value_preprocessor
-def pull_project_name(endpoint, values):
-    g.project_name = values.get('project_name') if values else None
-
-@app.url_defaults
-def add_project_name(endpoint, values):
-    # Only add project_name if the endpoint expects it
-    if app.url_map.is_endpoint_expecting(endpoint, 'project_name'):
-        if 'project_name' in values:
-            return
-        if g.get('project_name'):
-            values['project_name'] = g.project_name
-        elif g.get('current_project'):
-            values['project_name'] = g.current_project.name
-
-# Helper to check if an endpoint expects a variable
-def is_endpoint_expecting(self, endpoint, variable):
-    rules = self._rules_by_endpoint.get(endpoint, [])
-    for rule in rules:
-        if variable in rule.arguments:
-            return True
-    return False
-
-# Monkey patch Flask's url_map to easily check for expected arguments
-from werkzeug.routing import Map
-Map.is_endpoint_expecting = is_endpoint_expecting
-
-@app.before_request
-def load_project_context():
-    # Public routes and API routes that don't need project context check
-    # list_projects, app_settings, docs NOW ALLOW context loading (via cookie) so tabs stay visible
-    public_endpoints = ['static', 'create_project', 'select_project', 'check_and_migrate_db',
-                        'legacy_leaderboard_redirect', 'legacy_comparison_redirect',
-                        # Auth routes — must be reachable without a project context.
-                        'login', 'login_github', 'oauth_callback_github', 'logout',
-                        # Public landing + discoverability (Phase 6).
-                        'landing', 'explore', 'user_profile',
-                        # Phase 8: legal stubs reachable from the global footer.
-                        'terms', 'privacy',
-                        # Phase 8: settings (login_required handles auth itself).
-                        'api_tokens', 'api_tokens_regenerate', 'api_tokens_revoke',
-                        'account_settings', 'account_delete',
-                        # Project-mutation routes use project_id from URL, not g.current_project.
-                        'rename_project', 'clone_project', 'delete_project',
-                        # Datasets are global, not project-scoped — see CLAUDE.md.
-                        'datasets_list', 'dataset_view', 'delete_dataset',
-                        'update_dataset_display_columns', 'update_dataset_visualizations',
-                        'update_dataset_metrics']
-    if request.endpoint and (request.endpoint in public_endpoints or request.endpoint.startswith('static')):
-        # Public endpoint — skip the redirect-when-no-project guard, but
-        # still populate g.current_project so url_for(...) can auto-inject
-        # project_name into project-scoped URLs that the rendered template
-        # might build (e.g. an "Upload" button on /datasets, the per-sample
-        # download dropdown on /dataset/<id>).
-        #
-        # Order: cookie first (preserve the user's selected context), then
-        # fall back to the oldest Project so anonymous visitors with no
-        # cookie don't trip a BuildError in templates that assume project
-        # context. Static (no-project) sites would set this to None and
-        # the templates would need to guard each url_for — not worth it
-        # for the v1.
-        project_id = request.cookies.get('active_project_id')
-        p = None
-        if project_id:
-            try:
-                p = Project.query.get(int(project_id))
-            except (ValueError, TypeError):
-                p = None
-        if p is None:
-            p = Project.query.order_by(Project.created_at).first()
-        if p is not None:
-            g.current_project = p
-        return
-
-    # Programmatic API access should skip redirection
-    if request.path.startswith('/api/'):
-        return
-
-    # 1. Check for project name in URL (populated by pull_project_name) OR query param
-    project_name = g.get('project_name') or request.args.get('project_name')
-    
-    if project_name:
-        project = Project.query.filter_by(name=project_name).first()
-        if project:
-            g.current_project = project
-            
-            # Sync cookie to match the URL-specified project so global pages (like /datasets)
-            # remember this context.
-            @after_this_request
-            def remember_project_cookie(response):
-                response.set_cookie('active_project_id', str(project.id), max_age=30*24*60*60)
-                return response
-            return
-        elif g.get('project_name'):
-            # Only redirect if it was a path parameter that failed; query args might be stale/typos we can ignore
-            flash(f"Project '{project_name}' not found.", "error")
-            return redirect(url_for('list_projects'))
-
-    # 2. Check for active project cookie (Legacy/Fallback)
-    project_id = request.cookies.get('active_project_id')
-    
-    if project_id:
-        project = Project.query.get(project_id)
-        if project:
-            g.current_project = project
-            # If we are on a route that SHOULD have a project prefix but doesn't,
-            # we might want to redirect. However, for now, we'll let it be as-is
-            # unless we are on the root '/'.
-            if request.path == '/':
-                return redirect(url_for('index', project_name=project.name))
-            return
-
-    # If no valid project selected, and not on a public page, redirect to project selector
-    # We allow '/' to redirect, but maybe we want '/' to be the selector if no cookie?
-    # Let's say: if visiting root or any other page without project -> redirect to /projects
-    if request.endpoint != 'list_projects':
-        return redirect(url_for('list_projects'))
+# (Removed in projects-removal refactor:
+#   - load_project_context @before_request
+#   - pull_project_name @url_value_preprocessor
+#   - add_project_name @url_defaults
+#   - is_endpoint_expecting helper + werkzeug Map monkey-patch
+# URLs are no longer prefixed with /<project_name>/.)
 
 
 # ===================== Authentication routes =====================
@@ -1584,14 +1386,9 @@ def check_quota(user, *, kind, incoming_bytes=0):
     """Return (ok, message). `kind` is one of:
        - 'dataset_create'  : count cap + storage cap (incoming_bytes)
        - 'submission'      : daily rate cap
-
-    System users (`is_system=True`) bypass all checks — they own the
-    seeded curated content and shouldn't trip the free-tier caps.
     """
     if user is None:
         return False, "Sign in required."
-    if getattr(user, 'is_system', False):
-        return True, None
 
     if kind == 'dataset_create':
         if dataset_count(user) >= user.quota_max_datasets:
@@ -1721,7 +1518,7 @@ def login_github():
         return ("GitHub OAuth not configured: set GITHUB_CLIENT_ID and "
                 "GITHUB_CLIENT_SECRET (env vars or Fly secrets)."), 503
     # Stash the post-login redirect in the session so the OAuth state stays clean.
-    session['oauth_next'] = request.args.get('next') or url_for('list_projects')
+    session['oauth_next'] = request.args.get('next') or url_for('datasets_list')
     redirect_uri = url_for('oauth_callback_github', _external=True)
     return oauth.github.authorize_redirect(redirect_uri)
 
@@ -1780,7 +1577,7 @@ def oauth_callback_github():
 
     session['user_id'] = user.id
     flash(f"Logged in as {user.display_name}.", "success")
-    next_url = session.pop('oauth_next', None) or url_for('list_projects')
+    next_url = session.pop('oauth_next', None) or url_for('datasets_list')
     return redirect(next_url)
 
 
@@ -1868,13 +1665,7 @@ def account_delete():
     for sub in foreign_subs:
         sub.owner_user_id = None
 
-    # 2) Owned projects (cascade deletes their leaderboards + submissions).
-    for proj in Project.query.filter_by(owner_user_id=user_id).all():
-        db.session.delete(proj)
-
-    # 3) Orphan leaderboards: owned by the user but living in someone
-    # else's project (rare but possible if visibility was loosened
-    # historically). Delete them outright.
+    # 2) Owned leaderboards (cascade deletes their submissions).
     for lb in Leaderboard.query.filter_by(owner_user_id=user_id).all():
         db.session.delete(lb)
 
@@ -1917,75 +1708,6 @@ def privacy():
 
 
 # ===================== Project routes =====================
-
-@app.route('/projects')
-def list_projects():
-    projects = (
-        Project.query
-        .filter(visible_in_list(Project, getattr(g, 'current_user', None)))
-        .order_by(Project.created_at)
-        .all()
-    )
-    active_project_id = request.cookies.get('active_project_id')
-    return render_template('projects.html', projects=projects, active_project_id=active_project_id, version=__version__)
-
-@app.route('/projects/create', methods=['POST'])
-@login_required
-def create_project():
-    name = request.form.get('name')
-    description = request.form.get('description')
-
-    if not name:
-        flash("Project name is required.", "danger")
-        return redirect(url_for('list_projects'))
-
-    if Project.query.filter_by(name=name).first():
-        flash(f"Project '{name}' already exists.", "danger")
-        return redirect(url_for('list_projects'))
-
-    new_project = Project(name=name, description=description, owner_user_id=g.current_user.id)
-    db.session.add(new_project)
-    db.session.commit()
-
-    flash(f"Project '{name}' created!", "success")
-    return redirect(url_for('list_projects'))
-
-@app.route('/projects/select/<int:project_id>')
-def select_project(project_id):
-    project = Project.query.get_or_404(project_id)
-    
-    # Determine redirect target
-    next_page = request.args.get('next')
-    if next_page == 'dashboard':
-        target_url = url_for('index', project_name=project.name)
-    else:
-        target_url = url_for('list_projects')
-        
-    resp = redirect(target_url)
-    resp.set_cookie('active_project_id', str(project.id), max_age=30*24*60*60) # 30 days
-    
-    if next_page != 'dashboard':
-        flash(f"Project '{project.name}' is now active.", "success")
-        
-    return resp
-
-@app.route('/projects/<int:project_id>/rename', methods=['POST'])
-@login_required
-@owner_required(Project, 'project_id')
-def rename_project(project_id):
-    project = Project.query.get_or_404(project_id)
-    new_name = request.form.get('name')
-    
-    if not new_name:
-         flash("Name cannot be empty.", "danger")
-    elif Project.query.filter(Project.name == new_name, Project.id != project_id).first():
-         flash(f"Project name '{new_name}' is already taken.", "danger")
-    else:
-        project.name = new_name
-        db.session.commit()
-        flash("Project renamed successfully.", "success")
-        
-    return redirect(url_for('list_projects'))
 
 
 @app.route('/')
@@ -2033,25 +1755,10 @@ def landing():
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
 
-    # Phase 5: curated benchmarks rail. is_curated lives directly on
-    # Leaderboard (relocated from Project as part of the projects-removal
-    # refactor); the join through Project is gone.
-    curated_rows = (
-        db.session.query(Leaderboard, activity.c.recent_count)
-        .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
-        .filter(Leaderboard.is_curated.is_(True))
-        .filter(Leaderboard.visibility == 'public')
-        .order_by(func.coalesce(activity.c.recent_count, 0).desc(),
-                  Leaderboard.upload_date.desc())
-        .limit(3)
-        .all()
-    )
-    curated = [(lb, int(c or 0)) for lb, c in curated_rows]
 
     return render_template(
         'landing.html',
         featured=featured_rows,
-        curated=curated,
     )
 
 
@@ -2070,8 +1777,6 @@ def explore():
     sort = request.args.get('sort', 'activity')
     if sort not in ('activity', 'recent', 'popular'):
         sort = 'activity'
-    # Phase 5: ?curated=1 narrows to BenchHub-curated content.
-    curated_only = request.args.get('curated') in ('1', 'true', 'yes')
 
     cutoff = datetime.utcnow() - timedelta(days=30)
 
@@ -2107,8 +1812,6 @@ def explore():
         .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
     )
 
-    if curated_only:
-        base = base.filter(Leaderboard.is_curated.is_(True))
 
     if q:
         base = base.filter(Leaderboard.name.ilike(f'%{q}%'))
@@ -2135,7 +1838,6 @@ def explore():
         rows=rows,
         q=q,
         sort=sort,
-        curated_only=curated_only,
     )
 
 
@@ -2149,10 +1851,6 @@ def user_profile(user_id):
     """
     user = User.query.get(user_id)
     if user is None:
-        abort(404)
-    # System users (curated-content bookkeeping) aren't real people — no
-    # public profile. The curated content lives at /explore?curated=1.
-    if getattr(user, 'is_system', False):
         abort(404)
 
     viewer = getattr(g, 'current_user', None)
@@ -2204,103 +1902,15 @@ def user_profile(user_id):
         leaderboards=leaderboards,
         recent_subs=recent_subs,
     )
-
-
-# --- Legacy Redirects (Backward Compatibility) ---
-def get_fallback_project_name():
-    """Helper to guess a project for legacy URLs."""
-    if hasattr(g, 'current_project') and g.current_project:
-        return g.current_project.name
-    
-    # Try cookie manually if g didn't catch it (though before_request should have)
-    project_id = request.cookies.get('active_project_id')
-    if project_id:
-        p = Project.query.get(project_id)
-        if p: return p.name
-        
-    # Fallback to first available project
-    p = Project.query.order_by(Project.created_at).first()
-    if p: return p.name
-    
-    return None
-
-@app.route('/leaderboard/<int:leaderboard_id>')
-def legacy_leaderboard_redirect(leaderboard_id):
-    p_name = get_fallback_project_name()
-    if p_name:
-        return redirect(url_for('leaderboard_view', project_name=p_name, leaderboard_id=leaderboard_id))
-    return redirect(url_for('list_projects'))
-
-
-
-@app.route('/comparison/<int:leaderboard_id>')
-def legacy_comparison_redirect(leaderboard_id):
-    p_name = get_fallback_project_name()
-    if p_name:
-        return redirect(url_for('comparison_view', project_name=p_name, leaderboard_id=leaderboard_id))
-    return redirect(url_for('list_projects'))
 # -------------------------------------------------
-
-@app.route('/<project_name>/')
-def index(project_name):
-    if not hasattr(g, 'current_project'):
-        # Should be caught by before_request, but safety check
-        return redirect(url_for('list_projects'))
-
-    # Visibility-filtered list (Phase 1 Slice 3): only public + owned LBs
-    # show up here; private + unlisted LBs need a direct URL.
-    leaderboards = (
-        Leaderboard.query
-        .filter(Leaderboard.project_id == g.current_project.id)
-        .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
-        .all()
-    )
-    
-    # Sort leaderboards by last activity (creation or last submission)
-    # And enrich with summary stats
-    processed_leaderboards = []
-    now = datetime.utcnow()
-    
-    for lb in leaderboards:
-        submissions = lb.submissions
-        submission_count = len(submissions)
-        
-        last_sub_date = None
-        if submissions:
-            last_sub_date = max(s.upload_date for s in submissions)
-            
-        last_activity = last_sub_date if last_sub_date else lb.upload_date
-        
-        # On Fire Signal: Check submissions in last 24h (temporarily 7 days for demo)
-        subs_last_24h = sum(1 for s in submissions if s.upload_date > now - timedelta(days=7))
-        
-        # Calculate total sample count from all associated datasets
-        total_samples = sum(len(ds.samples) for ds in lb.datasets)
-        
-        # Attach attributes for template usage
-        lb.last_submission_date = last_sub_date
-        lb.submission_count = submission_count
-        lb.sample_count = total_samples
-        lb.subs_last_24h = subs_last_24h
-        lb.last_activity = last_activity
-        
-        processed_leaderboards.append(lb)
-        
-    # Sort by last_activity descending
-    processed_leaderboards.sort(key=lambda x: x.last_activity, reverse=True)
-    
-    # Datasets are global, passed for "Create Leaderboard" dropdown
-    datasets = Dataset.query.order_by(Dataset.name).all()
-    
-    return render_template('index.html', leaderboards=processed_leaderboards, datasets=datasets)
 
 # --- End Project Management Logic ---
 
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/edit', methods=['GET', 'POST'])
+@app.route('/leaderboard/<int:leaderboard_id>/edit', methods=['GET', 'POST'])
 @login_required
 @owner_required(Leaderboard, 'leaderboard_id')
-def edit_leaderboard(project_name, leaderboard_id):
+def edit_leaderboard(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     if request.method == 'POST':
         if 'name' in request.form:
@@ -2384,7 +1994,7 @@ def edit_leaderboard(project_name, leaderboard_id):
         else:
             flash('Leaderboard settings updated.', 'success')
             
-        return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
+        return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
         
     # Get available fields for mapping (sampling)
     fields_set = set()
@@ -2512,13 +2122,11 @@ def edit_leaderboard(project_name, leaderboard_id):
                            metric_to_lm=metric_to_lm,
                            global_metrics=global_metrics,
                            global_visualizations=global_visualizations,
-                           all_projects=Project.query.all(),
-                           all_datasets=Dataset.query.all(),
-                           project_name=project_name)
+                           all_datasets=Dataset.query.all())
                            
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_metric/add', methods=['POST'])
-def add_leaderboard_metric(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_metric/add', methods=['POST'])
+def add_leaderboard_metric(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     try:
         global_metric_id = request.form.get('global_metric_id')
@@ -2604,7 +2212,7 @@ def import_leaderboard_settings(leaderboard_id):
     
     if not source_lb_id:
         flash("Please select a source leaderboard.", "warning")
-        return redirect(url_for('edit_leaderboard', project_name=target_lb.project.name, leaderboard_id=target_lb.id, _anchor=request.form.get('active_tab')))
+        return redirect(url_for('edit_leaderboard', leaderboard_id=target_lb.id, _anchor=request.form.get('active_tab')))
         
     source_lb = Leaderboard.query.get_or_404(source_lb_id)
     
@@ -2715,10 +2323,10 @@ def import_leaderboard_settings(leaderboard_id):
         db.session.rollback()
         flash(f"Error importing settings: {e}", "error")
         
-    return redirect(url_for('edit_leaderboard', project_name=target_lb.project.name, leaderboard_id=target_lb.id, _anchor=request.form.get('active_tab')))
+    return redirect(url_for('edit_leaderboard', leaderboard_id=target_lb.id, _anchor=request.form.get('active_tab')))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_metric/<int:metric_id>/edit', methods=['POST'])
-def edit_leaderboard_metric(project_name, leaderboard_id, metric_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_metric/<int:metric_id>/edit', methods=['POST'])
+def edit_leaderboard_metric(leaderboard_id, metric_id):
     lm = LeaderboardMetric.query.get_or_404(metric_id)
     if lm.leaderboard_id != leaderboard_id:
         abort(403)
@@ -2802,8 +2410,8 @@ def edit_leaderboard_metric(project_name, leaderboard_id, metric_id):
         
     return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_metric/<int:metric_id>/delete', methods=['POST'])
-def delete_leaderboard_metric(project_name, leaderboard_id, metric_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_metric/<int:metric_id>/delete', methods=['POST'])
+def delete_leaderboard_metric(leaderboard_id, metric_id):
     lm = LeaderboardMetric.query.get_or_404(metric_id)
     if lm.leaderboard_id != leaderboard_id:
         abort(403)
@@ -2832,12 +2440,12 @@ def delete_leaderboard_metric(project_name, leaderboard_id, metric_id):
          tasks.process_submission.delay(sub.id)
          
     flash(f'Metric "{metric_name}" removed. Recalculation started.', 'success')
-    return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
+    return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
 # ==================== Leaderboard Visualization Management Routes ====================
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_visualization/add', methods=['POST'])
-def add_leaderboard_visualization(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_visualization/add', methods=['POST'])
+def add_leaderboard_visualization(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     try:
         global_viz_id = request.form.get('global_visualization_id')
@@ -2895,10 +2503,10 @@ def add_leaderboard_visualization(project_name, leaderboard_id):
     except Exception as e:
         flash(f'Error adding visualization: {e}', 'danger')
         
-    return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
+    return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_visualization/<int:viz_id>/edit', methods=['POST'])
-def edit_leaderboard_visualization(project_name, leaderboard_id, viz_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_visualization/<int:viz_id>/edit', methods=['POST'])
+def edit_leaderboard_visualization(leaderboard_id, viz_id):
     lv = LeaderboardVisualization.query.get_or_404(viz_id)
     try:
         # Arg mappings
@@ -2928,10 +2536,10 @@ def edit_leaderboard_visualization(project_name, leaderboard_id, viz_id):
     except Exception as e:
         flash(f'Error updating visualization: {e}', 'danger')
         
-    return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
+    return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/leaderboard_visualization/<int:viz_id>/delete', methods=['POST'])
-def delete_leaderboard_visualization(project_name, leaderboard_id, viz_id):
+@app.route('/leaderboard/<int:leaderboard_id>/leaderboard_visualization/<int:viz_id>/delete', methods=['POST'])
+def delete_leaderboard_visualization(leaderboard_id, viz_id):
     lv = LeaderboardVisualization.query.get_or_404(viz_id)
     try:
         db.session.delete(lv)
@@ -2940,7 +2548,7 @@ def delete_leaderboard_visualization(project_name, leaderboard_id, viz_id):
     except Exception as e:
         flash(f'Error removing visualization: {e}', 'danger')
         
-    return redirect(url_for('edit_leaderboard', project_name=project_name, leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
+    return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id, _anchor=request.form.get('active_tab')))
 
 # ==================== Visualization Execution Route ====================
 
@@ -3013,9 +2621,9 @@ def extract_viz_arg_value(sample, submission, field_key):
             
     return value
 
-@app.route('/<project_name>/visualization/<int:lv_id>/execute/<int:sample_id>')
-@app.route('/<project_name>/visualization/<int:lv_id>/execute/<int:sample_id>/<int:submission_id>')
-def execute_visualization(project_name, lv_id, sample_id, submission_id=None):
+@app.route('/visualization/<int:lv_id>/execute/<int:sample_id>')
+@app.route('/visualization/<int:lv_id>/execute/<int:sample_id>/<int:submission_id>')
+def execute_visualization(lv_id, sample_id, submission_id=None):
     """Execute a visualization and return the image as PNG."""
     import io
     import hashlib
@@ -3163,9 +2771,9 @@ def generate_and_cache_agg_viz(lv, submission=None):
         traceback.print_exc()
         return None
 
-@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated')
-@app.route('/<project_name>/visualization/<int:lv_id>/execute_aggregated/<int:submission_id>')
-def execute_aggregated_visualization(project_name, lv_id, submission_id=None):
+@app.route('/visualization/<int:lv_id>/execute_aggregated')
+@app.route('/visualization/<int:lv_id>/execute_aggregated/<int:submission_id>')
+def execute_aggregated_visualization(lv_id, submission_id=None):
     """Execute an aggregated visualization (across all samples) and return the image as PNG."""
     lv = LeaderboardVisualization.query.get_or_404(lv_id)
     if not lv.global_visualization.is_aggregated:
@@ -3218,8 +2826,8 @@ def handle_dlp_safe_code(code_str):
     return code_str
 
 
-@app.route('/<project_name>/metrics')
-def metrics_view(project_name):
+@app.route('/metrics')
+def metrics_view():
     metrics = (
         GlobalMetric.query
         .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
@@ -3282,9 +2890,9 @@ def extract_code_from_file(file_storage):
     
     return None
 
-@app.route('/<project_name>/metrics/create', methods=['POST'])
+@app.route('/metrics/create', methods=['POST'])
 @login_required
-def create_global_metric(project_name):
+def create_global_metric():
     try:
         name = request.form.get('name')
         description = request.form.get('description')
@@ -3325,10 +2933,10 @@ def create_global_metric(project_name):
     
     return redirect(url_for('metrics_view'))
 
-@app.route('/<project_name>/metrics/<int:metric_id>/edit', methods=['POST'])
+@app.route('/metrics/<int:metric_id>/edit', methods=['POST'])
 @login_required
 @owner_required(GlobalMetric, 'metric_id')
-def edit_global_metric(project_name, metric_id):
+def edit_global_metric(metric_id):
     metric = GlobalMetric.query.get_or_404(metric_id)
     try:
         name = request.form.get('name')
@@ -3367,169 +2975,10 @@ def edit_global_metric(project_name, metric_id):
     
     return redirect(url_for('metrics_view'))
 
-@app.route('/projects/<int:project_id>/clone', methods=['POST'])
-@login_required
-def clone_project(project_id):
-    import sys
-    original_project = Project.query.get_or_404(project_id)
-    new_name = request.form.get('name')
-    
-    if not new_name:
-        flash('Project name is required.', 'danger')
-        return redirect(url_for('list_projects'))
-        
-    if Project.query.filter_by(name=new_name).first():
-        flash(f'Project "{new_name}" already exists.', 'danger')
-        return redirect(url_for('list_projects'))
-        
-    created_paths = []
-    try:
-        # 1. Create New Project
-        new_project = Project(
-            name=new_name,
-            description=f"Clone of {original_project.name}",
-            owner_user_id=g.current_user.id,
-        )
-        db.session.add(new_project)
-        db.session.flush() # Get ID
-        
-        # 2. Clone Leaderboards (Link to SAME Datasets)
-        # Note: Datasets are global now. We just clone the LB metadata and submissions.
-        
-        for old_lb in original_project.leaderboards:
-            new_lb = Leaderboard(
-                name=old_lb.name,
-                project_id=new_project.id, # Belongs to New Project
-                dataset_id=old_lb.dataset_id, # Link to SAME Dataset
-                summary_metrics=old_lb.summary_metrics,
-                comparison_display_columns=old_lb.comparison_display_columns,
-                visualizations=old_lb.visualizations,
-                selected_metrics=old_lb.selected_metrics,
-                metric_directions=old_lb.metric_directions,
-                metric_aggregation=old_lb.metric_aggregation,
-                scalar_width=old_lb.scalar_width,
-                image_width=old_lb.image_width,
-                last_sample_filter=old_lb.last_sample_filter
-            )
-            db.session.add(new_lb)
-            db.session.flush()
-            
-            # Clone Leaderboard Metrics
-            for old_lm in old_lb.leaderboard_metrics:
-                new_lm = LeaderboardMetric(
-                    leaderboard_id=new_lb.id,
-                    global_metric_id=old_lm.global_metric_id,
-                    arg_mappings=old_lm.arg_mappings,
-                    target_name=old_lm.target_name,
-                    pooling_type=old_lm.pooling_type,
-                    pooling_percentile=old_lm.pooling_percentile,
-                    sort_direction=old_lm.sort_direction
-                )
-                db.session.add(new_lm)
-                
-            # Clone Leaderboard Visualizations
-            for old_lv in old_lb.leaderboard_visualizations:
-                new_lv = LeaderboardVisualization(
-                    leaderboard_id=new_lb.id,
-                    global_visualization_id=old_lv.global_visualization_id,
-                    arg_mappings=old_lv.arg_mappings,
-                    target_name=old_lv.target_name,
-                    display_order=old_lv.display_order
-                )
-                db.session.add(new_lv)
-            
-            # Clone Submissions
-            for old_sub in old_lb.submissions:
-                new_sub = Submission(
-                    name=old_sub.name,
-                    leaderboard_id=new_lb.id,
-                    git_commit=old_sub.git_commit,
-                    git_branch=old_sub.git_branch,
-                    git_message=old_sub.git_message,
-                    is_archived=old_sub.is_archived,
-                    processing_status=old_sub.processing_status, 
-                    last_sample_filter=old_sub.last_sample_filter
-                )
-                db.session.add(new_sub)
-                db.session.flush() # Get new_sub.id
-                
-                # Copy Submission Folder
-                old_sub_path = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(old_sub.id))
-                new_sub_path = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(new_sub.id))
-                
-                if os.path.exists(new_sub_path):
-                     shutil.rmtree(new_sub_path, ignore_errors=True)
-
-                if os.path.exists(old_sub_path):
-                    shutil.copytree(old_sub_path, new_sub_path, dirs_exist_ok=True)
-                    created_paths.append(new_sub_path)
-                    
-                for tag in old_sub.tags:
-                    new_sub.tags.append(tag)
-                    
-                for cf in old_sub.custom_fields:
-                    # Reuse same sample_id since we share the dataset
-                    new_cf = CustomField(
-                        name=cf.name,
-                        field_type=cf.field_type,
-                        value_text=cf.value_text,
-                        value_float=cf.value_float,
-                        submission_id=new_sub.id,
-                        sample_id=cf.sample_id, 
-                        sample_name=cf.sample_name
-                    )
-                    db.session.add(new_cf)
-                    
-        db.session.commit()
-        flash(f'Project cloned successfully as "{new_name}"', 'success')
-        return redirect(url_for('list_projects'))
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        db.session.rollback()
-        # Clean up created paths
-        for path in created_paths:
-            if os.path.exists(path):
-                shutil.rmtree(path, ignore_errors=True)
-                
-        flash(f'Error cloning project: {e}', 'danger')
-        return redirect(url_for('list_projects'))
-
-@app.route('/projects/<int:project_id>/delete', methods=['POST'])
-@login_required
-@owner_required(Project, 'project_id')
-def delete_project(project_id):
-    project = Project.query.get_or_404(project_id)
-    import sys
-    try:
-        project = Project.query.get_or_404(project_id)
-        
-        # Delete project folder if exists? logic...
-        
-        db.session.delete(project)
-        db.session.commit()
-        
-        flash(f'Project "{project.name}" deleted successfully.', 'success')
-        
-        response = make_response(redirect(url_for('list_projects')))
-        # Check cookie manually or via g
-        active_id = request.cookies.get('active_project_id')
-        if active_id and str(active_id) == str(project_id):
-            response.set_cookie('active_project_id', '', expires=0)
-            
-        return response
-        
-    except Exception as e:
-        db.session.rollback()
-        # Check integrity error (should be handled by cascade, but just in case)
-        flash(f'Error deleting project: {str(e)}', 'danger')
-        return redirect(url_for('list_projects'))
-
-@app.route('/<project_name>/metrics/<int:metric_id>/delete', methods=['POST'])
+@app.route('/metrics/<int:metric_id>/delete', methods=['POST'])
 @login_required
 @owner_required(GlobalMetric, 'metric_id')
-def delete_global_metric(project_name, metric_id):
+def delete_global_metric(metric_id):
     metric = GlobalMetric.query.get_or_404(metric_id)
     try:
         db.session.delete(metric)
@@ -3541,8 +2990,8 @@ def delete_global_metric(project_name, metric_id):
          
     return redirect(url_for('metrics_view'))
 
-@app.route('/<project_name>/metrics/<int:metric_id>/download')
-def download_metric(project_name, metric_id):
+@app.route('/metrics/<int:metric_id>/download')
+def download_metric(metric_id):
     """Download metric code as a .txt file"""
     metric = GlobalMetric.query.get_or_404(metric_id)
     
@@ -3555,8 +3004,8 @@ def download_metric(project_name, metric_id):
 
 # ==================== Visualization Management Routes ====================
 
-@app.route('/<project_name>/visualizations')
-def visualizations_view(project_name):
+@app.route('/visualizations')
+def visualizations_view():
     """List all visualizations for the project."""
     visualizations = (
         GlobalVisualization.query
@@ -3564,11 +3013,11 @@ def visualizations_view(project_name):
         .order_by(GlobalVisualization.name)
         .all()
     )
-    return render_template('visualizations.html', visualizations=visualizations, project_name=project_name)
+    return render_template('visualizations.html', visualizations=visualizations)
 
-@app.route('/<project_name>/create_visualization', methods=['POST'])
+@app.route('/create_visualization', methods=['POST'])
 @login_required
-def create_visualization(project_name):
+def create_visualization():
     """Create a new visualization."""
     try:
         name = request.form.get('name')
@@ -3584,11 +3033,11 @@ def create_visualization(project_name):
         elif viz_file and viz_file.filename:
             flash(f'Found file {viz_file.filename} but could not extract Python code from it.', 'warning')
             if "Implementation will be loaded from ZIP" in python_code:
-                return redirect(url_for('visualizations_view', project_name=project_name))
+                return redirect(url_for('visualizations_view'))
 
         if not python_code or not python_code.strip() or "Implementation will be loaded from ZIP" in python_code:
             flash('Visualization code is required.', 'danger')
-            return redirect(url_for('visualizations_view', project_name=project_name))
+            return redirect(url_for('visualizations_view'))
         
         # Create new visualization
         new_viz = GlobalVisualization(
@@ -3607,12 +3056,12 @@ def create_visualization(project_name):
         db.session.rollback()
         flash(f'Error creating visualization: {e}', 'danger')
     
-    return redirect(url_for('visualizations_view', project_name=project_name))
+    return redirect(url_for('visualizations_view'))
 
-@app.route('/<project_name>/visualizations/<int:viz_id>/edit', methods=['POST'])
+@app.route('/visualizations/<int:viz_id>/edit', methods=['POST'])
 @login_required
 @owner_required(GlobalVisualization, 'viz_id')
-def edit_visualization(project_name, viz_id):
+def edit_visualization(viz_id):
     """Edit an existing visualization."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
     try:
@@ -3629,12 +3078,12 @@ def edit_visualization(project_name, viz_id):
         elif viz_file and viz_file.filename:
             flash(f'Found file {viz_file.filename} but could not extract Python code from it.', 'warning')
             if "Implementation will be loaded from ZIP" in python_code:
-                return redirect(url_for('visualizations_view', project_name=project_name))
+                return redirect(url_for('visualizations_view'))
 
         if not python_code or not python_code.strip() or "Implementation will be loaded from ZIP" in python_code:
             if "Implementation will be loaded from ZIP" in python_code:
                 flash('Invalid code submitted (placeholder). Update canceled.', 'danger')
-                return redirect(url_for('visualizations_view', project_name=project_name))
+                return redirect(url_for('visualizations_view'))
         
         viz.name = name
         viz.description = description
@@ -3648,12 +3097,12 @@ def edit_visualization(project_name, viz_id):
         db.session.rollback()
         flash(f'Error updating visualization: {e}', 'danger')
     
-    return redirect(url_for('visualizations_view', project_name=project_name))
+    return redirect(url_for('visualizations_view'))
 
-@app.route('/<project_name>/visualizations/<int:viz_id>/delete', methods=['POST'])
+@app.route('/visualizations/<int:viz_id>/delete', methods=['POST'])
 @login_required
 @owner_required(GlobalVisualization, 'viz_id')
-def delete_visualization(project_name, viz_id):
+def delete_visualization(viz_id):
     """Delete a visualization."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
     try:
@@ -3664,10 +3113,10 @@ def delete_visualization(project_name, viz_id):
         db.session.rollback()
         flash(f'Error deleting visualization: {e}. It might be used by a leaderboard.', 'danger')
         
-    return redirect(url_for('visualizations_view', project_name=project_name))
+    return redirect(url_for('visualizations_view'))
 
-@app.route('/<project_name>/visualizations/<int:viz_id>/download')
-def download_visualization(project_name, viz_id):
+@app.route('/visualizations/<int:viz_id>/download')
+def download_visualization(viz_id):
     """Download visualization code as a .txt file."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
     
@@ -3678,9 +3127,9 @@ def download_visualization(project_name, viz_id):
     
     return response
 
-@app.route('/<project_name>/metrics/upload', methods=['POST'])
+@app.route('/metrics/upload', methods=['POST'])
 @login_required
-def upload_metric(project_name):
+def upload_metric():
     """Upload/update metric from a .txt file"""
     try:
         metric_file = request.files.get('metric_file')
@@ -3749,10 +3198,10 @@ def upload_metric(project_name):
     
     return redirect(url_for('metrics_view'))
 
-@app.route('/<project_name>/submission/<int:submission_id>/recalculate', methods=['POST'])
+@app.route('/submission/<int:submission_id>/recalculate', methods=['POST'])
 @login_required
 @owner_required(Submission, 'submission_id')
-def recalculate_submission(project_name, submission_id):
+def recalculate_submission(submission_id):
     submission = Submission.query.get_or_404(submission_id)
     
     # Set to processing state immediately for UI feedback
@@ -3797,9 +3246,9 @@ def recalculate_submission(project_name, submission_id):
     # Redirect back to the leaderboard
     return redirect(url_for('leaderboard_view', **redirect_args))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>')
+@app.route('/leaderboard/<int:leaderboard_id>')
 @visibility_required(Leaderboard, 'leaderboard_id')
-def leaderboard_view(project_name, leaderboard_id):
+def leaderboard_view(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     show_archived = request.args.get('show_archived', 'false').lower() == 'true'
     sort_metric = request.args.get('sort_metric', '')
@@ -4169,7 +3618,6 @@ def leaderboard_view(project_name, leaderboard_id):
                 metric_directions_dict[target] = lm.sort_direction
 
     return render_template('leaderboard.html', 
-                           project_name=project_name, 
                            leaderboard=leaderboard,
                            submissions=submissions,
                            all_metrics=all_metrics,
@@ -4201,16 +3649,16 @@ def leaderboard_view(project_name, leaderboard_id):
                            sample_prefix_tags=sample_prefix_tags,
                            metric_directions=metric_directions_dict)
 
-@app.route('/<project_name>/upload_dataset', methods=['POST'])
+@app.route('/upload_dataset', methods=['POST'])
 @login_required
-def upload_dataset(project_name):
+def upload_dataset():
     dataset_names_input = request.form.get('dataset_name', '')
     files = request.files.getlist('dataset_zip')
     override = request.form.get('override_dataset') == 'true'
 
     if not files:
         flash("No files uploaded.", "warning")
-        return redirect(url_for('index'))
+        return redirect(url_for('datasets_list'))
 
     # If names are provided, split them by comma. Otherwise, auto-generate from filenames.
     if dataset_names_input:
@@ -4220,9 +3668,7 @@ def upload_dataset(project_name):
 
     if len(provided_names) != len(files):
         flash("Number of names provided does not match number of files uploaded.", "danger")
-        return redirect(url_for('index'))
-
-    project_id = g.current_project.id if g.get('current_project') else None
+        return redirect(url_for('datasets_list'))
 
     for i, file in enumerate(files):
         dataset_name = provided_names[i]
@@ -4300,9 +3746,9 @@ def import_dataset_from_hf(repo_id, dataset_name, *, revision=None,
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-@app.route('/<project_name>/import_from_hf', methods=['POST'])
+@app.route('/import_from_hf', methods=['POST'])
 @login_required
-def import_from_hf(project_name):
+def import_from_hf():
     repo_id = (request.form.get('hf_repo_id') or '').strip()
     dataset_name = (request.form.get('dataset_name') or '').strip()
     revision = (request.form.get('hf_revision') or '').strip() or None
@@ -4339,26 +3785,24 @@ def import_from_hf(project_name):
     return redirect(url_for('datasets_list'))
 
 
-@app.route('/<project_name>/create_leaderboard', methods=['POST'])
+@app.route('/create_leaderboard', methods=['POST'])
 @login_required
-def create_leaderboard(project_name):
-    project = Project.query.filter_by(name=project_name).first_or_404()
+def create_leaderboard():
     leaderboard_name = request.form['leaderboard_name']
 
-    # Check if leaderboard with this name already exists in this project
-    existing = Leaderboard.query.filter_by(name=leaderboard_name, project_id=project.id).first()
+    # Names are global now (no project namespace).
+    existing = Leaderboard.query.filter_by(name=leaderboard_name).first()
     if existing:
         if request.form.get('overwrite'):
             db.session.delete(existing)
             db.session.commit()
             flash(f'Overwriting existing leaderboard "{leaderboard_name}".', 'warning')
         else:
-            flash(f'Leaderboard "{leaderboard_name}" already exists in this project. Please choose a different name or check "Overwrite".', 'danger')
-            return redirect(url_for('index', project_name=project_name))
+            flash(f'Leaderboard "{leaderboard_name}" already exists. Choose a different name or check "Overwrite".', 'danger')
+            return redirect(url_for('datasets_list'))
 
     new_leaderboard = Leaderboard(
         name=leaderboard_name,
-        project_id=project.id,
         summary_metrics=','.join(request.form.getlist('summary_metrics')),
         owner_user_id=g.current_user.id,
     )
@@ -4407,7 +3851,7 @@ def create_leaderboard(project_name):
     db.session.commit()
     
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
-    return redirect(url_for('index', project_name=project_name))
+    return redirect(url_for('datasets_list'))
 
 def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user_id=None):
     """
@@ -4647,9 +4091,9 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user
         print(f"Error processing submission {submission_name}: {e}")
         return False, str(e)
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/upload_submission', methods=['POST'])
+@app.route('/leaderboard/<int:leaderboard_id>/upload_submission', methods=['POST'])
 @login_required
-def upload_submission(project_name, leaderboard_id):
+def upload_submission(leaderboard_id):
     files = request.files.getlist('submission_zip')
     submission_names_input = request.form.get('submission_name')
 
@@ -4744,8 +4188,8 @@ def upload_submission(project_name, leaderboard_id):
 
 
 
-@app.route('/<project_name>/submissions/batch_action', methods=['POST'])
-def batch_action(project_name):
+@app.route('/submissions/batch_action', methods=['POST'])
+def batch_action():
     action = request.form.get('action')
     submission_ids = request.form.getlist('submission_ids')
     leaderboard_id = request.form.get('leaderboard_id')
@@ -4812,10 +4256,10 @@ def batch_action(project_name):
     return redirect(url_for('leaderboard_view', **redirect_args))
 
 
-@app.route('/<project_name>/submission/<int:submission_id>/update_tags', methods=['POST'])
+@app.route('/submission/<int:submission_id>/update_tags', methods=['POST'])
 @login_required
 @owner_required(Submission, 'submission_id')
-def update_submission_tags(project_name, submission_id):
+def update_submission_tags(submission_id):
     submission = Submission.query.get_or_404(submission_id)
     new_tags_str = request.form.get('tags', '').strip()
     
@@ -4833,19 +4277,19 @@ def update_submission_tags(project_name, submission_id):
     
     db.session.commit()
     flash(f'Tags updated for submission {submission.name}', 'success')
-    return redirect(request.referrer or url_for('leaderboard_view', project_name=project_name, leaderboard_id=submission.leaderboard_id))
+    return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=submission.leaderboard_id))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/update_metrics', methods=['POST'])
-def update_leaderboard_metrics(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/update_metrics', methods=['POST'])
+def update_leaderboard_metrics(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     selected_metrics = request.form.getlist('metrics')
     leaderboard.selected_metrics = ','.join(selected_metrics)
     db.session.commit()
     return redirect(url_for('comparison_view', leaderboard_id=leaderboard_id))
 
-@app.route('/<project_name>/comparison/<int:leaderboard_id>')
+@app.route('/comparison/<int:leaderboard_id>')
 @visibility_required(Leaderboard, 'leaderboard_id')
-def comparison_view(project_name, leaderboard_id):
+def comparison_view(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     
     # Check for compare_ids in query parameters first (for shareable URLs)
@@ -4892,7 +4336,6 @@ def comparison_view(project_name, leaderboard_id):
                                sort_order='asc', 
                                sample_metric_options=SAMPLE_METRIC_OPTIONS, 
                                active_metrics=[],
-                               project_name=project_name,
                                current_compare_ids=compare_ids_arg,
                                metric_labels=metric_labels)
 
@@ -5587,7 +5030,6 @@ def comparison_view(project_name, leaderboard_id):
                            metric_directions=metric_directions,
                            metric_labels=metric_labels,
                            active_metrics=active_metrics,
-                           project_name=project_name,
                            current_compare_ids=compare_ids_arg)
 
 
@@ -5844,9 +5286,11 @@ def get_user_stats(username):
             activity[date_str] = activity.get(date_str, 0) + 1
             
     # LBs used
-    lbs = db.session.query(Leaderboard.name, Leaderboard.id, Project.name).join(Submission).join(Project, Leaderboard.project_id == Project.id).filter(Submission.git_author.in_(identities)).distinct().all()
-    lb_info = [{'name': r[0], 'id': r[1], 'project_name': r[2]} for r in lbs]
-    
+    lbs = db.session.query(Leaderboard.name, Leaderboard.id).join(Submission).filter(
+        Submission.git_author.in_(identities)
+    ).distinct().all()
+    lb_info = [{'name': r[0], 'id': r[1]} for r in lbs]
+
     # Recent submissions
     recent = []
     for s in Submission.query.filter(Submission.git_author.in_(identities)).order_by(Submission.upload_date.desc()).limit(10).all():
@@ -5855,7 +5299,6 @@ def get_user_stats(username):
             'date': s.upload_date.strftime('%Y-%m-%d %H:%M'),
             'lb': s.leaderboard.name,
             'lb_id': s.leaderboard_id,
-            'project_name': s.leaderboard.project.name
         })
         
     return jsonify({
@@ -6189,15 +5632,15 @@ def update_dataset_metrics(dataset_id):
     db.session.commit()
     return redirect(request.referrer)
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/update_visualizations', methods=['POST'])
-def update_leaderboard_visualizations(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/update_visualizations', methods=['POST'])
+def update_leaderboard_visualizations(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     leaderboard.visualizations = ','.join(request.form.getlist('visualizations'))
     db.session.commit()
     return redirect(request.referrer)
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/update_comparison_display_columns', methods=['POST'])
-def update_comparison_display_columns(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/update_comparison_display_columns', methods=['POST'])
+def update_comparison_display_columns(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     cols = request.form.getlist('comparison_display_columns')
     # Use a sentinel value to distinguish "user wants nothing" from "use defaults"
@@ -6205,8 +5648,8 @@ def update_comparison_display_columns(project_name, leaderboard_id):
     db.session.commit()
     return redirect(request.referrer)
 
-@app.route('/<project_name>/submission/<int:submission_id>/download')
-def download_submission(project_name, submission_id):
+@app.route('/submission/<int:submission_id>/download')
+def download_submission(submission_id):
     submission = Submission.query.get_or_404(submission_id)
     submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id))
     zip_path = os.path.join(submission_folder, 'submission.zip')
@@ -6217,8 +5660,8 @@ def download_submission(project_name, submission_id):
         flash("Original submission ZIP not found.", "warning")
         return redirect(url_for('leaderboard_view', leaderboard_id=submission.leaderboard_id))
 
-@app.route('/<project_name>/leaderboard/<int:leaderboard_id>/download_submissions', methods=['POST'])
-def download_submissions_bulk(project_name, leaderboard_id):
+@app.route('/leaderboard/<int:leaderboard_id>/download_submissions', methods=['POST'])
+def download_submissions_bulk(leaderboard_id):
     submission_ids = request.form.getlist('submission_ids')
     redirect_args = {
         'leaderboard_id': leaderboard_id,
@@ -6296,27 +5739,27 @@ def delete_dataset(dataset_id):
     db.session.commit()
     return redirect(url_for('datasets_list'))
 
-@app.route('/<project_name>/delete_leaderboard/<int:leaderboard_id>', methods=['POST'])
+@app.route('/delete_leaderboard/<int:leaderboard_id>', methods=['POST'])
 @login_required
 @owner_required(Leaderboard, 'leaderboard_id')
-def delete_leaderboard(project_name, leaderboard_id):
+def delete_leaderboard(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     db.session.delete(leaderboard)
     db.session.commit()
-    return redirect(url_for('index'))
+    return redirect(url_for('datasets_list'))
 
-@app.route('/<project_name>/delete_submission/<int:submission_id>', methods=['POST'])
+@app.route('/delete_submission/<int:submission_id>', methods=['POST'])
 @login_required
 @owner_required(Submission, 'submission_id')
-def delete_submission(project_name, submission_id):
+def delete_submission(submission_id):
     submission = Submission.query.get_or_404(submission_id)
     shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id)), ignore_errors=True)
     db.session.delete(submission)
     db.session.commit()
     return redirect(url_for('leaderboard_view', leaderboard_id=submission.leaderboard_id))
 
-@app.route('/<project_name>/custom_field_image/<int:field_id>')
-def serve_custom_field_image(project_name, field_id):
+@app.route('/custom_field_image/<int:field_id>')
+def serve_custom_field_image(field_id):
     """Serve a custom field image or depth map"""
     custom_field = CustomField.query.get_or_404(field_id)
     
@@ -6334,8 +5777,8 @@ def serve_custom_field_image(project_name, field_id):
     
     return send_file(image_path)
 
-@app.route('/<project_name>/api/custom_field_depth_data/<int:field_id>')
-def serve_custom_field_depth_data(project_name, field_id):
+@app.route('/api/custom_field_depth_data/<int:field_id>')
+def serve_custom_field_depth_data(field_id):
     """Serve raw depth data for a custom field as JSON."""
     custom_field = CustomField.query.get_or_404(field_id)
     
@@ -6344,8 +5787,8 @@ def serve_custom_field_depth_data(project_name, field_id):
         
     return serve_depth_data(custom_field.value_text)
 
-@app.route('/<project_name>/api/custom_field_json/<int:field_id>')
-def serve_custom_field_json(project_name, field_id):
+@app.route('/api/custom_field_json/<int:field_id>')
+def serve_custom_field_json(field_id):
     """Serve JSON data for a custom field."""
     custom_field = CustomField.query.get_or_404(field_id)
     
@@ -6366,8 +5809,8 @@ def serve_custom_field_json(project_name, field_id):
         return abort(500, description=f"Error reading JSON file: {str(e)}")
 
 
-@app.route('/<project_name>/sample/<int:sample_id>/download')
-def download_sample(project_name, sample_id):
+@app.route('/sample/<int:sample_id>/download')
+def download_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
     # Optional submission IDs to include in the zip
     submission_ids = request.args.getlist('submission_id', type=int)
@@ -6612,111 +6055,6 @@ def dataset_upload_api():
             os.remove(temp_zip_path)
 
 
-# --- Admin endpoints (Phase 5 — curated content management) ---
-
-
-@app.route('/api/admin/datasets/<int:dataset_id>/curate', methods=['POST'])
-@require_api_token
-@require_admin
-def admin_dataset_curate(dataset_id):
-    """Mark a dataset as BenchHub-curated and reassign ownership to the
-    system user. Idempotent: rerunning is a no-op. Use POST .../uncurate
-    to flip back."""
-    ds = Dataset.query.get(dataset_id)
-    if ds is None:
-        return jsonify({'error': 'Dataset not found'}), 404
-
-    sys_user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
-    if sys_user is None:
-        return jsonify({'error': 'Curated system user missing — call ensure_curated_seed()'}), 500
-
-    ds.is_curated = True
-    ds.owner_user_id = sys_user.id
-    ds.visibility = 'public'
-    db.session.commit()
-    return jsonify({
-        'dataset_id': ds.id,
-        'name': ds.name,
-        'is_curated': True,
-        'owner_user_id': sys_user.id,
-    }), 200
-
-
-@app.route('/api/admin/datasets/<int:dataset_id>/uncurate', methods=['POST'])
-@require_api_token
-@require_admin
-def admin_dataset_uncurate(dataset_id):
-    ds = Dataset.query.get(dataset_id)
-    if ds is None:
-        return jsonify({'error': 'Dataset not found'}), 404
-    ds.is_curated = False
-    db.session.commit()
-    return jsonify({'dataset_id': ds.id, 'is_curated': False}), 200
-
-
-@app.route('/api/admin/leaderboards/create', methods=['POST'])
-@require_api_token
-@require_admin
-def admin_leaderboard_create():
-    """Create a curated leaderboard owned by the system user.
-
-    JSON body:
-        name (str, required)        Leaderboard name.
-        dataset_ids (list[int])     Datasets to link.
-        project_name (str)          Defaults to 'benchhub-curated'.
-        summary_metrics (str)       Comma-separated, defaults to ''.
-
-    Idempotent on (project_id, name): returns the existing row if present.
-    """
-    payload = request.get_json(silent=True) or {}
-    name = (payload.get('name') or '').strip()
-    if not name:
-        return jsonify({'error': 'name required'}), 400
-    dataset_ids = payload.get('dataset_ids') or []
-    project_name = (payload.get('project_name') or CURATED_PROJECT_NAME).strip()
-    summary_metrics = payload.get('summary_metrics') or ''
-
-    proj = Project.query.filter_by(name=project_name).first()
-    if proj is None:
-        return jsonify({'error': f"project '{project_name}' not found"}), 404
-
-    sys_user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
-    if sys_user is None:
-        return jsonify({'error': 'curated system user missing'}), 500
-
-    existing = Leaderboard.query.filter_by(project_id=proj.id, name=name).first()
-    if existing is not None:
-        return jsonify({
-            'leaderboard_id': existing.id,
-            'name': existing.name,
-            'project_name': proj.name,
-            'created': False,
-        }), 200
-
-    lb = Leaderboard(
-        name=name,
-        project_id=proj.id,
-        summary_metrics=summary_metrics,
-        owner_user_id=sys_user.id,
-        visibility='public',
-        is_curated=True,  # Stage 1: curated state lives directly on the leaderboard.
-    )
-    if dataset_ids:
-        datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()
-        lb.datasets = datasets
-        if datasets:
-            lb.dataset_id = datasets[0].id  # legacy back-compat field
-    db.session.add(lb)
-    db.session.commit()
-    return jsonify({
-        'leaderboard_id': lb.id,
-        'name': lb.name,
-        'project_name': proj.name,
-        'dataset_ids': [d.id for d in lb.datasets],
-        'created': True,
-    }), 201
-
-
 @app.route('/api/leaderboard/<int:leaderboard_id>/info', methods=['GET'])
 def get_leaderboard_info_api(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
@@ -6733,17 +6071,11 @@ def get_leaderboard_info_api(leaderboard_id):
         }
     })
 
-@app.route('/<project_name>/api/leaderboard/by_name/<leaderboard_name>/info', methods=['GET'])
-def get_leaderboard_info_by_name_api(project_name, leaderboard_name):
-    # Look up project
-    project = Project.query.filter_by(name=project_name).first()
-    if not project:
-        return jsonify({'error': f'Project "{project_name}" not found'}), 404
-    
-    # Filter leaderboard by both name and project
-    leaderboard = Leaderboard.query.filter_by(name=leaderboard_name, project_id=project.id).first()
+@app.route('/api/leaderboard/by_name/<leaderboard_name>/info', methods=['GET'])
+def get_leaderboard_info_by_name_api(leaderboard_name):
+    leaderboard = Leaderboard.query.filter_by(name=leaderboard_name).first()
     if not leaderboard:
-        return jsonify({'error': f'Leaderboard "{leaderboard_name}" not found in project "{project_name}"'}), 404
+        return jsonify({'error': f'Leaderboard "{leaderboard_name}" not found'}), 404
     return jsonify({
         'id': leaderboard.id,
         'name': leaderboard.name,
@@ -6780,8 +6112,8 @@ def suggest_leaderboard_name():
             return jsonify({'error': 'Could not find available name'}), 500
 
 
-@app.route('/<project_name>/dataset/<int:dataset_id>/download')
-def download_dataset(project_name, dataset_id):
+@app.route('/dataset/<int:dataset_id>/download')
+def download_dataset(dataset_id):
     """Download dataset ZIP file"""
     dataset = Dataset.query.get_or_404(dataset_id)
     dataset_folder_name = secure_filename(dataset.name)
@@ -6796,8 +6128,8 @@ def download_dataset(project_name, dataset_id):
 
 
 
-@app.route('/<project_name>/api/dataset/<dataset_id>/download', methods=['GET'], endpoint='api_download_dataset')
-def api_download_dataset(project_name, dataset_id):
+@app.route('/api/dataset/<dataset_id>/download', methods=['GET'], endpoint='api_download_dataset')
+def api_download_dataset(dataset_id):
     """Download stored dataset ZIP"""
     import sys
     import traceback
@@ -6840,9 +6172,9 @@ def api_download_dataset(project_name, dataset_id):
         sys.stderr.flush()
         return jsonify({'error': str(e)}), 500
 
-@app.route('/<project_name>/api/leaderboard/<int:leaderboard_id>/submission/upload', methods=['POST'])
+@app.route('/api/leaderboard/<int:leaderboard_id>/submission/upload', methods=['POST'])
 @require_api_token
-def submission_upload_api(project_name, leaderboard_id):
+def submission_upload_api(leaderboard_id):
     """Programmatic submission upload API. Bearer-token authenticated;
     owner_user_id of the resulting Submission is the token's user."""
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
@@ -7232,46 +6564,9 @@ def check_and_migrate_db():
                     except Exception as e:
                         print(f"Migration error (submission.git_author): {e}")
 
-                # Helper to get/create General project
-                def ensure_general_project():
-                    cursor.execute("SELECT id FROM project WHERE name = 'General'")
-                    res = cursor.fetchone()
-                    if res:
-                        return res[0]
-                    print("Creating default 'General' project for orphaned/legacy data...")
-                    cursor.execute("INSERT INTO project (name, description, created_at) VALUES (?, ?, ?)",
-                                   ('General', 'Default project for legacy data', datetime.utcnow()))
-                    conn.commit()
-                    return cursor.lastrowid
-
-                # --- 2. Dataset & Leaderboard Project ID migration ---
-                tables_to_migrate = ['dataset', 'leaderboard']
-                for table in tables_to_migrate:
-                    needs_migration = False
-                    try:
-                        cursor.execute(f"SELECT project_id FROM {table} LIMIT 1")
-                    except sqlite3.OperationalError:
-                        print(f"Migrating DB: Adding 'project_id' to '{table}' table...")
-                        try:
-                            cursor.execute(f"ALTER TABLE {table} ADD COLUMN project_id INTEGER")
-                            conn.commit()
-                            needs_migration = True
-                        except Exception as e:
-                            print(f"Failed to add project_id to {table}: {e}")
-                            continue
-                    
-                    # Also check for NULL values if column existed
-                    if not needs_migration:
-                        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE project_id IS NULL")
-                        res = cursor.fetchone()
-                        if res and res[0] > 0:
-                            needs_migration = True
-                    
-                    if needs_migration:
-                        gen_id = ensure_general_project()
-                        print(f"Migrating orphaned records in '{table}' to Project '{gen_id}' (General)...")
-                        cursor.execute(f"UPDATE {table} SET project_id = ? WHERE project_id IS NULL", (gen_id,))
-                        conn.commit()
+                # (Legacy "ensure General project" + project_id backfill removed
+                # in the projects-removal refactor. The Stage 2 teardown later
+                # in this function drops the project table outright.)
 
                 # --- 3. Leaderboard Columns (Legacy) ---
                 columns_to_check = {
@@ -7373,7 +6668,9 @@ def check_and_migrate_db():
                 # Each ALTER is wrapped so a half-applied state is recoverable
                 # by re-running the migration.
                 _ownership_migrations = [
-                    ("project",              "owner_user_id", "INTEGER"),
+                    # project.* entries kept for back-compat on installs that
+                    # still have the table around — they're harmless once the
+                    # table is dropped (the loop checks PRAGMA table_info first).
                     ("project",              "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
                     ("dataset",              "owner_user_id", "INTEGER"),
                     ("dataset",              "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
@@ -7385,18 +6682,12 @@ def check_and_migrate_db():
                     ("global_metric",        "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
                     ("global_visualization", "owner_user_id", "INTEGER"),
                     ("global_visualization", "visibility",    "VARCHAR(20) NOT NULL DEFAULT 'public'"),
-                    # Phase 5: curated-content marker.
-                    ("project",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
-                    ("dataset",              "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
-                    # Phase 5 relocation: curated state moves from Project
-                    # to Leaderboard (Project itself is being deleted).
-                    ("leaderboard",          "is_curated",    "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Phase 5: curated-content marker (legacy on Project, then relocated).
                     # Phase 7: per-user quotas. Existing rows pick up the
                     # free-tier defaults; bump per-row to grant a paid tier.
                     ("user",                 "quota_max_storage_bytes",        f"BIGINT NOT NULL DEFAULT {200 * 1024 * 1024}"),
                     ("user",                 "quota_max_datasets",             "INTEGER NOT NULL DEFAULT 5"),
                     ("user",                 "quota_max_submissions_per_day",  "INTEGER NOT NULL DEFAULT 50"),
-                    ("user",                 "is_system",                      "BOOLEAN NOT NULL DEFAULT 0"),
                     # Phase 8: programmatic-access token. Nullable; users
                     # opt-in by clicking "Generate" in /settings/api_tokens.
                     ("user",                 "api_token",                      "VARCHAR(64)"),
@@ -7422,28 +6713,29 @@ def check_and_migrate_db():
                     except Exception as e:
                         print(f"Failed to add {tbl}.{col}: {e}")
 
-                # One-shot backfill: any leaderboard whose project is
-                # is_curated=True inherits is_curated=True. Idempotent
-                # because the second run finds no project.is_curated=1
-                # rows that aren't already reflected on leaderboard.
-                # Wrapped in try/except so a fresh install (no project
-                # table yet) doesn't choke.
+                # Stage 2 — projects + curated removal teardown.
+                # All wrapped in try/except so reruns and fresh installs are no-ops.
+                for tbl, col in [
+                    ('leaderboard', 'project_id'),
+                    ('leaderboard', 'is_curated'),
+                    ('dataset', 'is_curated'),
+                    ('global_visualization', 'project_id'),
+                ]:
+                    try:
+                        cursor.execute(f"PRAGMA table_info({tbl})")
+                        cols = {row[1] for row in cursor.fetchall()}
+                        if col in cols:
+                            cursor.execute(f"ALTER TABLE {tbl} DROP COLUMN {col}")
+                            conn.commit()
+                            print(f"Dropped {tbl}.{col}.")
+                    except Exception as e:
+                        print(f"Could not drop {tbl}.{col} (will retry next boot): {e}")
                 try:
-                    cursor.execute("""
-                        UPDATE leaderboard
-                           SET is_curated = 1
-                         WHERE is_curated = 0
-                           AND project_id IN (
-                               SELECT id FROM project WHERE is_curated = 1
-                           )
-                    """)
-                    if cursor.rowcount:
-                        print(f"Backfilled {cursor.rowcount} leaderboard.is_curated rows from project.is_curated.")
+                    cursor.execute("DROP TABLE IF EXISTS project")
                     conn.commit()
+                    print("Dropped project table.")
                 except Exception as e:
-                    # Expected on a fresh install where project.is_curated
-                    # doesn't exist yet, or after Stage 2 drops the table.
-                    print(f"is_curated backfill skipped: {e}")
+                    print(f"Could not drop project table: {e}")
 
                 conn.close()
 
@@ -7608,7 +6900,6 @@ def download_sample_metrics_csv(submission_id):
 def download_submissions_sample_metrics_bulk(leaderboard_id):
     submission_ids = request.form.getlist('submission_ids')
     redirect_args = {
-        'project_name': g.current_project.name if g.get('current_project') else 'dTOF',
         'leaderboard_id': leaderboard_id
     }
     
@@ -7770,7 +7061,6 @@ def download_submissions_sample_metrics_bulk(leaderboard_id):
 def download_submissions_metrics_bulk(leaderboard_id):
     submission_ids = request.form.getlist('submission_ids')
     redirect_args = {
-        'project_name': g.current_project.name if g.get('current_project') else 'dTOF', # Fallback
         'leaderboard_id': leaderboard_id
     }
     # Add other filter args for redirect if needed, similar to existing bulk download
@@ -7839,7 +7129,6 @@ def download_submissions_metrics_bulk(leaderboard_id):
 def download_submissions_full_bulk(leaderboard_id):
     submission_ids = request.form.getlist('submission_ids')
     redirect_args = {
-        'project_name': g.current_project.name if g.get('current_project') else 'dTOF',
         'leaderboard_id': leaderboard_id
     }
     
@@ -7977,54 +7266,6 @@ def download_submissions_full_bulk(leaderboard_id):
         return response
 
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions_full.zip")
-CURATED_SYSTEM_EMAIL = 'curated@benchhub.local'
-CURATED_PROJECT_NAME = 'benchhub-curated'
-
-
-def ensure_curated_seed():
-    """Phase 5: idempotently create the system user + curated project.
-
-    Surfaces:
-      - landing page renders a "Curated benchmarks" rail filtering on
-        leaderboard.project.is_curated == True.
-      - /explore?curated=1 narrows to curated content.
-      - the system user is excluded from /u/<id> and from /explore by the
-        is_system flag — it's bookkeeping, not a person.
-
-    Datasets and leaderboards are NOT seeded here — picking the actual
-    benchmark content is a data task. This helper only ensures the
-    namespace exists so a later seed script (or admin hand-curation)
-    can attach content to it.
-    """
-    user = User.query.filter_by(email=CURATED_SYSTEM_EMAIL).first()
-    if user is None:
-        user = User(
-            email=CURATED_SYSTEM_EMAIL,
-            display_name='BenchHub Curated',
-            oauth_provider='system',
-            oauth_sub='curated',
-            is_system=True,
-        )
-        db.session.add(user)
-        db.session.flush()
-    elif not user.is_system:
-        # Existing row from before is_system existed — adopt it.
-        user.is_system = True
-
-    proj = Project.query.filter_by(name=CURATED_PROJECT_NAME).first()
-    if proj is None:
-        proj = Project(
-            name=CURATED_PROJECT_NAME,
-            description='Official BenchHub-curated benchmarks.',
-            owner_user_id=user.id,
-            visibility='public',
-            is_curated=True,
-        )
-        db.session.add(proj)
-    elif not proj.is_curated:
-        proj.is_curated = True
-
-    db.session.commit()
 
 
 def run_migrations():
@@ -8036,11 +7277,6 @@ def run_migrations():
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         check_and_migrate_db()
         db.create_all()
-        try:
-            ensure_curated_seed()
-        except Exception as e:
-            # Seed failure must not block boot — the rest of the app still works.
-            print(f"ensure_curated_seed failed (non-fatal): {e}")
 
 
 # Auto-run migrations at module import time when the env var is set. This is

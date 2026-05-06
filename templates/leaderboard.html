@@ -647,7 +647,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     name="submission_ids" value="{{ submission.id }}"></td>
                             <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}">
                                 <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    <a href="{{ url_for('comparison_view', project_name=project_name, leaderboard_id=leaderboard.id, compare_ids=submission.id, 
+                                    <a href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, compare_ids=submission.id, 
                                         search_query=sample_search_query,
                                         enable_include='true' if enable_sample_include else 'false',
                                         include_tags=sample_include_tags|join(','),
@@ -2394,7 +2394,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // BATCH ADD MODE
                 title.textContent = "Add Tags to Selected Submissions";
                 description.textContent = "Enter tags to be ADDED to the selected submissions. Existing tags will persist.";
-                form.action = "{{ url_for('batch_action', project_name=project_name) }}";
+                form.action = "{{ url_for('batch_action') }}";
                 actionInput.value = 'add_tags';
                 modalTagsCtrl.clearTags();
 

@@ -9,7 +9,6 @@ from app import (
     CustomField,
     Dataset,
     Leaderboard,
-    Project,
     Sample,
     Submission,
     db,
@@ -18,11 +17,8 @@ from app import (
 
 @pytest.fixture
 def project(db_session, client):
-    p = Project(name="cmp_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name='legacy')
 
 
 @pytest.fixture
@@ -35,7 +31,7 @@ def lb_with_subs(db_session, project):
         db.session.add(Sample(dataset_id=ds.id, name=f"s{i}"))
     db.session.flush()
 
-    lb = Leaderboard(name="cmp_lb", project_id=project.id, summary_metrics="")
+    lb = Leaderboard(name="cmp_lb", summary_metrics="")
     lb.datasets.append(ds)
     db.session.add(lb)
     db.session.flush()
@@ -60,7 +56,7 @@ def test_comparison_view_renders_with_all_unarchived_submissions(
 ):
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
 
-    resp = client.get(f"/{proj_name}/comparison/{lb_id}")
+    resp = client.get(f"/comparison/{lb_id}")
     assert resp.status_code == 200
     body = resp.data
     assert b"alpha" in body
@@ -75,7 +71,7 @@ def test_comparison_view_filters_to_compare_ids_when_provided(
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
     alpha_id = lb_with_subs["subs"][0].id
 
-    resp = client.get(f"/{proj_name}/comparison/{lb_id}?compare_ids={alpha_id}")
+    resp = client.get(f"/comparison/{lb_id}?compare_ids={alpha_id}")
     assert resp.status_code == 200
     assert b"alpha" in resp.data
     # beta should NOT be rendered when compare_ids restricts to alpha.
@@ -92,7 +88,7 @@ def test_comparison_view_pagination_preserves_compare_ids(
 
     # Compare alpha+beta, request page 2 with very small per_page.
     resp = client.get(
-        f"/{proj_name}/comparison/{lb_id}?compare_ids={alpha_id},{beta_id}&page=2&per_page=2"
+        f"/comparison/{lb_id}?compare_ids={alpha_id},{beta_id}&page=2&per_page=2"
     )
     assert resp.status_code == 200
     # gamma must remain excluded even though it would appear when no compare_ids
@@ -115,14 +111,14 @@ def test_comparison_view_with_empty_subs_raises_unbound_local(
     # The Flask test client propagates server-side exceptions in TESTING mode
     # rather than converting to a 500 response — so catch it here.
     with pytest.raises(UnboundLocalError, match="metric_labels"):
-        client.get(f"/{proj_name}/comparison/{lb_id}?compare_ids=999999")
+        client.get(f"/comparison/{lb_id}?compare_ids=999999")
 
 
 def test_comparison_view_search_filters_samples(client, project, lb_with_subs):
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
 
     # Search for "s1" should narrow visible samples.
-    resp = client.get(f"/{proj_name}/comparison/{lb_id}?search_query=s1")
+    resp = client.get(f"/comparison/{lb_id}?search_query=s1")
     assert resp.status_code == 200
     body = resp.data.decode("utf-8", errors="ignore")
     assert "s1" in body
@@ -136,7 +132,7 @@ def test_comparison_view_search_filters_samples(client, project, lb_with_subs):
 def test_leaderboard_view_smoke_with_submissions(client, project, lb_with_subs):
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
 
-    resp = client.get(f"/{proj_name}/leaderboard/{lb_id}")
+    resp = client.get(f"/leaderboard/{lb_id}")
     assert resp.status_code == 200
     assert b"alpha" in resp.data
     assert b"beta" in resp.data
@@ -147,7 +143,7 @@ def test_leaderboard_view_show_archived_includes_archived(
 ):
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
 
-    resp = client.get(f"/{proj_name}/leaderboard/{lb_id}?show_archived=true")
+    resp = client.get(f"/leaderboard/{lb_id}?show_archived=true")
     assert resp.status_code == 200
     assert b"gamma" in resp.data
 
@@ -157,7 +153,7 @@ def test_leaderboard_view_search_filters_submissions(
 ):
     proj_name, lb_id = project.name, lb_with_subs["lb"].id
 
-    resp = client.get(f"/{proj_name}/leaderboard/{lb_id}?search_query=alpha")
+    resp = client.get(f"/leaderboard/{lb_id}?search_query=alpha")
     assert resp.status_code == 200
     # alpha is present; beta name should not appear in submission rows.
     # (We can't fully assert because tag-search also goes here; weak check.)

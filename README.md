@@ -1,122 +1,110 @@
-# dTOF Benchmarking Application
+# BenchHub
 
-This is a Flask-based web application for processing and benchmarking dTOF SPAD based pipeline histograms.
+BenchHub is an open-source benchmarking platform: pick a dataset, define
+metrics in Python, upload predictions, and see how your model ranks. Live
+at **https://benchhub.fly.dev**.
+
+Originally built as a private dTOF SPAD pipeline benchmarking tool, then
+generalized into a public, multi-tenant web app.
 
 ## Features
 
--   Dataset and submission uploads (ZIP files)
--   Dataset content parsed and stored in a local SQLite database.
--   Leaderboard creation based on datasets
--   Asynchronous processing of submissions using Celery
--   Calculation of metrics: ARE, L1, L2, and curve fit error
--   Dynamic leaderboard view with color-coded metric visualization
--   Dataset exploration view with sample details and histogram visualization.
+- **OAuth sign-in (GitHub)** — no passwords; one-click account creation.
+- **Datasets and leaderboards** are global — no project namespace.
+- **Per-row visibility** (`public` / `unlisted` / `private`) on datasets,
+  leaderboards, and metric/visualization library entries.
+- **HuggingFace import**: pull a structured HF dataset repo as a one-click
+  alternative to a ZIP upload (see `scripts/seed_nyu_v2_curated.py` for
+  an example workflow).
+- **User-defined metrics in Python** — bring your own scoring code; the
+  metric engine resolves dependencies and runs them per-sample or
+  aggregated. Sandbox-isolated when `BENCHHUB_SANDBOX_METRICS=1`.
+- **Asynchronous processing** with Celery (Redis broker).
+- **Per-user quotas**: 200 MB storage, 5 datasets, 50 submissions / 24h
+  by default. Free-tier safe to expose to the open internet.
+- **API tokens** for programmatic uploads (`/settings/api_tokens`).
+- **Account deletion** (GDPR right-to-be-forgotten) with cascading cleanup.
+- **Public landing page** at `/`, `/explore` for browsing leaderboards,
+  `/u/<id>` for public profile pages.
 
 ## Prerequisites
 
--   Python 3.x
--   Redis
+- Python 3.10+
+- Redis (broker + result backend, default port 6379)
 
-## Installation and Setup
+## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd dtof_benchmarking
-    ```
-
-2.  **Install Python dependencies:**
-    It is recommended to use a virtual environment.
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    pip install -r requirements.txt
-    ```
-
-3.  **Start the Redis server:**
-    Make sure your Redis server is running on its default port (6379).
-    ```bash
-    redis-server
-    ```
-
-## Running the Application
-
-1.  **Start the Celery worker:**
-    Open a new terminal window, navigate to the project directory, and run:
-    ```bash
-    celery -A app.celery worker --loglevel=info
-    ```
-
-2.  **Run the Flask application:**
-    In another terminal window, navigate to the project directory, and run:
-    ```bash
-    python app.py
-    ```
-
-3.  **Access the application:**
-    Open your web browser and go to `http://127.0.0.1:5000`.
-
-## Data Structure
-
-The application uses folder-based naming conventions to automatically detect and process different types of data.
-
-### Dataset ZIP Structure:
-
-Your dataset ZIP file should have the following folder structure.
-
-```
-dataset_name.zip
-├── hist/                      # Core: Histogram .npz files (bins/counts)
-├── pick/                      # Core: Ground truth peak .txt files
-├── config/                    # Core: Sample configuration .json files
-├── wave_shape/                # Core: Signal shape name .txt (gaussian/square)
-├── tags/                      # Core: Sample tags .txt (comma separated)
-├── raw_depth/                 # Dynamic: 2D depth maps .npz (name_WxH.npz)
-├── hist_reference/            # Dynamic: Additional histograms .npz
-└── any_folder_name/           # Generic: .png/.jpg for images, .txt for scalars
+```bash
+git clone <repository-url>
+cd BenchHub
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### Submission ZIP Structure:
+## Running
 
-Submissions follow a similar dynamic structure.
+Three terminals:
 
+```bash
+# 1. Redis
+redis-server
+
+# 2. Celery worker
+celery -A app.celery worker --loglevel=info
+
+# 3. Flask app
+python app.py
 ```
-submission.zip
-├── metric_accuracy/           # Dynamic Metric: .txt files with scalar values
-├── hist_filtered/             # Dynamic Histogram: .npz files (bins/counts)
-├── raw_refl_map/              # Dynamic Map: 2D .npz for interactive heatmap
-└── viz_output/                # Generic Image: .png/.jpg visualizations
+
+Then open `http://localhost:6060`.
+
+Data lives outside the repo at `~/.dtofbenchmarking/` (database + uploads).
+Override with `BENCHHUB_DATA_DIR=/some/path`.
+
+## Tests
+
+```bash
+pytest
 ```
 
-### Supported Folder Prefixes:
+429 tests, ~3-4 seconds. Coverage gate is configured in `pytest.ini`.
 
-| Prefix | Type | Usage |
-| :--- | :--- | :--- |
-| `metric_` | **Metric** | Scalar values for leaderboards and comparison charts. |
-| `raw_` | **Depth/Map** | 2D array data enabling interactive heatmaps and hover values. |
-| `hist_` | **Histogram** | Secondary histograms viewable in comparison. |
-| *None* | **Generic** | Detected as **Image** (if contains .png/.jpg) or **Scalar** (if contains .txt). |
+## Dataset / submission ZIP convention
 
-> [!NOTE]
-> `raw_histogram` is also supported as an alias for `hist_` but `hist_` is preferred for new data.
+Folders are auto-detected by prefix:
 
-### File Naming Conventions:
-- Files must be named `<sample_name>.<ext>` (e.g., `sample1.txt`, `sample1.npz`).
-- For `raw_` folders, use `<sample_name>_<width>x<height>.npz` to enable spatial visualization.
+| Prefix          | Type      | Files                                  |
+| --------------- | --------- | -------------------------------------- |
+| `metric_`       | metric    | `<sample>.txt` containing a float      |
+| `hist_` / `raw_histogram` / `hist` | histogram | `<sample>.npz` (`bins`, `counts`) |
+| `raw_`          | depth/map | `<sample>_<W>x<H>.npz`                 |
+| (anything else) | image / scalar / json / text | by file extension          |
 
-## Handling DLP Blocks (Code Uploads)
+`git_info.json` (or `git.info`) at the ZIP root attaches commit metadata
+to the resulting dataset/submission row.
 
-If your network or computer blocks the upload of Python code, use the included **Code Obfuscator** tools located in the `scripts/` directory.
+## DLP-safe code uploads
 
-### 1. Standalone Tools
--   **[`obfuscator.html`](scripts/obfuscator.html)**: Portable tool. Open in any browser to convert code into "safe" `.txt` files.
--   **[`obfuscator_gui.py`](scripts/obfuscator_gui.py)**: Tkinter-based GUI app for local obfuscation.
+Some networks block `.py` uploads. The metric editor encodes user code
+as `BASE64:<...>` client-side; the server decodes. Standalone helpers:
 
-### 2. Built-in "DLP Safe Mode"
-When creating or editing metrics in the web UI, check the **DLP Safe Mode** box. This will encode the code to Base64 *locally* in your browser before transmission.
+- `scripts/obfuscator.html` — portable browser tool
+- `scripts/obfuscator_gui.py` — Tkinter GUI
 
-### 3. Packaging the GUI as an Executable
-To create a standalone app (`.exe` for Windows or `.app` for macOS):
-1.  Install PyInstaller: `pip install pyinstaller`
-2.  Run build: `pyinstaller --onefile --windowed --name "CodeObfuscator" scripts/obfuscator_gui.py`
-3.  Find your app in the `dist/` directory.
+## Deployment
+
+The production app runs on [Fly.io](https://fly.io) — see `fly.toml` and
+`Dockerfile`. Configuration (Redis URL, GitHub OAuth, admin allow-list)
+lives in Fly secrets:
+
+- `SECRET_KEY`
+- `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
+- `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
+- `BENCHHUB_ADMIN_EMAILS` — comma-separated list for `/api/admin/*` access
+- `BENCHHUB_AUTO_MIGRATE=1` — runs `check_and_migrate_db()` at module load
+  (Fly's release_command can't see the persistent volume, so migrations
+  bootstrap themselves on each gunicorn/celery process boot)
+
+## License
+
+(Choose and add a license file — repository currently has no LICENSE.)

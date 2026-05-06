@@ -13,24 +13,24 @@ def test_app_uses_test_data_dir(app):
 
 
 def test_db_session_starts_empty(app, db_session):
-    from app import Project
+    from app import Dataset
 
-    assert Project.query.count() == 0
+    assert Dataset.query.count() == 0
 
 
 def test_db_session_isolated_between_tests_part_1(app, db_session):
-    from app import Project
+    from app import Dataset
 
-    db_session.add(Project(name="leaks-if-not-isolated"))
+    db_session.add(Dataset(name="leaks-if-not-isolated"))
     db_session.commit()
-    assert Project.query.count() == 1
+    assert Dataset.query.count() == 1
 
 
 def test_db_session_isolated_between_tests_part_2(app, db_session):
-    from app import Project
+    from app import Dataset
 
     # If part_1 leaked, this would be 1.
-    assert Project.query.count() == 0
+    assert Dataset.query.count() == 0
 
 
 def test_root_renders_landing_page(client):

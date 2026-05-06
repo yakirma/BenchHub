@@ -16,7 +16,7 @@ Why a script and not a server-side flow:
 
 Local setup (NOT a production dependency):
     python -m venv .venv-seed && source .venv-seed/bin/activate
-    pip install datasets pillow numpy requests
+    pip install h5py pillow numpy requests
 
 Run:
     BENCHHUB_API_TOKEN=<your-token-from-/settings/api_tokens> \\
@@ -29,35 +29,53 @@ Flags:
     --hf-repo REPO     HF repo to stream (default sayakpaul/nyu_depth_v2).
     --override         Allow overwriting an existing dataset with the same name.
     --no-curate        Upload but skip the curate flip (debugging).
+
+Implementation notes:
+- We stream `data/train-000000.tar` (3 GB total) via HTTP and walk it
+  with the stdlib `tarfile` module in stream-only mode (`r|`). We stop
+  reading the moment we hit our sample budget, so only the first ~30 MB
+  of the shard actually transfers — enough for ~50 (rgb, depth) pairs.
+- Each tar member is an HDF5 file with two datasets: `rgb` (3,480,640 uint8)
+  and `depth` (480,640 float32). We extract the bytes into BytesIO and
+  open with h5py.
+- The `datasets` HF library was tried first, but `sayakpaul/nyu_depth_v2`
+  ships a loader script and HF dropped script support. Going direct to
+  the tar avoids the broken dependency.
 """
 import argparse
 import io
 import os
 import shutil
 import sys
+import tarfile
 import tempfile
 import zipfile
 
 try:
+    import h5py
     import numpy as np
     from PIL import Image
-    from datasets import load_dataset
     import requests
 except ImportError as e:
     sys.stderr.write(
         f"Missing dependency: {e}. This script's requirements are not in "
         "the production requirements.txt — install locally:\n"
-        "    pip install datasets pillow numpy requests\n"
+        "    pip install h5py pillow numpy requests\n"
     )
     sys.exit(2)
 
 
+HF_RESOLVE_TEMPLATE = (
+    "https://huggingface.co/datasets/{repo}/resolve/main/data/train-000000.tar"
+)
+
+
 def _build_subset_zip(hf_repo: str, n_samples: int, dest_zip_path: str) -> int:
-    """Stream `hf_repo` from HF, write the first n_samples into a ZIP at
-    dest_zip_path following BenchHub folder convention. Returns the
-    number of samples actually written."""
-    print(f"Streaming {hf_repo} (this may take a moment for the first shard)...")
-    ds = load_dataset(hf_repo, split="train", streaming=True)
+    """Stream the first shard of `hf_repo` from HF, write the first
+    n_samples (rgb, depth) pairs into a ZIP at dest_zip_path following
+    BenchHub folder convention. Returns the number of samples written."""
+    url = HF_RESOLVE_TEMPLATE.format(repo=hf_repo)
+    print(f"Streaming {url}\n  (only the first ~30 MB will transfer for {n_samples} samples)")
 
     work_dir = tempfile.mkdtemp(prefix="benchhub-nyu-")
     try:
@@ -72,40 +90,50 @@ def _build_subset_zip(hf_repo: str, n_samples: int, dest_zip_path: str) -> int:
         with open(os.path.join(work_dir, "README.md"), "w") as f:
             f.write(
                 f"# NYU v2 subset\n\nFirst {n_samples} samples streamed from "
-                f"`{hf_repo}` and converted to BenchHub format.\n"
+                f"`{hf_repo}` (`data/train-000000.tar`) and converted to "
+                f"BenchHub folder convention.\n"
             )
 
         written = 0
-        for example in ds:
-            if written >= n_samples:
-                break
-            sample_id = f"s{written:04d}"
+        with requests.get(url, stream=True, timeout=600) as resp:
+            resp.raise_for_status()
+            # `r|` = stream-only mode; tarfile reads sequentially without seeking.
+            with tarfile.open(fileobj=resp.raw, mode="r|") as tar:
+                for member in tar:
+                    if written >= n_samples:
+                        break
+                    if not member.name.endswith(".h5"):
+                        continue
+                    fobj = tar.extractfile(member)
+                    if fobj is None:
+                        continue
+                    raw = fobj.read()
+                    try:
+                        with h5py.File(io.BytesIO(raw), "r") as h5:
+                            rgb = np.array(h5["rgb"])      # (3, H, W) uint8
+                            depth = np.array(h5["depth"])  # (H, W) float32
+                    except Exception as e:
+                        print(f"  skip {member.name}: {e}")
+                        continue
 
-            # The sayakpaul mirror exposes columns 'image' and 'depth_map'
-            # as PIL.Image. Resilient to either being missing.
-            img = example.get("image")
-            depth = example.get("depth_map") or example.get("depth")
-            if img is None or depth is None:
-                continue
-
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img.save(os.path.join(rgb_dir, f"{sample_id}.png"), "PNG")
-
-            depth_arr = np.asarray(depth)
-            h, w = depth_arr.shape[:2]
-            np.savez(
-                os.path.join(depth_dir, f"{sample_id}_{w}x{h}.npz"),
-                depth=depth_arr,
-            )
-            written += 1
-            if written % 10 == 0:
-                print(f"  ...wrote {written}/{n_samples}")
+                    sample_id = f"s{written:04d}"
+                    # rgb is channels-first; PIL wants (H, W, 3).
+                    rgb_hwc = np.transpose(rgb, (1, 2, 0))
+                    Image.fromarray(rgb_hwc, mode="RGB").save(
+                        os.path.join(rgb_dir, f"{sample_id}.png"), "PNG"
+                    )
+                    h, w = depth.shape[:2]
+                    np.savez(
+                        os.path.join(depth_dir, f"{sample_id}_{w}x{h}.npz"),
+                        depth=depth,
+                    )
+                    written += 1
+                    if written % 10 == 0:
+                        print(f"  ...wrote {written}/{n_samples}")
 
         if written == 0:
             raise RuntimeError(
-                "No samples written — schema didn't match expected "
-                "(image, depth_map) columns."
+                "No samples written — the shard didn't yield any .h5 files."
             )
 
         # Zip the work_dir contents (not the work_dir itself) — process_dataset_zip

@@ -13,7 +13,6 @@ from app import (
     CustomField,
     Dataset,
     Leaderboard,
-    Project,
     Sample,
     Submission,
     Tag,
@@ -23,11 +22,8 @@ from app import (
 
 @pytest.fixture
 def project(db_session, client):
-    p = Project(name="sub_proj")
-    db.session.add(p)
-    db.session.commit()
-    client.set_cookie("active_project_id", str(p.id))
-    return p
+    import types
+    return types.SimpleNamespace(id=0, name='legacy')
 
 
 @pytest.fixture
@@ -38,7 +34,7 @@ def leaderboard_with_samples(db_session, project):
     db.session.add_all([Sample(dataset_id=ds.id, name=f"s{i}") for i in range(1, 4)])
     db.session.flush()
 
-    lb = Leaderboard(name="sub_lb", project_id=project.id, summary_metrics="")
+    lb = Leaderboard(name="sub_lb", summary_metrics="")
     lb.datasets.append(ds)
     db.session.add(lb)
     db.session.commit()
@@ -72,7 +68,7 @@ def test_upload_single_submission_via_web_form(
 
     with open(zip_path, "rb") as f:
         resp = auth_client.post(
-            f"/{proj_name}/leaderboard/{lb_id}/upload_submission",
+            f"/leaderboard/{lb_id}/upload_submission",
             data={"submission_name": "via_form", "submission_zip": (f, "upload.zip")},
             content_type="multipart/form-data",
         )
@@ -90,7 +86,7 @@ def test_upload_with_no_files_redirects_back(
 ):
     proj_name, lb_id = project.name, leaderboard_with_samples.id
     resp = auth_client.post(
-        f"/{proj_name}/leaderboard/{lb_id}/upload_submission",
+        f"/leaderboard/{lb_id}/upload_submission",
         data={"submission_name": "x"},
         content_type="multipart/form-data",
     )
@@ -109,7 +105,7 @@ def test_recalculate_single_submission_dispatches_task(
     proj_name, sub_id = project.name, submissions[0].id
 
     with patch("tasks.process_submission.delay") as task_mock:
-        resp = auth_client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
+        resp = auth_client.post(f"/submission/{sub_id}/recalculate")
 
     assert resp.status_code == 302
     task_mock.assert_called_once()
@@ -122,14 +118,14 @@ def test_recalculate_single_marks_pending_immediately(
     proj_name, sub_id = project.name, submissions[0].id
 
     with patch("tasks.process_submission.delay"):
-        auth_client.post(f"/{proj_name}/submission/{sub_id}/recalculate")
+        auth_client.post(f"/submission/{sub_id}/recalculate")
 
     db.session.expire_all()
     assert Submission.query.get(sub_id).processing_status == "Pending"
 
 
 def test_recalculate_single_404_for_unknown(auth_client, project):
-    resp = auth_client.post(f"/{project.name}/submission/9999/recalculate")
+    resp = auth_client.post("/submission/9999/recalculate")
     assert resp.status_code == 404
 
 
@@ -138,7 +134,7 @@ def test_recalculate_forwards_sample_filters(auth_client, project, submissions):
 
     with patch("tasks.process_submission.delay") as task_mock:
         auth_client.post(
-            f"/{proj_name}/submission/{sub_id}/recalculate",
+            f"/submission/{sub_id}/recalculate",
             data={
                 "enable_sample_include": "true",
                 "sample_include_tags": "easy,fast",
@@ -160,7 +156,7 @@ def test_batch_action_archive(client, project, leaderboard_with_samples, submiss
     sub_ids = [str(s.id) for s in submissions]
 
     resp = client.post(
-        f"/{proj_name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={
             "action": "archive",
             "submission_ids": sub_ids,
@@ -180,7 +176,7 @@ def test_batch_action_unarchive(client, project, leaderboard_with_samples, submi
     db.session.commit()
 
     resp = client.post(
-        f"/{project.name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={
             "action": "unarchive",
             "submission_ids": [str(s.id) for s in submissions],
@@ -198,7 +194,7 @@ def test_batch_action_delete(client, project, leaderboard_with_samples, submissi
     sub_ids = [str(s.id) for s in submissions[:2]]  # delete first two
 
     resp = client.post(
-        f"/{proj_name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={
             "action": "delete",
             "submission_ids": sub_ids,
@@ -219,7 +215,7 @@ def test_batch_action_add_tags_creates_and_links(
     sub_ids = [str(s.id) for s in submissions]
 
     resp = client.post(
-        f"/{proj_name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={
             "action": "add_tags",
             "submission_ids": sub_ids,
@@ -243,7 +239,7 @@ def test_batch_action_recalculate_dispatches_sequential_task(
 
     with patch("tasks.process_submissions_batch_sequential.delay") as task_mock:
         resp = client.post(
-            f"/{proj_name}/submissions/batch_action",
+            "/submissions/batch_action",
             data={
                 "action": "recalculate",
                 "submission_ids": sub_ids,
@@ -270,7 +266,7 @@ def test_batch_action_compare_redirects_to_comparison_view(
     sub_ids = [str(s.id) for s in submissions[:2]]
 
     resp = client.post(
-        f"/{proj_name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={
             "action": "compare",
             "submission_ids": sub_ids,
@@ -279,7 +275,7 @@ def test_batch_action_compare_redirects_to_comparison_view(
     )
     assert resp.status_code == 302
     location = resp.headers["Location"]
-    assert f"/{proj_name}/comparison/{leaderboard_with_samples.id}" in location
+    assert f"/comparison/{leaderboard_with_samples.id}" in location
     assert "compare_ids=" in location
 
 
@@ -287,7 +283,7 @@ def test_batch_action_no_submissions_redirects_to_leaderboard(
     client, project, leaderboard_with_samples
 ):
     resp = client.post(
-        f"/{project.name}/submissions/batch_action",
+        "/submissions/batch_action",
         data={"action": "archive", "leaderboard_id": str(leaderboard_with_samples.id)},
     )
     assert resp.status_code == 302
@@ -307,7 +303,7 @@ def test_update_submission_tags_replaces_existing(
     db.session.commit()
 
     resp = auth_client.post(
-        f"/{project.name}/submission/{sub.id}/update_tags",
+        f"/submission/{sub.id}/update_tags",
         data={"tags": "new_a,new_b"},
     )
     assert resp.status_code == 302
@@ -325,7 +321,7 @@ def test_update_submission_tags_replaces_existing(
 def test_delete_submission_removes_row(auth_client, project, submissions):
     sub_id = submissions[0].id
 
-    resp = auth_client.post(f"/{project.name}/delete_submission/{sub_id}")
+    resp = auth_client.post(f"/delete_submission/{sub_id}")
     assert resp.status_code == 302
 
     db.session.expire_all()

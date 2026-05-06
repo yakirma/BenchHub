@@ -1,6 +1,6 @@
 """Phase 1 Slice 4 — ownership of GlobalMetric / GlobalVisualization.
 
-Same shape as Slice 2/3 (Project, Dataset, Leaderboard, Submission). The
+Same shape as Slice 2/3 (Dataset, Leaderboard, Submission). The
 extra wrinkle: GlobalMetric.name is globally UNIQUE (not scoped to owner),
 so two users can't pick the same name. Pinned in
 test_upload_metric_owned_by_other_user_blocked.
@@ -10,7 +10,6 @@ import pytest
 from app import (
     GlobalMetric,
     GlobalVisualization,
-    Project,
     User,
     db,
 )
@@ -31,12 +30,10 @@ def stranger(db_session):
 
 @pytest.fixture
 def proj(db_session, logged_in_user):
-    """A project owned by logged_in_user, used so client.set_cookie sets up
-    project context for the project-name-routed metric/viz endpoints."""
-    p = Project(name="metric_proj", owner_user_id=logged_in_user.id)
-    db_session.add(p)
-    db_session.commit()
-    return p
+    """Vestigial — projects no longer exist. Stubbed so tests that take
+    `proj` as a fixture don't AttributeError."""
+    import types
+    return types.SimpleNamespace(id=0, name="legacy")
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +43,7 @@ def proj(db_session, logged_in_user):
 
 def test_anon_create_metric_redirects_to_login(client, proj):
     resp = client.post(
-        f"/{proj.name}/metrics/create",
+        "/metrics/create",
         data={"name": "anon_m", "python_code": "def m(): return 1\n"},
         follow_redirects=False,
     )
@@ -57,7 +54,7 @@ def test_anon_create_metric_redirects_to_login(client, proj):
 
 def test_anon_create_visualization_redirects_to_login(client, proj):
     resp = client.post(
-        f"/{proj.name}/create_visualization",
+        "/create_visualization",
         data={"name": "anon_v", "python_code": "def v(): pass\n"},
         follow_redirects=False,
     )
@@ -72,7 +69,7 @@ def test_anon_create_visualization_redirects_to_login(client, proj):
 
 def test_create_metric_stamps_owner(auth_client, proj, logged_in_user):
     auth_client.post(
-        f"/{proj.name}/metrics/create",
+        "/metrics/create",
         data={"name": "owned_m", "python_code": "def m(): return 1\n"},
     )
     gm = GlobalMetric.query.filter_by(name="owned_m").first()
@@ -81,7 +78,7 @@ def test_create_metric_stamps_owner(auth_client, proj, logged_in_user):
 
 def test_create_visualization_stamps_owner(auth_client, proj, logged_in_user):
     auth_client.post(
-        f"/{proj.name}/create_visualization",
+        "/create_visualization",
         data={"name": "owned_v", "python_code": "def v(): pass\n"},
     )
     gv = GlobalVisualization.query.filter_by(name="owned_v").first()
@@ -103,7 +100,7 @@ def test_non_owner_cannot_edit_metric(auth_client, proj, db_session, stranger):
     db_session.commit()
 
     resp = auth_client.post(
-        f"/{proj.name}/metrics/{gm.id}/edit",
+        f"/metrics/{gm.id}/edit",
         data={"name": "renamed", "python_code": "def m2(): return 2\n"},
     )
     assert resp.status_code == 403
@@ -118,7 +115,7 @@ def test_non_owner_cannot_delete_metric(auth_client, proj, db_session, stranger)
     db_session.add(gm)
     db_session.commit()
 
-    resp = auth_client.post(f"/{proj.name}/metrics/{gm.id}/delete")
+    resp = auth_client.post(f"/metrics/{gm.id}/delete")
     assert resp.status_code == 403
 
     db_session.expire_all()
@@ -135,7 +132,7 @@ def test_non_owner_cannot_edit_visualization(auth_client, proj, db_session, stra
     db_session.commit()
 
     resp = auth_client.post(
-        f"/{proj.name}/visualizations/{gv.id}/edit",
+        f"/visualizations/{gv.id}/edit",
         data={"name": "renamed_v"},
     )
     assert resp.status_code == 403
@@ -155,7 +152,7 @@ def test_owner_can_delete_own_metric(auth_client, proj, db_session, logged_in_us
     db_session.add(gm)
     db_session.commit()
 
-    resp = auth_client.post(f"/{proj.name}/metrics/{gm.id}/delete")
+    resp = auth_client.post(f"/metrics/{gm.id}/delete")
     assert resp.status_code == 302
 
     db_session.expire_all()
@@ -188,7 +185,7 @@ def test_upload_metric_owned_by_other_user_blocked(
     fake_file = (io.BytesIO(b"def m(): return 999\n"), "shared_name.txt")
 
     resp = auth_client.post(
-        f"/{proj.name}/metrics/upload",
+        "/metrics/upload",
         data={"metric_name": "shared_name", "metric_file": fake_file},
         content_type="multipart/form-data",
     )
@@ -216,7 +213,7 @@ def test_upload_metric_overwrite_own(auth_client, proj, db_session, logged_in_us
     fake_file = (io.BytesIO(b"def m(): return 42\n"), "mine_to_overwrite.txt")
 
     resp = auth_client.post(
-        f"/{proj.name}/metrics/upload",
+        "/metrics/upload",
         data={"metric_name": "mine_to_overwrite", "metric_file": fake_file},
         content_type="multipart/form-data",
     )
@@ -245,7 +242,7 @@ def test_metrics_list_filters_private_other_owner(
     ])
     db_session.commit()
 
-    resp = auth_client.get(f"/{proj.name}/metrics")
+    resp = auth_client.get("/metrics")
     body = resp.data
     assert b"m_pub" in body
     assert b"m_priv_mine" in body  # I own it
@@ -265,7 +262,7 @@ def test_visualizations_list_filters_private_other_owner(
     ])
     db_session.commit()
 
-    resp = auth_client.get(f"/{proj.name}/visualizations")
+    resp = auth_client.get("/visualizations")
     body = resp.data
     assert b"v_pub" in body
     assert b"v_priv_mine" in body

@@ -201,7 +201,7 @@
         <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom shadow-sm">
             <div class="container-fluid">
                 <!-- Brand -->
-                <a class="navbar-brand d-flex align-items-center" href="{{ url_for('list_projects') }}">
+                <a class="navbar-brand d-flex align-items-center" href="{{ url_for('datasets_list') }}">
                     <i class="bi bi-grid-3x3-gap-fill me-2 text-warning"></i>
                     Bench-Hub
                 </a>
@@ -217,75 +217,30 @@
                     <i class="bi bi-people me-1 text-success"></i> Users
                 </a>
 
-                {% if g.current_project %}
-                <div class="vr mx-3 d-none d-lg-block"></div>
-                <!-- Project Name (Clickable to change) -->
-                <!-- Project Switcher Dropdown -->
-                <div class="dropdown">
-                    <a href="#" class="navbar-text fw-bold text-body text-decoration-none dropdown-toggle project-link"
-                        id="projectDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false"
-                        title="Switch Project">
-                        <i class="bi bi-folder2 text-primary me-1"></i>{{ g.current_project.name }}
-                    </a>
-                    <ul class="dropdown-menu shadow" aria-labelledby="projectDropdown">
-                        <li>
-                            <h6 class="dropdown-header">Switch Project</h6>
-                        </li>
-                        {% for proj in all_projects %}
-                        {% if proj.id != g.current_project.id %}
-                        <li>
-                            <a class="dropdown-item" href="{{ url_for('index', project_name=proj.name) }}">
-                                <i class="bi bi-folder2 me-2"></i>{{ proj.name }}
-                            </a>
-                        </li>
-                        {% endif %}
-                        {% endfor %}
-                        <li>
-                            <hr class="dropdown-divider">
-                        </li>
-                        <li>
-                            <a class="dropdown-item text-primary" href="{{ url_for('list_projects') }}">
-                                <i class="bi bi-grid-3x3-gap me-2"></i>View All Projects
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-                {% endif %}
-
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNavbar">
                     <span class="navbar-toggler-icon"></span>
                 </button>
 
                 <div class="collapse navbar-collapse" id="mainNavbar">
                     <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-
-                        <!-- Project Specific Links -->
-                        {% if g.current_project %}
                         <li class="nav-item ms-lg-3">
-                            <a class="nav-link {{ 'active' if request.endpoint == 'index' }}"
-                                href="{{ url_for('index', project_name=g.current_project.name) }}">
-                                <i class="bi bi-trophy me-1"></i> Leaderboards
+                            <a class="nav-link {{ 'active' if request.endpoint == 'datasets_list' }}"
+                                href="{{ url_for('datasets_list') }}">
+                                <i class="bi bi-database me-1"></i> Datasets
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {{ 'active' if request.endpoint == 'metrics_view' }}"
-                                href="{{ url_for('metrics_view', project_name=g.current_project.name) }}">
+                                href="{{ url_for('metrics_view') }}">
                                 <i class="bi bi-calculator me-1"></i> Metrics
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {{ 'active' if request.endpoint == 'visualizations_view' }}"
-                                href="{{ url_for('visualizations_view', project_name=g.current_project.name) }}">
+                                href="{{ url_for('visualizations_view') }}">
                                 <i class="bi bi-image me-1"></i> Visualizations
                             </a>
                         </li>
-                        <li class="nav-item">
-                            <a class="nav-link {{ 'active' if request.endpoint == 'settings_page' }}"
-                                href="{{ url_for('settings_page', project_name=g.current_project.name) }}">
-                                <i class="bi bi-sliders me-1"></i> Project Settings
-                            </a>
-                        </li>
-                        {% endif %}
                     </ul>
 
                     <div class="d-flex align-items-center">
