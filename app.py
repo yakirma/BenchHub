@@ -121,6 +121,14 @@ def get_distinguishable_metric_name(lm):
 app = Flask(__name__)
 __version__ = "1.0.0"
 app.secret_key = os.environ.get('SECRET_KEY') or 'supersecretkey'  # Override in prod via SECRET_KEY env
+
+# Honor X-Forwarded-Proto / X-Forwarded-Host from the Fly + Cloudflare edges
+# so url_for(_external=True) produces https:// URLs (and the right host) when
+# the container itself only sees plain HTTP. Without this the GitHub OAuth
+# redirect_uri ends up http://, GitHub rejects it as "not associated with
+# this application."
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # basedir = os.path.abspath(os.path.dirname(__file__)) # No longer used for data
 user_home = os.path.expanduser("~")
 dtof_data_dir = os.environ.get('BENCHHUB_DATA_DIR') or os.path.join(user_home, ".dtofbenchmarking")
