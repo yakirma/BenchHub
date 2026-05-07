@@ -2002,7 +2002,7 @@ def _dataset_thumb_url(ds):
     )
     if cf is None:
         return None
-    return url_for('custom_field_image', field_id=cf.id)
+    return url_for('serve_custom_field_image', field_id=cf.id)
 
 
 @app.route('/home')

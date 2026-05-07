@@ -12,6 +12,28 @@ def test_home_requires_login(client):
     assert '/login' in resp.headers['Location']
 
 
+def test_home_renders_when_user_owns_dataset_with_image_field(auth_client, logged_in_user, db_session):
+    """Regression: _dataset_thumb_url called url_for('custom_field_image')
+    which doesn't exist (real endpoint is 'serve_custom_field_image').
+    /home crashed with BuildError once a logged-in user owned any dataset
+    with an image custom field."""
+    from app import CustomField, Sample
+    ds = Dataset(name='thumb_ds', owner_user_id=logged_in_user.id)
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s1')
+    db.session.add(s); db.session.flush()
+    db.session.add(CustomField(
+        name='thumb', field_type='image',
+        value_text='images/thumb/s1.png',
+        sample_id=s.id,
+    ))
+    db.session.commit()
+
+    resp = auth_client.get('/home')
+    assert resp.status_code == 200
+    assert b'thumb_ds' in resp.data
+
+
 def test_home_renders_for_signed_in_user(auth_client, logged_in_user):
     resp = auth_client.get('/home')
     assert resp.status_code == 200
