@@ -3690,6 +3690,53 @@ def leaderboard_colab_notebook(leaderboard_id):
     return resp
 
 
+@app.route('/leaderboard/<int:leaderboard_id>/colab_bootstrap.py')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_colab_bootstrap(leaderboard_id):
+    """Standalone .py version of the notebook's RUN-LOCALLY BOOTSTRAP
+    cell. Lets a user set up a local environment for this LB without
+    opening Colab — `python bootstrap.py` downloads the notebook +
+    dataset GT zip and pip-installs the deps. Always served fresh
+    (cheap to regenerate, no caching needed)."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    base_url = os.environ.get(
+        'BENCHHUB_BASE_URL', request.host_url.rstrip('/'),
+    ).rstrip('/')
+    ds = lb.datasets[0] if lb.datasets else None
+    ds_id_repr = str(ds.id) if ds else 'None'
+
+    body = (
+        f"# bootstrap.py — set up a local run for BenchHub leaderboard\n"
+        f"# {lb.name!r} (id={lb.id})\n"
+        f"#\n"
+        f"# Run with: python bootstrap.py\n"
+        f"# Then open submit.ipynb in Jupyter / VS Code, edit my_model(),\n"
+        f"# and run the cells.\n"
+        f"import os, subprocess, sys, urllib.request\n"
+        f"\n"
+        f"BENCHHUB = {base_url!r}\n"
+        f"LEADERBOARD_ID = {lb.id}\n"
+        f"DATASET_ID = {ds_id_repr}\n"
+        f"\n"
+        f"nb_url = f'{{BENCHHUB}}/leaderboard/{{LEADERBOARD_ID}}/colab_notebook.ipynb'\n"
+        f"urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n"
+        f"if DATASET_ID is not None:\n"
+        f"    urllib.request.urlretrieve(\n"
+        f"        f'{{BENCHHUB}}/dataset/{{DATASET_ID}}/download', 'gt.zip')\n"
+        f"subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n"
+        f"                       '-q', 'requests', 'numpy', 'pillow'])\n"
+        f"print('Saved submit.ipynb' + (' + gt.zip' if DATASET_ID is not None else '')\n"
+        f"      + '. Open submit.ipynb in Jupyter or VS Code.')\n"
+    )
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    return app.response_class(
+        body, mimetype='text/x-python',
+        headers={
+            'Content-Disposition': f'attachment; filename="{safe_name}_bootstrap.py"',
+        },
+    )
+
+
 @app.route('/leaderboard/<int:leaderboard_id>')
 @visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_view(leaderboard_id):

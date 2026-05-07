@@ -512,6 +512,54 @@ def test_colab_notebook_direct_download_anon_keeps_placeholder(
     assert "API_TOKEN = ''" in resp.data.decode()
 
 
+def test_lb_page_links_directly_to_notebook_and_bootstrap_downloads(
+    client, db_session, lb_with_one_dataset,
+):
+    """Both downloadable artifacts (notebook + bootstrap.py) are
+    reachable from the LB header without opening the Colab modal."""
+    resp = client.get(f'/leaderboard/{lb_with_one_dataset.id}')
+    body = resp.data.decode()
+    assert (f'/leaderboard/{lb_with_one_dataset.id}/colab_notebook.ipynb'
+            in body)
+    assert (f'/leaderboard/{lb_with_one_dataset.id}/colab_bootstrap.py'
+            in body)
+
+
+def test_colab_bootstrap_route_returns_runnable_python(
+    client, db_session, lb_with_one_dataset,
+):
+    """The bootstrap endpoint serves a self-contained Python script
+    that downloads the notebook + dataset GT zip and pip-installs deps.
+    Must compile (so a typo doesn't ship), and must NOT carry the
+    `metric_*` namespace into the prediction-folder convention."""
+    resp = client.get(
+        f'/leaderboard/{lb_with_one_dataset.id}/colab_bootstrap.py')
+    assert resp.status_code == 200
+    assert resp.headers['Content-Type'].startswith('text/x-python')
+    body = resp.data.decode()
+    # Filename hint preserved (sanitized).
+    assert 'colab_lb' in resp.headers.get('Content-Disposition', '')
+    # Must compile.
+    compile(body, 'bootstrap.py', 'exec')
+    # Carries the LB id + dataset id so the script knows what to fetch.
+    assert f'LEADERBOARD_ID = {lb_with_one_dataset.id}' in body
+    # No leftover `metric_<col>` for predictions — the bare-folder
+    # convention is the canonical one now.
+    assert 'metric_' not in body
+
+
+def test_colab_bootstrap_route_404s_for_private_lb_to_anon(client, db_session):
+    from app import User
+    owner = User(email='priv-bootstrap@example.com', display_name='Owner',
+                 oauth_provider='github', oauth_sub='pb-1')
+    db.session.add(owner); db.session.flush()
+    lb = Leaderboard(name='priv_bootstrap_lb', summary_metrics='',
+                     owner_user_id=owner.id, visibility='private')
+    db.session.add(lb); db.session.commit()
+    resp = client.get(f'/leaderboard/{lb.id}/colab_bootstrap.py')
+    assert resp.status_code == 404
+
+
 def test_colab_notebook_route_404s_for_private_to_anon(client, db_session, monkeypatch):
     """Notebook respects LB visibility — private LB → 404 to anon."""
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
