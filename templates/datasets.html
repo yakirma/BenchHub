@@ -156,10 +156,11 @@
 
                     {# ----- HF form (hidden until tab is picked) ----- #}
                     <div id="form-hf" class="source-form d-none">
-                        <form action="{{ url_for('import_from_hf') }}" method="post">
+                        <form action="{{ url_for('import_from_hf') }}" method="post" id="hf-import-form">
                             <div class="mb-1">
                                 <input type="text" class="form-control form-control-lg font-monospace"
-                                    name="hf_repo_id" placeholder="user/repo" required autocomplete="off">
+                                    name="hf_repo_id" id="hf-repo-id-input"
+                                    placeholder="user/repo" required autocomplete="off">
                             </div>
                             <div class="form-text small mb-3">
                                 <i class="bi bi-info-circle me-1"></i>Repo must follow BenchHub's folder convention.
@@ -183,6 +184,37 @@
                                 <i class="bi bi-cloud-arrow-down me-1"></i>Import
                             </button>
                         </form>
+
+                        {# Browse-from-HF picker. Lazy-loads on first switch
+                           into this tab; click any row to populate the
+                           repo-id field above. #}
+                        <div class="mt-4 pt-3 border-top">
+                            <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+                                <small class="fw-semibold text-body-secondary">
+                                    <i class="bi bi-search me-1"></i>Browse HuggingFace
+                                </small>
+                                <select id="hf-picker-sort" class="form-select form-select-sm" style="width: auto;">
+                                    <option value="likes">Sort: Most likes</option>
+                                    <option value="downloads">Sort: Most downloads</option>
+                                    <option value="trending">Sort: Trending</option>
+                                </select>
+                            </div>
+                            <input type="search" id="hf-picker-q" class="form-control form-control-sm mb-2"
+                                placeholder="Filter HF datasets…" autocomplete="off">
+                            <div id="hf-picker-list"
+                                style="max-height: 280px; overflow-y: auto;
+                                       border: 1px solid var(--bs-border-color); border-radius: 6px;
+                                       padding: 0.25rem;">
+                                <div class="text-center small text-body-secondary py-3" id="hf-picker-hint">
+                                    Switch to this tab to load the list.
+                                </div>
+                            </div>
+                            <div class="form-text small mt-1">
+                                Many HF datasets store data as parquet/arrow tables and
+                                won't import directly — only repos with the BenchHub
+                                folder convention work right now.
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -228,7 +260,79 @@
         document.getElementById('src-hf').addEventListener('change', () => {
             zipForm.classList.add('d-none');
             hfForm.classList.remove('d-none');
+            // Lazy-load the HF picker list on first activation.
+            if (!window._hfPickerLoaded) {
+                window._hfPickerLoaded = true;
+                loadHfPicker();
+            }
         });
+
+        // ---- HuggingFace picker ----
+        const hfList = document.getElementById('hf-picker-list');
+        const hfHint = document.getElementById('hf-picker-hint');
+        const hfSort = document.getElementById('hf-picker-sort');
+        const hfQ = document.getElementById('hf-picker-q');
+        const hfRepoIdInput = document.getElementById('hf-repo-id-input');
+        let hfFetchSeq = 0;
+
+        function escapeHtml(s) {
+            return (s || '').replace(/[&<>"']/g, c => (
+                {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+            ));
+        }
+
+        async function loadHfPicker() {
+            const seq = ++hfFetchSeq;
+            hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">Loading…</div>';
+            const params = new URLSearchParams({sort: hfSort.value, q: hfQ.value});
+            try {
+                const resp = await fetch(`/api/hf/datasets?${params}`);
+                if (seq !== hfFetchSeq) return;  // stale response, newer fetch in flight
+                const body = await resp.json();
+                const rows = body.rows || [];
+                if (!rows.length) {
+                    hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">No matches.</div>';
+                    return;
+                }
+                hfList.innerHTML = rows.map(r => `
+                    <button type="button" class="hf-picker-row btn btn-link text-start w-100 px-2 py-1"
+                            data-repo-id="${escapeHtml(r.id)}"
+                            style="text-decoration: none; color: inherit; border-bottom: 1px solid var(--bs-border-color);">
+                        <div class="d-flex justify-content-between align-items-baseline">
+                            <span class="font-monospace small">${escapeHtml(r.id)}</span>
+                            <span class="small text-body-secondary ms-2">
+                                <i class="bi bi-heart-fill text-danger me-1"></i>${r.likes}
+                                <i class="bi bi-download ms-2 me-1"></i>${r.downloads.toLocaleString()}
+                            </span>
+                        </div>
+                        ${(r.tags || []).slice(0, 4).map(t =>
+                            `<span class="badge text-bg-light border me-1 mt-1 small">${escapeHtml(t)}</span>`
+                        ).join('')}
+                    </button>
+                `).join('');
+                hfList.querySelectorAll('.hf-picker-row').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        if (hfRepoIdInput) {
+                            hfRepoIdInput.value = btn.getAttribute('data-repo-id');
+                            hfRepoIdInput.focus();
+                        }
+                    });
+                });
+            } catch (err) {
+                if (seq !== hfFetchSeq) return;
+                hfList.innerHTML = '<div class="text-center small text-danger py-3">Failed to load. Try again.</div>';
+            }
+        }
+
+        // Debounced search.
+        let hfQTimer = null;
+        if (hfQ) {
+            hfQ.addEventListener('input', () => {
+                clearTimeout(hfQTimer);
+                hfQTimer = setTimeout(loadHfPicker, 300);
+            });
+        }
+        if (hfSort) hfSort.addEventListener('change', loadHfPicker);
 
         // ---- ZIP drop zone ----
         const dropzone = document.querySelector('.upload-dropzone');

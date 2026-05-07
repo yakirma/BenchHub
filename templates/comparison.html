@@ -397,21 +397,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </form>
             <form method="post"
                 action="{{ url_for('update_comparison_display_columns', leaderboard_id=submissions[0].leaderboard.id) }}"
-                class="d-flex align-items-center ms-3 gap-2">
-                <label class="form-label fw-bold mb-0" for="comp_display_columns_select">
-                    Display columns:
-                </label>
-                <select name="comparison_display_columns" id="comp_display_columns_select"
-                    class="form-select" multiple size="5"
-                    style="max-width: 320px;"
-                    onchange="saveScrollAndSubmit(this.form)">
-                    {% for key, option in comparison_display_options.items() %}
-                    <option value="{{ key }}"
-                        {% if key in selected_comparison_display_columns %}selected{% endif %}>
-                        {{ option.label }}
-                    </option>
-                    {% endfor %}
-                </select>
+                class="d-flex align-items-end ms-3 gap-2">
+                <div>
+                    <label class="form-label fw-bold mb-1" for="comp_display_columns_select">
+                        Display columns:
+                    </label>
+                    <select name="comparison_display_columns" id="comp_display_columns_select"
+                        class="form-select" multiple size="5"
+                        style="max-width: 320px;">
+                        {% for key, option in comparison_display_options.items() %}
+                        <option value="{{ key }}"
+                            {% if key in selected_comparison_display_columns %}selected{% endif %}>
+                            {{ option.label }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="bi bi-check-lg me-1"></i>Apply
+                </button>
             </form>
 
             {% if sample_metric_options %}

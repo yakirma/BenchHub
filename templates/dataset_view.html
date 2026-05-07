@@ -281,16 +281,16 @@
     <div class="card-body">
         <h5 class="card-title">View Options</h5>
         <form method="post" action="{{ url_for('update_dataset_display_columns', dataset_id=dataset.id) }}"
-            class="row g-2 align-items-center">
+            class="row g-2 align-items-end">
             <label for="display_columns_select" class="col-sm-auto col-form-label fw-bold">
                 Display columns:
             </label>
             <div class="col">
-                {# Multi-select dropdown — Ctrl/Cmd-click to toggle. Saves on
-                   change (no submit button needed). #}
+                {# Multi-select dropdown — pick everything you want, then
+                   click Apply. Auto-submit-on-change felt frantic when the
+                   user only meant to add one column. #}
                 <select name="display_columns" id="display_columns_select"
-                    class="form-select" multiple size="5"
-                    onchange="saveScrollAndSubmit(this.form)">
+                    class="form-select" multiple size="5">
                     {% for key, option in dataset_display_options.items() %}
                     <option value="{{ key }}"
                         {% if key in selected_display_columns %}selected{% endif %}>
@@ -298,7 +298,12 @@
                     </option>
                     {% endfor %}
                 </select>
-                <div class="form-text small">Hold ⌘/Ctrl to toggle individual columns.</div>
+                <div class="form-text small">Hold ⌘/Ctrl to toggle individual columns. Click Apply when done.</div>
+            </div>
+            <div class="col-sm-auto">
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="bi bi-check-lg me-1"></i>Apply
+                </button>
             </div>
         </form>
     </div>

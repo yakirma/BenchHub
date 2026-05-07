@@ -3951,6 +3951,72 @@ def import_from_hf():
     return redirect(url_for('datasets_list'))
 
 
+# --- HuggingFace dataset listing (Round C) -------------------------------
+# Proxy the HF public datasets index so users can pick a repo from a
+# searchable list inside BenchHub instead of context-switching to
+# huggingface.co. Server-side cache keeps us under HF's anonymous rate
+# limit (the result is the same for everyone for an hour).
+
+_hf_datasets_cache = {'fetched_at': 0.0, 'sort': None, 'q': '', 'rows': []}
+
+
+def _fetch_hf_datasets(*, sort='likes', q='', limit=50):
+    """Hit huggingface.co/api/datasets and return a list of dicts. Cache
+    for 1h on (sort, q). Returns [] on any error so the UI degrades to
+    the manual-entry path."""
+    import time as _time
+    now = _time.time()
+    if (_hf_datasets_cache['sort'] == sort
+            and _hf_datasets_cache['q'] == q
+            and now - _hf_datasets_cache['fetched_at'] < 3600
+            and _hf_datasets_cache['rows']):
+        return _hf_datasets_cache['rows']
+
+    try:
+        import requests as _r
+        url = "https://huggingface.co/api/datasets"
+        params = {'sort': sort, 'limit': limit, 'full': 'false'}
+        if q:
+            params['search'] = q
+        resp = _r.get(url, params=params, timeout=8)
+        resp.raise_for_status()
+        raw = resp.json() or []
+        rows = []
+        for entry in raw:
+            rid = entry.get('id') or ''
+            if not rid:
+                continue
+            rows.append({
+                'id': rid,
+                'downloads': int(entry.get('downloads') or 0),
+                'likes': int(entry.get('likes') or 0),
+                'updated': entry.get('lastModified') or '',
+                'tags': [t for t in (entry.get('tags') or []) if isinstance(t, str)][:6],
+            })
+        _hf_datasets_cache.update({
+            'fetched_at': now, 'sort': sort, 'q': q, 'rows': rows,
+        })
+        return rows
+    except Exception as e:
+        print(f"_fetch_hf_datasets failed: {e}")
+        return []
+
+
+@app.route('/api/hf/datasets')
+@login_required
+def api_hf_datasets():
+    """JSON listing of HuggingFace datasets, used by the picker on /datasets.
+
+    Query string: ?sort=likes|downloads|trending  ?q=<keyword>
+    """
+    sort = request.args.get('sort', 'likes')
+    if sort not in ('likes', 'downloads', 'trending'):
+        sort = 'likes'
+    q = (request.args.get('q') or '').strip()
+    rows = _fetch_hf_datasets(sort=sort, q=q)
+    return jsonify({'rows': rows, 'sort': sort, 'q': q})
+
+
 @app.route('/create_leaderboard', methods=['POST'])
 @login_required
 def create_leaderboard():
