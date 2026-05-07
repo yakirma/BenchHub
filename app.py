@@ -4548,7 +4548,20 @@ def import_from_hf_auto():
         if success and ds_id:
             return redirect(url_for('dataset_view', dataset_id=ds_id))
     except Exception as e:
-        flash(f"HuggingFace auto-import failed: {e}", "danger")
+        msg = str(e)
+        low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'authenticated' in low
+                or 'restricted' in low or 'access denied' in low):
+            flash(
+                f"'{repo_id}' is a gated HuggingFace dataset. "
+                f"Open https://huggingface.co/datasets/{repo_id}, accept "
+                "its terms, then create an access token at "
+                "huggingface.co/settings/tokens (read-only is fine) and "
+                "paste it under Advanced before retrying.",
+                "danger",
+            )
+        else:
+            flash(f"HuggingFace auto-import failed: {e}", "danger")
     return redirect(url_for('datasets_list'))
 
 

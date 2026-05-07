@@ -166,6 +166,35 @@ def test_preview_warns_when_no_features(auth_client, db_session):
 # ---------------------------------------------------------------------------
 
 
+def test_auto_route_friendly_error_for_gated_dataset(
+    auth_client, logged_in_user, db_session,
+):
+    """When `datasets.load_dataset` raises with HF's 'gated dataset'
+    wording, surface the friendly accept-terms-and-paste-token flash
+    instead of the raw traceback."""
+    fake_mod = types.ModuleType('datasets')
+    def _raise_gated(*a, **kw):
+        raise RuntimeError(
+            "Dataset 'ILSVRC/imagenet-1k' is a gated dataset on the Hub. "
+            "You must be authenticated to access it."
+        )
+    fake_mod.load_dataset = _raise_gated
+    with patch.dict(sys.modules, {'datasets': fake_mod}):
+        resp = auth_client.post('/import_from_hf/auto', data={
+            'hf_repo_id': 'ILSVRC/imagenet-1k',
+            'dataset_name': 'imagenet_subset',
+            'sample_cap': '50',
+            'mapping_column[]': ['image'],
+            'mapping_target_kind[]': ['image'],
+            'mapping_target_field[]': ['image_image'],
+        }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data
+    assert b'gated HuggingFace dataset' in body
+    assert b'huggingface.co/settings/tokens' in body
+    assert b'ILSVRC/imagenet-1k' in body
+
+
 def test_auto_route_returns_friendly_error_when_datasets_lib_missing(
     auth_client, logged_in_user, db_session,
 ):
