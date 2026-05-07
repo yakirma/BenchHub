@@ -143,6 +143,82 @@ def test_colab_notebook_route_returns_ipynb_json(client, db_session, monkeypatch
     assert any('my_model' in ''.join(c.get('source', [])) for c in nb['cells'])
 
 
+# ---------------------------------------------------------------------------
+# /colab_open route — gist creation when token configured, fallback otherwise
+# ---------------------------------------------------------------------------
+
+
+def test_colab_open_redirects_to_gist_when_token_set(
+    client, db_session, monkeypatch, lb_with_one_dataset,
+):
+    monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
+    class _GistOk:
+        status_code = 201
+        def raise_for_status(self): pass
+        def json(self):
+            return {'id': 'gistabc123', 'html_url': 'https://gist.github.com/gistabc123'}
+
+    with patch('requests.post', return_value=_GistOk()):
+        resp = client.get(
+            f'/leaderboard/{lb_with_one_dataset.id}/colab_open',
+            follow_redirects=False,
+        )
+    assert resp.status_code == 302
+    assert 'colab.research.google.com/gist/gistabc123' in resp.headers['Location']
+
+    # gist_id was persisted to the cache so the next request can PATCH instead.
+    db.session.refresh(lb_with_one_dataset)
+    wrapped = json.loads(lb_with_one_dataset.colab_notebook_cache)
+    assert wrapped.get('gist_id') == 'gistabc123'
+
+
+def test_colab_open_falls_back_when_no_token(
+    client, db_session, monkeypatch, lb_with_one_dataset,
+):
+    monkeypatch.delenv('BENCHHUB_GITHUB_GIST_TOKEN', raising=False)
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    resp = client.get(
+        f'/leaderboard/{lb_with_one_dataset.id}/colab_open',
+        follow_redirects=False,
+    )
+    # No token → bounce to the LB page with a warning flash.
+    assert resp.status_code == 302
+    assert f'/leaderboard/{lb_with_one_dataset.id}' in resp.headers['Location']
+    assert 'colab.research.google.com' not in resp.headers['Location']
+
+
+def test_colab_open_patches_existing_gist_on_second_call(
+    client, db_session, monkeypatch, lb_with_one_dataset,
+):
+    """Second visit reuses the cached gist_id and PATCHes instead of
+    creating a fresh gist — no orphans on subsequent regenerations."""
+    monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
+    # Seed cache with a gist_id and a stale signature so the notebook regens.
+    lb_with_one_dataset.colab_notebook_cache = json.dumps({
+        'sig': 'stale', 'notebook': '{}', 'gist_id': 'oldgist'
+    })
+    db.session.commit()
+
+    class _PatchOk:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {'id': 'oldgist', 'html_url': 'https://gist.github.com/oldgist'}
+
+    with patch('requests.patch', return_value=_PatchOk()) as patch_mock, \
+         patch('requests.post') as post_mock:
+        resp = client.get(f'/leaderboard/{lb_with_one_dataset.id}/colab_open')
+
+    assert resp.status_code == 302
+    patch_mock.assert_called_once()
+    post_mock.assert_not_called()
+    assert 'colab.research.google.com/gist/oldgist' in resp.headers['Location']
+
+
 def test_colab_notebook_route_404s_for_private_to_anon(client, db_session, monkeypatch):
     """Notebook respects LB visibility — private LB → 404 to anon."""
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)

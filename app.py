@@ -3588,6 +3588,25 @@ def recalculate_submission(submission_id):
     # Redirect back to the leaderboard
     return redirect(url_for('leaderboard_view', **redirect_args))
 
+@app.route('/leaderboard/<int:leaderboard_id>/colab_open')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_colab_open(leaderboard_id):
+    """Materialize the LB's notebook as a GitHub gist (Colab-whitelisted)
+    and redirect to Colab's gist importer. Falls back to the modal with
+    a "couldn't open directly, download instead" flash if no GitHub
+    token is configured or gist creation fails."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    gist_url, gist_id = _ensure_colab_gist(lb)
+    if gist_id:
+        return redirect(f'https://colab.research.google.com/gist/{gist_id}')
+    flash(
+        "Couldn't open directly in Colab — set BENCHHUB_GITHUB_GIST_TOKEN "
+        "or download the notebook and upload it manually.",
+        "warning",
+    )
+    return redirect(url_for('leaderboard_view', leaderboard_id=leaderboard_id))
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/colab_notebook.ipynb')
 @visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_colab_notebook(leaderboard_id):
@@ -4768,12 +4787,97 @@ def _get_or_generate_colab_notebook(lb):
         nb = _static_colab_notebook(lb)
         source = 'static'
     try:
-        lb.colab_notebook_cache = json.dumps({'sig': sig, 'notebook': nb})
+        # Preserve any existing gist_id across regenerations so we can
+        # PATCH the gist instead of orphaning it.
+        existing_gist = None
+        if cache:
+            try:
+                existing_gist = (json.loads(cache) or {}).get('gist_id')
+            except Exception:
+                existing_gist = None
+        lb.colab_notebook_cache = json.dumps({
+            'sig': sig, 'notebook': nb, 'gist_id': existing_gist,
+        })
         db.session.commit()
     except Exception as e:
         db.session.rollback()
         print(f"colab notebook cache write failed: {e}")
     return nb, source
+
+
+def _ensure_colab_gist(lb):
+    """Materialize the LB's notebook as a GitHub gist so Colab's URL
+    importer (which only whitelists github.com / gist.github.com /
+    drive.google.com / raw.githubusercontent.com) can fetch it.
+
+    Returns (gist_html_url, gist_id) on success, or (None, None) when
+    BENCHHUB_GITHUB_GIST_TOKEN isn't configured or the API call fails.
+    Caller falls back to the manual download path in either case.
+
+    Cache shape: lb.colab_notebook_cache = {sig, notebook, gist_id}.
+    On signature drift, the notebook is regenerated and the gist is
+    PATCH'd in place — no orphan gists per LB version.
+    """
+    token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN')
+    if not token:
+        return None, None
+
+    notebook, _src = _get_or_generate_colab_notebook(lb)
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    filename = f'{safe_name}_submit.ipynb'
+    description = f"BenchHub submission scaffold for leaderboard '{lb.name}' (id={lb.id})"
+
+    # Re-read cache to get any existing gist_id.
+    gist_id = None
+    if lb.colab_notebook_cache:
+        try:
+            gist_id = (json.loads(lb.colab_notebook_cache) or {}).get('gist_id')
+        except Exception:
+            gist_id = None
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    payload = {
+        'description': description,
+        'public': False,
+        'files': {filename: {'content': notebook}},
+    }
+    try:
+        import requests as _r
+        if gist_id:
+            # Update existing gist (idempotent for unchanged content).
+            resp = _r.patch(
+                f'https://api.github.com/gists/{gist_id}',
+                headers=headers, json=payload, timeout=15,
+            )
+            if resp.status_code == 404:
+                gist_id = None  # was deleted upstream; create fresh
+            else:
+                resp.raise_for_status()
+        if not gist_id:
+            resp = _r.post(
+                'https://api.github.com/gists',
+                headers=headers, json=payload, timeout=15,
+            )
+            resp.raise_for_status()
+            gist_id = resp.json().get('id')
+        if not gist_id:
+            return None, None
+        # Persist the gist_id in the cache wrapper so future calls reuse it.
+        try:
+            wrapped = json.loads(lb.colab_notebook_cache or '{}') or {}
+            wrapped['gist_id'] = gist_id
+            lb.colab_notebook_cache = json.dumps(wrapped)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return f'https://gist.github.com/{gist_id}', gist_id
+    except Exception as e:
+        print(f"_ensure_colab_gist failed: {e}")
+        return None, None
 
 
 def _llm_infer_mapping(features, dataset_repo=None):
