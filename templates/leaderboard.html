@@ -19,7 +19,8 @@
         }
     }
 
-    /* Tag Input Styles */
+    /* Tag Input Styles — color-coded so include/exclude/prefix read at
+       a glance without reading the placeholder. */
     .tag-input-wrapper {
         border: 1px solid var(--bs-border-color);
         border-radius: 0.25rem;
@@ -37,6 +38,31 @@
     .tag-input-wrapper.disabled {
         background-color: var(--bs-secondary-bg);
         cursor: not-allowed;
+    }
+
+    /* Color-coded variants by intent. The chip color inside the wrapper
+       follows the intent so include-tag pills are green, exclude-tag
+       pills are red, prefix pills are blue. */
+    .tag-input-wrapper.tag-include {
+        border-color: rgba(25, 135, 84, 0.55);
+        background: rgba(25, 135, 84, 0.06);
+    }
+    .tag-input-wrapper.tag-include .tag-chip {
+        background-color: #198754;
+    }
+    .tag-input-wrapper.tag-exclude {
+        border-color: rgba(220, 53, 69, 0.55);
+        background: rgba(220, 53, 69, 0.06);
+    }
+    .tag-input-wrapper.tag-exclude .tag-chip {
+        background-color: #dc3545;
+    }
+    .tag-input-wrapper.tag-prefix {
+        border-color: rgba(13, 110, 253, 0.55);
+        background: rgba(13, 110, 253, 0.06);
+    }
+    .tag-input-wrapper.tag-prefix .tag-chip {
+        background-color: #0d6efd;
     }
 
     .submission-name-link:hover {
@@ -211,16 +237,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
         <h1>{{ leaderboard.name }}</h1>
-        <p class="lead d-flex align-items-center flex-wrap">
-            Using datasets:
+        <div class="lead d-flex align-items-center flex-wrap gap-2">
+            <span class="text-body-secondary small">Using datasets:</span>
             {% for ds in leaderboard.datasets %}
-        <div class="d-inline-flex align-items-center ms-2 my-1">
-            <div class="author-avatar-init me-1" data-author="{{ ds.git_author or '' }}" data-size="27"></div>
-            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}" class="btn btn-sm btn-outline-primary">{{ ds.name
-                }}</a>
+            {% set thumb = dataset_thumbs.get(ds.id) if dataset_thumbs else None %}
+            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
+                title="Open {{ ds.name }}">
+                {# Thumbnail (or placeholder) prefixed to the dataset name. #}
+                {% if thumb %}
+                <span style="display:inline-block; width:28px; height:28px; border-radius:4px;
+                             background-image: url('{{ thumb }}');
+                             background-size: cover; background-position: center;"></span>
+                {% else %}
+                <span style="display:inline-flex; align-items:center; justify-content:center;
+                             width:28px; height:28px; border-radius:4px;
+                             background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
+                    <i class="bi bi-database"></i>
+                </span>
+                {% endif %}
+                <span class="fw-semibold">{{ ds.name }}</span>
+            </a>
+            {% endfor %}
         </div>
-        {% endfor %}
-        </p>
         <div>
             {% if leaderboard.tags %}
             {% for t in leaderboard.tags %}
@@ -276,7 +315,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <input class="form-check-input" type="checkbox" id="enable-include-tags"
                                     name="enable_include" value="true" {% if enable_include %}checked{% endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_include %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-include {% if not enable_include %}disabled{% endif %}"
                                 id="include-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="include-tags-input"
@@ -294,7 +333,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <input class="form-check-input" type="checkbox" id="enable-exclude-tags"
                                     name="enable_exclude" value="true" {% if enable_exclude %}checked{% endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_exclude %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-exclude {% if not enable_exclude %}disabled{% endif %}"
                                 id="exclude-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="exclude-tags-input"
@@ -312,7 +351,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <input class="form-check-input" type="checkbox" id="enable-prefix-tags"
                                     name="enable_prefix" value="true" {% if enable_prefix %}checked{% endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_prefix %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-prefix {% if not enable_prefix %}disabled{% endif %}"
                                 id="prefix-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="prefix-tags-input"
@@ -351,7 +390,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     name="enable_sample_include" value="true" {% if enable_sample_include %}checked{%
                                     endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_sample_include %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-include {% if not enable_sample_include %}disabled{% endif %}"
                                 id="sample-include-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="sample-include-tags-input"
@@ -370,7 +409,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     name="enable_sample_exclude" value="true" {% if enable_sample_exclude %}checked{%
                                     endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_sample_exclude %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-exclude {% if not enable_sample_exclude %}disabled{% endif %}"
                                 id="sample-exclude-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="sample-exclude-tags-input"
@@ -389,7 +428,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     name="enable_sample_prefix" value="true" {% if enable_sample_prefix %}checked{%
                                     endif %}>
                             </div>
-                            <div class="tag-input-wrapper {% if not enable_sample_prefix %}disabled{% endif %}"
+                            <div class="tag-input-wrapper tag-prefix {% if not enable_sample_prefix %}disabled{% endif %}"
                                 id="sample-prefix-tags-wrapper">
                                 <div class="chips-container d-flex flex-wrap"></div>
                                 <input type="text" class="tag-input" id="sample-prefix-tags-input"

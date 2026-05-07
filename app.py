@@ -3945,8 +3945,13 @@ def leaderboard_view(leaderboard_id):
             if lm.sort_direction:
                 metric_directions_dict[target] = lm.sort_direction
 
-    return render_template('leaderboard.html', 
+    # Per-dataset thumbnails for the LB header (mirrors /datasets and
+    # /home logic: first image-or-depth custom field on any sample).
+    dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in leaderboard.datasets}
+
+    return render_template('leaderboard.html',
                            leaderboard=leaderboard,
+                           dataset_thumbs=dataset_thumbs,
                            submissions=submissions,
                            all_metrics=all_metrics,
                            selected_metrics=all_metrics,
