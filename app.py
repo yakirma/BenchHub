@@ -4552,13 +4552,19 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
+_COLAB_TEMPLATE_VERSION = 'v2-runtime-choice+bootstrap'
+
+
 def _lb_structure_signature(lb):
     """Stable hash of the LB's externally-visible structure: which
     datasets, which custom-field names on the GT samples, which
     metrics. If any of these changes, the cached notebook is stale.
-    Returns a short hex string."""
+    Returns a short hex string. The template version is folded in so
+    that template-side improvements force a regeneration even when the
+    LB's structure itself is unchanged."""
     import zlib as _zlib
     parts = {
+        'template': _COLAB_TEMPLATE_VERSION,
         'dataset_ids': sorted(d.id for d in lb.datasets),
         'metrics': sorted([
             (lm.global_metric_id, lm.target_name)
@@ -4607,6 +4613,15 @@ def _static_colab_notebook(lb):
                     "\n",
                     f"Dataset: `{ds_name}` &middot; Metrics: {metric_block}\n",
                     "\n",
+                    "**Runtime choice (Colab):** this notebook runs on CPU by default. "
+                    "If your model needs a GPU/TPU, switch via "
+                    "*Runtime → Change runtime type* before running the cells below.\n",
+                    "\n",
+                    "**Want to run locally instead?** The next cell is a self-"
+                    "contained Python bootstrap that fetches this notebook + "
+                    "the dataset onto your own machine. Copy it, save as "
+                    "`bootstrap.py`, and run `python bootstrap.py` outside Colab.\n",
+                    "\n",
                     "Workflow:\n",
                     "1. Run the cells below, replacing `my_model(sample)` with your inference code.\n",
                     "2. The notebook builds a submission ZIP in BenchHub's expected folder layout.\n",
@@ -4614,6 +4629,32 @@ def _static_colab_notebook(lb):
                     "\n",
                     "Sample schema (from the first sample):\n",
                     field_block + "\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# >>> RUN-LOCALLY BOOTSTRAP <<<\n",
+                    "# This cell is a no-op on Colab (Colab already has the\n",
+                    "# notebook + can install pip packages). Copy it into a\n",
+                    "# `bootstrap.py` on your machine to set up a local run.\n",
+                    "import os, subprocess, sys, urllib.request\n",
+                    f"BENCHHUB = '{base_url}'\n",
+                    f"LEADERBOARD_ID = {lb.id}\n",
+                    f"DATASET_ID = {ds.id if ds else 'None'}\n",
+                    "if 'google.colab' not in sys.modules:\n",
+                    "    # Local run: fetch the notebook + dataset GT zip, install deps.\n",
+                    "    nb_url = f'{BENCHHUB}/leaderboard/{LEADERBOARD_ID}/colab_notebook.ipynb'\n",
+                    "    urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n",
+                    "    if DATASET_ID is not None:\n",
+                    "        urllib.request.urlretrieve(\n",
+                    "            f'{BENCHHUB}/dataset/{DATASET_ID}/download', 'gt.zip')\n",
+                    "    subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n",
+                    "                           '-q', 'requests', 'numpy', 'pillow'])\n",
+                    "    print('Saved submit.ipynb + gt.zip. Open submit.ipynb in '\n",
+                    "          'Jupyter or VS Code, then run the remaining cells.')\n",
+                    "else:\n",
+                    "    print('On Colab — skipping local bootstrap.')\n",
                 ],
             },
             {
@@ -4747,7 +4788,20 @@ def _llm_colab_notebook(lb):
         "a specific leaderboard.\n\n"
         "The notebook MUST:\n"
         "- Open with a markdown cell explaining the leaderboard, its "
-        "  datasets, metrics, and a placeholder for the user's model.\n"
+        "  datasets, metrics, and a placeholder for the user's model. "
+        "  This cell MUST also include:\n"
+        "  * a one-line note that the runtime defaults to CPU and the "
+        "    user can switch to GPU/TPU via Runtime → Change runtime "
+        "    type IF their model needs acceleration. Do NOT pre-set the "
+        "    accelerator in metadata — let the user decide.\n"
+        "  * a one-line pointer to the run-locally bootstrap cell below.\n"
+        "- Include, RIGHT AFTER that markdown cell, a Python code cell "
+        "  marked '>>> RUN-LOCALLY BOOTSTRAP <<<'. It detects "
+        "  `'google.colab' in sys.modules` and, when run OUTSIDE Colab, "
+        "  uses urllib.request to download "
+        "  `<BENCHHUB>/leaderboard/<id>/colab_notebook.ipynb` + the "
+        "  dataset ZIP, then pip-installs requests/numpy/pillow. On "
+        "  Colab, it just prints a skip message — no-op.\n"
         "- Include a code cell that downloads the dataset ZIP from "
         "  BenchHub and extracts it to /tmp/gt/.\n"
         "- Include a clearly-marked `def my_model(sample_name, inputs)` "
@@ -4759,6 +4813,8 @@ def _llm_colab_notebook(lb):
         "- ZIP the submission folder and offer both a `files.download` "
         "  flow and an optional API-token upload to the BenchHub URL "
         "  /api/leaderboard/<id>/submission/upload.\n\n"
+        "DO NOT set `metadata.accelerator` or `metadata.colab.gpuClass` "
+        "— the user picks their runtime themselves.\n\n"
         "Return ONLY a JSON object — a valid .ipynb nbformat 4 notebook. "
         "Do not wrap it in markdown fences. Do not include explanatory prose."
     )

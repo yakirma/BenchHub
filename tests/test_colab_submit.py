@@ -63,6 +63,53 @@ def test_static_notebook_is_valid_ipynb(lb_with_one_dataset):
     assert 'my_model' in raw
 
 
+def test_static_notebook_lets_user_pick_runtime_and_offers_local_bootstrap(
+    lb_with_one_dataset,
+):
+    """The notebook must NOT force a GPU runtime (some users only need
+    CPU; some have their own accelerator preference) — but it must
+    surface the choice. It must also include a no-op-on-Colab
+    `>>> RUN-LOCALLY BOOTSTRAP <<<` cell so users who'd rather work
+    locally can fetch the notebook + dataset to their own machine."""
+    raw = _static_colab_notebook(lb_with_one_dataset)
+    nb = json.loads(raw)
+
+    # No accelerator pin in metadata — user decides.
+    md = nb.get('metadata', {})
+    assert 'accelerator' not in md
+    assert 'gpuClass' not in (md.get('colab') or {})
+
+    # GPU choice surfaced in the leading markdown.
+    first_md = ''.join(nb['cells'][0]['source'])
+    assert 'Change runtime type' in first_md
+    assert 'GPU' in first_md
+
+    # Bootstrap script lives near the top, runs only outside Colab,
+    # and downloads both the notebook and the dataset ZIP.
+    bootstrap_src = next(
+        (''.join(c['source']) for c in nb['cells']
+         if c.get('cell_type') == 'code'
+         and 'RUN-LOCALLY BOOTSTRAP' in ''.join(c['source'])),
+        None,
+    )
+    assert bootstrap_src is not None, "bootstrap cell missing"
+    assert "'google.colab' not in sys.modules" in bootstrap_src
+    assert 'urllib.request' in bootstrap_src
+    assert '/colab_notebook.ipynb' in bootstrap_src
+    assert '/dataset/' in bootstrap_src
+    # Bootstrap precedes the model-definition cell.
+    bootstrap_idx = next(
+        i for i, c in enumerate(nb['cells'])
+        if c.get('cell_type') == 'code'
+        and 'RUN-LOCALLY BOOTSTRAP' in ''.join(c['source'])
+    )
+    model_idx = next(
+        i for i, c in enumerate(nb['cells'])
+        if 'def my_model' in ''.join(c.get('source', []))
+    )
+    assert bootstrap_idx < model_idx
+
+
 # ---------------------------------------------------------------------------
 # get_or_generate: cache hit + miss + LLM path + signature drift
 # ---------------------------------------------------------------------------
