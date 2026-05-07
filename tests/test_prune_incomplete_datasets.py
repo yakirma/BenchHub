@@ -73,6 +73,43 @@ def test_prune_returns_zero_when_nothing_to_clean(client, db_session):
     assert prune_incomplete_datasets() == 0
 
 
+def test_process_dataset_zip_self_cleans_on_failure(client, db_session, make_zip):
+    """A ZIP with no recognizable samples fails inside ingest. The
+    failure path must leave NO orphan Dataset row and NO leftover folder."""
+    # Only __MACOSX/ entries — excluded by the sample-discovery loop, so
+    # sample_names ends up empty and the function takes the "No valid
+    # samples" failure path.
+    zip_path = make_zip(
+        "broken.zip",
+        {"__MACOSX/garbage.txt": "junk"},
+        root_folder="broken_ds",
+    )
+    success, msg, ds_id = process_dataset_zip(zip_path, "broken_ds")
+    assert success is False
+    assert "No valid samples" in msg
+    assert ds_id is None
+
+    # No orphan row left behind.
+    assert Dataset.query.filter_by(name="broken_ds").count() == 0
+
+    # No leftover folder either.
+    folder = os.path.join(_datasets_root(), "broken_ds")
+    assert not os.path.isdir(folder)
+
+
+def test_datasets_list_prunes_orphans_on_view(client, db_session):
+    """The /datasets route runs the prune routine inline so users don't
+    wait for the next deploy to see a clean catalog."""
+    # Plant an orphan directly in the DB.
+    db.session.add(Dataset(name="orphan_visible_to_view"))
+    db.session.commit()
+
+    resp = client.get('/datasets')
+    assert resp.status_code == 200
+    # Orphan is gone after the view runs.
+    assert Dataset.query.filter_by(name="orphan_visible_to_view").count() == 0
+
+
 def test_prune_cascades_samples_and_custom_fields(client, db_session):
     """Deleting an incomplete dataset still cleans its child rows (the
     SQLAlchemy cascade on Sample / CustomField). Otherwise we'd accumulate

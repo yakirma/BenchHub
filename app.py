@@ -657,6 +657,32 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_extract_' + datetime.now().strftime('%Y%m%d%H%M%S%f'))
     os.makedirs(temp_dir, exist_ok=True)
 
+    # Track the prelim Dataset row so all failure paths can clean it up.
+    # The row is committed early (to grab an id and release the write lock)
+    # which means anything failing mid-extraction would otherwise leave an
+    # orphan tying up the user's quota until the periodic prune.
+    prelim_dataset = None
+
+    def _cleanup_prelim():
+        """Remove the prelim Dataset row + any partial folder. Idempotent."""
+        if prelim_dataset is None:
+            return
+        try:
+            db.session.rollback()
+            detached = Dataset.query.get(prelim_dataset.id)
+            if detached is not None:
+                folder = os.path.join(
+                    app.config['UPLOAD_FOLDER'], 'datasets',
+                    secure_filename(detached.name),
+                )
+                if os.path.isdir(folder):
+                    shutil.rmtree(folder, ignore_errors=True)
+                db.session.delete(detached)
+                db.session.commit()
+        except Exception as cleanup_err:
+            db.session.rollback()
+            print(f"process_dataset_zip self-cleanup failed: {cleanup_err}")
+
     try:
         # Initial collision check.
         existing = Dataset.query.filter_by(name=dataset_name).first()
@@ -667,6 +693,7 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
         new_dataset = Dataset(name=dataset_name, owner_user_id=owner_user_id)
         db.session.add(new_dataset)
         db.session.commit() # Commit immediately to release lock and get ID
+        prelim_dataset = new_dataset
 
         # Unzip
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -687,6 +714,7 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
             if real_dataset_name != dataset_name:
                 existing = Dataset.query.filter_by(name=real_dataset_name).first()
                 if existing:
+                    _cleanup_prelim()
                     return False, f"Dataset '{real_dataset_name}' (extracted from ZIP) already exists.", None
                 new_dataset.name = real_dataset_name
                 db.session.add(new_dataset)
@@ -741,6 +769,7 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
                         sample_names.add(base)
             
             if not sample_names:
+                _cleanup_prelim()
                 return False, "No valid samples (hist, config, etc.) found in ZIP.", None
 
             # Create sample records
@@ -827,7 +856,9 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
             return True, f"Uploaded '{new_dataset.name}' ({len(sample_names)} samples)", new_dataset.id
 
     except Exception as e:
-        db.session.rollback()
+        # Crash mid-extraction → roll back the prelim row + any partial folder
+        # via the same cleanup the early-return paths use.
+        _cleanup_prelim()
         return False, f"Error: {str(e)}", None
     finally:
         if os.path.exists(temp_dir):
@@ -5174,6 +5205,17 @@ def serve_depth_data(filepath):
 
 @app.route('/datasets')
 def datasets_list():
+    # Belt-and-suspenders: clean up orphan rows on the way in so the list
+    # reflects what's actually usable. process_dataset_zip's except handler
+    # is the primary defense; this catches anything that escaped (e.g. a
+    # SIGKILL'd worker mid-extraction). Cheap because the typical case
+    # finds nothing.
+    try:
+        prune_incomplete_datasets()
+    except Exception as e:
+        # Never let cleanup break the listing.
+        print(f"datasets_list inline prune failed (non-fatal): {e}")
+
     datasets = (
         Dataset.query
         .filter(visible_in_list(Dataset, getattr(g, 'current_user', None)))

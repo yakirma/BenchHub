@@ -177,25 +177,20 @@ def test_empty_zip_returns_false(client, make_zip):
     assert "No valid samples" in message
 
 
-def test_failure_path_leaves_orphan_dataset_row(client, make_zip):
-    """REAL BUG: process_dataset_zip commits a Dataset row early (to release
-    the lock and get the ID). When sample discovery later fails ("No valid
-    samples..."), the function returns False but does NOT delete the orphan
-    row. Subsequent uploads with the same name will hit a "collision" error
-    against this ghost dataset.
-
-    Pin this so a future fix (e.g. wrapping in try/except with rollback) is
-    a positive — flip the assertion when fixed."""
-    # Single-folder layout that triggers the bug: the inner folder gets treated
-    # as the "wrapper" and dataset_content_path ends up at a leaf with no subdirs.
+def test_failure_path_does_not_leave_orphan_dataset_row(client, make_zip):
+    """Regression: process_dataset_zip used to commit the prelim Dataset
+    row early (to release the lock and get the id), and a later failure
+    in sample discovery would leave that row behind as an orphan tying
+    up the user's quota. Now every failure path runs _cleanup_prelim()
+    before returning, so the row is gone."""
     zip_path = make_zip("orphan.zip", {"config/s1.json": '{"x":1}'})
     success, message, ds_id = process_dataset_zip(zip_path, "should_fail")
     assert success is False
     assert "No valid samples" in message
 
-    # Bug: the function still leaves a Dataset(name="config") row behind.
-    orphan = Dataset.query.filter_by(name="config").first()
-    assert orphan is not None  # remove this line when the bug is fixed
+    # No orphan, regardless of which intermediate name the row briefly held.
+    assert Dataset.query.filter_by(name="should_fail").count() == 0
+    assert Dataset.query.filter_by(name="config").count() == 0
 
 
 # ---------------------------------------------------------------------------
