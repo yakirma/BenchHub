@@ -489,6 +489,22 @@ class CustomField(db.Model):
             return self.value_float
         return self.value_text
 
+
+def _smart_num(value):
+    """Render a scalar without a trailing '.0' when it's actually an
+    integer (HF ClassLabel indices, count metrics, etc.). Floats with
+    a fractional part keep their decimals. Non-numerics pass through.
+    Registered as a Jinja filter further down."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    if f != f:  # NaN
+        return value
+    if f.is_integer() and abs(f) < 1e15:
+        return str(int(f))
+    return value
+
 class GlobalMetric(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False, unique=True) # Unique name for global reference
@@ -1292,6 +1308,11 @@ def load_current_user():
     """Populate g.current_user from session on every request. None if anonymous."""
     user_id = session.get('user_id')
     g.current_user = User.query.get(user_id) if user_id else None
+
+
+# Jinja filter: drop trailing '.0' on integer-valued floats so scalars
+# imported from int sources (ClassLabel, count metrics) render as ints.
+app.jinja_env.filters['smart_num'] = _smart_num
 
 
 @app.context_processor
@@ -4598,14 +4619,26 @@ def _infer_mapping(features):
 
 def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                    split='train', revision=None, hf_token=None,
-                   owner_user_id=None):
+                   owner_user_id=None, features=None):
     """Stream up to `sample_cap` rows from the HF dataset, lay them out
     as BenchHub folders per the mapping, and feed the result through the
     existing process_dataset_zip pipeline by re-zipping the folder.
 
     `mapping` is a list of {column, target_kind, target_field}. Anything
     with target_kind='skip' is ignored. Returns (success, message, ds_id).
+
+    `features` (optional) is the normalized HF feature schema. When
+    provided and a column is a ClassLabel, the importer also writes a
+    text column with the human-readable class name and a per-sample
+    tag (in tags/<sample>.txt) so users can filter by class downstream.
     """
+    # Index ClassLabel columns once so the per-row loop is cheap.
+    classlabel_names = {}  # col -> [name0, name1, ...]
+    for col, desc in (features or {}).items():
+        if isinstance(desc, dict) and desc.get('type') == 'ClassLabel':
+            names = desc.get('names') or []
+            if isinstance(names, list) and names:
+                classlabel_names[col] = names
     try:
         from datasets import load_dataset
     except ImportError:
@@ -4665,8 +4698,50 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                                   depth=arr)
                         wrote_anything = True
                     elif kind == 'metric' and value is not None:
-                        with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
-                            f.write(str(float(value)))
+                        # ClassLabel columns: store the class as an int
+                        # (1 not 1.0), plus a parallel text column
+                        # carrying the class NAME, and a per-sample tag
+                        # in tags/ so users can filter the dataset by
+                        # class downstream.
+                        names = classlabel_names.get(col)
+                        try:
+                            int_val = int(value)
+                        except (TypeError, ValueError):
+                            int_val = None
+                        if names is not None and int_val is not None and 0 <= int_val < len(names):
+                            class_name = str(names[int_val])
+                            with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
+                                f.write(str(int_val))
+                            # Side files: class-name text field + per-sample tag.
+                            class_dir = os.path.join(work_dir, f"{col}_class")
+                            os.makedirs(class_dir, exist_ok=True)
+                            with open(os.path.join(class_dir, f"{sample_id}.txt"), 'w') as f:
+                                f.write(class_name)
+                            tags_dir = os.path.join(work_dir, 'tags')
+                            os.makedirs(tags_dir, exist_ok=True)
+                            tag_path = os.path.join(tags_dir, f"{sample_id}.txt")
+                            existing = ''
+                            if os.path.exists(tag_path):
+                                with open(tag_path) as f:
+                                    existing = f.read().strip()
+                            with open(tag_path, 'w') as f:
+                                merged = ','.join(
+                                    [t for t in (existing.split(',') if existing else []) if t]
+                                    + [class_name]
+                                )
+                                f.write(merged)
+                        else:
+                            # Regular numeric metric. Round-trip ints as ints.
+                            try:
+                                fv = float(value)
+                                if fv.is_integer():
+                                    out_str = str(int(fv))
+                                else:
+                                    out_str = str(fv)
+                            except (TypeError, ValueError):
+                                out_str = str(value)
+                            with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
+                                f.write(out_str)
                         wrote_anything = True
                     elif kind == 'text' and value is not None:
                         with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
@@ -4819,11 +4894,19 @@ def import_from_hf_auto():
         flash(msg, "danger")
         return redirect(url_for('datasets_list'))
 
+    # Re-fetch features so _import_hf_auto can do ClassLabel-aware
+    # writes (parallel class-name text column + per-sample tags).
+    # Cheap call, same JSON we used in the preview step.
+    try:
+        features = _hf_fetch_features(repo_id, revision=revision, hf_token=hf_token)
+    except Exception:
+        features = {}
+
     try:
         success, message, ds_id = _import_hf_auto(
             repo_id, dataset_name, mapping,
             sample_cap=sample_cap, revision=revision, hf_token=hf_token,
-            owner_user_id=g.current_user.id,
+            owner_user_id=g.current_user.id, features=features,
         )
         flash(message, "success" if success else "danger")
         if success and ds_id:

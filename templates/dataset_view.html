@@ -617,7 +617,11 @@
                                 {% for m_key, m_val in gt_metrics_data %}
                                 <tr title="{{ m_key }}">
                                     <td class="text-muted text-truncate" style="max-width: 120px;">{{ m_key }}:</td>
-                                    <td class="fw-medium">{{ "%.4f"|format(m_val) if m_val is number else m_val }}</td>
+                                    <td class="fw-medium">
+                                        {%- if m_val is number and m_val == m_val|int %}{{ m_val|smart_num }}
+                                        {%- elif m_val is number %}{{ "%.4f"|format(m_val) }}
+                                        {%- else %}{{ m_val }}{% endif %}
+                                    </td>
                                 </tr>
                                 {% endfor %}
                                 {% endif %}
@@ -638,7 +642,11 @@
                                 {% for m_key, m_val in gt_scalars_data %}
                                 <tr title="{{ m_key }}">
                                     <td class="text-muted text-truncate" style="max-width: 120px;">{{ m_key }}:</td>
-                                    <td class="fw-medium">{{ "%.4f"|format(m_val) if m_val is number else m_val }}</td>
+                                    <td class="fw-medium">
+                                        {%- if m_val is number and m_val == m_val|int %}{{ m_val|smart_num }}
+                                        {%- elif m_val is number %}{{ "%.4f"|format(m_val) }}
+                                        {%- else %}{{ m_val }}{% endif %}
+                                    </td>
                                 </tr>
                                 {% endfor %}
                                 {% endif %}
