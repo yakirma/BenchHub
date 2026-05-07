@@ -386,6 +386,18 @@ class Dataset(db.Model):
     source_kind = db.Column(db.String(32), nullable=True)
     source_metadata = db.Column(db.Text, nullable=True)
 
+    @property
+    def source_metadata_parsed(self):
+        """Parsed source_metadata or {} on any error. Used by templates
+        that want to read e.g. .repo_id without writing JSON-decoding
+        boilerplate inline."""
+        if not self.source_metadata:
+            return {}
+        try:
+            return json.loads(self.source_metadata)
+        except Exception:
+            return {}
+
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=False)
@@ -5913,15 +5925,90 @@ def serve_author_avatar(filename):
     avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
     return send_from_directory(avatar_dir, filename)
 
+_VALID_FIELD_TYPES = ('image', 'scalar', 'metric', 'histogram', 'depth', 'json', 'text')
+
+
+def _dataset_field_types(dataset):
+    """Return [{name, current_type, sample_count}] for every distinct
+    custom-field name on this dataset, used by the settings UI."""
+    sample_ids = [s.id for s in dataset.samples]
+    if not sample_ids:
+        return []
+    rows = (
+        db.session.query(
+            CustomField.name,
+            CustomField.field_type,
+            func.count(CustomField.id),
+        )
+        .filter(CustomField.sample_id.in_(sample_ids))
+        .group_by(CustomField.name, CustomField.field_type)
+        .all()
+    )
+    # Collapse: a field name with mixed types (rare, mid-edit state) shows
+    # the most common one and a "mixed" flag.
+    by_name = {}
+    for name, ftype, cnt in rows:
+        entry = by_name.setdefault(name, {
+            'name': name, 'current_type': ftype,
+            'sample_count': 0, 'mixed': False,
+        })
+        entry['sample_count'] += cnt
+        if entry.get('current_type') != ftype:
+            entry['mixed'] = True
+    return sorted(by_name.values(), key=lambda r: r['name'])
+
+
 @app.route('/dataset/<int:dataset_id>/settings', methods=['GET'])
 @login_required
 @owner_required(Dataset, 'dataset_id')
 def dataset_settings(dataset_id):
     """Dedicated settings page — collects all owner-only controls
-    (sharing, danger zone) in one place so they aren't scattered
-    across the busy dataset detail view."""
+    (sharing, danger zone, field types) in one place so they aren't
+    scattered across the busy dataset detail view."""
     dataset = Dataset.query.get_or_404(dataset_id)
-    return render_template('dataset_settings.html', dataset=dataset)
+    field_types = _dataset_field_types(dataset)
+    # Source provenance for the HF-import badge.
+    hf_meta = None
+    if (dataset.source_kind or '').startswith('hf-') and dataset.source_metadata:
+        try:
+            hf_meta = json.loads(dataset.source_metadata)
+        except Exception:
+            hf_meta = None
+    return render_template(
+        'dataset_settings.html',
+        dataset=dataset,
+        field_types=field_types,
+        valid_field_types=_VALID_FIELD_TYPES,
+        hf_meta=hf_meta,
+    )
+
+
+@app.route('/dataset/<int:dataset_id>/field/<path:field_name>/type', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def update_dataset_field_type(dataset_id, field_name):
+    """Reclassify every CustomField row with this name on this dataset
+    to a new field_type. Useful when auto-detection picked the wrong
+    type (e.g. a `metric_*` column that landed as 'scalar')."""
+    new_type = (request.form.get('field_type') or '').strip()
+    if new_type not in _VALID_FIELD_TYPES:
+        flash(f"Invalid field type '{new_type}'.", "danger")
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    dataset = Dataset.query.get_or_404(dataset_id)
+    sample_ids = [s.id for s in dataset.samples]
+    if not sample_ids:
+        flash("No samples to update.", "warning")
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    updated = (
+        CustomField.query
+        .filter(CustomField.sample_id.in_(sample_ids), CustomField.name == field_name)
+        .update({'field_type': new_type}, synchronize_session=False)
+    )
+    db.session.commit()
+    flash(f"Reclassified {updated} '{field_name}' rows to '{new_type}'.", "success")
+    return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
 
 @app.route('/dataset/<int:dataset_id>')

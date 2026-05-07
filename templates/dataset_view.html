@@ -11,7 +11,23 @@
         <div class="author-avatar-init" data-author="{{ dataset.git_author or '' }}" data-size="53"
             id="dataset-author-avatar"></div>
         <div>
-            <h1>Dataset: {{ dataset.name }}</h1>
+            <h1 class="d-flex align-items-center gap-2 flex-wrap">
+                Dataset: {{ dataset.name }}
+                {# HF source badge — visible to everyone, deep-links back
+                   to the upstream HuggingFace repo. #}
+                {% set hf = dataset.source_metadata_parsed %}
+                {% if dataset.source_kind and dataset.source_kind.startswith('hf-') and hf.repo_id %}
+                <a href="https://huggingface.co/datasets/{{ hf.repo_id }}{% if hf.revision %}/tree/{{ hf.revision }}{% endif %}"
+                    target="_blank" rel="noopener"
+                    class="badge text-bg-light border text-decoration-none align-middle"
+                    style="font-size: 0.55em;"
+                    title="Imported from HuggingFace — click to view the source repo">
+                    <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg"
+                        alt="HF" width="14" height="14" class="me-1">
+                    HF: {{ hf.repo_id }}
+                </a>
+                {% endif %}
+            </h1>
             <p class="text-muted mb-0">Uploaded on: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}</p>
             {% if dataset.git_commit %}
             <p class="text-muted">
