@@ -397,21 +397,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </form>
             <form method="post"
                 action="{{ url_for('update_comparison_display_columns', leaderboard_id=submissions[0].leaderboard.id) }}"
-                class="d-flex align-items-center ms-3">
-                <label class="form-check-label fw-bold me-3">Display Columns:</label>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" id="select_all_comparison_cols"
-                        onclick="handleSelectAllClick(this)">
-                    <label class="form-check-label" for="select_all_comparison_cols"><strong>All</strong></label>
-                </div>
-                {% for key, option in comparison_display_options.items() %}
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" name="comparison_display_columns" value="{{ key }}"
-                        id="comp_col_{{ key }}" {% if key in selected_comparison_display_columns %}checked{% endif %}
-                        onchange="saveScrollAndSubmit(this.form)">
-                    <label class="form-check-label" for="comp_col_{{ key }}">{{ option.label }}</label>
-                </div>
-                {% endfor %}
+                class="d-flex align-items-center ms-3 gap-2">
+                <label class="form-label fw-bold mb-0" for="comp_display_columns_select">
+                    Display columns:
+                </label>
+                <select name="comparison_display_columns" id="comp_display_columns_select"
+                    class="form-select" multiple size="5"
+                    style="max-width: 320px;"
+                    onchange="saveScrollAndSubmit(this.form)">
+                    {% for key, option in comparison_display_options.items() %}
+                    <option value="{{ key }}"
+                        {% if key in selected_comparison_display_columns %}selected{% endif %}>
+                        {{ option.label }}
+                    </option>
+                    {% endfor %}
+                </select>
             </form>
 
             {% if sample_metric_options %}

@@ -1242,8 +1242,13 @@ def load_current_user():
 
 @app.context_processor
 def inject_current_user():
-    """Make current_user available in every Jinja template."""
-    return {'current_user': getattr(g, 'current_user', None)}
+    """Make current_user (and current_user_is_admin) available in every
+    Jinja template."""
+    user = getattr(g, 'current_user', None)
+    return {
+        'current_user': user,
+        'current_user_is_admin': is_admin(user),
+    }
 
 
 def login_required(view):
@@ -1290,6 +1295,10 @@ def owner_required(model_cls, id_kwarg='id'):
             if owner_id is None:
                 # Legacy / unowned. Permit for now; the eventual backfill
                 # plan assigns an owner so this branch becomes unreachable.
+                return view(*args, **kwargs)
+            # Admin (BENCHHUB_ADMIN_EMAILS) bypass — staff can act on
+            # anything, e.g. delete abusive content.
+            if is_admin(current):
                 return view(*args, **kwargs)
             if current is None or current.id != owner_id:
                 abort(403)
@@ -1356,6 +1365,9 @@ def visibility_required(model_cls, id_kwarg='id'):
             if owner_id is None:
                 return view(*args, **kwargs)
             if current is not None and current.id == owner_id:
+                return view(*args, **kwargs)
+            # Admin can view anything (incl. private rows of other users).
+            if is_admin(current):
                 return view(*args, **kwargs)
             if visibility in ('public', 'unlisted'):
                 return view(*args, **kwargs)

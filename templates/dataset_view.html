@@ -281,21 +281,25 @@
     <div class="card-body">
         <h5 class="card-title">View Options</h5>
         <form method="post" action="{{ url_for('update_dataset_display_columns', dataset_id=dataset.id) }}"
-            class="d-flex align-items-center">
-            <strong class="me-3">Display Columns:</strong>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="checkbox" id="select_all_dataset_cols"
-                    onclick="handleDatasetSelectAllClick(this)">
-                <label class="form-check-label" for="select_all_dataset_cols"><strong>All</strong></label>
-            </div>
-            {% for key, option in dataset_display_options.items() %}
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="checkbox" name="display_columns" value="{{ key }}"
-                    id="col_{{ key }}" {% if key in selected_display_columns %}checked{% endif %}
+            class="row g-2 align-items-center">
+            <label for="display_columns_select" class="col-sm-auto col-form-label fw-bold">
+                Display columns:
+            </label>
+            <div class="col">
+                {# Multi-select dropdown — Ctrl/Cmd-click to toggle. Saves on
+                   change (no submit button needed). #}
+                <select name="display_columns" id="display_columns_select"
+                    class="form-select" multiple size="5"
                     onchange="saveScrollAndSubmit(this.form)">
-                <label class="form-check-label" for="col_{{ key }}">{{ option.label }}</label>
+                    {% for key, option in dataset_display_options.items() %}
+                    <option value="{{ key }}"
+                        {% if key in selected_display_columns %}selected{% endif %}>
+                        {{ option.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <div class="form-text small">Hold ⌘/Ctrl to toggle individual columns.</div>
             </div>
-            {% endfor %}
         </form>
     </div>
 </div>
@@ -828,6 +832,37 @@
         <div id="metric-gallery-footer" style="margin-top: 10px;"></div>
     </div>
 </div>
+
+{# Danger zone — only the owner or an admin sees this. Delete used to
+   live on the dataset list but was prone to accidental clicks; now it's
+   a deliberate action from the detail page. #}
+{% if current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
+<div class="container my-5">
+    <div class="card border-danger">
+        <div class="card-body">
+            <h5 class="text-danger fw-bold mb-2">
+                <i class="bi bi-exclamation-octagon me-1"></i>Danger zone
+            </h5>
+            <p class="mb-3">
+                Deleting <strong>{{ dataset.name }}</strong> removes the
+                dataset, all of its samples, and any leaderboards that use
+                it. This cannot be undone.
+            </p>
+            <form method="post" action="{{ url_for('delete_dataset', dataset_id=dataset.id) }}"
+                onsubmit="return confirm('Permanently delete dataset \'{{ dataset.name }}\'? This cannot be undone.');">
+                <button type="submit" class="btn btn-danger">
+                    <i class="bi bi-trash me-1"></i>Delete this dataset
+                </button>
+                {% if current_user_is_admin and dataset.owner_user_id != current_user.id %}
+                <span class="ms-2 small text-body-secondary">
+                    (admin override — you don't own this dataset)
+                </span>
+                {% endif %}
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
