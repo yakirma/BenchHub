@@ -50,7 +50,15 @@
 <div class="container py-4">
     <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-3">
         <div>
-            <h1 class="h3 fw-bold mb-1">Welcome back, {{ current_user.display_name }}</h1>
+            <h1 class="h3 fw-bold mb-1">
+                Welcome back, {{ current_user.display_name }}
+                {% if current_user_is_admin %}
+                <span class="badge text-bg-warning text-dark ms-2 align-middle"
+                    style="font-size: 0.6em;">
+                    <i class="bi bi-shield-fill-check me-1"></i>Admin
+                </span>
+                {% endif %}
+            </h1>
             <p class="text-body-secondary mb-0">Your datasets and leaderboards, most recent first.</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">

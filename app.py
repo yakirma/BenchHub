@@ -644,6 +644,13 @@ class User(db.Model):
     # a new value and invalidates the old one (no grace window).
     api_token = db.Column(db.String(64), unique=True, nullable=True, index=True)
 
+    # Admin bit. Two ways to be an admin:
+    # 1. Email is on the BENCHHUB_ADMIN_EMAILS env-var allow-list
+    #    (immutable from the running app — set via Fly secret).
+    # 2. This DB-backed flag (mutable from /settings/admins by another
+    #    admin). Bootstrapped from the env-var allow-list at first login.
+    is_admin = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
+
     __table_args__ = (
         db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
     )
@@ -1551,8 +1558,14 @@ def _admin_emails():
 
 
 def is_admin(user):
+    """A user is admin if EITHER their email is on the env-var allow-list
+    OR their User.is_admin DB flag is set. Env-var users get the flag
+    auto-set on first OAuth callback so the DB-backed admin list always
+    reflects reality."""
     if user is None:
         return False
+    if getattr(user, 'is_admin', False):
+        return True
     return (user.email or '').strip().lower() in _admin_emails()
 
 
@@ -1654,6 +1667,11 @@ def oauth_callback_github():
         user.display_name = profile.get('name') or profile.get('login') or user.display_name
         user.avatar_url = profile.get('avatar_url') or user.avatar_url
     user.last_login_at = datetime.utcnow()
+    # Bootstrap: anyone whose email is on the env-var allow-list gets the
+    # DB-backed admin bit set at login. Lets the runtime UI show + edit
+    # the admin list without losing the env-var users on every restart.
+    if (user.email or '').strip().lower() in _admin_emails() and not user.is_admin:
+        user.is_admin = True
     db.session.commit()
 
     session['user_id'] = user.id
@@ -1698,6 +1716,65 @@ def api_tokens_revoke():
     db.session.commit()
     flash("API token revoked.", "warning")
     return redirect(url_for('api_tokens'))
+
+
+# ===================== Admin management =====================
+# DB-backed admin list, manageable from /settings/admins. Bootstrapped
+# from BENCHHUB_ADMIN_EMAILS at OAuth callback.
+
+@app.route('/settings/admins', methods=['GET'])
+@login_required
+def admins_settings():
+    if not is_admin(g.current_user):
+        abort(403)
+    admin_users = User.query.filter_by(is_admin=True).order_by(User.email).all()
+    env_emails = sorted(_admin_emails())
+    return render_template(
+        'admins_settings.html',
+        admin_users=admin_users,
+        env_emails=env_emails,
+    )
+
+
+@app.route('/settings/admins/grant', methods=['POST'])
+@login_required
+def admins_grant():
+    if not is_admin(g.current_user):
+        abort(403)
+    email = (request.form.get('email') or '').strip().lower()
+    if not email:
+        flash("Email required.", "warning")
+        return redirect(url_for('admins_settings'))
+    user = User.query.filter(func.lower(User.email) == email).first()
+    if user is None:
+        flash(f"No BenchHub user with email '{email}'. They need to sign in once first.", "warning")
+        return redirect(url_for('admins_settings'))
+    if user.is_admin:
+        flash(f"{user.display_name or user.email} is already an admin.", "info")
+        return redirect(url_for('admins_settings'))
+    user.is_admin = True
+    db.session.commit()
+    flash(f"Granted admin to {user.display_name or user.email}.", "success")
+    return redirect(url_for('admins_settings'))
+
+
+@app.route('/settings/admins/revoke/<int:user_id>', methods=['POST'])
+@login_required
+def admins_revoke(user_id):
+    if not is_admin(g.current_user):
+        abort(403)
+    target = User.query.get(user_id)
+    if target is None:
+        abort(404)
+    # Don't let an admin demote themselves — too easy to lock everyone out.
+    # Another admin can do it, or revert via the env-var bootstrap.
+    if target.id == g.current_user.id:
+        flash("You can't revoke your own admin. Ask another admin.", "warning")
+        return redirect(url_for('admins_settings'))
+    target.is_admin = False
+    db.session.commit()
+    flash(f"Revoked admin from {target.display_name or target.email}.", "success")
+    return redirect(url_for('admins_settings'))
 
 
 # ===================== Account deletion (GDPR) =====================
@@ -6891,6 +6968,9 @@ def check_and_migrate_db():
                     # Phase 8: programmatic-access token. Nullable; users
                     # opt-in by clicking "Generate" in /settings/api_tokens.
                     ("user",                 "api_token",                      "VARCHAR(64)"),
+                    # DB-backed admin flag (env-var allow-list still works
+                    # in parallel as the bootstrap mechanism).
+                    ("user",                 "is_admin",                       "BOOLEAN NOT NULL DEFAULT 0"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

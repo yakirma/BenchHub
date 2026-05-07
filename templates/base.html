@@ -266,12 +266,19 @@
                            signed-in user with a dropdown for logout, or a
                            Login link for anonymous visitors. #}
                         {% if current_user %}
+                        {% if current_user_is_admin %}
+                        <span class="badge text-bg-warning text-dark ms-3 d-flex align-items-center"
+                            title="You're on the BENCHHUB_ADMIN_EMAILS allow-list — you can view and delete other users' content.">
+                            <i class="bi bi-shield-fill-check me-1"></i>Admin
+                        </span>
+                        {% endif %}
                         <div class="dropdown ms-3">
-                            <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle"
+                            <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle
+                                {{ 'fw-bold text-warning' if current_user_is_admin }}"
                                 data-bs-toggle="dropdown" aria-expanded="false">
                                 {% if current_user.avatar_url %}
                                 <img src="{{ current_user.avatar_url }}" alt="" width="28" height="28"
-                                    class="rounded-circle me-2">
+                                    class="rounded-circle me-2 {{ 'border border-2 border-warning' if current_user_is_admin }}">
                                 {% else %}
                                 <i class="bi bi-person-circle fs-4 me-2"></i>
                                 {% endif %}
@@ -280,6 +287,11 @@
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li class="dropdown-item-text small text-muted">
                                     {{ current_user.email }}
+                                    {% if current_user_is_admin %}
+                                    <span class="badge text-bg-warning text-dark ms-1">
+                                        <i class="bi bi-shield-fill-check me-1"></i>Admin
+                                    </span>
+                                    {% endif %}
                                 </li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li>
@@ -292,6 +304,13 @@
                                         <i class="bi bi-gear me-1"></i> Account settings
                                     </a>
                                 </li>
+                                {% if current_user_is_admin %}
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('admins_settings') }}">
+                                        <i class="bi bi-shield-fill-check me-1 text-warning"></i> Manage admins
+                                    </a>
+                                </li>
+                                {% endif %}
                                 <li>
                                     <form method="POST" action="{{ url_for('logout') }}" class="m-0">
                                         <button type="submit" class="dropdown-item">
