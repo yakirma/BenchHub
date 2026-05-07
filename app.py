@@ -4403,10 +4403,69 @@ _HF_TAG_PREFIX_DROP = (
 _HF_TAG_PREFIX_KEEP = ('task_categories:', 'task_ids:', 'task:', 'modality:')
 
 
+# The single allowed vocabulary for the primary discovery tag. Every
+# auto-tagged dataset gets exactly one of these (or none if we can't
+# classify confidently). Keeps `/explore` filterable instead of drowning
+# in 50 near-duplicate task labels.
+_PRIMARY_TASK_TAGS = (
+    'depth', 'segmentation', 'classification', 'detection',
+    'language', 'audio', 'generation', 'regression', 'tabular',
+    'multimodal', 'tracking', 'pose', 'reconstruction',
+)
+
+# Map common HF task tags onto our primary vocabulary so the heuristic
+# fallback (no API key) can still pick a sensible primary.
+_HF_TASK_TO_PRIMARY = {
+    'image-classification': 'classification',
+    'text-classification': 'classification',
+    'token-classification': 'classification',
+    'audio-classification': 'classification',
+    'tabular-classification': 'tabular',
+    'tabular-regression': 'tabular',
+    'image-segmentation': 'segmentation',
+    'semantic-segmentation': 'segmentation',
+    'instance-segmentation': 'segmentation',
+    'panoptic-segmentation': 'segmentation',
+    'object-detection': 'detection',
+    'face-detection': 'detection',
+    'depth-estimation': 'depth',
+    'monocular-depth-estimation': 'depth',
+    'translation': 'language',
+    'summarization': 'language',
+    'question-answering': 'language',
+    'text-generation': 'language',
+    'fill-mask': 'language',
+    'sentiment-analysis': 'language',
+    'text-to-image': 'generation',
+    'image-to-image': 'generation',
+    'unconditional-image-generation': 'generation',
+    'image-to-text': 'multimodal',
+    'visual-question-answering': 'multimodal',
+    'speech-recognition': 'audio',
+    'automatic-speech-recognition': 'audio',
+    'audio-to-audio': 'audio',
+    'pose-estimation': 'pose',
+    'keypoint-detection': 'pose',
+    'object-tracking': 'tracking',
+    'reinforcement-learning': 'other',  # filtered later
+}
+
+# Optional second tag: a qualifier that further specializes the primary.
+# Keep this list short — it's the only kebab-cased free-text tag we'll
+# accept from the heuristic side. The LLM is allowed to invent its own.
+_HF_QUALIFIER_VOCAB = {
+    'stereo', 'monocular', 'indoor', 'outdoor', 'medical', 'satellite',
+    'aerial', 'lidar', 'ct', 'mri', 'xray', 'autonomous-driving',
+    'robotics', 'fine-grained', 'multi-label', 'multilingual',
+    'low-light', 'underwater', 'face', 'document',
+}
+
+
 def _normalize_hf_tags(raw_tags):
-    """Convert HF's raw tag list into the small handful of clean
-    discovery tags we'd actually show on a BenchHub dataset.
-    Strips noise prefixes, lowercases, dedupes, caps at 6."""
+    """Strip noise prefixes off HF's raw tag list and return a flat
+    lowercased list. Used as INPUT to _heuristic_primary_tag — not as
+    the dataset's final tag set. (Final tags live behind
+    _auto_tags_for_hf and are capped at 1 primary + 1 qualifier.)"""
     out = []
     seen = set()
     for tag in raw_tags or []:
@@ -4421,11 +4480,9 @@ def _normalize_hf_tags(raw_tags):
             if t.startswith(keep):
                 t = t[len(keep):]
                 break
-        # After prefix strip, drop anything that's still empty or a single char.
         t = t.strip().strip(':')
         if len(t) < 2:
             continue
-        # Skip generic catch-all values that show up on most datasets.
         if t in {'image', 'text', 'audio', 'tabular', 'multimodal',
                  'crowdsourced', 'expert-generated', 'machine-generated',
                  'found', 'other', 'mit', 'apache-2.0', 'cc-by-4.0', 'unknown'}:
@@ -4434,9 +4491,28 @@ def _normalize_hf_tags(raw_tags):
             continue
         seen.add(t)
         out.append(t)
-        if len(out) >= 6:
-            break
     return out
+
+
+def _heuristic_primary_tag(normalized_hf_tags):
+    """First HF task tag that maps onto our primary vocabulary, or None."""
+    for t in normalized_hf_tags:
+        primary = _HF_TASK_TO_PRIMARY.get(t)
+        if primary and primary in _PRIMARY_TASK_TAGS:
+            return primary
+        # Sometimes the tag is bare (e.g. 'depth-estimation' without
+        # the `task:` prefix); the same lookup still applies.
+    return None
+
+
+def _heuristic_qualifier_tag(normalized_hf_tags, primary):
+    """First qualifier-vocab tag that's compatible with the primary,
+    or None. Stereo + classification doesn't pair, so we don't bother
+    cross-checking — qualifiers are intentionally sparse."""
+    for t in normalized_hf_tags:
+        if t in _HF_QUALIFIER_VOCAB and t != primary:
+            return t
+    return None
 
 
 def _hf_fetch_repo_metadata(repo_id, revision=None, hf_token=None):
@@ -4465,23 +4541,38 @@ def _hf_fetch_repo_metadata(repo_id, revision=None, hf_token=None):
 
 
 def _llm_suggest_tags(repo_id, hf_tags, description):
-    """Ask Claude for 3-6 short discovery tags. Returns [] when the
-    API key isn't set or the call fails — caller falls back to the
-    HF-tag-only normalized list."""
+    """Ask Claude for the dataset's primary task tag and at most ONE
+    qualifier. Returns [primary] or [primary, qualifier], or [] when
+    the API key isn't set or the call fails. Keeps the discovery tag
+    set tiny on purpose — see _auto_tags_for_hf."""
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         return []
     try:
         import requests as _r
+        primary_list = ', '.join(_PRIMARY_TASK_TAGS)
         system_prompt = (
-            "You suggest concise discovery tags for a benchmarking platform's "
-            "dataset listing. Tags help users find datasets by topic.\n\n"
-            "Return JSON: an array of 3-6 lowercase tag strings, kebab-case, "
-            "each 1-3 words. Examples: 'depth-estimation', 'segmentation', "
-            "'indoor', 'autonomous-driving', 'medical-imaging'.\n\n"
-            "Skip generic words: 'dataset', 'benchmark', 'image', 'machine-learning'.\n"
-            "Skip license/language/size/format metadata.\n"
-            "Prefer task and domain terms over modality."
+            "You assign minimal discovery tags to a HuggingFace dataset "
+            "for a benchmarking platform. Tags must be SHORT and "
+            "INFORMATIVE so /explore stays scannable.\n\n"
+            "Output rule: a JSON array with EXACTLY 1 OR 2 strings — "
+            "first the primary task tag, then (optional) a qualifier.\n\n"
+            f"PRIMARY TAG MUST be one of: {primary_list}.\n"
+            "Pick the closest match; never invent a new primary.\n\n"
+            "QUALIFIER (optional 2nd tag) is a SINGLE WORD or kebab-case "
+            "modifier that further specializes the primary. Examples:\n"
+            "- depth + stereo (stereo-depth dataset)\n"
+            "- depth + monocular\n"
+            "- depth + indoor\n"
+            "- segmentation + medical / semantic / instance / panoptic\n"
+            "- classification + medical / fine-grained / multi-label\n"
+            "- detection + autonomous-driving / face / aerial\n"
+            "- language + qa / summarization / sentiment / translation\n"
+            "- generation + text-to-image / image-to-image\n"
+            "- audio + speech / music\n\n"
+            "If you cannot classify confidently, return []. NEVER return "
+            "vague or generic tags. NEVER return more than 2 tags. "
+            "Return ONLY the JSON array, no prose."
         )
         msg = (
             f"Repo: {repo_id}\n"
@@ -4497,7 +4588,7 @@ def _llm_suggest_tags(repo_id, hf_tags, description):
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 200,
+                "max_tokens": 100,
                 "system": [
                     {"type": "text", "text": system_prompt,
                      "cache_control": {"type": "ephemeral"}},
@@ -4517,47 +4608,50 @@ def _llm_suggest_tags(repo_id, hf_tags, description):
             text = re.sub(r'^```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```$', '', text)
         parsed = json.loads(text)
-        if not isinstance(parsed, list):
+        if not isinstance(parsed, list) or not parsed:
             return []
-        cleaned = []
-        seen = set()
-        for tag in parsed:
-            if not isinstance(tag, str):
-                continue
-            t = tag.strip().lower().replace(' ', '-')
-            if 2 <= len(t) <= 40 and t not in seen:
-                seen.add(t)
-                cleaned.append(t)
-            if len(cleaned) >= 6:
-                break
-        return cleaned
+        # Validate shape: first entry must be in the primary vocab.
+        primary = str(parsed[0]).strip().lower().replace(' ', '-')
+        if primary not in _PRIMARY_TASK_TAGS:
+            return []
+        out = [primary]
+        if len(parsed) >= 2 and isinstance(parsed[1], str):
+            qualifier = parsed[1].strip().lower().replace(' ', '-')
+            if 2 <= len(qualifier) <= 40 and qualifier != primary:
+                out.append(qualifier)
+        return out
     except Exception as e:
         print(f"_llm_suggest_tags failed: {e}")
         return []
 
 
 def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
-    """Combine HF metadata tags with optional Claude suggestions.
-    Returns a final list of up to 6 tag names suitable for
-    _resolve_tags(). Both sources may return [] — that's fine, just
-    leave the dataset untagged for the user to fill in."""
+    """Pick at most 2 discovery tags for the dataset: a primary task
+    category from `_PRIMARY_TASK_TAGS` plus an optional qualifier.
+
+    LLM-first when ANTHROPIC_API_KEY is set; otherwise the heuristic
+    HF-task-tag → primary mapping. Returns [] when neither source can
+    classify the dataset — caller leaves it untagged for the user to
+    fill in.
+
+    Anti-bloat: never returns more than 2 tags. The previous union-of-
+    everything behavior produced noise that made /explore unreadable.
+    """
     meta = _hf_fetch_repo_metadata(repo_id, revision=revision, hf_token=hf_token)
-    hf_tags = _normalize_hf_tags(meta.get('tags', []))
-    llm_tags = _llm_suggest_tags(
-        repo_id, meta.get('tags', []), meta.get('description', '')
-    )
-    # Union, LLM-first (it tends to produce cleaner tags), then HF for
-    # anything new. Cap at 6 final tags.
-    out = []
-    seen = set()
-    for source in (llm_tags, hf_tags):
-        for t in source:
-            if t not in seen:
-                seen.add(t)
-                out.append(t)
-            if len(out) >= 6:
-                return out
-    return out
+    raw = meta.get('tags', []) or []
+    description = meta.get('description', '')
+
+    llm_tags = _llm_suggest_tags(repo_id, raw, description)
+    if llm_tags:
+        return llm_tags[:2]
+
+    # Heuristic fallback (no API key, or LLM returned []).
+    normalized = _normalize_hf_tags(raw)
+    primary = _heuristic_primary_tag(normalized)
+    if not primary:
+        return []
+    qualifier = _heuristic_qualifier_tag(normalized, primary)
+    return [primary, qualifier] if qualifier else [primary]
 
 
 # --- Colab submission notebook generation (per-LB, LLM-cached) ---------

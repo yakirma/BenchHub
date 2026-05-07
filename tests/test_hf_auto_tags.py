@@ -1,17 +1,28 @@
-"""Auto-tagging on HF imports: HF-metadata path + LLM path + combined."""
+"""Auto-tagging on HF imports.
+
+Contract: every auto-tagged dataset gets at most TWO discovery tags —
+a primary task category from a fixed vocabulary plus an optional
+qualifier. The previous "up to 6 vague tags from union(HF, LLM)"
+behavior is gone; tags are intentionally tiny so /explore stays
+scannable.
+"""
 from unittest.mock import patch
 
 import pytest
 
 from app import (
+    _PRIMARY_TASK_TAGS,
     _normalize_hf_tags,
+    _heuristic_primary_tag,
+    _heuristic_qualifier_tag,
     _llm_suggest_tags,
     _auto_tags_for_hf,
 )
 
 
 # ---------------------------------------------------------------------------
-# _normalize_hf_tags: filter HF's noisy raw tag list down to discovery tags
+# _normalize_hf_tags: strip noise prefixes, return a flat list (input to the
+# heuristic — NOT the dataset's final tag set).
 # ---------------------------------------------------------------------------
 
 
@@ -28,17 +39,15 @@ def test_normalize_strips_metadata_prefixes():
     assert out == ['image-classification']
 
 
-def test_normalize_dedupes_and_caps_at_six():
+def test_normalize_dedupes():
     raw = [
-        'task:depth-estimation', 'depth-estimation',
-        'task:segmentation', 'task:detection',
-        'task:tracking', 'task:pose-estimation',
-        'task:reconstruction', 'task:retrieval',  # 7th — gets capped
+        'task:depth-estimation', 'depth-estimation',  # same after strip
+        'task:segmentation',
     ]
     out = _normalize_hf_tags(raw)
-    assert len(out) == 6
-    assert out[0] == 'depth-estimation'  # dedupe winner
-    assert 'retrieval' not in out         # capped
+    # Dedupe still applies; cap is no longer enforced here (the old
+    # 6-tag cap is gone — _auto_tags_for_hf collapses to ≤ 2 instead).
+    assert out == ['depth-estimation', 'segmentation']
 
 
 def test_normalize_drops_empty_and_too_short():
@@ -46,7 +55,36 @@ def test_normalize_drops_empty_and_too_short():
 
 
 # ---------------------------------------------------------------------------
-# _llm_suggest_tags: opt-in via ANTHROPIC_API_KEY
+# Heuristic primary + qualifier: deterministic fallback when no API key.
+# ---------------------------------------------------------------------------
+
+
+def test_heuristic_primary_maps_hf_task_tag_onto_vocabulary():
+    assert _heuristic_primary_tag(['image-classification']) == 'classification'
+    assert _heuristic_primary_tag(['object-detection']) == 'detection'
+    assert _heuristic_primary_tag(['depth-estimation']) == 'depth'
+    assert _heuristic_primary_tag(['semantic-segmentation']) == 'segmentation'
+
+
+def test_heuristic_primary_returns_none_when_nothing_matches():
+    assert _heuristic_primary_tag(['some-random-tag', 'another']) is None
+
+
+def test_heuristic_qualifier_picks_known_modifier():
+    assert _heuristic_qualifier_tag(['stereo', 'rgb-d'], primary='depth') == 'stereo'
+    assert _heuristic_qualifier_tag(['indoor'], primary='depth') == 'indoor'
+
+
+def test_heuristic_qualifier_skips_unknown_modifiers():
+    assert _heuristic_qualifier_tag(['rgb-d', 'kinect'], primary='depth') is None
+
+
+def test_heuristic_qualifier_doesnt_duplicate_primary():
+    assert _heuristic_qualifier_tag(['depth'], primary='depth') is None
+
+
+# ---------------------------------------------------------------------------
+# _llm_suggest_tags: returns [] or [primary] or [primary, qualifier].
 # ---------------------------------------------------------------------------
 
 
@@ -55,7 +93,7 @@ def test_llm_suggest_returns_empty_without_api_key(monkeypatch):
     assert _llm_suggest_tags('foo/bar', [], 'description') == []
 
 
-def test_llm_suggest_parses_json_array(monkeypatch):
+def test_llm_suggest_accepts_primary_and_qualifier(monkeypatch):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
 
     class _Ok:
@@ -63,12 +101,60 @@ def test_llm_suggest_parses_json_array(monkeypatch):
         def json(self):
             return {'content': [{
                 'type': 'text',
-                'text': '["depth-estimation", "indoor", "rgb-d"]',
+                'text': '["depth", "stereo"]',
             }]}
 
     with patch('requests.post', return_value=_Ok()):
-        tags = _llm_suggest_tags('a/b', ['x', 'y'], 'A great dataset')
-    assert tags == ['depth-estimation', 'indoor', 'rgb-d']
+        tags = _llm_suggest_tags('a/b', ['x', 'y'], 'A stereo depth dataset')
+    assert tags == ['depth', 'stereo']
+
+
+def test_llm_suggest_accepts_primary_only(monkeypatch):
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
+    class _Ok:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{
+                'type': 'text', 'text': '["segmentation"]',
+            }]}
+
+    with patch('requests.post', return_value=_Ok()):
+        tags = _llm_suggest_tags('a/b', [], '')
+    assert tags == ['segmentation']
+
+
+def test_llm_suggest_rejects_invalid_primary(monkeypatch):
+    """Primary tag must be in _PRIMARY_TASK_TAGS; off-vocab → []."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
+    class _Ok:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{
+                'type': 'text', 'text': '["chocolate", "vanilla"]',
+            }]}
+
+    with patch('requests.post', return_value=_Ok()):
+        assert _llm_suggest_tags('a/b', [], '') == []
+
+
+def test_llm_suggest_caps_at_two_tags(monkeypatch):
+    """Even if the model emits 5 tags, only the first two are kept."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
+    class _Ok:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{
+                'type': 'text',
+                'text': '["depth", "indoor", "rgb-d", "kinect", "scenes"]',
+            }]}
+
+    with patch('requests.post', return_value=_Ok()):
+        tags = _llm_suggest_tags('a/b', [], '')
+    assert len(tags) <= 2
+    assert tags[0] == 'depth'
 
 
 def test_llm_suggest_silently_falls_back_on_error(monkeypatch):
@@ -79,25 +165,25 @@ def test_llm_suggest_silently_falls_back_on_error(monkeypatch):
 
 def test_llm_suggest_handles_fenced_json(monkeypatch):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
     class _Ok:
         def raise_for_status(self): pass
         def json(self):
             return {'content': [{
-                'type': 'text',
-                'text': '```json\n["medical-imaging", "ct"]\n```',
+                'type': 'text', 'text': '```json\n["classification", "medical"]\n```',
             }]}
     with patch('requests.post', return_value=_Ok()):
         tags = _llm_suggest_tags('a/b', [], '')
-    assert tags == ['medical-imaging', 'ct']
+    assert tags == ['classification', 'medical']
 
 
 # ---------------------------------------------------------------------------
-# _auto_tags_for_hf: combine both sources
+# _auto_tags_for_hf: end-to-end, with + without LLM.
 # ---------------------------------------------------------------------------
 
 
-def test_auto_tags_combines_llm_first_then_hf(monkeypatch):
-    """LLM-suggested tags lead; HF tags fill in any new ones; cap at 6."""
+def test_auto_tags_uses_llm_when_available(monkeypatch):
+    """LLM picks the primary + qualifier; HF tags are not unioned in."""
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
 
     class _MetaOk:
@@ -105,52 +191,120 @@ def test_auto_tags_combines_llm_first_then_hf(monkeypatch):
         def json(self):
             return {
                 'tags': ['task:depth-estimation', 'language:en', 'size:1k'],
-                'description': 'NYU depth dataset',
+                'description': 'NYU stereo depth dataset',
             }
 
     class _LLMOk:
         def raise_for_status(self): pass
         def json(self):
             return {'content': [{
-                'type': 'text',
-                'text': '["indoor", "rgb-d"]',
+                'type': 'text', 'text': '["depth", "stereo"]',
             }]}
 
-    def fake_get(url, *a, **kw):
-        return _MetaOk()
-    def fake_post(url, *a, **kw):
-        return _LLMOk()
+    def fake_get(*a, **kw): return _MetaOk()
+    def fake_post(*a, **kw): return _LLMOk()
 
     with patch('requests.get', side_effect=fake_get), \
          patch('requests.post', side_effect=fake_post):
         tags = _auto_tags_for_hf('nyu/depth')
 
-    # LLM suggestions come first; HF-derived 'depth-estimation' tacked on after.
-    assert tags[0] == 'indoor'
-    assert tags[1] == 'rgb-d'
-    assert 'depth-estimation' in tags
-    # HF noise prefixes filtered out.
-    assert 'language:en' not in tags
+    assert tags == ['depth', 'stereo']
 
 
-def test_auto_tags_works_without_llm(monkeypatch):
-    """No ANTHROPIC_API_KEY → still returns HF-derived tags."""
+def test_auto_tags_heuristic_when_no_llm(monkeypatch):
+    """No ANTHROPIC_API_KEY → heuristic maps the HF task tag onto the
+    primary vocabulary."""
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
     class _MetaOk:
         def raise_for_status(self): pass
         def json(self):
-            return {'tags': ['task:segmentation'], 'description': ''}
+            return {'tags': ['task_categories:image-segmentation'],
+                    'description': ''}
     with patch('requests.get', return_value=_MetaOk()):
         tags = _auto_tags_for_hf('foo/seg')
     assert tags == ['segmentation']
 
 
-def test_auto_tags_returns_empty_when_both_sources_empty(monkeypatch):
-    """No HF tags + no LLM = no tags. Caller leaves the dataset untagged."""
+def test_auto_tags_heuristic_picks_qualifier_when_compatible(monkeypatch):
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
+    class _MetaOk:
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                'tags': ['task:depth-estimation', 'stereo', 'rgb-d'],
+                'description': '',
+            }
+    with patch('requests.get', return_value=_MetaOk()):
+        tags = _auto_tags_for_hf('foo/stereo-depth')
+    assert tags == ['depth', 'stereo']
+
+
+def test_auto_tags_returns_empty_when_nothing_matches(monkeypatch):
+    """No primary mapping + no LLM → leave dataset untagged."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
+    class _MetaOk:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'tags': ['weird-tag-not-in-vocab'], 'description': ''}
+    with patch('requests.get', return_value=_MetaOk()):
+        assert _auto_tags_for_hf('blank/repo') == []
+
+
+def test_auto_tags_falls_back_to_heuristic_when_llm_returns_empty(monkeypatch):
+    """LLM said 'I cannot classify confidently' → heuristic still tries."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
+    class _MetaOk:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'tags': ['task:depth-estimation'], 'description': ''}
+
+    class _LLMEmpty:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{'type': 'text', 'text': '[]'}]}
+
+    with patch('requests.get', return_value=_MetaOk()), \
+         patch('requests.post', return_value=_LLMEmpty()):
+        tags = _auto_tags_for_hf('a/b')
+    assert tags == ['depth']
+
+
+def test_auto_tags_caps_at_two_globally(monkeypatch):
+    """Even if internals slip up, the public API never returns > 2."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+
     class _MetaOk:
         def raise_for_status(self): pass
         def json(self):
             return {'tags': [], 'description': ''}
-    with patch('requests.get', return_value=_MetaOk()):
-        assert _auto_tags_for_hf('blank/repo') == []
+
+    class _LLMTriple:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{
+                'type': 'text', 'text': '["classification", "medical", "ct"]',
+            }]}
+
+    with patch('requests.get', return_value=_MetaOk()), \
+         patch('requests.post', return_value=_LLMTriple()):
+        tags = _auto_tags_for_hf('a/b')
+    assert len(tags) <= 2
+
+
+def test_primary_vocabulary_is_locked_down():
+    """Defensive: pin the vocabulary so a future refactor can't quietly
+    add tags that would re-introduce sprawl."""
+    assert 'depth' in _PRIMARY_TASK_TAGS
+    assert 'segmentation' in _PRIMARY_TASK_TAGS
+    assert 'classification' in _PRIMARY_TASK_TAGS
+    assert 'language' in _PRIMARY_TASK_TAGS
+    # The old generic 'image' / 'machine-learning' / 'benchmark' tags
+    # are explicitly NOT primary categories — they were the bloat
+    # source we just got rid of.
+    assert 'image' not in _PRIMARY_TASK_TAGS
+    assert 'machine-learning' not in _PRIMARY_TASK_TAGS
+    assert 'benchmark' not in _PRIMARY_TASK_TAGS
