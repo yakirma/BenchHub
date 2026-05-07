@@ -676,6 +676,12 @@ class User(db.Model):
     #    admin). Bootstrapped from the env-var allow-list at first login.
     is_admin = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
 
+    # HuggingFace access token, used by HF imports (auto + direct + gated
+    # wizard). Auto-saved when the user supplies one; user can review or
+    # remove from /settings/hf_token. Treat the DB as secret-bearing —
+    # same posture as api_token.
+    hf_token = db.Column(db.String(200), nullable=True)
+
     __table_args__ = (
         db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
     )
@@ -1741,6 +1747,38 @@ def api_tokens_revoke():
     db.session.commit()
     flash("API token revoked.", "warning")
     return redirect(url_for('api_tokens'))
+
+
+# ===================== HuggingFace token =====================
+# Stored alongside the user row so HF imports don't need to ask for a
+# token every time. Auto-saved on import; manageable here.
+
+@app.route('/settings/hf_token', methods=['GET'])
+@login_required
+def hf_token_settings():
+    return render_template('hf_token_settings.html', token=g.current_user.hf_token)
+
+
+@app.route('/settings/hf_token/save', methods=['POST'])
+@login_required
+def hf_token_save():
+    token = (request.form.get('hf_token') or '').strip()
+    if not token:
+        flash("Empty token — nothing saved.", "warning")
+        return redirect(url_for('hf_token_settings'))
+    g.current_user.hf_token = token
+    db.session.commit()
+    flash("HuggingFace token saved.", "success")
+    return redirect(url_for('hf_token_settings'))
+
+
+@app.route('/settings/hf_token/remove', methods=['POST'])
+@login_required
+def hf_token_remove():
+    g.current_user.hf_token = None
+    db.session.commit()
+    flash("HuggingFace token removed. Future imports will need it again.", "warning")
+    return redirect(url_for('hf_token_settings'))
 
 
 # ===================== Admin management =====================
@@ -4020,7 +4058,7 @@ def import_from_hf():
     repo_id = (request.form.get('hf_repo_id') or '').strip()
     dataset_name = (request.form.get('dataset_name') or '').strip()
     revision = (request.form.get('hf_revision') or '').strip() or None
-    hf_token = (request.form.get('hf_token') or '').strip() or None
+    hf_token = _resolve_hf_token(request.form.get('hf_token'))
 
     if not repo_id:
         flash("Missing HuggingFace repo ID.", "danger")
@@ -4101,6 +4139,23 @@ def import_from_hf_gated_wizard():
 _HF_DEPTH_NAMES = {'depth', 'depth_map', 'gt_depth', 'disparity'}
 _HF_RGB_NAMES = {'image', 'rgb', 'color', 'photo', 'pixel_values'}
 _HF_METRIC_NAMES = {'label', 'class', 'score', 'metric', 'target', 'y'}
+
+
+def _resolve_hf_token(form_token):
+    """Return the HF token to use for this request: prefer the form
+    field (operator just typed it in for this attempt), fall back to
+    the saved user.hf_token. Also persist a non-empty form value so
+    future imports skip the password input."""
+    form_token = (form_token or '').strip() or None
+    user = getattr(g, 'current_user', None)
+    if form_token:
+        if user is not None and user.hf_token != form_token:
+            user.hf_token = form_token
+            db.session.commit()
+        return form_token
+    if user is not None and user.hf_token:
+        return user.hf_token
+    return None
 
 
 def _hf_fetch_features(repo_id, revision=None, hf_token=None):
@@ -4471,7 +4526,7 @@ def import_from_hf_preview():
     """
     repo_id = (request.form.get('hf_repo_id') or '').strip()
     revision = (request.form.get('hf_revision') or '').strip() or None
-    hf_token = (request.form.get('hf_token') or '').strip() or None
+    hf_token = _resolve_hf_token(request.form.get('hf_token'))
     sample_cap = int(request.form.get('sample_cap') or 200)
     sample_cap = max(10, min(sample_cap, 2000))
     dataset_name = (request.form.get('dataset_name') or '').strip()
@@ -4535,7 +4590,7 @@ def import_from_hf_auto():
     """Step 2: form has the (potentially edited) mapping; run the import."""
     repo_id = (request.form.get('hf_repo_id') or '').strip()
     revision = (request.form.get('hf_revision') or '').strip() or None
-    hf_token = (request.form.get('hf_token') or '').strip() or None
+    hf_token = _resolve_hf_token(request.form.get('hf_token'))
     dataset_name = (request.form.get('dataset_name') or '').strip()
     sample_cap = max(10, min(int(request.form.get('sample_cap') or 200), 2000))
 
@@ -7617,6 +7672,8 @@ def check_and_migrate_db():
                     # DB-backed admin flag (env-var allow-list still works
                     # in parallel as the bootstrap mechanism).
                     ("user",                 "is_admin",                       "BOOLEAN NOT NULL DEFAULT 0"),
+                    # Per-user HuggingFace access token.
+                    ("user",                 "hf_token",                       "VARCHAR(200)"),
                     # HF auto-import provenance.
                     ("dataset",              "source_kind",                    "VARCHAR(32)"),
                     ("dataset",              "source_metadata",                "TEXT"),

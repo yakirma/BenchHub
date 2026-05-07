@@ -304,6 +304,11 @@
                                         <i class="bi bi-gear me-1"></i> Account settings
                                     </a>
                                 </li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('hf_token_settings') }}">
+                                        <i class="bi bi-cloud me-1"></i> HuggingFace token
+                                    </a>
+                                </li>
                                 {% if current_user_is_admin %}
                                 <li>
                                     <a class="dropdown-item" href="{{ url_for('admins_settings') }}">
