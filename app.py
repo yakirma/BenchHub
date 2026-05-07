@@ -4044,10 +4044,27 @@ def import_dataset_from_hf(repo_id, dataset_name, *, revision=None,
         # write/read of the bytes; cheap relative to the network pull.
         zip_base = os.path.join(work_dir, secure_filename(dataset_name))
         zip_path = shutil.make_archive(zip_base, 'zip', root_dir=snap_dir)
-        return process_dataset_zip(
+        success, message, ds_id = process_dataset_zip(
             zip_path, dataset_name,
             owner_user_id=owner_user_id,
         )
+        if success and ds_id is not None:
+            ds = Dataset.query.get(ds_id)
+            if ds is not None:
+                ds.source_kind = 'hf-bench'
+                ds.source_metadata = json.dumps({
+                    'repo_id': repo_id, 'revision': revision,
+                })
+                try:
+                    auto_tags = _auto_tags_for_hf(
+                        repo_id, hf_token=hf_token, revision=revision,
+                    )
+                    if auto_tags:
+                        ds.tags = _resolve_tags(', '.join(auto_tags))
+                except Exception as e:
+                    print(f"auto-tag attach failed (direct): {e}")
+                db.session.commit()
+        return success, message, ds_id
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -4227,6 +4244,181 @@ def _normalize_features(feats):
             }
         else:
             out[name] = {'type': kind}
+    return out
+
+
+# --- Auto-tag generation for HF imports ---------------------------------
+# Two sources combined: HF's own tags (after filtering out noise prefixes
+# like language: and size_categories:) plus, when ANTHROPIC_API_KEY is
+# set, Claude-suggested discovery tags from the dataset description.
+
+# HF tag prefixes that are pure metadata noise for our discovery
+# purposes — license, size, language, etc. don't help anyone find the
+# dataset by topic.
+_HF_TAG_PREFIX_DROP = (
+    'language:', 'size_categories:', 'license:', 'arxiv:', 'dataset:',
+    'pretty_name:', 'paperswithcode:', 'multilinguality:', 'region:',
+    'source_datasets:', 'annotations_creators:', 'language_creators:',
+    'extra_gated', 'configs:', 'config_names:',
+)
+# Prefixes whose tail we DO want to keep, sans the prefix.
+_HF_TAG_PREFIX_KEEP = ('task_categories:', 'task_ids:', 'task:', 'modality:')
+
+
+def _normalize_hf_tags(raw_tags):
+    """Convert HF's raw tag list into the small handful of clean
+    discovery tags we'd actually show on a BenchHub dataset.
+    Strips noise prefixes, lowercases, dedupes, caps at 6."""
+    out = []
+    seen = set()
+    for tag in raw_tags or []:
+        if not isinstance(tag, str):
+            continue
+        t = tag.strip().lower()
+        if not t:
+            continue
+        if t.startswith(_HF_TAG_PREFIX_DROP):
+            continue
+        for keep in _HF_TAG_PREFIX_KEEP:
+            if t.startswith(keep):
+                t = t[len(keep):]
+                break
+        # After prefix strip, drop anything that's still empty or a single char.
+        t = t.strip().strip(':')
+        if len(t) < 2:
+            continue
+        # Skip generic catch-all values that show up on most datasets.
+        if t in {'image', 'text', 'audio', 'tabular', 'multimodal',
+                 'crowdsourced', 'expert-generated', 'machine-generated',
+                 'found', 'other', 'mit', 'apache-2.0', 'cc-by-4.0', 'unknown'}:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def _hf_fetch_repo_metadata(repo_id, revision=None, hf_token=None):
+    """Fetch repo-level metadata: raw HF tags, description, license. Used
+    to feed the auto-tag generator. Returns {} on any error so the import
+    keeps working even when this side feature is degraded."""
+    import requests as _r
+    headers = {}
+    if hf_token:
+        headers['Authorization'] = f'Bearer {hf_token}'
+    url = f"https://huggingface.co/api/datasets/{repo_id}"
+    if revision:
+        url += f"?revision={revision}"
+    try:
+        resp = _r.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        info = resp.json()
+        return {
+            'tags': info.get('tags') or [],
+            'description': (info.get('description') or '')[:2000],
+            'card_data': info.get('cardData') or {},
+        }
+    except Exception as e:
+        print(f"_hf_fetch_repo_metadata failed: {e}")
+        return {}
+
+
+def _llm_suggest_tags(repo_id, hf_tags, description):
+    """Ask Claude for 3-6 short discovery tags. Returns [] when the
+    API key isn't set or the call fails — caller falls back to the
+    HF-tag-only normalized list."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return []
+    try:
+        import requests as _r
+        system_prompt = (
+            "You suggest concise discovery tags for a benchmarking platform's "
+            "dataset listing. Tags help users find datasets by topic.\n\n"
+            "Return JSON: an array of 3-6 lowercase tag strings, kebab-case, "
+            "each 1-3 words. Examples: 'depth-estimation', 'segmentation', "
+            "'indoor', 'autonomous-driving', 'medical-imaging'.\n\n"
+            "Skip generic words: 'dataset', 'benchmark', 'image', 'machine-learning'.\n"
+            "Skip license/language/size/format metadata.\n"
+            "Prefer task and domain terms over modality."
+        )
+        msg = (
+            f"Repo: {repo_id}\n"
+            f"HF tags: {', '.join((hf_tags or [])[:25])}\n"
+            f"Description:\n{(description or '')[:1500]}"
+        )
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 200,
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": msg}],
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return []
+        cleaned = []
+        seen = set()
+        for tag in parsed:
+            if not isinstance(tag, str):
+                continue
+            t = tag.strip().lower().replace(' ', '-')
+            if 2 <= len(t) <= 40 and t not in seen:
+                seen.add(t)
+                cleaned.append(t)
+            if len(cleaned) >= 6:
+                break
+        return cleaned
+    except Exception as e:
+        print(f"_llm_suggest_tags failed: {e}")
+        return []
+
+
+def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
+    """Combine HF metadata tags with optional Claude suggestions.
+    Returns a final list of up to 6 tag names suitable for
+    _resolve_tags(). Both sources may return [] — that's fine, just
+    leave the dataset untagged for the user to fill in."""
+    meta = _hf_fetch_repo_metadata(repo_id, revision=revision, hf_token=hf_token)
+    hf_tags = _normalize_hf_tags(meta.get('tags', []))
+    llm_tags = _llm_suggest_tags(
+        repo_id, meta.get('tags', []), meta.get('description', '')
+    )
+    # Union, LLM-first (it tends to produce cleaner tags), then HF for
+    # anything new. Cap at 6 final tags.
+    out = []
+    seen = set()
+    for source in (llm_tags, hf_tags):
+        for t in source:
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+            if len(out) >= 6:
+                return out
     return out
 
 
@@ -4512,6 +4704,16 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                     'mapping': mapping,
                     'samples_written': n_written,
                 })
+                # Auto-tag from HF metadata + LLM (when configured).
+                # Best-effort; the dataset import is the primary success.
+                try:
+                    auto_tags = _auto_tags_for_hf(
+                        repo_id, hf_token=hf_token, revision=revision,
+                    )
+                    if auto_tags:
+                        ds.tags = _resolve_tags(', '.join(auto_tags))
+                except Exception as e:
+                    print(f"auto-tag attach failed: {e}")
                 db.session.commit()
         return success, message, ds_id
     finally:
