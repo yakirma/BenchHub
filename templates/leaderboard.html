@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_user_avatar.html" import user_avatar %}
 
 {% block title %}{{ leaderboard.name }} - Leaderboard{% endblock %}
 
@@ -948,8 +949,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <td data-lb-column="git_info" style="max-width: 200px;"
                                 title="{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or 'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}{% if submission.git_author %} by {{ submission.git_author }}{% endif %}">
                                 <div class="d-flex align-items-center gap-2">
-                                    <div class="author-avatar-init" data-author="{{ submission.git_author or '' }}"
-                                        data-size="32"></div>
+                                    {{ user_avatar(submission.owner, size=32,
+                                                   title=(submission.owner.display_name if submission.owner else (submission.git_author or 'Unknown'))) }}
                                     <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                                         <small>{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or
                                             'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}</small>
@@ -1114,8 +1115,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 {% endblock %}
 
 {% block scripts %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
-<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
 <script>
     const GLOBAL_LEADERBOARD_ID = {{ leaderboard.id }};
     const LEADERBOARD_ID = GLOBAL_LEADERBOARD_ID;
@@ -2769,15 +2768,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             document.getElementById('hidden-modal-tags').value = currentTags.join(',');
         });
     }
-
-    // Initialize author avatars
-    document.addEventListener('DOMContentLoaded', function () {
-        document.querySelectorAll('.author-avatar-init').forEach(el => {
-            const author = el.dataset.author;
-            const size = parseInt(el.dataset.size || '43');
-            el.innerHTML = createAuthorAvatar(author, size);
-        });
-    });
 
 </script>
 {% endblock %}

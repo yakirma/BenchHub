@@ -1,16 +1,6 @@
 {% extends "base.html" %}
+{% from "_user_avatar.html" import user_avatar %}
 
-<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
-<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        document.querySelectorAll('.author-avatar-init').forEach(el => {
-            const author = el.dataset.author;
-            const size = parseInt(el.dataset.size || '32');
-            el.innerHTML = createAuthorAvatar(author, size);
-        });
-    }); 
-</script>
 {% block title %}Datasets - Bench-Hub{% endblock %}
 
 {% block content %}
@@ -58,8 +48,7 @@
                     {% endif %}
                     <div class="flex-grow-1 min-w-0">
                         <div class="d-flex align-items-center mb-1">
-                            <div class="author-avatar-init me-2" data-author="{{ dataset.git_author or '' }}"
-                                data-size="32"></div>
+                            <span class="me-2">{{ user_avatar(dataset.owner, size=32) }}</span>
                             <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
                                 class="text-decoration-none text-body fw-bold fs-5 text-truncate">
                                 {{ dataset.name }}
@@ -269,17 +258,6 @@
         </div>
     </div>
 </div>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
-<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        document.querySelectorAll('.author-avatar-init').forEach(el => {
-            const author = el.dataset.author;
-            const size = parseInt(el.dataset.size || '32');
-            el.innerHTML = createAuthorAvatar(author, size);
-        });
-    }); 
-</script>
 {% endblock %}
 
 {% block scripts %}
@@ -416,16 +394,5 @@
             }
         });
     })();
-</script>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
-<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        document.querySelectorAll('.author-avatar-init').forEach(el => {
-            const author = el.dataset.author;
-            const size = parseInt(el.dataset.size || '32');
-            el.innerHTML = createAuthorAvatar(author, size);
-        });
-    }); 
 </script>
 {% endblock %}

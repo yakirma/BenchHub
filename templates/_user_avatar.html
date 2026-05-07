@@ -1,0 +1,57 @@
+{# Server-rendered avatar for an OAuth-authenticated User row.
+
+   Replaces the legacy git-author / AuthorProfile flow on dataset
+   and leaderboard surfaces — the canonical identity for thumbnails
+   is now whoever owns the row (User.owner_user_id), not the git
+   commit's author string.
+
+   Usage:
+       {% from "_user_avatar.html" import user_avatar %}
+       {{ user_avatar(dataset.owner, size=53) }}
+       {{ user_avatar(submission.owner, size=32) }}
+
+   `user` is a User row or None. When None we render an inert "?"
+   placeholder rather than guessing from git metadata. #}
+{% macro user_avatar(user, size=43, link=True, title=None) -%}
+{%- set _size = size|int -%}
+{%- set _font = (_size * 0.4)|int -%}
+{%- if user -%}
+    {%- set _name = user.display_name or user.email or 'User' -%}
+    {%- set _hover = title or _name -%}
+    {%- set _open_tag = '<a href="' ~ url_for('user_profile', user_id=user.id) ~ '"' if link else '<span' -%}
+    {%- set _close_tag = '</a>' if link else '</span>' -%}
+    {%- if user.avatar_url -%}
+        {{ _open_tag|safe }}
+            class="user-avatar"
+            style="display:inline-block; width:{{ _size }}px; height:{{ _size }}px; border-radius:50%; overflow:hidden; vertical-align:middle; background:var(--bs-tertiary-bg);"
+            title="{{ _hover }}">
+            <img src="{{ user.avatar_url }}" alt="{{ _name }}"
+                 style="width:100%; height:100%; object-fit:cover; display:block;">
+        {{ _close_tag|safe }}
+    {%- else -%}
+        {%- set _parts = _name.split() -%}
+        {%- if _parts|length >= 2 -%}
+            {%- set _initials = (_parts[0][:1] ~ _parts[-1][:1])|upper -%}
+        {%- else -%}
+            {%- set _initials = _name[:2]|upper -%}
+        {%- endif -%}
+        {# Stable hue from the user id so the same user gets the same colour. #}
+        {%- set _hue = (user.id * 47) % 360 -%}
+        {{ _open_tag|safe }}
+            class="user-avatar"
+            style="display:inline-flex; align-items:center; justify-content:center;
+                   width:{{ _size }}px; height:{{ _size }}px; border-radius:50%;
+                   background:hsl({{ _hue }},65%,50%); color:white;
+                   font-weight:bold; font-size:{{ _font }}px; vertical-align:middle;
+                   text-decoration:none;"
+            title="{{ _hover }}">{{ _initials or '?' }}{{ _close_tag|safe }}
+    {%- endif -%}
+{%- else -%}
+    <span class="user-avatar"
+          style="display:inline-flex; align-items:center; justify-content:center;
+                 width:{{ _size }}px; height:{{ _size }}px; border-radius:50%;
+                 background:var(--bs-secondary); color:white;
+                 font-weight:bold; font-size:{{ _font }}px; vertical-align:middle;"
+          title="{{ title or 'Unknown user' }}">?</span>
+{%- endif -%}
+{%- endmacro %}

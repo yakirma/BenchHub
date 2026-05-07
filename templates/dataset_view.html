@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_user_avatar.html" import user_avatar %}
 
 {% block title %}Dataset: {{ dataset.name }}{% endblock %}
 
@@ -8,8 +9,7 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div class="d-flex align-items-center gap-3">
-        <div class="author-avatar-init" data-author="{{ dataset.git_author or '' }}" data-size="53"
-            id="dataset-author-avatar"></div>
+        {{ user_avatar(dataset.owner, size=53) }}
         <div>
             <h1 class="d-flex align-items-center gap-2 flex-wrap">
                 Dataset: {{ dataset.name }}
@@ -972,17 +972,6 @@
 
 {% block scripts %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/author_avatars.css') }}">
-<script src="{{ url_for('static', filename='js/author_avatars.js') }}"></script>
-<script>
-    // Initialize author avatars
-    document.addEventListener('DOMContentLoaded', function () {
-        document.querySelectorAll('.author-avatar-init').forEach(el => {
-            const author = el.dataset.author;
-            const size = parseInt(el.dataset.size || '43');
-            el.innerHTML = createAuthorAvatar(author, size);
-        });
-    });
-</script>
 <script>
     console.log('!!! CRITICAL DEBUG: DATASET_VIEW SCRIPT STARTED !!!');
     // alert('dataset_view script loaded'); 
