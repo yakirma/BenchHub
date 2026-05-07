@@ -9,4 +9,6 @@ debug_log.txt
 __pycache__
 data/
 uploads/
-dataset*
+/dataset*.zip
+/dataset_*/
+/dataset.csv

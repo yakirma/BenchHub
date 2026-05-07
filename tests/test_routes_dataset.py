@@ -171,27 +171,43 @@ def test_download_dataset_returns_zip(client, project_ctx, seeded_dataset):
 # ---------------------------------------------------------------------------
 
 
-def test_update_display_columns_persists_selection(client, project_ctx, seeded_dataset):
+def test_update_display_columns_records_hidden(client, project_ctx, seeded_dataset):
+    """New inverted model: form posts back the chosen-visible list AND
+    the full rendered set; route stores the difference as 'hidden'."""
     resp = client.post(
         f"/dataset/{seeded_dataset.id}/update_display_columns",
-        data={"display_columns": ["sample_name", "tags"]},
+        data={
+            "display_columns": ["sample_name", "tags"],
+            "display_columns_all": ["sample_name", "tags", "config", "histogram"],
+        },
     )
     assert resp.status_code in (302, 200)
-
     db.session.expire_all()
     refreshed = Dataset.query.get(seeded_dataset.id)
-    assert refreshed.display_columns == "sample_name,tags"
+    # 'config' and 'histogram' were rendered but not chosen → saved as hidden.
+    saved = sorted((refreshed.hidden_display_columns or '').split(','))
+    assert saved == ['config', 'histogram']
 
 
-def test_update_display_columns_with_empty_uses_sentinel(
+def test_update_display_columns_all_chosen_clears_hidden(
     client, project_ctx, seeded_dataset
 ):
-    """Empty list saves "__NONE__" to distinguish from "use defaults"."""
-    client.post(f"/dataset/{seeded_dataset.id}/update_display_columns", data={})
+    """Selecting every rendered option means 'no exclusions' — hidden
+    column gets cleared back to NULL so the dataset is in the
+    everything-visible default state."""
+    seeded_dataset.hidden_display_columns = 'tags'
+    db.session.commit()
 
+    client.post(
+        f"/dataset/{seeded_dataset.id}/update_display_columns",
+        data={
+            "display_columns": ["sample_name", "tags", "config"],
+            "display_columns_all": ["sample_name", "tags", "config"],
+        },
+    )
     db.session.expire_all()
     refreshed = Dataset.query.get(seeded_dataset.id)
-    assert refreshed.display_columns == "__NONE__"
+    assert refreshed.hidden_display_columns is None
 
 
 # ---------------------------------------------------------------------------

@@ -354,6 +354,11 @@ class Dataset(db.Model):
     git_message = db.Column(db.String(200))
     git_author = db.Column(db.String(100))  # Git commit author
     display_columns = db.Column(db.String(500), nullable=False, default=DEFAULT_DATASET_DISPLAY_COLUMNS)
+    # New model: track which columns the user explicitly *hid*. Empty
+    # string (or NULL) → nothing hidden → all available columns visible.
+    # This way new custom fields added after the user's last save
+    # default to visible instead of disappearing until re-selected.
+    hidden_display_columns = db.Column(db.Text, nullable=True)
     visualizations = db.Column(db.String(500), nullable=False, default='') # Active visualizers
     selected_metrics = db.Column(db.String(500), nullable=False, default='') # No default metrics
     # Phase 1 multi-tenancy.
@@ -567,6 +572,8 @@ class Leaderboard(db.Model):
     upload_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     summary_metrics = db.Column(db.String(200), nullable=False) # are, l1, l2 etc.
     comparison_display_columns = db.Column(db.String(500), nullable=False, default=DEFAULT_COMPARISON_DISPLAY_COLUMNS)
+    # New: same flip as Dataset.hidden_display_columns. Track exclusions.
+    hidden_comparison_display_columns = db.Column(db.Text, nullable=True)
     visualizations = db.Column(db.String(500), nullable=False, default='') # Active visualizers
     selected_metrics = db.Column(db.String(500), default='') # Comma separated list of targets
     summary_metrics = db.Column(db.String(500), default='') # Initial metrics to show
@@ -4029,7 +4036,16 @@ def import_from_hf():
     except ImportError:
         flash("HuggingFace import is not available on this server (huggingface_hub not installed).", "danger")
     except Exception as e:
-        flash(f"HuggingFace import failed: {e}", "danger")
+        msg = str(e)
+        if '401' in msg or 'gated' in msg.lower() or 'restricted' in msg.lower():
+            flash(
+                f"HuggingFace returned 401 — '{repo_id}' is a gated dataset. "
+                f"Visit huggingface.co/datasets/{repo_id} to accept its terms, "
+                "then paste an access token under Advanced and try again.",
+                "danger",
+            )
+        else:
+            flash(f"HuggingFace import failed: {e}", "danger")
 
     return redirect(url_for('datasets_list'))
 
@@ -5658,15 +5674,15 @@ def comparison_view(leaderboard_id):
     sorted_display_options = dict(sorted(available_display_options.items(), 
                                           key=lambda x: get_column_priority(x[0], x[1].get('type'), x[0] in dataset_custom_fields)))
     
-    # Enable all columns by default ONLY on first visit (when no selection is saved)
-    # Otherwise, respect the saved selection to allow users to disable columns
-    if leaderboard.comparison_display_columns == '__NONE__':
-        # User explicitly wants nothing selected
-        selected_comparison_display_columns = []
-    elif not leaderboard.comparison_display_columns.strip() or leaderboard.comparison_display_columns == DEFAULT_COMPARISON_DISPLAY_COLUMNS:
-        # First time or using old defaults - enable all available columns except per_sample_values
-        selected_comparison_display_columns = [k for k in available_display_options.keys() if k != 'per_sample_values']
-    # else: use the saved selection as loaded earlier
+    # Inverted-visibility model — default to all available columns,
+    # subtract anything the user explicitly hid.
+    hidden_set = set(
+        c.strip() for c in (leaderboard.hidden_comparison_display_columns or '').split(',')
+        if c.strip()
+    )
+    selected_comparison_display_columns = [
+        k for k in available_display_options.keys() if k not in hidden_set
+    ]
     
     # Also ensure selected_comparison_display_columns are sorted by priority
     selected_comparison_display_columns = sorted(selected_comparison_display_columns, 
@@ -5897,6 +5913,17 @@ def serve_author_avatar(filename):
     avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
     return send_from_directory(avatar_dir, filename)
 
+@app.route('/dataset/<int:dataset_id>/settings', methods=['GET'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def dataset_settings(dataset_id):
+    """Dedicated settings page — collects all owner-only controls
+    (sharing, danger zone) in one place so they aren't scattered
+    across the busy dataset detail view."""
+    dataset = Dataset.query.get_or_404(dataset_id)
+    return render_template('dataset_settings.html', dataset=dataset)
+
+
 @app.route('/dataset/<int:dataset_id>')
 @visibility_required(Dataset, 'dataset_id')
 def dataset_view(dataset_id):
@@ -6084,15 +6111,18 @@ def dataset_view(dataset_id):
     sorted_display_options = dict(sorted(available_display_options.items(), 
                                           key=lambda x: get_column_priority(x[0], x[1].get('type'), x[0] in dataset_custom_fields)))
     
-    # Enable all columns by default ONLY on first visit (when no selection is saved)
-    # Otherwise, respect the saved selection to allow users to disable columns
-    if dataset.display_columns == '__NONE__':
-        # User explicitly wants nothing selected
-        selected_display_columns = []
-    elif not dataset.display_columns.strip() or dataset.display_columns == DEFAULT_DATASET_DISPLAY_COLUMNS:
-        # First time or using old defaults - enable all available columns
-        selected_display_columns = list(available_display_options.keys())
-    # else: use the saved selection as loaded earlier
+    # Inverted-visibility model: default is "all available columns
+    # visible". Only columns the user explicitly hid (saved in
+    # hidden_display_columns) are removed from the selection. New custom
+    # fields added later automatically appear because they aren't in
+    # the hidden list.
+    hidden_set = set(
+        c.strip() for c in (dataset.hidden_display_columns or '').split(',')
+        if c.strip()
+    )
+    selected_display_columns = [
+        k for k in available_display_options.keys() if k not in hidden_set
+    ]
     
     # Also ensure selected_display_columns are sorted by priority
     selected_display_columns = sorted(selected_display_columns, 
@@ -6123,17 +6153,16 @@ def dataset_view(dataset_id):
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])
 def update_dataset_display_columns(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
-    cols = request.form.getlist('display_columns')
-    
-    # We need to look up types for sorting. 
-    # Since we don't have available_display_options here easily without repeating logic,
-    # we'll do a simple key-based sort here, and the view render will do the definitive sort.
-    # Actually, saving in the requested order is good.
-    # Use a sentinel value to distinguish "user wants nothing" from "use defaults"
-    dataset.display_columns = ','.join(cols) if cols else '__NONE__'
-
+    chosen = set(request.form.getlist('display_columns'))
+    # The form posts back the full set of options it rendered, so we can
+    # compute "hidden = rendered - chosen" without re-deriving the
+    # available_display_options here. Saves duplicating the heavy
+    # column-derivation logic from dataset_view().
+    rendered = set(request.form.getlist('display_columns_all'))
+    hidden = rendered - chosen
+    dataset.hidden_display_columns = ','.join(sorted(hidden)) if hidden else None
     db.session.commit()
-    return redirect(request.referrer)
+    return redirect(request.referrer or url_for('dataset_view', dataset_id=dataset_id))
 
 @app.route('/dataset/<int:dataset_id>/update_visualizations', methods=['POST'])
 def update_dataset_visualizations(dataset_id):
@@ -6273,11 +6302,12 @@ def update_leaderboard_visualizations(leaderboard_id):
 @app.route('/leaderboard/<int:leaderboard_id>/update_comparison_display_columns', methods=['POST'])
 def update_comparison_display_columns(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
-    cols = request.form.getlist('comparison_display_columns')
-    # Use a sentinel value to distinguish "user wants nothing" from "use defaults"
-    leaderboard.comparison_display_columns = ','.join(cols) if cols else '__NONE__'
+    chosen = set(request.form.getlist('comparison_display_columns'))
+    rendered = set(request.form.getlist('comparison_display_columns_all'))
+    hidden = rendered - chosen
+    leaderboard.hidden_comparison_display_columns = ','.join(sorted(hidden)) if hidden else None
     db.session.commit()
-    return redirect(request.referrer)
+    return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
 @app.route('/submission/<int:submission_id>/download')
 def download_submission(submission_id):
@@ -7344,6 +7374,10 @@ def check_and_migrate_db():
                     # HF auto-import provenance.
                     ("dataset",              "source_kind",                    "VARCHAR(32)"),
                     ("dataset",              "source_metadata",                "TEXT"),
+                    # Inverted column-visibility model: track which cols the
+                    # user explicitly hid. Empty/NULL = all visible.
+                    ("dataset",              "hidden_display_columns",         "TEXT"),
+                    ("leaderboard",          "hidden_comparison_display_columns", "TEXT"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
