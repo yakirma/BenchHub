@@ -610,6 +610,11 @@ class Leaderboard(db.Model):
     scalar_width = db.Column(db.String(50), nullable=True) # Override for scalar column width
     image_width = db.Column(db.String(50), nullable=True) # Override for image column width
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON string: store last used filter settings
+    # Cached Colab submission notebook. Stored as JSON
+    # {"sig": "<crc32-of-lb-structure>", "notebook": "<.ipynb json>"}.
+    # Self-invalidating: when the LB's datasets/metrics change, the
+    # signature drifts and the next request regenerates.
+    colab_notebook_cache = db.Column(db.Text, nullable=True)
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
@@ -3583,6 +3588,28 @@ def recalculate_submission(submission_id):
     # Redirect back to the leaderboard
     return redirect(url_for('leaderboard_view', **redirect_args))
 
+@app.route('/leaderboard/<int:leaderboard_id>/colab_notebook.ipynb')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_colab_notebook(leaderboard_id):
+    """Serve the per-LB Colab submission notebook. Generates on first
+    hit (LLM if ANTHROPIC_API_KEY set, static fallback otherwise),
+    caches on Leaderboard.colab_notebook_cache, self-invalidates when
+    the LB's structure signature drifts."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    notebook_json, _source = _get_or_generate_colab_notebook(lb)
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    resp = app.response_class(
+        notebook_json,
+        mimetype='application/x-ipynb+json',
+        headers={
+            'Content-Disposition': f'inline; filename="{safe_name}_submit.ipynb"',
+            # Permissive CORS so Colab's URL importer can fetch it.
+            'Access-Control-Allow-Origin': '*',
+        },
+    )
+    return resp
+
+
 @app.route('/leaderboard/<int:leaderboard_id>')
 @visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_view(leaderboard_id):
@@ -4455,6 +4482,298 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
             if len(out) >= 6:
                 return out
     return out
+
+
+# --- Colab submission notebook generation (per-LB, LLM-cached) ---------
+# Click "Submit via Colab" on a leaderboard → user gets a notebook
+# pre-filled with that LB's sample schema and the loop that builds a
+# submission ZIP. Cached on Leaderboard.colab_notebook_cache and
+# self-invalidated via a structure signature, so changing the LB's
+# datasets / metrics triggers a re-generation on the next request.
+
+def _lb_structure_signature(lb):
+    """Stable hash of the LB's externally-visible structure: which
+    datasets, which custom-field names on the GT samples, which
+    metrics. If any of these changes, the cached notebook is stale.
+    Returns a short hex string."""
+    import zlib as _zlib
+    parts = {
+        'dataset_ids': sorted(d.id for d in lb.datasets),
+        'metrics': sorted([
+            (lm.global_metric_id, lm.target_name)
+            for lm in (lb.leaderboard_metrics or [])
+        ]),
+    }
+    # First-dataset sample-field schema (cheap proxy for the submission
+    # shape). Skip if the LB has no samples yet.
+    if lb.datasets:
+        sample_ids = [s.id for s in lb.datasets[0].samples[:1]]
+        if sample_ids:
+            parts['fields'] = sorted({
+                (cf.name, cf.field_type)
+                for cf in CustomField.query.filter(
+                    CustomField.sample_id.in_(sample_ids)
+                ).all()
+            })
+    return f"{_zlib.crc32(json.dumps(parts, sort_keys=True, default=str).encode()):08x}"
+
+
+def _static_colab_notebook(lb):
+    """Fallback notebook used when no ANTHROPIC_API_KEY is set or the
+    LLM call fails. Generic enough to work for any LB shape — the user
+    edits the model placeholder + the per-sample prediction format."""
+    ds = lb.datasets[0] if lb.datasets else None
+    ds_name = ds.name if ds else '<dataset>'
+    base_url = os.environ.get('BENCHHUB_BASE_URL', 'https://benchhub.fly.dev').rstrip('/')
+    sample_field_summary = []
+    if ds and ds.samples:
+        first = ds.samples[0]
+        for cf in (first.custom_fields or [])[:8]:
+            sample_field_summary.append(f"- `{cf.name}` ({cf.field_type})")
+    field_block = '\n'.join(sample_field_summary) or '- *(no custom fields detected)*'
+    metric_names = [
+        lm.target_name or (lm.global_metric.name if lm.global_metric else '?')
+        for lm in (lb.leaderboard_metrics or [])
+    ]
+    metric_block = ', '.join(metric_names) or '_(none configured yet)_'
+
+    nb = {
+        "cells": [
+            {
+                "cell_type": "markdown", "metadata": {},
+                "source": [
+                    f"# Submit to **{lb.name}** — BenchHub\n",
+                    "\n",
+                    f"Dataset: `{ds_name}` &middot; Metrics: {metric_block}\n",
+                    "\n",
+                    "Workflow:\n",
+                    "1. Run the cells below, replacing `my_model(sample)` with your inference code.\n",
+                    "2. The notebook builds a submission ZIP in BenchHub's expected folder layout.\n",
+                    "3. Either download it (last cell) or upload it via the API token in the cell after.\n",
+                    "\n",
+                    "Sample schema (from the first sample):\n",
+                    field_block + "\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "!pip -q install requests numpy pillow\n",
+                    "import os, io, json, zipfile, requests, numpy as np\n",
+                    "from PIL import Image\n",
+                    f"BENCHHUB = '{base_url}'\n",
+                    f"LEADERBOARD_ID = {lb.id}\n",
+                    f"DATASET_NAME = '{ds_name}'\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# 1. Fetch the dataset ZIP from BenchHub so we know what samples to predict on.\n",
+                    "ds_zip = requests.get(f'{BENCHHUB}/dataset/" + (str(ds.id) if ds else "<id>") + "/download', timeout=120).content\n",
+                    "open('/tmp/gt.zip', 'wb').write(ds_zip)\n",
+                    "import zipfile as zf\n",
+                    "with zf.ZipFile('/tmp/gt.zip') as z:\n",
+                    "    z.extractall('/tmp/gt')\n",
+                    "print('Extracted to /tmp/gt/'); print(os.listdir('/tmp/gt'))\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# 2. >>> EDIT THIS <<< Plug your model in here.\n",
+                    "def my_model(sample_name, sample_inputs):\n",
+                    "    \"\"\"sample_inputs is a dict of {field_name: numpy_array_or_PIL_image}.\n",
+                    "    Return a dict of predictions matching the metric names this leaderboard expects.\n",
+                    f"    Expected metric outputs: {metric_block}\n",
+                    "    \"\"\"\n",
+                    "    return {m: 0.0 for m in " + json.dumps(metric_names) + "}  # placeholder\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# 3. Walk the GT folder, run predictions, build a submission folder in BenchHub layout.\n",
+                    "from pathlib import Path\n",
+                    "import shutil\n",
+                    "GT = Path('/tmp/gt')\n",
+                    "OUT = Path('/tmp/submission')\n",
+                    "if OUT.exists(): shutil.rmtree(OUT)\n",
+                    "OUT.mkdir(parents=True)\n",
+                    "# Discover sample names from the first metric_*/ or image_*/ folder.\n",
+                    "sample_names = set()\n",
+                    "for sub in GT.iterdir():\n",
+                    "    if sub.is_dir() and sub.name not in {'__MACOSX'}:\n",
+                    "        for f in sub.iterdir():\n",
+                    "            sample_names.add(f.stem.split('_')[0])  # strip W xH suffix from raw_/\n",
+                    "sample_names = sorted(sample_names)\n",
+                    "print(f'Found {len(sample_names)} samples')\n",
+                    "\n",
+                    "for name in sample_names:\n",
+                    "    # Build per-sample inputs by reading whatever GT files match.\n",
+                    "    inputs = {}  # populate with reads as needed\n",
+                    "    preds = my_model(name, inputs)\n",
+                    "    for metric, value in preds.items():\n",
+                    "        out_dir = OUT / f'metric_{metric}'\n",
+                    "        out_dir.mkdir(exist_ok=True)\n",
+                    "        (out_dir / f'{name}.txt').write_text(str(value))\n",
+                    "print('Submission folder built at', OUT)\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# 4a. ZIP and download to your Drive / local.\n",
+                    "import shutil as sh, zipfile as zf\n",
+                    "zip_path = sh.make_archive('/tmp/submission', 'zip', '/tmp/submission')\n",
+                    "from google.colab import files; files.download(zip_path)\n",
+                ],
+            },
+            {
+                "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
+                "source": [
+                    "# 4b. (Optional) upload directly to BenchHub via API token.\n",
+                    "# Generate a token at /settings/api_tokens, paste below, name it.\n",
+                    "API_TOKEN = ''  # 'hf_...'-style token from BenchHub settings\n",
+                    "SUBMISSION_NAME = 'my_first_submission'\n",
+                    "if API_TOKEN:\n",
+                    "    with open(zip_path, 'rb') as fh:\n",
+                    "        r = requests.post(\n",
+                    f"            f'{{BENCHHUB}}/api/leaderboard/{lb.id}/submission/upload',\n",
+                    "            headers={'Authorization': f'Bearer {API_TOKEN}'},\n",
+                    "            data={'submission_name': SUBMISSION_NAME},\n",
+                    "            files={'submission_zip': ('submission.zip', fh)},\n",
+                    "            timeout=300,\n",
+                    "        )\n",
+                    "    print(r.status_code, r.text)\n",
+                    "else:\n",
+                    "    print('Set API_TOKEN above to upload directly.')\n",
+                ],
+            },
+        ],
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python"},
+        },
+        "nbformat": 4, "nbformat_minor": 5,
+    }
+    return json.dumps(nb)
+
+
+def _llm_colab_notebook(lb):
+    """Ask Claude to write the notebook. Returns the .ipynb JSON
+    string on success, None on any failure."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+    base_url = os.environ.get('BENCHHUB_BASE_URL', 'https://benchhub.fly.dev').rstrip('/')
+    ds = lb.datasets[0] if lb.datasets else None
+    ds_id = ds.id if ds else None
+    ds_name = ds.name if ds else None
+    metric_names = [
+        lm.target_name or (lm.global_metric.name if lm.global_metric else '?')
+        for lm in (lb.leaderboard_metrics or [])
+    ]
+    sample_fields = []
+    if ds and ds.samples:
+        for cf in (ds.samples[0].custom_fields or [])[:12]:
+            sample_fields.append({'name': cf.name, 'type': cf.field_type})
+
+    system_prompt = (
+        "You generate a Google Colab Jupyter notebook (Python 3, "
+        "nbformat 4) that helps a BenchHub user submit predictions to "
+        "a specific leaderboard.\n\n"
+        "The notebook MUST:\n"
+        "- Open with a markdown cell explaining the leaderboard, its "
+        "  datasets, metrics, and a placeholder for the user's model.\n"
+        "- Include a code cell that downloads the dataset ZIP from "
+        "  BenchHub and extracts it to /tmp/gt/.\n"
+        "- Include a clearly-marked `def my_model(sample_name, inputs)` "
+        "  cell the user is meant to edit.\n"
+        "- Include a loop that writes per-sample predictions into "
+        "  BenchHub's folder layout: `metric_<name>/<sample>.txt` for "
+        "  scalars, `image_<name>/<sample>.png` for images, "
+        "  `raw_<name>/<sample>_<W>x<H>.npz` for depth.\n"
+        "- ZIP the submission folder and offer both a `files.download` "
+        "  flow and an optional API-token upload to the BenchHub URL "
+        "  /api/leaderboard/<id>/submission/upload.\n\n"
+        "Return ONLY a JSON object — a valid .ipynb nbformat 4 notebook. "
+        "Do not wrap it in markdown fences. Do not include explanatory prose."
+    )
+    user_msg = (
+        f"BenchHub base URL: {base_url}\n"
+        f"Leaderboard id: {lb.id}\n"
+        f"Leaderboard name: {lb.name}\n"
+        f"Dataset: {ds_name} (id={ds_id})\n"
+        f"Dataset download URL: {base_url}/dataset/{ds_id}/download\n"
+        f"Submission upload URL: {base_url}/api/leaderboard/{lb.id}/submission/upload\n"
+        f"Metric output names expected: {json.dumps(metric_names)}\n"
+        f"Sample-field schema (first sample): {json.dumps(sample_fields)}\n"
+    )
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 4000,
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        # Validate it parses as JSON and is shaped like a notebook.
+        nb = json.loads(text)
+        if not isinstance(nb, dict) or 'cells' not in nb or 'nbformat' not in nb:
+            return None
+        return text
+    except Exception as e:
+        print(f"_llm_colab_notebook failed: {e}")
+        return None
+
+
+def _get_or_generate_colab_notebook(lb):
+    """Returns a (notebook_json_str, source) tuple where source is 'cache',
+    'llm', or 'static'. Stamps the cache on miss."""
+    sig = _lb_structure_signature(lb)
+    cache = lb.colab_notebook_cache
+    if cache:
+        try:
+            wrapped = json.loads(cache)
+            if wrapped.get('sig') == sig and wrapped.get('notebook'):
+                return wrapped['notebook'], 'cache'
+        except Exception:
+            pass
+    nb = _llm_colab_notebook(lb)
+    source = 'llm'
+    if not nb:
+        nb = _static_colab_notebook(lb)
+        source = 'static'
+    try:
+        lb.colab_notebook_cache = json.dumps({'sig': sig, 'notebook': nb})
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"colab notebook cache write failed: {e}")
+    return nb, source
 
 
 def _llm_infer_mapping(features, dataset_repo=None):
@@ -8014,6 +8333,8 @@ def check_and_migrate_db():
                     # user explicitly hid. Empty/NULL = all visible.
                     ("dataset",              "hidden_display_columns",         "TEXT"),
                     ("leaderboard",          "hidden_comparison_display_columns", "TEXT"),
+                    # Cached Colab submission notebook (self-invalidating).
+                    ("leaderboard",          "colab_notebook_cache",             "TEXT"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
