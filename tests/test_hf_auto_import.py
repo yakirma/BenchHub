@@ -166,12 +166,12 @@ def test_preview_warns_when_no_features(auth_client, db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_auto_route_friendly_error_for_gated_dataset(
+def test_auto_route_redirects_to_gated_wizard(
     auth_client, logged_in_user, db_session,
 ):
-    """When `datasets.load_dataset` raises with HF's 'gated dataset'
-    wording, surface the friendly accept-terms-and-paste-token flash
-    instead of the raw traceback."""
+    """When datasets.load_dataset hits HF's 'gated dataset' error,
+    we now redirect to a step-by-step unlock wizard instead of just
+    flashing the message."""
     fake_mod = types.ModuleType('datasets')
     def _raise_gated(*a, **kw):
         raise RuntimeError(
@@ -187,12 +187,35 @@ def test_auto_route_friendly_error_for_gated_dataset(
             'mapping_column[]': ['image'],
             'mapping_target_kind[]': ['image'],
             'mapping_target_field[]': ['image_image'],
-        }, follow_redirects=True)
+        }, follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/import_from_hf/gated' in resp.headers['Location']
+    assert 'repo_id=ILSVRC' in resp.headers['Location']
+
+
+def test_gated_wizard_renders_with_repo_context(auth_client):
+    resp = auth_client.get(
+        '/import_from_hf/gated'
+        '?repo_id=ILSVRC/imagenet-1k&dataset_name=imagenet_subset&sample_cap=50'
+    )
     assert resp.status_code == 200
     body = resp.data
-    assert b'gated HuggingFace dataset' in body
-    assert b'huggingface.co/settings/tokens' in body
-    assert b'ILSVRC/imagenet-1k' in body
+    # Step content + deep links present.
+    assert b'Accept the dataset' in body
+    assert b'Create a read-only access token' in body
+    # Both HF deep-links rendered with target=_blank.
+    assert b'https://huggingface.co/datasets/ILSVRC/imagenet-1k' in body
+    assert b'https://huggingface.co/settings/tokens' in body
+    # Token retry form posts back with the context preserved.
+    assert b'value="ILSVRC/imagenet-1k"' in body
+    assert b'value="imagenet_subset"' in body
+
+
+def test_gated_wizard_redirects_without_repo_id(auth_client):
+    """No repo_id → bounce back to /datasets, don't render an empty wizard."""
+    resp = auth_client.get('/import_from_hf/gated', follow_redirects=False)
+    assert resp.status_code == 302
+    assert '/datasets' in resp.headers['Location']
 
 
 def test_auto_route_returns_friendly_error_when_datasets_lib_missing(

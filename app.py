@@ -4049,17 +4049,41 @@ def import_from_hf():
         flash("HuggingFace import is not available on this server (huggingface_hub not installed).", "danger")
     except Exception as e:
         msg = str(e)
-        if '401' in msg or 'gated' in msg.lower() or 'restricted' in msg.lower():
-            flash(
-                f"HuggingFace returned 401 — '{repo_id}' is a gated dataset. "
-                f"Visit huggingface.co/datasets/{repo_id} to accept its terms, "
-                "then paste an access token under Advanced and try again.",
-                "danger",
-            )
-        else:
-            flash(f"HuggingFace import failed: {e}", "danger")
+        low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'authenticated' in low
+                or 'restricted' in low or 'access denied' in low):
+            return redirect(url_for(
+                'import_from_hf_gated_wizard',
+                repo_id=repo_id, dataset_name=dataset_name,
+                revision=revision or '', flow='direct',
+            ))
+        flash(f"HuggingFace import failed: {e}", "danger")
 
     return redirect(url_for('datasets_list'))
+
+
+@app.route('/import_from_hf/gated', methods=['GET'])
+@login_required
+def import_from_hf_gated_wizard():
+    """Step-by-step gated-dataset unlock page. Reached from any HF
+    import path that hit a 401 / 'gated' error. The user opens the
+    dataset's HF page (new tab) → accepts terms → opens HF token
+    settings (new tab) → pastes the token here → resubmits."""
+    repo_id = (request.args.get('repo_id') or '').strip()
+    dataset_name = (request.args.get('dataset_name') or '').strip()
+    revision = (request.args.get('revision') or '').strip()
+    sample_cap = request.args.get('sample_cap', type=int) or 200
+    flow = request.args.get('flow', 'auto')  # 'auto' or 'direct'
+    if not repo_id:
+        return redirect(url_for('datasets_list'))
+    return render_template(
+        'hf_gated_wizard.html',
+        repo_id=repo_id,
+        dataset_name=dataset_name or repo_id.rstrip('/').split('/')[-1],
+        revision=revision,
+        sample_cap=sample_cap,
+        flow=flow,
+    )
 
 
 # --- HuggingFace auto-import (Level 2) -----------------------------------
@@ -4462,15 +4486,15 @@ def import_from_hf_preview():
         features = _hf_fetch_features(repo_id, revision=revision, hf_token=hf_token)
     except Exception as e:
         msg = str(e)
-        if '401' in msg or 'gated' in msg.lower():
-            flash(
-                f"HuggingFace returned 401 — '{repo_id}' is a gated dataset. "
-                "Accept its terms on huggingface.co/datasets/" + repo_id +
-                " first, then paste an access token under Advanced.",
-                "danger",
-            )
-        else:
-            flash(f"Couldn't read schema: {e}", "danger")
+        low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'authenticated' in low
+                or 'restricted' in low or 'access denied' in low):
+            return redirect(url_for(
+                'import_from_hf_gated_wizard',
+                repo_id=repo_id, dataset_name=dataset_name,
+                revision=revision or '', sample_cap=sample_cap, flow='auto',
+            ))
+        flash(f"Couldn't read schema: {e}", "danger")
         return redirect(url_for('datasets_list'))
 
     if not features:
@@ -4552,16 +4576,12 @@ def import_from_hf_auto():
         low = msg.lower()
         if ('401' in msg or 'gated' in low or 'authenticated' in low
                 or 'restricted' in low or 'access denied' in low):
-            flash(
-                f"'{repo_id}' is a gated HuggingFace dataset. "
-                f"Open https://huggingface.co/datasets/{repo_id}, accept "
-                "its terms, then create an access token at "
-                "huggingface.co/settings/tokens (read-only is fine) and "
-                "paste it under Advanced before retrying.",
-                "danger",
-            )
-        else:
-            flash(f"HuggingFace auto-import failed: {e}", "danger")
+            return redirect(url_for(
+                'import_from_hf_gated_wizard',
+                repo_id=repo_id, dataset_name=dataset_name,
+                revision=revision or '', sample_cap=sample_cap, flow='auto',
+            ))
+        flash(f"HuggingFace auto-import failed: {e}", "danger")
     return redirect(url_for('datasets_list'))
 
 
