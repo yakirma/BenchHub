@@ -187,3 +187,114 @@ def test_auto_route_returns_friendly_error_when_datasets_lib_missing(
     # Either ImportError-friendly message OR the AttributeError surfaces as
     # a flash. Either way, no 500.
     assert resp.status_code != 500
+
+
+# ---------------------------------------------------------------------------
+# LLM-driven inference (Claude API, optional)
+# ---------------------------------------------------------------------------
+
+
+def _hf_features_resp_factory(features_dict):
+    """Build a mock HF API response containing parquet features."""
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {'cardData': {'dataset_info': [{'features': features_dict}]}}
+    return _Resp
+
+
+def test_preview_uses_llm_when_api_key_set(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """With ANTHROPIC_API_KEY in the env, the preview route calls
+    Claude and uses its mapping. Indicator badge says 'AI-inferred'."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test-fake-key')
+
+    hf_resp = _hf_features_resp_factory({
+        'image': {'_type': 'Image'},
+        'depth_map': {'_type': 'Image'},
+    })()
+
+    # Mock the Anthropic API to return a deliberate JSON answer that
+    # the rule-based heuristic wouldn't produce — proves the LLM path
+    # is the one we picked up.
+    class _AnthRespOk:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                'content': [{
+                    'type': 'text',
+                    'text': '[{"column":"image","target_kind":"image","target_field":"image_image","reason":"RGB"},'
+                             '{"column":"depth_map","target_kind":"depth","target_field":"raw_depth_map","reason":"depth name"}]',
+                }],
+            }
+
+    def fake_get(url, *a, **kw):  # HF features fetch
+        return hf_resp
+
+    def fake_post(url, *a, **kw):  # Anthropic API
+        assert 'anthropic' in url
+        return _AnthRespOk()
+
+    with patch('requests.get', side_effect=fake_get), \
+         patch('requests.post', side_effect=fake_post):
+        resp = auth_client.post('/import_from_hf/preview',
+                                data={'hf_repo_id': 'fake/ds-llm'},
+                                follow_redirects=True)
+    assert resp.status_code == 200
+    assert b'AI-inferred' in resp.data
+
+
+def test_preview_falls_back_to_rules_without_api_key(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """No ANTHROPIC_API_KEY → no LLM call, indicator says 'Rule-inferred'."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    hf_resp = _hf_features_resp_factory({'image': {'_type': 'Image'}})()
+    with patch('requests.get', return_value=hf_resp), \
+         patch('requests.post') as post_mock:
+        resp = auth_client.post('/import_from_hf/preview',
+                                data={'hf_repo_id': 'fake/ds-rules'},
+                                follow_redirects=True)
+    assert resp.status_code == 200
+    assert b'Rule-inferred' in resp.data
+    # No call to Anthropic.
+    post_mock.assert_not_called()
+
+
+def test_preview_falls_back_when_llm_call_fails(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """Network or rate-limit error from the LLM API → silent fallback
+    to rules. UI doesn't error; indicator says 'Rule-inferred'."""
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test-fake-key')
+    hf_resp = _hf_features_resp_factory({'image': {'_type': 'Image'}})()
+
+    def fake_post(url, *a, **kw):
+        raise RuntimeError("rate limited")
+
+    with patch('requests.get', return_value=hf_resp), \
+         patch('requests.post', side_effect=fake_post):
+        resp = auth_client.post('/import_from_hf/preview',
+                                data={'hf_repo_id': 'fake/ds-fallback'},
+                                follow_redirects=True)
+    assert resp.status_code == 200
+    assert b'Rule-inferred' in resp.data
+
+
+def test_preview_template_uses_Type_label(client):
+    """Sanity: the column header was renamed from 'Map to' to 'Type'."""
+    # Render the template directly via a test request-context.
+    from flask import render_template
+    from app import app as flask_app
+    with flask_app.test_request_context('/'):
+        rendered = render_template(
+            'hf_import_preview.html',
+            repo_id='x/y', revision=None, hf_token=None,
+            dataset_name='y', sample_cap=50, features={},
+            mapping=[], inference_source='rules',
+        )
+    assert '>Type<' in rendered
+    assert 'Map to' not in rendered

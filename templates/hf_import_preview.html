@@ -8,11 +8,25 @@
         <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Auto-import preview
     </h1>
     <p class="text-body-secondary mb-3">
-        Review the inferred field mapping for
+        Review the inferred field types for
         <a href="https://huggingface.co/datasets/{{ repo_id }}" target="_blank"
             class="font-monospace">{{ repo_id }}</a>{% if revision %} @ <code>{{ revision }}</code>{% endif %}.
         Adjust per-column choices below, then confirm to start streaming
         the first {{ sample_cap }} samples.
+        {# Tiny indicator for whether Claude or the heuristic produced
+           the initial guesses, so an operator who's surprised by an
+           inference knows which way to think about overrides. #}
+        {% if inference_source == 'llm' %}
+        <span class="badge text-bg-info-subtle text-info border border-info-subtle ms-1 small fw-normal"
+            title="Initial types inferred by Claude (sonnet-4-6). Edit any row before confirming.">
+            <i class="bi bi-stars me-1"></i>AI-inferred
+        </span>
+        {% else %}
+        <span class="badge text-bg-light border ms-1 small fw-normal text-body-secondary"
+            title="Initial types inferred from BenchHub's built-in rules. Set ANTHROPIC_API_KEY for Claude-driven inference.">
+            <i class="bi bi-rulers me-1"></i>Rule-inferred
+        </span>
+        {% endif %}
     </p>
 
     <form method="post" action="{{ url_for('import_from_hf_auto') }}">
@@ -52,8 +66,8 @@
                     <thead class="table-light">
                         <tr>
                             <th class="ps-3" style="width: 25%;">HF column</th>
-                            <th style="width: 18%;">Detected type</th>
-                            <th style="width: 22%;">Map to</th>
+                            <th style="width: 18%;">HF dtype</th>
+                            <th style="width: 22%;">Type</th>
                             <th>BenchHub field</th>
                         </tr>
                     </thead>

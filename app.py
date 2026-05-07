@@ -4151,6 +4151,121 @@ def _normalize_features(feats):
     return out
 
 
+def _llm_infer_mapping(features, dataset_repo=None):
+    """Ask Claude to map each HF feature into a BenchHub field type.
+    Returns a list of {column, target_kind, target_field, reason} on
+    success, or None when the LLM is unavailable / parsing fails — in
+    which case the caller falls back to the rule-based _infer_mapping().
+
+    Activates only when ANTHROPIC_API_KEY is set so local-dev / tests
+    skip the network round-trip without configuration.
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    # Compact features payload — column name + normalized type only.
+    payload_features = {col: desc.get('type', 'unknown')
+                        for col, desc in features.items()}
+    if not payload_features:
+        return None
+
+    system_prompt = (
+        "You map columns from a HuggingFace dataset's feature schema onto "
+        "BenchHub field types for benchmark ingestion.\n\n"
+        "Allowed target_kind values:\n"
+        "- image: 2D RGB visual data (photos, rendered frames)\n"
+        "- depth: 2D depth/disparity/distance maps\n"
+        "- metric: scalar score, label, class index, or measurement\n"
+        "- histogram: count distribution (vector of bin counts)\n"
+        "- text: textual descriptions, captions, tags\n"
+        "- skip: not useful for benchmarking (file paths, metadata, etc.)\n\n"
+        "Rules:\n"
+        "- Image() with depth-suggesting name → depth\n"
+        "- Image() otherwise → image\n"
+        "- ClassLabel or numeric Value → metric\n"
+        "- Sequence of integers, fixed length → histogram\n"
+        "- Strings: 'caption'/'text'/'tags'/'description' → text, others → skip\n"
+        "- Use the column name's semantics, not just the dtype.\n\n"
+        "Output a JSON array, one entry per column, with exactly these keys: "
+        '`column`, `target_kind`, `target_field`, `reason`. '
+        '`target_field` follows BenchHub conventions: image_<col>, raw_<col>, '
+        'metric_<col>, hist_<col>, or the bare column name for text. '
+        '`reason` is one short sentence (≤ 15 words) explaining the choice. '
+        "Return ONLY the JSON array, no prose."
+    )
+
+    user_msg = f"Dataset: {dataset_repo or 'unknown'}\n"
+    user_msg += "Columns:\n"
+    for col, t in payload_features.items():
+        user_msg += f"  - {col}: {t}\n"
+
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 2048,
+                # Cache the rules — they don't change per request.
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        # Tolerate the model wrapping in fenced code blocks.
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            return None
+        # Validate each entry has the required shape and a known target_kind.
+        valid_kinds = {'image', 'depth', 'metric', 'histogram', 'text', 'skip'}
+        cleaned = []
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            col = entry.get('column')
+            kind = entry.get('target_kind', 'skip')
+            if col not in payload_features or kind not in valid_kinds:
+                continue
+            cleaned.append({
+                'column': col,
+                'target_kind': kind,
+                'target_field': str(entry.get('target_field') or col)[:120],
+                'reason': str(entry.get('reason') or '')[:200],
+            })
+        # Cover any column the model dropped.
+        seen_cols = {e['column'] for e in cleaned}
+        for col in payload_features:
+            if col not in seen_cols:
+                cleaned.append({
+                    'column': col, 'target_kind': 'skip',
+                    'target_field': '',
+                    'reason': 'Not classified by the model — defaulted to skip.',
+                })
+        return cleaned
+    except Exception as e:
+        print(f"_llm_infer_mapping failed: {e}")
+        return None
+
+
 def _infer_mapping(features):
     """Heuristic: map each feature into a BenchHub field type, or 'skip'.
     Returns a list of {column, target_kind, target_field, reason}."""
@@ -4366,7 +4481,17 @@ def import_from_hf_preview():
         )
         return redirect(url_for('datasets_list'))
 
-    mapping = _infer_mapping(features)
+    # Try LLM-driven inference first; fall back to the rule-based
+    # heuristic if the API key isn't set, the call fails, or the
+    # response doesn't parse.
+    llm_mapping = _llm_infer_mapping(features, dataset_repo=repo_id)
+    if llm_mapping:
+        mapping = llm_mapping
+        inference_source = 'llm'
+    else:
+        mapping = _infer_mapping(features)
+        inference_source = 'rules'
+
     return render_template(
         'hf_import_preview.html',
         repo_id=repo_id,
@@ -4376,6 +4501,7 @@ def import_from_hf_preview():
         sample_cap=sample_cap,
         features=features,
         mapping=mapping,
+        inference_source=inference_source,
     )
 
 
