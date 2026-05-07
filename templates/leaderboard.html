@@ -316,6 +316,56 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
+{# --- Submission contract: which folders the user must include in their ZIP --- #}
+{% if pred_field_schema %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-3">
+        <div class="d-flex align-items-center gap-2 mb-2">
+            <i class="bi bi-upload text-primary"></i>
+            <h2 class="h6 mb-0 fw-semibold">Submission contract — required folders</h2>
+            <span class="badge text-bg-light border small ms-auto">{{ pred_field_schema|length }}
+                field{{ '' if pred_field_schema|length == 1 else 's' }}</span>
+        </div>
+        <p class="small text-body-secondary mb-2">
+            Submissions to this leaderboard must include one folder per
+            row below. Each folder holds one <code>&lt;sample&gt;.txt</code>
+            per dataset sample with the predicted value. Bare-name
+            folders <strong>only</strong> &mdash; <code>metric_*</code>
+            is reserved for user-precomputed metric values, not raw
+            predictions.
+        </p>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light small">
+                    <tr>
+                        <th class="ps-3" style="width: 26%;">Folder</th>
+                        <th style="width: 14%;">Type</th>
+                        <th style="width: 16%;">Compares to GT</th>
+                        <th>Meaning</th>
+                        <th style="width: 22%;">Used by</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pf in pred_field_schema %}
+                    <tr>
+                        <td class="ps-3 font-monospace small">{{ pf.name }}/</td>
+                        <td><span class="badge text-bg-secondary-subtle text-secondary border">{{ pf.kind }}</span></td>
+                        <td class="font-monospace small text-body-secondary">{{ pf.gt_field }}</td>
+                        <td class="small">{{ pf.description }}</td>
+                        <td class="small text-body-secondary">
+                            {% for u in pf.used_by %}
+                            <span class="badge text-bg-light border me-1">{{ u }}</span>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {# --- Submit-via-Colab modal --- #}
 {% set _nb_url = url_for('leaderboard_colab_notebook', leaderboard_id=leaderboard.id, _external=True) %}
 <div class="modal fade" id="submit-colab-modal" tabindex="-1" aria-hidden="true">
@@ -377,6 +427,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
+{# View options + filters were always-on and crowded the page. Hide them
+   behind a toggle by default, but auto-open if any filter is currently
+   active so the user can SEE what's narrowing their view. #}
+{% set _filters_active = (
+    enable_include or enable_exclude or enable_prefix
+    or enable_sample_include or enable_sample_exclude or enable_sample_prefix
+    or include_tags or exclude_tags or prefix_tags
+    or sample_include_tags or sample_exclude_tags or sample_prefix_tags
+    or sample_search_query or search_query
+) %}
+<div class="d-flex align-items-center gap-2 mb-2">
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+        data-bs-toggle="collapse" data-bs-target="#lb-view-options"
+        aria-expanded="{{ 'true' if _filters_active else 'false' }}"
+        aria-controls="lb-view-options">
+        <i class="bi bi-sliders me-1"></i>View options &amp; filters
+        {% if _filters_active %}
+        <span class="badge text-bg-primary ms-1" title="At least one filter is active">on</span>
+        {% endif %}
+    </button>
+    {% if _filters_active %}
+    {# One-click clear: drop all filter query params + cookies. #}
+    <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
+       class="btn btn-sm btn-link text-body-secondary">
+        <i class="bi bi-x-circle me-1"></i>Clear filters
+    </a>
+    {% endif %}
+</div>
+
+<div class="collapse {% if _filters_active %}show{% endif %}" id="lb-view-options">
 <div class="card mb-3">
     <div class="card-body">
         <h5 class="card-title">View Options</h5>
@@ -594,6 +674,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
     </div>
 </div>
+</div>{# /lb-view-options collapse #}
 
 <!-- Main Table Card with Sticky Scrollbar -->
 <div class="card page-container">

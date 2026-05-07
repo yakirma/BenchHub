@@ -4046,9 +4046,11 @@ def leaderboard_view(leaderboard_id):
     # /home logic: first image-or-depth custom field on any sample).
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in leaderboard.datasets}
 
+    pred_field_schema = _lb_submission_pred_fields(leaderboard)
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_thumbs=dataset_thumbs,
+                           pred_field_schema=pred_field_schema,
                            submissions=submissions,
                            all_metrics=all_metrics,
                            selected_metrics=all_metrics,
@@ -4552,7 +4554,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v3-pred-field-schema'
+_COLAB_TEMPLATE_VERSION = 'v4-bare-pred-folders'
 
 
 def _lb_structure_signature(lb):
@@ -4803,15 +4805,30 @@ def _llm_colab_notebook(lb):
     if ds and ds.samples:
         for cf in (ds.samples[0].custom_fields or [])[:12]:
             sample_fields.append({'name': cf.name, 'type': cf.field_type})
+    pred_fields = _lb_submission_pred_fields(lb)
 
     system_prompt = (
         "You generate a Google Colab Jupyter notebook (Python 3, "
         "nbformat 4) that helps a BenchHub user submit predictions to "
         "a specific leaderboard.\n\n"
+        "BenchHub folder convention (CRITICAL — the LB metrics will\n"
+        "FAIL TO EVALUATE if predictions land in the wrong folder):\n"
+        "- Per-sample predictions land in BARE-NAME folders, NOT under\n"
+        "  `metric_*`. The user is given a `PRED_FIELDS` list of folder\n"
+        "  names; each prediction goes to `<field>/<sample>.txt`.\n"
+        "- `metric_<name>/<sample>.txt` is RESERVED for user-precomputed\n"
+        "  metric VALUES (the rare case where the user already ran the\n"
+        "  metric and is shipping the score directly). Never use this\n"
+        "  folder for raw model predictions.\n"
+        "- `image_<name>/<sample>.png` for image predictions.\n"
+        "- `raw_<name>/<sample>_<W>x<H>.npz` for depth predictions.\n\n"
         "The notebook MUST:\n"
         "- Open with a markdown cell explaining the leaderboard, its "
         "  datasets, metrics, and a placeholder for the user's model. "
         "  This cell MUST also include:\n"
+        "  * a 'Required submission folders' subsection listing the "
+        "    pred fields (from the user_msg) verbatim with their GT "
+        "    field origin and the bare-name folder layout.\n"
         "  * a one-line note that the runtime defaults to CPU and the "
         "    user can switch to GPU/TPU via Runtime → Change runtime "
         "    type IF their model needs acceleration. Do NOT pre-set the "
@@ -4827,11 +4844,12 @@ def _llm_colab_notebook(lb):
         "- Include a code cell that downloads the dataset ZIP from "
         "  BenchHub and extracts it to /tmp/gt/.\n"
         "- Include a clearly-marked `def my_model(sample_name, inputs)` "
-        "  cell the user is meant to edit.\n"
-        "- Include a loop that writes per-sample predictions into "
-        "  BenchHub's folder layout: `metric_<name>/<sample>.txt` for "
-        "  scalars, `image_<name>/<sample>.png` for images, "
-        "  `raw_<name>/<sample>_<W>x<H>.npz` for depth.\n"
+        "  cell the user is meant to edit. The cell defines a "
+        "  `PRED_FIELDS` list (copy verbatim from the user_msg) and the "
+        "  function returns a dict whose keys exactly match `PRED_FIELDS`.\n"
+        "- Include a loop that walks `preds.items()` and writes each\n"
+        "  value to `<field>/<sample>.txt` under a `submission/` "
+        "  directory — bare-name folders, NO `metric_` prefix.\n"
         "- ZIP the submission folder and offer both a `files.download` "
         "  flow and an optional API-token upload to the BenchHub URL "
         "  /api/leaderboard/<id>/submission/upload.\n\n"
@@ -4847,6 +4865,8 @@ def _llm_colab_notebook(lb):
         f"Dataset: {ds_name} (id={ds_id})\n"
         f"Dataset download URL: {base_url}/dataset/{ds_id}/download\n"
         f"Submission upload URL: {base_url}/api/leaderboard/{lb.id}/submission/upload\n"
+        f"Required prediction fields (PRED_FIELDS — bare-name folders, "
+        f"NOT under metric_*): {json.dumps(pred_fields)}\n"
         f"Metric output names expected: {json.dumps(metric_names)}\n"
         f"Sample-field schema (first sample): {json.dumps(sample_fields)}\n"
     )
@@ -5226,16 +5246,40 @@ def _lb_submission_pred_fields(lb):
     keys that reference `sub_<x>_pred`. De-duplicates across metrics
     and visualizations by field name.
 
-    Returns a list of dicts: [{name, gt_field, kind}]. Used by the
-    colab notebook generator and the auto-LB flash message so
-    submitters know what folders their ZIP must include."""
+    Returns a list of dicts: [{name, gt_field, kind, description,
+    used_by}]. `description` infers from the matching GT custom field
+    on the first dataset (ClassLabel-shaped → 'predicted class index',
+    plain numeric → 'predicted value'). `used_by` lists the LB metric
+    + visualization target names that consume this pred field, so the
+    LB page can show which scoreboards depend on each prediction."""
     seen = {}
-    sources = list(lb.leaderboard_metrics or []) + list(lb.leaderboard_visualizations or [])
-    for source in sources:
+
+    def _record(field_name, gt_field, used_by):
+        if field_name in seen:
+            seen[field_name]['used_by'].append(used_by)
+            return
+        seen[field_name] = {
+            'name': field_name,
+            'gt_field': gt_field,
+            'kind': 'scalar',
+            'description': '',  # filled in below
+            'used_by': [used_by],
+        }
+
+    sources = (
+        [('metric', lm) for lm in (lb.leaderboard_metrics or [])]
+        + [('viz', lv) for lv in (lb.leaderboard_visualizations or [])]
+    )
+    for kind, source in sources:
         try:
             mappings = json.loads(source.arg_mappings or '{}')
         except (TypeError, ValueError):
             mappings = {}
+        used_by_label = (
+            source.target_name
+            or (source.global_metric.name if kind == 'metric'
+                else source.global_visualization.name)
+        )
         for ctx_key in mappings.values():
             if not isinstance(ctx_key, str):
                 continue
@@ -5246,13 +5290,36 @@ def _lb_submission_pred_fields(lb):
                 continue
             field_name = ctx_key[len('sub_'):]
             gt_field = field_name[:-len('_pred')]
-            if field_name in seen:
-                continue
-            seen[field_name] = {
-                'name': field_name,
-                'gt_field': gt_field,
-                'kind': 'scalar',
-            }
+            _record(field_name, gt_field, used_by_label)
+
+    # Now backfill descriptions by inspecting the GT side of the first
+    # dataset for each pred field's `gt_field`.
+    gt_field_meta = {}
+    for ds in (lb.datasets or []):
+        if not ds.samples:
+            continue
+        first = ds.samples[0]
+        for cf in (first.custom_fields or []):
+            gt_field_meta.setdefault(cf.name, cf.field_type)
+        # Walk one dataset's worth of fields; that's enough to infer.
+        break
+    for entry in seen.values():
+        gt_name = entry['gt_field']
+        sibling_class = f"{gt_name}_class"
+        if sibling_class in gt_field_meta:
+            entry['description'] = (
+                f"Predicted class index for `{gt_name}` "
+                f"(per-sample integer)."
+            )
+        elif gt_field_meta.get(gt_name) == 'scalar':
+            entry['description'] = (
+                f"Predicted numeric value for `{gt_name}` "
+                f"(per-sample float)."
+            )
+        else:
+            entry['description'] = (
+                f"Per-sample prediction paired against GT `{gt_name}`."
+            )
     return list(seen.values())
 
 
@@ -5399,19 +5466,84 @@ def _llm_generate_visualization_code(global_name, llm_hint,
         return None
 
 
-def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
-    """Create a Leaderboard backed by `dataset`, propose metrics AND
-    visualizations from its GT scalar fields, reuse any existing
-    GlobalMetric / GlobalVisualization whose name matches a proposal
-    (strict name match), and author new ones via the LLM (with a
-    deterministic fallback). Returns (success, message, lb_id)."""
+def _enrich_metric_proposal_with_existing_code(p):
+    """If a GlobalMetric with the proposed name already exists, attach
+    its current python_code to the proposal so the preview UI shows
+    what the user is reusing (and they can override it). Otherwise try
+    the LLM to author code (with the deterministic fallback as the
+    floor). Mutates `p` in-place: adds `python_code` and `code_source`
+    ∈ {'existing', 'llm', 'static'}."""
+    existing = GlobalMetric.query.filter_by(name=p['global_name']).first()
+    if existing is not None:
+        p['python_code'] = existing.python_code
+        p['code_source'] = 'existing'
+        p['existing_global_metric_id'] = existing.id
+        return p
+    llm_code = _llm_generate_metric_code(p['global_name'], p['llm_hint'])
+    if llm_code:
+        p['python_code'] = llm_code
+        p['code_source'] = 'llm'
+    else:
+        p['python_code'] = p['fallback_code']
+        p['code_source'] = 'static'
+    return p
+
+
+def _enrich_viz_proposal_with_existing_code(p):
+    """Sister of _enrich_metric_proposal_with_existing_code for vis."""
+    existing = GlobalVisualization.query.filter_by(name=p['global_name']).first()
+    if existing is not None:
+        p['python_code'] = existing.python_code
+        p['code_source'] = 'existing'
+        p['existing_global_visualization_id'] = existing.id
+        return p
+    llm_code = _llm_generate_visualization_code(
+        p['global_name'], p['llm_hint'],
+        p['is_aggregated'], p['accepts_aggregated_inputs'],
+    )
+    if llm_code:
+        p['python_code'] = llm_code
+        p['code_source'] = 'llm'
+    else:
+        p['python_code'] = p['fallback_code']
+        p['code_source'] = 'static'
+    return p
+
+
+def _collect_auto_lb_proposals(dataset):
+    """Run the metric + viz proposers and enrich each entry with the
+    code the LB would persist if the user accepts it as-is. Returns
+    (metric_proposals, viz_proposals). The preview page renders both
+    and the user picks which to keep / edits the code."""
+    metric_proposals = [
+        _enrich_metric_proposal_with_existing_code(dict(p))
+        for p in _propose_metrics_for_dataset(dataset)
+    ]
+    viz_proposals = [
+        _enrich_viz_proposal_with_existing_code(dict(p))
+        for p in _propose_visualizations_for_dataset(dataset)
+    ]
+    return metric_proposals, viz_proposals
+
+
+def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id,
+                                 *, metric_proposals=None, viz_proposals=None):
+    """Create a Leaderboard backed by `dataset`, attach metrics and
+    visualizations from the supplied (or freshly proposed) lists, and
+    reuse any existing GlobalMetric / GlobalVisualization whose name
+    matches (strict name match). When proposals aren't supplied, runs
+    the proposers + LLM-fallback code-gen path itself.
+
+    Returns (success, message, lb_id)."""
     if not lb_name:
         return False, "Leaderboard name is required.", None
     if Leaderboard.query.filter_by(name=lb_name).first():
         return False, f'A leaderboard named "{lb_name}" already exists.', None
 
-    metric_proposals = _propose_metrics_for_dataset(dataset)
-    viz_proposals = _propose_visualizations_for_dataset(dataset)
+    if metric_proposals is None and viz_proposals is None:
+        metric_proposals, viz_proposals = _collect_auto_lb_proposals(dataset)
+    metric_proposals = metric_proposals or []
+    viz_proposals = viz_proposals or []
     if not metric_proposals and not viz_proposals:
         return False, ("No GT scalar fields detected on the dataset — "
                        "nothing to auto-attach. Create the leaderboard "
@@ -5429,8 +5561,11 @@ def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
     for p in metric_proposals:
         gm = GlobalMetric.query.filter_by(name=p['global_name']).first()
         if gm is None:
-            code = _llm_generate_metric_code(p['global_name'], p['llm_hint']) \
+            code = (
+                p.get('python_code')
+                or _llm_generate_metric_code(p['global_name'], p['llm_hint'])
                 or p['fallback_code']
+            )
             gm = GlobalMetric(
                 name=p['global_name'],
                 description=p['description'],
@@ -5455,10 +5590,14 @@ def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
     for p in viz_proposals:
         gv = GlobalVisualization.query.filter_by(name=p['global_name']).first()
         if gv is None:
-            code = _llm_generate_visualization_code(
-                p['global_name'], p['llm_hint'],
-                p['is_aggregated'], p['accepts_aggregated_inputs'],
-            ) or p['fallback_code']
+            code = (
+                p.get('python_code')
+                or _llm_generate_visualization_code(
+                    p['global_name'], p['llm_hint'],
+                    p['is_aggregated'], p['accepts_aggregated_inputs'],
+                )
+                or p['fallback_code']
+            )
             gv = GlobalVisualization(
                 name=p['global_name'],
                 description=p['description'],
@@ -6243,10 +6382,10 @@ def create_leaderboard():
             flash(f'Leaderboard "{leaderboard_name}" already exists. Choose a different name or check "Overwrite".', 'danger')
             return redirect(url_for('datasets_list'))
 
-    # When the user opts into auto-assigned metrics, hand off to the
-    # dedicated helper so the proposer / LLM-fallback path stays in one
-    # place. The helper handles LB row creation + metric attachment in
-    # a single transaction.
+    # When the user opts into auto-assigned metrics, render the preview
+    # page so they can review/edit/skip individual proposals before any
+    # GlobalMetric / GlobalVisualization rows are created. The actual
+    # commit happens in /create_leaderboard/auto_finalize.
     auto_assign = bool(request.form.get('auto_assign_metrics'))
     if auto_assign:
         dataset_ids = request.form.getlist('dataset_ids')
@@ -6257,13 +6396,25 @@ def create_leaderboard():
         if ds is None:
             flash("Auto-assign metrics needs a dataset attached to the LB.", "danger")
             return redirect(url_for('datasets_list'))
-        ok, msg, lb_id = _auto_create_lb_with_metrics(
-            ds, leaderboard_name, owner_user_id=g.current_user.id,
+        metric_props, viz_props = _collect_auto_lb_proposals(ds)
+        if not metric_props and not viz_props:
+            flash("No GT scalar fields detected on the dataset — "
+                  "nothing to auto-attach.", "warning")
+            return redirect(url_for('dataset_view', dataset_id=ds.id))
+        # Combined pred-field schema preview so the user sees what
+        # submission folders the proposed metrics + viz will require.
+        seen_pred = {}
+        for p in metric_props + viz_props:
+            for pf in (p.get('pred_fields') or []):
+                seen_pred.setdefault(pf['name'], pf)
+        return render_template(
+            'auto_lb_preview.html',
+            leaderboard_name=leaderboard_name,
+            dataset=ds,
+            metric_proposals=metric_props,
+            viz_proposals=viz_props,
+            pred_field_schema=list(seen_pred.values()),
         )
-        flash(msg, "success" if ok else "warning")
-        if ok and lb_id:
-            return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
-        return redirect(url_for('dataset_view', dataset_id=ds.id))
 
     new_leaderboard = Leaderboard(
         name=leaderboard_name,
@@ -6316,6 +6467,67 @@ def create_leaderboard():
     
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
     return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))
+
+
+@app.route('/create_leaderboard/auto_finalize', methods=['POST'])
+@login_required
+def create_leaderboard_auto_finalize():
+    """Consume the auto-LB preview form and persist whichever proposals
+    the user kept (with their edits). The preview page emits one row of
+    parallel arrays per proposal — `kept_metric[<global_name>]` (a
+    checkbox), `metric_target_name[<global_name>]`, `metric_code[<global_name>]`,
+    `metric_sort_direction[<global_name>]` — same shape for viz with
+    `kept_viz[<global_name>]` etc."""
+    leaderboard_name = (request.form.get('leaderboard_name') or '').strip()
+    if not leaderboard_name:
+        flash("Leaderboard name is required.", "danger")
+        return redirect(url_for('datasets_list'))
+    dataset_id = request.form.get('dataset_id')
+    if not dataset_id:
+        flash("Dataset id is required.", "danger")
+        return redirect(url_for('datasets_list'))
+    ds = Dataset.query.get(int(dataset_id))
+    if ds is None:
+        flash("Dataset not found.", "danger")
+        return redirect(url_for('datasets_list'))
+
+    # Re-run the proposers so we have the canonical arg_mappings + hint
+    # for every name. We only TRUST data that came back through the
+    # form for fields the proposer also produced — defends against a
+    # crafted POST trying to inject metrics for a different dataset.
+    metric_proposals_all, viz_proposals_all = _collect_auto_lb_proposals(ds)
+
+    def _override(p, prefix):
+        gn = p['global_name']
+        if not request.form.get(f'kept_{prefix}_{gn}'):
+            return None
+        target_name = (request.form.get(f'{prefix}_target_name_{gn}') or '').strip()
+        if target_name:
+            p['target_name'] = target_name
+        code = (request.form.get(f'{prefix}_code_{gn}') or '').strip()
+        if code and f"def {gn}(" in code:
+            p['python_code'] = code
+        if prefix == 'metric':
+            sort_dir = request.form.get(f'metric_sort_direction_{gn}')
+            if sort_dir in ('higher_is_better', 'lower_is_better'):
+                p['sort_direction'] = sort_dir
+        return p
+
+    kept_metrics = [m for m in (_override(p, 'metric') for p in metric_proposals_all) if m]
+    kept_viz = [v for v in (_override(p, 'viz') for p in viz_proposals_all) if v]
+    if not kept_metrics and not kept_viz:
+        flash("Nothing kept from the proposal — leaderboard not created.", "warning")
+        return redirect(url_for('dataset_view', dataset_id=ds.id))
+
+    ok, msg, lb_id = _auto_create_lb_with_metrics(
+        ds, leaderboard_name, owner_user_id=g.current_user.id,
+        metric_proposals=kept_metrics, viz_proposals=kept_viz,
+    )
+    flash(msg, "success" if ok else "warning")
+    if ok and lb_id:
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
+    return redirect(url_for('dataset_view', dataset_id=ds.id))
+
 
 def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user_id=None):
     """

@@ -294,9 +294,18 @@ def test_lb_submission_pred_fields_dedupes_across_metrics_and_viz(
     )
     lb = Leaderboard.query.get(lb_id)
     schema = _lb_submission_pred_fields(lb)
-    assert schema == [{
-        'name': 'label_pred', 'gt_field': 'label', 'kind': 'scalar',
-    }]
+    assert len(schema) == 1
+    entry = schema[0]
+    assert entry['name'] == 'label_pred'
+    assert entry['gt_field'] == 'label'
+    assert entry['kind'] == 'scalar'
+    # Used-by is the union of metric + viz target names that consume
+    # this pred field — both reference `sub_label_pred`.
+    assert sorted(entry['used_by']) == sorted([
+        'top-1 accuracy (label)', 'confusion matrix (label)',
+    ])
+    # Description differentiates ClassLabel from regression-style.
+    assert 'class index' in entry['description'].lower()
 
 
 def test_lb_submission_pred_fields_ignores_non_pred_sub_keys(db_session, logged_in_user):
@@ -510,29 +519,131 @@ def test_auto_create_lb_returns_clear_error_when_no_scalar_fields(
 # ---------------------------------------------------------------------------
 
 
-def test_create_leaderboard_with_auto_assign_metrics(
+def test_create_leaderboard_with_auto_assign_renders_preview(
     auth_client, logged_in_user, db_session, monkeypatch,
     dataset_classlabel_shape,
 ):
+    """auto_assign_metrics now opens the review-and-edit preview page
+    instead of creating the LB immediately. The user has to confirm
+    via /create_leaderboard/auto_finalize for any rows to land."""
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
     resp = auth_client.post(
         '/create_leaderboard',
         data={
-            'leaderboard_name': 'auto_lb_from_form',
+            'leaderboard_name': 'auto_lb_preview',
             'dataset_ids': str(dataset_classlabel_shape.id),
             'auto_assign_metrics': '1',
         },
         follow_redirects=False,
     )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'Review auto-proposed' in body
+    # Both kinds of proposals surfaced.
+    assert 'top1_label' in body
+    assert 'confusion_matrix_label' in body
+    # Submission contract preview is included.
+    assert 'label_pred' in body
+    # No LB was created yet — the user has to confirm.
+    assert Leaderboard.query.filter_by(name='auto_lb_preview').first() is None
+
+
+def test_auto_finalize_persists_only_kept_proposals(
+    auth_client, logged_in_user, db_session, monkeypatch,
+    dataset_classlabel_shape,
+):
+    """User unchecks the visualization → only the metric is attached."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    resp = auth_client.post(
+        '/create_leaderboard/auto_finalize',
+        data={
+            'leaderboard_name': 'kept_metric_only',
+            'dataset_id': str(dataset_classlabel_shape.id),
+            'kept_metric_top1_label': '1',
+            'metric_target_name_top1_label': 'top-1 accuracy (label)',
+            'metric_sort_direction_top1_label': 'higher_is_better',
+            # Note: kept_viz_confusion_matrix_label intentionally absent.
+        },
+        follow_redirects=False,
+    )
     assert resp.status_code == 302
     assert '/leaderboard/' in resp.headers['Location']
-
-    lb = Leaderboard.query.filter_by(name='auto_lb_from_form').first()
+    lb = Leaderboard.query.filter_by(name='kept_metric_only').first()
     assert lb is not None
     assert [lm.global_metric.name for lm in lb.leaderboard_metrics] == ['top1_label']
-    assert [lv.global_visualization.name for lv in lb.leaderboard_visualizations] == [
-        'confusion_matrix_label',
-    ]
+    assert lb.leaderboard_visualizations == []
+
+
+def test_auto_finalize_honors_user_edits_to_target_name_and_sort(
+    auth_client, logged_in_user, db_session, monkeypatch,
+    dataset_classlabel_shape,
+):
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    resp = auth_client.post(
+        '/create_leaderboard/auto_finalize',
+        data={
+            'leaderboard_name': 'edited_lb',
+            'dataset_id': str(dataset_classlabel_shape.id),
+            'kept_metric_top1_label': '1',
+            'metric_target_name_top1_label': 'My renamed top1',
+            'metric_sort_direction_top1_label': 'lower_is_better',
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    lb = Leaderboard.query.filter_by(name='edited_lb').first()
+    lm = lb.leaderboard_metrics[0]
+    assert lm.target_name == 'My renamed top1'
+    assert lm.sort_direction == 'lower_is_better'
+
+
+def test_auto_finalize_uses_user_edited_python_code(
+    auth_client, logged_in_user, db_session, monkeypatch,
+    dataset_classlabel_shape,
+):
+    """User overrides the proposed python_code → the new GlobalMetric
+    persists with the override (only when the function name still
+    matches; otherwise the form-supplied code is silently ignored
+    and the proposal's default lands)."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    user_code = (
+        "def top1_label(gt, pred):\n"
+        "    # USER-EDITED\n"
+        "    return 1.0 if int(gt) == int(pred) else 0.0\n"
+    )
+    resp = auth_client.post(
+        '/create_leaderboard/auto_finalize',
+        data={
+            'leaderboard_name': 'edited_code_lb',
+            'dataset_id': str(dataset_classlabel_shape.id),
+            'kept_metric_top1_label': '1',
+            'metric_code_top1_label': user_code,
+            'metric_sort_direction_top1_label': 'higher_is_better',
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    gm = GlobalMetric.query.filter_by(name='top1_label').first()
+    assert gm is not None
+    assert '# USER-EDITED' in gm.python_code
+
+
+def test_auto_finalize_with_nothing_kept_creates_no_lb(
+    auth_client, logged_in_user, db_session, monkeypatch,
+    dataset_classlabel_shape,
+):
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    resp = auth_client.post(
+        '/create_leaderboard/auto_finalize',
+        data={
+            'leaderboard_name': 'nothing_kept',
+            'dataset_id': str(dataset_classlabel_shape.id),
+            # No kept_metric_* / kept_viz_* checkboxes.
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert Leaderboard.query.filter_by(name='nothing_kept').first() is None
 
 
 def test_create_leaderboard_without_auto_assign_metrics_path_unchanged(

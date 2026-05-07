@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}Review auto-assigned metrics — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1100px;">
+    <h1 class="h3 fw-bold mb-1">
+        <i class="bi bi-stars text-warning me-1"></i>Review auto-proposed metrics &amp; visualizations
+    </h1>
+    <p class="text-body-secondary mb-3">
+        Walking the GT scalar fields on
+        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+            class="font-monospace">{{ dataset.name }}</a>,
+        BenchHub proposes one comparison metric per field plus a
+        confusion-matrix visualization for ClassLabel-shaped columns.
+        Toggle, rename, or edit before creating the leaderboard.
+    </p>
+
+    <form method="post" action="{{ url_for('create_leaderboard_auto_finalize') }}">
+        <input type="hidden" name="leaderboard_name" value="{{ leaderboard_name }}">
+        <input type="hidden" name="dataset_id" value="{{ dataset.id }}">
+
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-9">
+                        <label class="form-label small fw-semibold mb-1">Leaderboard name</label>
+                        <input type="text" name="leaderboard_name"
+                            class="form-control" required
+                            value="{{ leaderboard_name }}">
+                    </div>
+                    <div class="col-md-3">
+                        <p class="form-label small fw-semibold mb-1">Backed by</p>
+                        <p class="font-monospace small mb-0">{{ dataset.name }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {# ---- Submission contract preview (mirrors the LB-page widget). #}
+        {% if pred_field_schema %}
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <h2 class="h6 fw-semibold mb-2">
+                    <i class="bi bi-upload text-primary me-1"></i>Submissions will need to ship
+                </h2>
+                <div class="d-flex flex-wrap gap-2">
+                    {% for pf in pred_field_schema %}
+                    <span class="badge text-bg-secondary-subtle text-secondary border font-monospace">
+                        {{ pf.name }}/
+                    </span>
+                    {% endfor %}
+                </div>
+                <p class="form-text small mb-0 mt-2">
+                    Bare-name folders &mdash; <code>metric_*</code> is reserved
+                    for user-precomputed metric values, never raw predictions.
+                </p>
+            </div>
+        </div>
+        {% endif %}
+
+        {# ---- Metric proposals ---- #}
+        {% if metric_proposals %}
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <h2 class="h6 fw-semibold mb-2">
+                    <i class="bi bi-bar-chart text-primary me-1"></i>Proposed metrics
+                </h2>
+                {% for p in metric_proposals %}
+                <details class="border rounded mb-2" {% if loop.first %}open{% endif %}>
+                    <summary class="p-2 d-flex align-items-center gap-2">
+                        <input class="form-check-input m-0"
+                            type="checkbox" checked
+                            name="kept_metric_{{ p.global_name }}"
+                            value="1"
+                            onclick="event.stopPropagation();">
+                        <span class="fw-semibold">{{ p.target_name }}</span>
+                        <span class="badge text-bg-light border small">{{ p.global_name }}</span>
+                        <span class="badge text-bg-{{ 'success-subtle' if p.code_source == 'existing' else ('info-subtle' if p.code_source == 'llm' else 'secondary-subtle') }} border small">
+                            {{ {'existing': 'reuse existing', 'llm': 'LLM-authored', 'static': 'static fallback'}[p.code_source] }}
+                        </span>
+                        <span class="ms-auto small text-body-secondary">
+                            sort: {{ p.sort_direction.replace('_', ' ') }}
+                        </span>
+                    </summary>
+                    <div class="p-3 pt-2 border-top">
+                        <p class="small text-body-secondary mb-2">{{ p.description }}</p>
+
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-6">
+                                <label class="form-label small fw-semibold mb-1">Display name</label>
+                                <input type="text" name="metric_target_name_{{ p.global_name }}"
+                                    class="form-control form-control-sm"
+                                    value="{{ p.target_name }}">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small fw-semibold mb-1">Sort direction</label>
+                                <select name="metric_sort_direction_{{ p.global_name }}"
+                                    class="form-select form-select-sm">
+                                    <option value="higher_is_better" {{ 'selected' if p.sort_direction == 'higher_is_better' }}>higher is better</option>
+                                    <option value="lower_is_better"  {{ 'selected' if p.sort_direction == 'lower_is_better'  }}>lower is better</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <p class="small text-body-secondary mb-1">
+                            Args: <code class="small">{{ p.arg_mappings | tojson }}</code>
+                        </p>
+
+                        <label class="form-label small fw-semibold mb-1">
+                            Python code
+                            {% if p.code_source == 'existing' %}
+                            <span class="text-body-secondary fw-normal">
+                                (currently in the GlobalMetric library — editing here will fork)
+                            </span>
+                            {% endif %}
+                        </label>
+                        <textarea name="metric_code_{{ p.global_name }}"
+                            class="form-control form-control-sm font-monospace"
+                            rows="6" spellcheck="false">{{ p.python_code }}</textarea>
+                    </div>
+                </details>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {# ---- Visualization proposals ---- #}
+        {% if viz_proposals %}
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <h2 class="h6 fw-semibold mb-2">
+                    <i class="bi bi-image text-primary me-1"></i>Proposed visualizations
+                </h2>
+                {% for p in viz_proposals %}
+                <details class="border rounded mb-2">
+                    <summary class="p-2 d-flex align-items-center gap-2">
+                        <input class="form-check-input m-0"
+                            type="checkbox" checked
+                            name="kept_viz_{{ p.global_name }}"
+                            value="1"
+                            onclick="event.stopPropagation();">
+                        <span class="fw-semibold">{{ p.target_name }}</span>
+                        <span class="badge text-bg-light border small">{{ p.global_name }}</span>
+                        <span class="badge text-bg-{{ 'success-subtle' if p.code_source == 'existing' else ('info-subtle' if p.code_source == 'llm' else 'secondary-subtle') }} border small">
+                            {{ {'existing': 'reuse existing', 'llm': 'LLM-authored', 'static': 'static fallback'}[p.code_source] }}
+                        </span>
+                        <span class="ms-auto small text-body-secondary">
+                            {% if p.is_aggregated %}aggregated{% else %}per-sample{% endif %}
+                        </span>
+                    </summary>
+                    <div class="p-3 pt-2 border-top">
+                        <p class="small text-body-secondary mb-2">{{ p.description }}</p>
+
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-6">
+                                <label class="form-label small fw-semibold mb-1">Display name</label>
+                                <input type="text" name="viz_target_name_{{ p.global_name }}"
+                                    class="form-control form-control-sm"
+                                    value="{{ p.target_name }}">
+                            </div>
+                        </div>
+
+                        <p class="small text-body-secondary mb-1">
+                            Args: <code class="small">{{ p.arg_mappings | tojson }}</code>
+                        </p>
+
+                        <label class="form-label small fw-semibold mb-1">
+                            Python code
+                            {% if p.code_source == 'existing' %}
+                            <span class="text-body-secondary fw-normal">
+                                (currently in the GlobalVisualization library — editing here will fork)
+                            </span>
+                            {% endif %}
+                        </label>
+                        <textarea name="viz_code_{{ p.global_name }}"
+                            class="form-control form-control-sm font-monospace"
+                            rows="8" spellcheck="false">{{ p.python_code }}</textarea>
+                    </div>
+                </details>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="d-flex justify-content-between gap-2">
+            <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}" class="btn btn-outline-secondary">
+                Cancel
+            </a>
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-1"></i>Create leaderboard with these
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
