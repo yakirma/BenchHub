@@ -2174,12 +2174,21 @@ def explore():
         combined[name] = combined.get(name, 0) + int(cnt or 0)
     if combined:
         max_cnt = max(combined.values())
-        # Bucket each tag into one of 5 size tiers for the cloud rendering.
-        # Linear bucketing is fine for the small sizes we expect (<100 tags).
+        # Tier controls SIZE only (1..5, by count). Color is now picked
+        # per-tag-name via a deterministic hash so two different tags
+        # never look identical even when they have the same count.
+        # 12-hue palette is enough that adjacent tags don't collide
+        # often; use crc32 instead of hash() so the assignment is
+        # stable across processes.
+        import zlib as _zlib
         tag_cloud = []
         for name, cnt in sorted(combined.items(), key=lambda kv: (-kv[1], kv[0])):
             tier = 1 + min(4, int((cnt / max_cnt) * 4))  # 1..5
-            tag_cloud.append({'name': name, 'count': cnt, 'tier': tier})
+            color_idx = _zlib.crc32(name.encode('utf-8')) % 12
+            tag_cloud.append({
+                'name': name, 'count': cnt,
+                'tier': tier, 'color_idx': color_idx,
+            })
     else:
         tag_cloud = []
 

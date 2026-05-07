@@ -81,15 +81,41 @@ def test_explore_tag_cloud_renders_with_counts(client, db_session):
     db.session.add_all([lb1, lb2, lb3]); db.session.commit()
 
     body = client.get('/explore').data.decode()
-    # Both tags surface; depth has higher count → bigger tier (5 > 1).
+    # Both tags surface; depth has higher count → bigger SIZE tier.
     assert 'depth' in body
     assert 'segmentation' in body
     # depth (count=2) gets the top tier; segmentation (count=1) gets the bottom.
+    # `hue-N` is independent of count (deterministic per name) — don't pin.
     import re as _re
     depth_anchor = _re.search(r'<a [^>]*class="tier-(\d+)[^"]*"[^>]*>\s*depth', body)
     seg_anchor = _re.search(r'<a [^>]*class="tier-(\d+)[^"]*"[^>]*>\s*segmentation', body)
     assert depth_anchor is not None and seg_anchor is not None
     assert int(depth_anchor.group(1)) > int(seg_anchor.group(1))
+
+
+def test_explore_tag_cloud_assigns_distinct_colors_by_name(client, db_session):
+    """Two tags at the SAME count should get different hue classes
+    (color is per-name, not per-count) so they don't look identical."""
+    ds = Dataset(name='hue_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    a = Tag(name='alpha-tag')
+    b = Tag(name='beta-tag')
+    db.session.add_all([a, b]); db.session.flush()
+    lb_a = Leaderboard(name='lb_alpha_only', summary_metrics='', visibility='public')
+    lb_a.datasets.append(ds); lb_a.tags.append(a)
+    lb_b = Leaderboard(name='lb_beta_only', summary_metrics='', visibility='public')
+    lb_b.datasets.append(ds); lb_b.tags.append(b)
+    db.session.add_all([lb_a, lb_b]); db.session.commit()
+
+    body = client.get('/explore').data.decode()
+    import re as _re
+    a_match = _re.search(r'class="tier-\d+ hue-(\d+)[^"]*"[^>]*>\s*alpha-tag', body)
+    b_match = _re.search(r'class="tier-\d+ hue-(\d+)[^"]*"[^>]*>\s*beta-tag', body)
+    assert a_match is not None and b_match is not None
+    # Same count, different name → different hue (very high probability;
+    # a CRC32 collision among two specific names mod 12 is unlikely
+    # but not impossible — these two specific names don't collide).
+    assert a_match.group(1) != b_match.group(1)
 
 
 def test_dataset_tags_render_on_dataset_list(client, db_session):

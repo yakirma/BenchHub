@@ -19,11 +19,43 @@
         transition: transform 0.1s ease, box-shadow 0.1s ease;
     }
     .tag-cloud a:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
-    .tag-cloud .tier-1 { font-size: 0.78rem; background: rgba(13,110,253,0.10); color: var(--bs-primary); }
-    .tag-cloud .tier-2 { font-size: 0.92rem; background: rgba(25,135,84,0.12); color: var(--bs-success); }
-    .tag-cloud .tier-3 { font-size: 1.10rem; background: rgba(255,193,7,0.18); color: #b58900; }
-    .tag-cloud .tier-4 { font-size: 1.30rem; background: rgba(220,53,69,0.15); color: var(--bs-danger); }
-    .tag-cloud .tier-5 { font-size: 1.55rem; background: rgba(13,110,253,0.20); color: var(--bs-primary); font-weight: 600; }
+
+    /* Tier classes now control SIZE only — count → font size. */
+    .tag-cloud .tier-1 { font-size: 0.80rem; }
+    .tag-cloud .tier-2 { font-size: 0.95rem; }
+    .tag-cloud .tier-3 { font-size: 1.15rem; }
+    .tag-cloud .tier-4 { font-size: 1.35rem; }
+    .tag-cloud .tier-5 { font-size: 1.60rem; font-weight: 600; }
+
+    /* Hue classes are picked per tag name (CRC32 mod 12) so two tags
+       with the same count still look distinguishable. Each gets a tinted
+       background + saturated text for legibility on light AND dark themes. */
+    .tag-cloud .hue-0  { background: rgba(220, 53, 69, 0.14); color: #c92a3b; }   /* red */
+    .tag-cloud .hue-1  { background: rgba(253, 126, 20, 0.14); color: #cc6510; } /* orange */
+    .tag-cloud .hue-2  { background: rgba(255, 193, 7, 0.18); color: #a07300; }  /* amber */
+    .tag-cloud .hue-3  { background: rgba(132, 204, 22, 0.14); color: #5a8c0f; } /* lime */
+    .tag-cloud .hue-4  { background: rgba(25, 135, 84, 0.14); color: #14724a; }  /* green */
+    .tag-cloud .hue-5  { background: rgba(20, 184, 166, 0.14); color: #0d8a7a; } /* teal */
+    .tag-cloud .hue-6  { background: rgba(13, 202, 240, 0.14); color: #097ba1; } /* cyan */
+    .tag-cloud .hue-7  { background: rgba(13, 110, 253, 0.14); color: #0a58ca; } /* blue */
+    .tag-cloud .hue-8  { background: rgba(102, 16, 242, 0.14); color: #5d10c2; } /* indigo */
+    .tag-cloud .hue-9  { background: rgba(186, 85, 211, 0.14); color: #8a3ea8; } /* violet */
+    .tag-cloud .hue-10 { background: rgba(214, 51, 132, 0.14); color: #a52564; } /* pink */
+    .tag-cloud .hue-11 { background: rgba(108, 117, 125, 0.16); color: #5a6268; } /* slate */
+
+    [data-bs-theme="dark"] .tag-cloud .hue-0  { color: #ff7080; }
+    [data-bs-theme="dark"] .tag-cloud .hue-1  { color: #ffa55c; }
+    [data-bs-theme="dark"] .tag-cloud .hue-2  { color: #ffd966; }
+    [data-bs-theme="dark"] .tag-cloud .hue-3  { color: #b8e667; }
+    [data-bs-theme="dark"] .tag-cloud .hue-4  { color: #5dd49a; }
+    [data-bs-theme="dark"] .tag-cloud .hue-5  { color: #5cdbcb; }
+    [data-bs-theme="dark"] .tag-cloud .hue-6  { color: #5cd3ee; }
+    [data-bs-theme="dark"] .tag-cloud .hue-7  { color: #6ea8fe; }
+    [data-bs-theme="dark"] .tag-cloud .hue-8  { color: #b18bff; }
+    [data-bs-theme="dark"] .tag-cloud .hue-9  { color: #d693e6; }
+    [data-bs-theme="dark"] .tag-cloud .hue-10 { color: #ee7eb1; }
+    [data-bs-theme="dark"] .tag-cloud .hue-11 { color: #c0c5ca; }
+
     .tag-cloud a.active {
         outline: 2px solid var(--bs-primary);
         outline-offset: 2px;
@@ -61,7 +93,7 @@
         <div class="card-body p-3 tag-cloud text-center">
             {% for t in tag_cloud %}
             <a href="{{ url_for('explore', tag=t.name, q=q, sort=sort) }}"
-                class="tier-{{ t.tier }} {{ 'active' if t.name == active_tag }}"
+                class="tier-{{ t.tier }} hue-{{ t.color_idx }} {{ 'active' if t.name == active_tag }}"
                 title="{{ t.count }} item{{ '' if t.count == 1 else 's' }}">
                 {{ t.name }}
                 <span class="ms-1 small opacity-75">{{ t.count }}</span>
