@@ -309,6 +309,18 @@ submission_tags = db.Table('submission_tags',
     db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'), primary_key=True)
 )
 
+# Discovery tags (separate concept from per-submission tags). Reuses the
+# Tag table — same string namespace, so a "depth" tag on a dataset and
+# a "depth" tag on a submission are the same row.
+dataset_tags = db.Table('dataset_tags',
+    db.Column('dataset_id', db.Integer, db.ForeignKey('dataset.id'), primary_key=True),
+    db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'), primary_key=True),
+)
+leaderboard_tags = db.Table('leaderboard_tags',
+    db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
+    db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'), primary_key=True),
+)
+
 # Association Table for Leaderboards and Datasets
 leaderboard_datasets = db.Table('leaderboard_datasets',
     db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
@@ -346,6 +358,8 @@ class Dataset(db.Model):
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
+    tags = db.relationship('Tag', secondary=dataset_tags, lazy='subquery',
+                           backref=db.backref('datasets', lazy=True))
 
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -547,6 +561,8 @@ class Leaderboard(db.Model):
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
+    tags = db.relationship('Tag', secondary=leaderboard_tags, lazy='subquery',
+                           backref=db.backref('leaderboards', lazy=True))
 
 
 class Submission(db.Model):
@@ -1854,6 +1870,7 @@ def explore():
               popular total submissions across all time
     """
     q = (request.args.get('q') or '').strip()
+    tag_filter = (request.args.get('tag') or '').strip().lower()
     sort = request.args.get('sort', 'activity')
     if sort not in ('activity', 'recent', 'popular'):
         sort = 'activity'
@@ -1896,6 +1913,13 @@ def explore():
     if q:
         base = base.filter(Leaderboard.name.ilike(f'%{q}%'))
 
+    if tag_filter:
+        base = (
+            base.join(leaderboard_tags, leaderboard_tags.c.leaderboard_id == Leaderboard.id)
+                .join(Tag, Tag.id == leaderboard_tags.c.tag_id)
+                .filter(Tag.name == tag_filter)
+        )
+
     if sort == 'recent':
         base = base.order_by(Leaderboard.upload_date.desc())
     elif sort == 'popular':
@@ -1913,11 +1937,50 @@ def explore():
         {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0)}
         for lb, r, t in base.limit(60).all()
     ]
+
+    # Tag cloud: count of *visible* leaderboards per tag, plus dataset
+    # tag counts folded in. Only tags with at least one visible item show.
+    visible_lb_filter = visible_in_list(Leaderboard, getattr(g, 'current_user', None))
+    visible_ds_filter = visible_in_list(Dataset, getattr(g, 'current_user', None))
+    lb_tag_counts = (
+        db.session.query(Tag.name, func.count(Leaderboard.id).label('cnt'))
+        .join(leaderboard_tags, leaderboard_tags.c.tag_id == Tag.id)
+        .join(Leaderboard, Leaderboard.id == leaderboard_tags.c.leaderboard_id)
+        .filter(visible_lb_filter)
+        .group_by(Tag.name)
+        .all()
+    )
+    ds_tag_counts = (
+        db.session.query(Tag.name, func.count(Dataset.id).label('cnt'))
+        .join(dataset_tags, dataset_tags.c.tag_id == Tag.id)
+        .join(Dataset, Dataset.id == dataset_tags.c.dataset_id)
+        .filter(visible_ds_filter)
+        .group_by(Tag.name)
+        .all()
+    )
+    combined = {}
+    for name, cnt in lb_tag_counts:
+        combined[name] = combined.get(name, 0) + int(cnt or 0)
+    for name, cnt in ds_tag_counts:
+        combined[name] = combined.get(name, 0) + int(cnt or 0)
+    if combined:
+        max_cnt = max(combined.values())
+        # Bucket each tag into one of 5 size tiers for the cloud rendering.
+        # Linear bucketing is fine for the small sizes we expect (<100 tags).
+        tag_cloud = []
+        for name, cnt in sorted(combined.items(), key=lambda kv: (-kv[1], kv[0])):
+            tier = 1 + min(4, int((cnt / max_cnt) * 4))  # 1..5
+            tag_cloud.append({'name': name, 'count': cnt, 'tier': tier})
+    else:
+        tag_cloud = []
+
     return render_template(
         'explore.html',
         rows=rows,
         q=q,
         sort=sort,
+        tag_cloud=tag_cloud,
+        active_tag=tag_filter,
     )
 
 
@@ -5524,6 +5587,54 @@ def update_dataset_metrics(dataset_id):
     dataset.selected_metrics = ','.join(request.form.getlist('metrics'))
     db.session.commit()
     return redirect(request.referrer)
+
+
+def _resolve_tags(raw):
+    """Turn a free-text comma/whitespace separated string into a list of
+    Tag rows, creating any that don't exist yet. Lowercases and strips
+    so 'Depth, Segmentation' and 'depth,segmentation' end up the same."""
+    names = []
+    seen = set()
+    for chunk in re.split(r'[,\n]+', raw or ''):
+        name = chunk.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    if not names:
+        return []
+    existing = {t.name: t for t in Tag.query.filter(Tag.name.in_(names)).all()}
+    out = []
+    for n in names:
+        tag = existing.get(n)
+        if tag is None:
+            tag = Tag(name=n)
+            db.session.add(tag)
+            db.session.flush()
+        out.append(tag)
+    return out
+
+
+@app.route('/dataset/<int:dataset_id>/update_tags', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def update_dataset_tags(dataset_id):
+    dataset = Dataset.query.get_or_404(dataset_id)
+    dataset.tags = _resolve_tags(request.form.get('tags', ''))
+    db.session.commit()
+    flash("Tags updated.", "success")
+    return redirect(request.referrer or url_for('dataset_view', dataset_id=dataset_id))
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/update_tags', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def update_leaderboard_tags(leaderboard_id):
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    lb.tags = _resolve_tags(request.form.get('tags', ''))
+    db.session.commit()
+    flash("Tags updated.", "success")
+    return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
 @app.route('/leaderboard/<int:leaderboard_id>/update_visualizations', methods=['POST'])
 def update_leaderboard_visualizations(leaderboard_id):

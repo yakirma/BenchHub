@@ -8,13 +8,46 @@
 {% block flash_messages %}{% endblock %}
 
 {% block content %}
+<style>
+    .tag-cloud { line-height: 1.9; }
+    .tag-cloud a {
+        display: inline-block;
+        text-decoration: none;
+        padding: 0.15em 0.6em;
+        margin: 0.15em;
+        border-radius: 999px;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .tag-cloud a:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+    .tag-cloud .tier-1 { font-size: 0.78rem; background: rgba(13,110,253,0.10); color: var(--bs-primary); }
+    .tag-cloud .tier-2 { font-size: 0.92rem; background: rgba(25,135,84,0.12); color: var(--bs-success); }
+    .tag-cloud .tier-3 { font-size: 1.10rem; background: rgba(255,193,7,0.18); color: #b58900; }
+    .tag-cloud .tier-4 { font-size: 1.30rem; background: rgba(220,53,69,0.15); color: var(--bs-danger); }
+    .tag-cloud .tier-5 { font-size: 1.55rem; background: rgba(13,110,253,0.20); color: var(--bs-primary); font-weight: 600; }
+    .tag-cloud a.active {
+        outline: 2px solid var(--bs-primary);
+        outline-offset: 2px;
+    }
+    .tag-pill {
+        display: inline-block;
+        font-size: 0.7rem;
+        padding: 0.1em 0.55em;
+        border-radius: 999px;
+        background: var(--bs-body-tertiary-bg, var(--bs-tertiary-bg));
+        color: var(--bs-body-secondary);
+        text-decoration: none;
+        margin-right: 0.25em;
+    }
+</style>
+
 <div class="container py-4">
     <div class="d-flex flex-wrap justify-content-between align-items-end mb-4 gap-3">
         <div>
             <h1 class="h3 fw-bold mb-1">Explore leaderboards</h1>
             <p class="text-body-secondary mb-0">
                 {% if rows %}
-                {{ rows|length }} public leaderboard{{ '' if rows|length == 1 else 's' }}.
+                {{ rows|length }} public leaderboard{{ '' if rows|length == 1 else 's' }}{% if active_tag %} tagged
+                <span class="badge text-bg-primary">{{ active_tag }}</span>{% endif %}.
                 {% else %}
                 Nothing matches your filters yet.
                 {% endif %}
@@ -22,8 +55,32 @@
         </div>
     </div>
 
+    {# ---- Tag cloud ---- #}
+    {% if tag_cloud %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3 tag-cloud text-center">
+            {% for t in tag_cloud %}
+            <a href="{{ url_for('explore', tag=t.name, q=q, sort=sort) }}"
+                class="tier-{{ t.tier }} {{ 'active' if t.name == active_tag }}"
+                title="{{ t.count }} item{{ '' if t.count == 1 else 's' }}">
+                {{ t.name }}
+                <span class="ms-1 small opacity-75">{{ t.count }}</span>
+            </a>
+            {% endfor %}
+            {% if active_tag %}
+            <div class="mt-2">
+                <a href="{{ url_for('explore', q=q, sort=sort) }}" class="small link-secondary">
+                    <i class="bi bi-x-lg me-1"></i>Clear tag filter
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     {# ---- Filters ---- #}
     <form method="GET" action="{{ url_for('explore') }}" class="mb-4">
+        {% if active_tag %}<input type="hidden" name="tag" value="{{ active_tag }}">{% endif %}
         <div class="row g-2">
             <div class="col-md-7">
                 <input type="search" name="q" value="{{ q }}"
@@ -67,6 +124,15 @@
 
                     {% if lb %}
                     
+                    {% endif %}
+
+                    {% if lb.tags %}
+                    <div class="mb-2">
+                        {% for t in lb.tags %}
+                        <a href="{{ url_for('explore', tag=t.name) }}" class="tag-pill"
+                            onclick="event.stopPropagation();">{{ t.name }}</a>
+                        {% endfor %}
+                    </div>
                     {% endif %}
 
                     <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">

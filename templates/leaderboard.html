@@ -221,6 +221,33 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
         {% endfor %}
         </p>
+        <div>
+            {% if leaderboard.tags %}
+            {% for t in leaderboard.tags %}
+            <a href="{{ url_for('explore', tag=t.name) }}"
+                class="badge text-bg-light border text-decoration-none me-1">
+                <i class="bi bi-tag me-1"></i>{{ t.name }}
+            </a>
+            {% endfor %}
+            {% endif %}
+            {% if current_user and leaderboard.owner_user_id == current_user.id %}
+            <button class="btn btn-sm btn-outline-secondary py-0 px-2 align-baseline ms-1"
+                type="button" data-bs-toggle="collapse" data-bs-target="#lb-tags-edit">
+                <i class="bi bi-pencil"></i>
+            </button>
+            <div class="collapse mt-2" id="lb-tags-edit">
+                <form method="post"
+                    action="{{ url_for('update_leaderboard_tags', leaderboard_id=leaderboard.id) }}"
+                    class="d-flex gap-2 align-items-center">
+                    <input type="text" name="tags" class="form-control form-control-sm"
+                        value="{{ leaderboard.tags|map(attribute='name')|join(', ') }}"
+                        placeholder="depth, segmentation, indoor"
+                        style="max-width: 480px;">
+                    <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                </form>
+            </div>
+            {% endif %}
+        </div>
     </div>
     <div class="d-flex align-items-center">
         <a href="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}"
