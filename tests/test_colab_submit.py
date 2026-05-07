@@ -158,7 +158,11 @@ def test_colab_open_redirects_to_gist_when_token_set(
         status_code = 201
         def raise_for_status(self): pass
         def json(self):
-            return {'id': 'gistabc123', 'html_url': 'https://gist.github.com/gistabc123'}
+            return {
+                'id': 'gistabc123',
+                'html_url': 'https://gist.github.com/testuser/gistabc123',
+                'owner': {'login': 'testuser'},
+            }
 
     with patch('requests.post', return_value=_GistOk()):
         resp = client.get(
@@ -166,12 +170,14 @@ def test_colab_open_redirects_to_gist_when_token_set(
             follow_redirects=False,
         )
     assert resp.status_code == 302
-    assert 'colab.research.google.com/gist/gistabc123' in resp.headers['Location']
+    # Colab requires `<owner>/<gist_id>` — bare id is rejected.
+    assert 'colab.research.google.com/gist/testuser/gistabc123' in resp.headers['Location']
 
-    # gist_id was persisted to the cache so the next request can PATCH instead.
+    # gist_id + owner persisted to cache so the next request can PATCH and reuse the URL.
     db.session.refresh(lb_with_one_dataset)
     wrapped = json.loads(lb_with_one_dataset.colab_notebook_cache)
     assert wrapped.get('gist_id') == 'gistabc123'
+    assert wrapped.get('gist_owner') == 'testuser'
 
 
 def test_colab_open_falls_back_when_no_token(
@@ -197,9 +203,10 @@ def test_colab_open_patches_existing_gist_on_second_call(
     monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
 
-    # Seed cache with a gist_id and a stale signature so the notebook regens.
+    # Seed cache with a gist_id+owner and a stale signature so the notebook regens.
     lb_with_one_dataset.colab_notebook_cache = json.dumps({
-        'sig': 'stale', 'notebook': '{}', 'gist_id': 'oldgist'
+        'sig': 'stale', 'notebook': '{}',
+        'gist_id': 'oldgist', 'gist_owner': 'testuser',
     })
     db.session.commit()
 
@@ -207,7 +214,11 @@ def test_colab_open_patches_existing_gist_on_second_call(
         status_code = 200
         def raise_for_status(self): pass
         def json(self):
-            return {'id': 'oldgist', 'html_url': 'https://gist.github.com/oldgist'}
+            return {
+                'id': 'oldgist',
+                'html_url': 'https://gist.github.com/testuser/oldgist',
+                'owner': {'login': 'testuser'},
+            }
 
     with patch('requests.patch', return_value=_PatchOk()) as patch_mock, \
          patch('requests.post') as post_mock:
@@ -216,7 +227,7 @@ def test_colab_open_patches_existing_gist_on_second_call(
     assert resp.status_code == 302
     patch_mock.assert_called_once()
     post_mock.assert_not_called()
-    assert 'colab.research.google.com/gist/oldgist' in resp.headers['Location']
+    assert 'colab.research.google.com/gist/testuser/oldgist' in resp.headers['Location']
 
 
 def test_colab_notebook_route_404s_for_private_to_anon(client, db_session, monkeypatch):

@@ -3596,9 +3596,12 @@ def leaderboard_colab_open(leaderboard_id):
     a "couldn't open directly, download instead" flash if no GitHub
     token is configured or gist creation fails."""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
-    gist_url, gist_id = _ensure_colab_gist(lb)
+    gist_url, gist_id, gist_owner = _ensure_colab_gist(lb)
     if gist_id:
-        return redirect(f'https://colab.research.google.com/gist/{gist_id}')
+        # Colab's gist URL pattern is `/gist/<owner>/<gist_id>` — the
+        # bare-id form is rejected with "Unexpected GitHub Gist path".
+        path = f'{gist_owner}/{gist_id}' if gist_owner else gist_id
+        return redirect(f'https://colab.research.google.com/gist/{path}')
     flash(
         "Couldn't open directly in Colab — set BENCHHUB_GITHUB_GIST_TOKEN "
         "or download the notebook and upload it manually.",
@@ -4810,30 +4813,35 @@ def _ensure_colab_gist(lb):
     importer (which only whitelists github.com / gist.github.com /
     drive.google.com / raw.githubusercontent.com) can fetch it.
 
-    Returns (gist_html_url, gist_id) on success, or (None, None) when
-    BENCHHUB_GITHUB_GIST_TOKEN isn't configured or the API call fails.
-    Caller falls back to the manual download path in either case.
+    Returns (gist_html_url, gist_id, gist_owner) on success, or
+    (None, None, None) when BENCHHUB_GITHUB_GIST_TOKEN isn't configured
+    or the API call fails. Caller falls back to the manual download path
+    in either case.
 
-    Cache shape: lb.colab_notebook_cache = {sig, notebook, gist_id}.
+    Cache shape: lb.colab_notebook_cache = {sig, notebook, gist_id, gist_owner}.
     On signature drift, the notebook is regenerated and the gist is
     PATCH'd in place — no orphan gists per LB version.
     """
     token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN')
     if not token:
-        return None, None
+        return None, None, None
 
     notebook, _src = _get_or_generate_colab_notebook(lb)
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
     filename = f'{safe_name}_submit.ipynb'
     description = f"BenchHub submission scaffold for leaderboard '{lb.name}' (id={lb.id})"
 
-    # Re-read cache to get any existing gist_id.
+    # Re-read cache to get any existing gist_id + owner login.
     gist_id = None
+    gist_owner = None
     if lb.colab_notebook_cache:
         try:
-            gist_id = (json.loads(lb.colab_notebook_cache) or {}).get('gist_id')
+            wrapped = json.loads(lb.colab_notebook_cache) or {}
+            gist_id = wrapped.get('gist_id')
+            gist_owner = wrapped.get('gist_owner')
         except Exception:
             gist_id = None
+            gist_owner = None
 
     headers = {
         'Authorization': f'Bearer {token}',
@@ -4847,6 +4855,7 @@ def _ensure_colab_gist(lb):
     }
     try:
         import requests as _r
+        gist_resp_json = None
         if gist_id:
             # Update existing gist (idempotent for unchanged content).
             resp = _r.patch(
@@ -4857,27 +4866,50 @@ def _ensure_colab_gist(lb):
                 gist_id = None  # was deleted upstream; create fresh
             else:
                 resp.raise_for_status()
+                gist_resp_json = resp.json()
         if not gist_id:
             resp = _r.post(
                 'https://api.github.com/gists',
                 headers=headers, json=payload, timeout=15,
             )
             resp.raise_for_status()
-            gist_id = resp.json().get('id')
+            gist_resp_json = resp.json()
+            gist_id = gist_resp_json.get('id')
         if not gist_id:
             return None, None
-        # Persist the gist_id in the cache wrapper so future calls reuse it.
+        # Owner login is part of the Colab gist URL pattern
+        # (colab.research.google.com/gist/<owner>/<gist_id>) — Colab
+        # rejects the bare-id form with "Unexpected GitHub Gist path".
+        if gist_resp_json:
+            owner_obj = gist_resp_json.get('owner') or {}
+            new_owner = owner_obj.get('login')
+            if new_owner:
+                gist_owner = new_owner
+        if not gist_owner:
+            # Fallback: parse from html_url if we got one (`https://gist.github.com/<owner>/<id>`).
+            html_url = (gist_resp_json or {}).get('html_url', '')
+            m = re.match(r'https://gist\.github\.com/([^/]+)/[0-9a-f]+', html_url)
+            if m:
+                gist_owner = m.group(1)
+        # Persist gist_id + owner in the cache wrapper so future calls reuse them.
         try:
             wrapped = json.loads(lb.colab_notebook_cache or '{}') or {}
             wrapped['gist_id'] = gist_id
+            if gist_owner:
+                wrapped['gist_owner'] = gist_owner
             lb.colab_notebook_cache = json.dumps(wrapped)
             db.session.commit()
         except Exception:
             db.session.rollback()
-        return f'https://gist.github.com/{gist_id}', gist_id
+        return (
+            f'https://gist.github.com/{gist_owner}/{gist_id}'
+            if gist_owner else f'https://gist.github.com/{gist_id}',
+            gist_id,
+            gist_owner,
+        )
     except Exception as e:
         print(f"_ensure_colab_gist failed: {e}")
-        return None, None
+        return None, None, None
 
 
 def _llm_infer_mapping(features, dataset_repo=None):
