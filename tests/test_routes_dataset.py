@@ -153,29 +153,6 @@ def test_api_upload_collision_without_override_returns_400(client, seeded_datase
     assert "already exists" in resp.get_json()["error"]
 
 
-def test_api_upload_with_override_replaces_existing(client, seeded_dataset, make_zip, api_token_headers):
-    layout = {"config/sa.json": '{"k":99}'}
-    zip_path = make_zip("over.zip", layout, root_folder="seed_ds")
-
-    with open(zip_path, "rb") as f:
-        resp = client.post(
-            "/api/dataset/upload",
-            headers=api_token_headers,
-            data={
-                "dataset_name": "seed_ds",
-                "override": "true",
-                "dataset_zip": (f, "over.zip"),
-            },
-            content_type="multipart/form-data",
-        )
-    assert resp.status_code == 201
-
-    # New dataset replaced — sample names changed.
-    new_ds = Dataset.query.filter_by(name="seed_ds").first()
-    sample_names = {s.name for s in Sample.query.filter_by(dataset_id=new_ds.id).all()}
-    assert sample_names == {"sa"}
-
-
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------

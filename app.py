@@ -646,29 +646,22 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
-def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=None):
+def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
     """
     Helper to process a dataset zip file and create database entries.
-    If override is True, deletes existing dataset with the same name.
-    owner_user_id (Phase 1 multi-tenancy) is the User who uploaded; None
-    means "legacy / scripted" upload.
+    Name collisions are rejected — users must delete the existing dataset
+    explicitly. owner_user_id (Phase 1 multi-tenancy) is the User who
+    uploaded; None means "legacy / scripted" upload.
     Returns (success: bool, message: str, dataset_id: int or None)
     """
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_extract_' + datetime.now().strftime('%Y%m%d%H%M%S%f'))
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
-        # Initial Collision Check
+        # Initial collision check.
         existing = Dataset.query.filter_by(name=dataset_name).first()
         if existing:
-            if override:
-                # Delete existing dataset and its files
-                dataset_folder_name = secure_filename(existing.name)
-                shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', dataset_folder_name), ignore_errors=True)
-                db.session.delete(existing)
-                db.session.commit()
-            else:
-                return False, f"Dataset '{dataset_name}' already exists.", None
+            return False, f"Dataset '{dataset_name}' already exists.", None
 
         # Create preliminary entry
         new_dataset = Dataset(name=dataset_name, owner_user_id=owner_user_id)
@@ -678,11 +671,11 @@ def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=No
         # Unzip
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
-            
+
             # Identify root folder
-            extracted_items = [item for item in os.listdir(temp_dir) 
+            extracted_items = [item for item in os.listdir(temp_dir)
                              if item != '__MACOSX' and not item.startswith('.') and item != os.path.basename(zip_path)]
-            
+
             if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_dir, extracted_items[0])):
                 real_dataset_name = extracted_items[0]
                 dataset_content_path = os.path.join(temp_dir, real_dataset_name)
@@ -694,14 +687,7 @@ def process_dataset_zip(zip_path, dataset_name, override=False, owner_user_id=No
             if real_dataset_name != dataset_name:
                 existing = Dataset.query.filter_by(name=real_dataset_name).first()
                 if existing:
-                    if override:
-                        # Delete existing dataset and its files
-                        dataset_folder_name = secure_filename(existing.name)
-                        shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', dataset_folder_name), ignore_errors=True)
-                        db.session.delete(existing)
-                        db.session.commit()
-                    else:
-                        return False, f"Dataset '{real_dataset_name}' (extracted from ZIP) already exists.", None
+                    return False, f"Dataset '{real_dataset_name}' (extracted from ZIP) already exists.", None
                 new_dataset.name = real_dataset_name
                 db.session.add(new_dataset)
                 db.session.commit()
@@ -3693,7 +3679,6 @@ def leaderboard_view(leaderboard_id):
 def upload_dataset():
     dataset_names_input = request.form.get('dataset_name', '')
     files = request.files.getlist('dataset_zip')
-    override = request.form.get('override_dataset') == 'true'
 
     if not files:
         flash("No files uploaded.", "warning")
@@ -3730,7 +3715,7 @@ def upload_dataset():
             continue
 
         success, message, ds_id = process_dataset_zip(
-            temp_zip_path, dataset_name, override=override,
+            temp_zip_path, dataset_name,
             owner_user_id=g.current_user.id,
         )
 
@@ -3778,7 +3763,7 @@ def import_dataset_from_hf(repo_id, dataset_name, *, revision=None,
         zip_base = os.path.join(work_dir, secure_filename(dataset_name))
         zip_path = shutil.make_archive(zip_base, 'zip', root_dir=snap_dir)
         return process_dataset_zip(
-            zip_path, dataset_name, override=False,
+            zip_path, dataset_name,
             owner_user_id=owner_user_id,
         )
     finally:
@@ -5905,7 +5890,6 @@ def dataset_upload_api():
         return jsonify({'error': 'No file selected'}), 400
 
     dataset_name = request.form.get('dataset_name', file.filename.replace('.zip', ''))
-    override = request.form.get('override', 'false').lower() == 'true'
 
     filename = secure_filename(file.filename)
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_api_pre')
@@ -5925,7 +5909,7 @@ def dataset_upload_api():
 
     try:
         success, message, ds_id = process_dataset_zip(
-            temp_zip_path, dataset_name, override=override,
+            temp_zip_path, dataset_name,
             owner_user_id=g.current_user.id,
         )
 
@@ -7162,6 +7146,47 @@ def download_submissions_full_bulk(leaderboard_id):
     return send_file(tmp_path, as_attachment=True, download_name="bulk_submissions_full.zip")
 
 
+def prune_incomplete_datasets():
+    """Remove datasets that landed in the DB but never finished uploading.
+
+    A "fully uploaded" dataset has at least one Sample row AND its
+    on-disk folder under uploads/datasets/<safe-name>/ exists. If either
+    is missing — typical signature of a process_dataset_zip() crash, an
+    interrupted ZIP extraction, or a deleted volume snapshot — the row
+    is just orphaned bookkeeping. Cascade-delete it (and any leftover
+    folder bytes) so the datasets list is honest about what's actually
+    available.
+
+    Runs at boot from run_migrations(); also exposed for tests.
+
+    Returns the number of datasets removed.
+    """
+    upload_folder = app.config['UPLOAD_FOLDER']
+    datasets_root = os.path.join(upload_folder, 'datasets')
+    removed = 0
+
+    for ds in Dataset.query.all():
+        sample_count = Sample.query.filter_by(dataset_id=ds.id).count()
+        folder_path = os.path.join(datasets_root, secure_filename(ds.name))
+        folder_ok = os.path.isdir(folder_path)
+
+        if sample_count == 0 or not folder_ok:
+            print(
+                f"prune_incomplete_datasets: removing dataset {ds.id} "
+                f"'{ds.name}' (samples={sample_count}, folder_present={folder_ok})"
+            )
+            # Remove on-disk folder if it exists at all (may be partially
+            # extracted bytes even when the row says zero samples).
+            if os.path.isdir(folder_path):
+                shutil.rmtree(folder_path, ignore_errors=True)
+            db.session.delete(ds)
+            removed += 1
+
+    if removed:
+        db.session.commit()
+    return removed
+
+
 def run_migrations():
     """Idempotent boot-time migration runner. Safe to call concurrently —
     SQLite WAL + 120s busy_timeout absorb the race, and both `db.create_all()`
@@ -7171,6 +7196,11 @@ def run_migrations():
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         check_and_migrate_db()
         db.create_all()
+        try:
+            prune_incomplete_datasets()
+        except Exception as e:
+            # Boot must continue even if the cleanup hits a snag.
+            print(f"prune_incomplete_datasets failed (non-fatal): {e}")
 
 
 # Auto-run migrations at module import time when the env var is set. This is

@@ -27,7 +27,6 @@ Flags:
     --samples N        How many examples to take (default 50).
     --name NAME        BenchHub dataset name (default 'nyu_depth_v2_subset').
     --hf-repo REPO     HF repo to stream (default sayakpaul/nyu_depth_v2).
-    --override         Allow overwriting an existing dataset with the same name.
     --no-curate        Upload but skip the curate flip (debugging).
 
 Implementation notes:
@@ -151,17 +150,13 @@ def _build_subset_zip(hf_repo: str, n_samples: int, dest_zip_path: str) -> int:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def _upload(zip_path: str, dataset_name: str, base_url: str, token: str,
-            override: bool) -> int:
+def _upload(zip_path: str, dataset_name: str, base_url: str, token: str) -> int:
     print(f"Uploading {os.path.getsize(zip_path) / 1e6:.1f} MB to {base_url}...")
     with open(zip_path, "rb") as fh:
         resp = requests.post(
             f"{base_url.rstrip('/')}/api/dataset/upload",
             headers={"Authorization": f"Bearer {token}"},
-            data={
-                "dataset_name": dataset_name,
-                "override": "true" if override else "false",
-            },
+            data={"dataset_name": dataset_name},
             files={"dataset_zip": (os.path.basename(zip_path), fh)},
             timeout=600,
         )
@@ -189,7 +184,6 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=50)
     parser.add_argument("--name", default="nyu_depth_v2_subset")
     parser.add_argument("--hf-repo", default="sayakpaul/nyu_depth_v2")
-    parser.add_argument("--override", action="store_true")
     parser.add_argument("--no-curate", action="store_true")
     args = parser.parse_args()
 
@@ -206,7 +200,7 @@ def main() -> int:
         zip_path = tmp.name
     try:
         n = _build_subset_zip(args.hf_repo, args.samples, zip_path)
-        dataset_id = _upload(zip_path, args.name, base_url, token, args.override)
+        dataset_id = _upload(zip_path, args.name, base_url, token)
         if not args.no_curate:
             _curate(dataset_id, base_url, token)
         print(

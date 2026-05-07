@@ -164,40 +164,6 @@ def test_collision_without_override_returns_false(client, make_zip):
     assert "already exists" in message
 
 
-def test_override_replaces_existing_dataset(client, make_zip):
-    # Seed an existing dataset with one sample.
-    zip_path1 = make_zip(
-        "v1.zip",
-        {"config/s1.json": '{"v":1}', "tags/s1.txt": "x"},
-        root_folder="ver_ds",
-    )
-    success1, _, ds_id1 = process_dataset_zip(zip_path1, "ver_ds")
-    assert success1
-
-    # Re-upload same name with different content + override=True.
-    zip_path2 = make_zip(
-        "v2.zip",
-        {
-            "config/sample_a.json": '{"v":2}',
-            "config/sample_b.json": '{"v":3}',
-            "tags/sample_a.txt": "x",
-            "tags/sample_b.txt": "x",
-        },
-        root_folder="ver_ds",
-    )
-    success2, _, ds_id2 = process_dataset_zip(zip_path2, "ver_ds", override=True)
-    assert success2
-
-    # Old samples are gone; the new ones replaced them.
-    # (Don't compare ds_id1 vs ds_id2 — SQLite recycles deleted INTEGER PKs.)
-    assert Dataset.query.filter_by(name="ver_ds").count() == 1
-    new_ds = Dataset.query.filter_by(name="ver_ds").first()
-    sample_names = {s.name for s in Sample.query.filter_by(dataset_id=new_ds.id)}
-    assert sample_names == {"sample_a", "sample_b"}
-    # And the previously-existing s1 sample is gone.
-    assert Sample.query.filter_by(name="s1").count() == 0
-
-
 # ---------------------------------------------------------------------------
 # Empty / malformed
 # ---------------------------------------------------------------------------
