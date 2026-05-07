@@ -47,6 +47,30 @@ def leaderboard(db_session, project, dataset):
 # ---------------------------------------------------------------------------
 
 
+def test_dataset_view_renders_new_leaderboard_form_for_signed_in(
+    auth_client, logged_in_user, db_session,
+):
+    """Anyone signed in sees the inline 'New leaderboard' form on a
+    dataset detail page (not just the owner)."""
+    from app import Dataset, db as _db
+    ds = Dataset(name='lb_form_ds', visibility='public')
+    _db.session.add(ds); _db.session.commit()
+
+    body = auth_client.get(f'/dataset/{ds.id}').data
+    assert b'New leaderboard' in body
+    # Form posts to the create endpoint with this dataset pre-selected.
+    assert b'/create_leaderboard' in body
+    assert f'value="{ds.id}"'.encode() in body
+
+
+def test_dataset_view_hides_new_leaderboard_form_anon(client, db_session):
+    from app import Dataset, db as _db
+    ds = Dataset(name='lb_form_anon', visibility='public')
+    _db.session.add(ds); _db.session.commit()
+    body = client.get(f'/dataset/{ds.id}').data
+    assert b'New leaderboard' not in body
+
+
 def test_create_leaderboard_attaches_dataset(auth_client, project, dataset, logged_in_user):
     resp = auth_client.post(
         "/create_leaderboard",

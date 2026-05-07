@@ -4772,7 +4772,7 @@ def create_leaderboard():
     db.session.commit()
     
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
-    return redirect(url_for('datasets_list'))
+    return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))
 
 def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user_id=None):
     """

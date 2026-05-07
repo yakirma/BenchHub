@@ -79,23 +79,71 @@
     </div>
 </div>
 
+{# Leaderboards section: existing list + a "New leaderboard" affordance
+   (signed-in users only — anyone can build a benchmark on a visible dataset). #}
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0">
+        <i class="bi bi-trophy me-1"></i>Leaderboards using this dataset
+    </h5>
+    {% if current_user %}
+    <button class="btn btn-sm btn-outline-primary" type="button"
+        data-bs-toggle="collapse" data-bs-target="#new-lb-form">
+        <i class="bi bi-plus-circle me-1"></i>New leaderboard
+    </button>
+    {% endif %}
+</div>
+
 {% if dataset.leaderboards %}
-<h5>Leaderboards using this Dataset</h5>
-<ul class="list-inline">
+<ul class="list-inline mb-2">
     {% for lb in dataset.leaderboards %}
     <li class="list-inline-item">
-        {% if lb %}
         <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
             class="btn btn-sm btn-outline-primary">{{ lb.name }}</a>
-        {% else %}
-        <span class="btn btn-sm btn-outline-secondary disabled" title="Orphaned Leaderboard">{{ lb.name }} (No
-            Project)</span>
-        {% endif %}
     </li>
     {% endfor %}
 </ul>
-<hr>
+{% else %}
+<p class="text-body-secondary small mb-2">No leaderboards yet — be the first.</p>
 {% endif %}
+
+{% if current_user %}
+<div class="collapse mb-3" id="new-lb-form">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body">
+            <form action="{{ url_for('create_leaderboard') }}" method="post" class="row g-2 align-items-end">
+                {# Pre-selects this dataset; hidden input ensures it's part of the
+                   submitted dataset_ids list even if the user doesn't tweak the field. #}
+                <input type="hidden" name="dataset_ids" value="{{ dataset.id }}">
+                <div class="col-md-7">
+                    <label for="leaderboard_name" class="form-label small fw-semibold mb-1">
+                        Leaderboard name
+                    </label>
+                    <input type="text" id="leaderboard_name" name="leaderboard_name"
+                        class="form-control" required
+                        placeholder="e.g. {{ dataset.name }} benchmark">
+                </div>
+                <div class="col-md-3">
+                    <label for="summary_metrics" class="form-label small fw-semibold mb-1">
+                        Initial summary metrics
+                    </label>
+                    <input type="text" id="summary_metrics" name="summary_metrics"
+                        class="form-control" placeholder="(optional, comma-sep)">
+                </div>
+                <div class="col-md-2 d-grid">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-plus-circle me-1"></i>Create
+                    </button>
+                </div>
+            </form>
+            <p class="form-text small mb-0 mt-2">
+                Tied to <strong>{{ dataset.name }}</strong> by default. Add
+                more datasets later from the leaderboard's edit page.
+            </p>
+        </div>
+    </div>
+</div>
+{% endif %}
+<hr>
 
 <style>
     /* Sample Metrics Chart Container */
