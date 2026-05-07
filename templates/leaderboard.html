@@ -43,23 +43,38 @@
     /* Color-coded variants by intent. The chip color inside the wrapper
        follows the intent so include-tag pills are green, exclude-tag
        pills are red, prefix pills are blue. */
-    .tag-input-wrapper.tag-include {
+    /* Higher specificity (two classes vs one in `.disabled`) so an
+       off-by-default filter still reads its intent. Disabled state
+       just dims the bg further. */
+    .tag-input-wrapper.tag-include,
+    .tag-input-wrapper.tag-include.disabled {
         border-color: rgba(25, 135, 84, 0.55);
-        background: rgba(25, 135, 84, 0.06);
+        background: rgba(25, 135, 84, 0.10);
+    }
+    .tag-input-wrapper.tag-include.disabled {
+        background: rgba(25, 135, 84, 0.04);
     }
     .tag-input-wrapper.tag-include .tag-chip {
         background-color: #198754;
     }
-    .tag-input-wrapper.tag-exclude {
+    .tag-input-wrapper.tag-exclude,
+    .tag-input-wrapper.tag-exclude.disabled {
         border-color: rgba(220, 53, 69, 0.55);
-        background: rgba(220, 53, 69, 0.06);
+        background: rgba(220, 53, 69, 0.10);
+    }
+    .tag-input-wrapper.tag-exclude.disabled {
+        background: rgba(220, 53, 69, 0.04);
     }
     .tag-input-wrapper.tag-exclude .tag-chip {
         background-color: #dc3545;
     }
-    .tag-input-wrapper.tag-prefix {
+    .tag-input-wrapper.tag-prefix,
+    .tag-input-wrapper.tag-prefix.disabled {
         border-color: rgba(13, 110, 253, 0.55);
-        background: rgba(13, 110, 253, 0.06);
+        background: rgba(13, 110, 253, 0.10);
+    }
+    .tag-input-wrapper.tag-prefix.disabled {
+        background: rgba(13, 110, 253, 0.04);
     }
     .tag-input-wrapper.tag-prefix .tag-chip {
         background-color: #0d6efd;
