@@ -65,13 +65,14 @@ def test_classlabel_import_writes_class_name_field_and_per_sample_tags(
     client, db_session, fake_classlabel_dataset, logged_in_user,
 ):
     """When a column is a ClassLabel with names, the importer writes:
-    - metric_<col>/<id>.txt with the integer index
+    - <col>/<id>.txt with the integer index (GT scalar — `metric_*` is
+      reserved for user-precomputed metric values, not labels)
     - <col>_class/<id>.txt with the human class name
     - tags/<id>.txt with the class name as a sample-level tag
     """
     mapping = [
         {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
-        {'column': 'label', 'target_kind': 'metric', 'target_field': 'metric_label'},
+        {'column': 'label', 'target_kind': 'scalar', 'target_field': 'label'},
     ]
     features = {
         'image': {'type': 'Image'},
@@ -90,12 +91,14 @@ def test_classlabel_import_writes_class_name_field_and_per_sample_tags(
     sample_names = sorted(s.name for s in samples)
     assert sample_names == ['s00000', 's00001', 's00002']
 
-    # The integer label survived as the metric_label custom field.
+    # The integer label survived as the bare-name `label` custom field.
     label_fields = {s.name: CustomField.query.filter_by(
-        sample_id=s.id, name='metric_label').first() for s in samples}
+        sample_id=s.id, name='label').first() for s in samples}
     # All present and integer-valued.
     assert all(cf is not None for cf in label_fields.values())
     assert sorted(int(cf.value_float) for cf in label_fields.values()) == [0, 1, 2]
+    # Field type is 'scalar' (GT label), not 'metric'.
+    assert {cf.field_type for cf in label_fields.values()} == {'scalar'}
 
     # Class-name parallel column got created with the human-readable string.
     class_fields = {s.name: CustomField.query.filter_by(
@@ -147,7 +150,7 @@ def test_classlabel_names_inferred_from_ds_features_when_api_blank(
 
     mapping = [
         {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
-        {'column': 'label', 'target_kind': 'metric', 'target_field': 'metric_label'},
+        {'column': 'label', 'target_kind': 'scalar', 'target_field': 'label'},
     ]
     success, message, ds_id = _import_hf_auto(
         'fake/cifar', 'cifar_subset', mapping,
@@ -176,9 +179,9 @@ def test_classlabel_skips_redundant_class_field_when_names_are_just_indices(
     client, db_session, monkeypatch, logged_in_user,
 ):
     """When ClassLabel.names is just stringified indices (['0','1','2',...]),
-    the `<col>_class` side field would mirror the metric column with the
-    same digit on every row — skip it. The per-sample tag still gets the
-    name string so users can filter by class downstream."""
+    the `<col>_class` side field would mirror the GT scalar column with
+    the same digit on every row — skip it. The per-sample tag still gets
+    the name string so users can filter by class downstream."""
     import sys, types
     from PIL import Image as _PILImage
 
@@ -192,7 +195,7 @@ def test_classlabel_skips_redundant_class_field_when_names_are_just_indices(
 
     mapping = [
         {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
-        {'column': 'label', 'target_kind': 'metric', 'target_field': 'metric_label'},
+        {'column': 'label', 'target_kind': 'scalar', 'target_field': 'label'},
     ]
     features = {
         'image': {'type': 'Image'},
@@ -212,9 +215,9 @@ def test_classlabel_skips_redundant_class_field_when_names_are_just_indices(
     from app import Sample, CustomField, Dataset
     ds = Dataset.query.get(ds_id)
     samples = Sample.query.filter_by(dataset_id=ds.id).all()
-    # The integer label survived as the metric_label custom field …
+    # The integer label survived as the bare-name `label` GT scalar …
     label_cfs = [CustomField.query.filter_by(
-        sample_id=s.id, name='metric_label').first() for s in samples]
+        sample_id=s.id, name='label').first() for s in samples]
     assert all(cf is not None for cf in label_cfs)
     # … but no `label_class` side field was written for any sample.
     assert all(

@@ -88,7 +88,8 @@
                                     <option value="skip" {{ 'selected' if row.target_kind == 'skip' }}>skip</option>
                                     <option value="image" {{ 'selected' if row.target_kind == 'image' }}>image</option>
                                     <option value="depth" {{ 'selected' if row.target_kind == 'depth' }}>depth (raw_)</option>
-                                    <option value="metric" {{ 'selected' if row.target_kind == 'metric' }}>metric</option>
+                                    <option value="scalar" {{ 'selected' if row.target_kind == 'scalar' }}>scalar (GT label/value)</option>
+                                    <option value="metric" {{ 'selected' if row.target_kind == 'metric' }}>metric (precomputed)</option>
                                     <option value="histogram" {{ 'selected' if row.target_kind == 'histogram' }}>histogram (hist_)</option>
                                     <option value="text" {{ 'selected' if row.target_kind == 'text' }}>text</option>
                                 </select>
@@ -137,7 +138,10 @@
         const prefixes = {image: 'image_', depth: 'raw_', metric: 'metric_', histogram: 'hist_'};
         if (kind in prefixes) {
             fieldInput.value = prefixes[kind] + col;
-        } else if (kind === 'text') {
+        } else if (kind === 'text' || kind === 'scalar') {
+            // scalar GT fields land in a bare-name folder (`<col>/`),
+            // not `metric_<col>/` — `metric_*` is reserved for
+            // user-precomputed metric values.
             fieldInput.value = col;
         } else {
             fieldInput.value = '';

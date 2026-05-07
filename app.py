@@ -4552,7 +4552,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v2-runtime-choice+bootstrap'
+_COLAB_TEMPLATE_VERSION = 'v3-pred-field-schema'
 
 
 def _lb_structure_signature(lb):
@@ -4604,6 +4604,21 @@ def _static_colab_notebook(lb):
     ]
     metric_block = ', '.join(metric_names) or '_(none configured yet)_'
 
+    pred_fields = _lb_submission_pred_fields(lb)
+    if pred_fields:
+        pred_block_lines = [
+            f"- `{p['name']}/<sample>.txt` &mdash; predicted value for GT "
+            f"`{p['gt_field']}`."
+            for p in pred_fields
+        ]
+        pred_block = '\n'.join(pred_block_lines)
+    else:
+        pred_block = (
+            "- _(this leaderboard has no auto-detected prediction fields; "
+            "fill `metric_<name>/<sample>.txt` per the LB's metric "
+            "definitions)_"
+        )
+
     nb = {
         "cells": [
             {
@@ -4612,6 +4627,9 @@ def _static_colab_notebook(lb):
                     f"# Submit to **{lb.name}** — BenchHub\n",
                     "\n",
                     f"Dataset: `{ds_name}` &middot; Metrics: {metric_block}\n",
+                    "\n",
+                    "**Required submission folders** (one .txt per sample):\n",
+                    pred_block + "\n",
                     "\n",
                     "**Runtime choice (Colab):** this notebook runs on CPU by default. "
                     "If your model needs a GPU/TPU, switch via "
@@ -4684,12 +4702,14 @@ def _static_colab_notebook(lb):
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
                 "source": [
                     "# 2. >>> EDIT THIS <<< Plug your model in here.\n",
+                    "# Required prediction fields for this leaderboard:\n",
+                    f"PRED_FIELDS = {json.dumps([p['name'] for p in pred_fields])}\n",
                     "def my_model(sample_name, sample_inputs):\n",
                     "    \"\"\"sample_inputs is a dict of {field_name: numpy_array_or_PIL_image}.\n",
-                    "    Return a dict of predictions matching the metric names this leaderboard expects.\n",
-                    f"    Expected metric outputs: {metric_block}\n",
+                    "    Return a dict whose keys match PRED_FIELDS — one numeric prediction per\n",
+                    "    sample for each entry. Each value lands in `<key>/<sample>.txt`.\n",
                     "    \"\"\"\n",
-                    "    return {m: 0.0 for m in " + json.dumps(metric_names) + "}  # placeholder\n",
+                    "    return {f: 0 for f in PRED_FIELDS}  # placeholder\n",
                 ],
             },
             {
@@ -4715,8 +4735,10 @@ def _static_colab_notebook(lb):
                     "    # Build per-sample inputs by reading whatever GT files match.\n",
                     "    inputs = {}  # populate with reads as needed\n",
                     "    preds = my_model(name, inputs)\n",
-                    "    for metric, value in preds.items():\n",
-                    "        out_dir = OUT / f'metric_{metric}'\n",
+                    "    # Each predicted field becomes its own folder. PRED_FIELDS is\n",
+                    "    # the canonical naming the LB's metrics + visualizations expect.\n",
+                    "    for field, value in preds.items():\n",
+                    "        out_dir = OUT / field\n",
                     "        out_dir.mkdir(exist_ok=True)\n",
                     "        (out_dir / f'{name}.txt').write_text(str(value))\n",
                     "print('Submission folder built at', OUT)\n",
@@ -5016,39 +5038,51 @@ def _ensure_user_colab_gist(lb, user):
         return None, None, None
 
 
-def _propose_metrics_for_dataset(ds):
-    """Heuristic metric proposer: walk the GT custom fields and propose
-    one metric per `metric_<col>` field. Each proposal carries:
-        target_name, global_name, description, fallback_code,
-        arg_mappings, sort_direction, pooling_type, llm_hint
-    The caller turns these into GlobalMetric + LeaderboardMetric rows.
-
-    Heuristic logic:
-    - `metric_<col>` next to a sibling `<col>_class` text field (HF
-      ClassLabel signal) → accuracy-style metric (0/1 per sample,
-      higher is better).
-    - other numeric `metric_<col>` → mean-absolute-error (lower is
-      better) so the LB ranks low-error submissions on top.
-    Image-mse / PSNR / depth-RMSE are out of scope here; users add
-    those manually in the LB editor.
-    """
+def _scalar_gt_columns(ds):
+    """Yield (col_name, is_classlabel) for each GT scalar column on
+    the first sample. ClassLabel-shaped is detected by the presence of
+    a sibling `<col>_class` text field (the HF auto-importer's
+    ClassLabel sidecar)."""
     if not ds or not ds.samples:
-        return []
+        return
     first = ds.samples[0]
     field_types = {cf.name: cf.field_type for cf in (first.custom_fields or [])}
-    proposals = []
     for cf in (first.custom_fields or []):
-        if not cf.name.startswith('metric_'):
+        if cf.field_type != 'scalar':
             continue
-        col = cf.name[len('metric_'):]
-        sibling_class = f"{col}_class"
-        is_classlabel = sibling_class in field_types
+        # Skip the class-name sidecars themselves.
+        if cf.name.endswith('_class'):
+            continue
+        is_classlabel = f"{cf.name}_class" in field_types
+        yield cf.name, is_classlabel
+
+
+def _propose_metrics_for_dataset(ds):
+    """Heuristic metric proposer: walk the GT scalar columns and
+    propose one comparison metric per column, against the submission's
+    `<col>_pred` field. Each proposal carries:
+        target_name, global_name, description, fallback_code,
+        arg_mappings, sort_direction, pooling_type, llm_hint
+
+    Heuristic logic:
+    - GT scalar with sibling `<col>_class` (HF ClassLabel signal)
+      → top-1 accuracy (higher is better, mean-pooled).
+    - Other numeric GT scalar → MAE (lower is better, mean-pooled).
+
+    Submissions are expected to ship `<col>_pred/<sample>.txt`
+    containing their predicted value. The convention is intentionally
+    distinct from `metric_*` (which is reserved for user-precomputed
+    metric values that the LB just averages and displays).
+    """
+    proposals = []
+    for col, is_classlabel in _scalar_gt_columns(ds):
         if is_classlabel:
-            global_name = f"accuracy_{col}"
-            target_name = f"accuracy ({col})"
+            global_name = f"top1_{col}"
+            target_name = f"top-1 accuracy ({col})"
             description = (
-                f"Per-sample accuracy on the `{col}` ClassLabel column: "
-                f"1.0 when prediction equals ground-truth class index, 0.0 otherwise."
+                f"Per-sample top-1 accuracy on the `{col}` ClassLabel: "
+                f"1.0 when the submission's `{col}_pred` equals GT `{col}`, "
+                f"0.0 otherwise. Mean-pooled across the dataset."
             )
             fallback_code = (
                 f"def {global_name}(gt, pred):\n"
@@ -5060,16 +5094,17 @@ def _propose_metrics_for_dataset(ds):
             )
             sort_direction = 'higher_is_better'
             llm_hint = (
-                f"Per-sample accuracy on a HuggingFace ClassLabel column "
-                f"named `{col}` (integer index). Function signature should "
-                f"be `{global_name}(gt, pred)`."
+                f"Per-sample top-1 accuracy: GT integer class index "
+                f"`{col}` versus submission's predicted index `{col}_pred`. "
+                f"Function name MUST be `{global_name}(gt, pred)` and "
+                f"return 1.0 / 0.0."
             )
         else:
             global_name = f"mae_{col}"
             target_name = f"MAE ({col})"
             description = (
-                f"Per-sample mean absolute error between predicted and "
-                f"ground-truth `{col}`."
+                f"Per-sample mean absolute error between submission's "
+                f"`{col}_pred` and GT `{col}`. Mean-pooled."
             )
             fallback_code = (
                 f"def {global_name}(gt, pred):\n"
@@ -5078,21 +5113,147 @@ def _propose_metrics_for_dataset(ds):
             )
             sort_direction = 'lower_is_better'
             llm_hint = (
-                f"Mean absolute error between the GT and the submitted "
-                f"value of a numeric column `{col}`. Function signature "
-                f"should be `{global_name}(gt, pred)`."
+                f"Mean absolute error between GT scalar `{col}` and "
+                f"submission's `{col}_pred`. Function name MUST be "
+                f"`{global_name}(gt, pred)`."
             )
         proposals.append({
             'target_name': target_name,
             'global_name': global_name,
             'description': description,
             'fallback_code': fallback_code,
-            'arg_mappings': {'gt': f'gt_metric_{col}', 'pred': f'sub_metric_{col}'},
+            'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
             'sort_direction': sort_direction,
             'pooling_type': 'mean',
             'llm_hint': llm_hint,
+            # The contract this metric expects from submissions: one
+            # bare-name scalar field per GT column. The submission ships
+            # `<col>_pred/<sample>.txt`. Surfaced via flash message + the
+            # colab notebook so submitters know what to write.
+            'pred_fields': [{
+                'name': f'{col}_pred',
+                'kind': 'scalar',
+                'description': (
+                    f"Per-sample predicted class index for `{col}`."
+                    if is_classlabel
+                    else f"Per-sample predicted value for `{col}`."
+                ),
+                'gt_field': col,
+            }],
         })
     return proposals
+
+
+def _propose_visualizations_for_dataset(ds):
+    """Mirror of _propose_metrics_for_dataset for visualizations.
+    Each proposal carries:
+        target_name, global_name, description, fallback_code,
+        arg_mappings, is_aggregated, accepts_aggregated_inputs,
+        llm_hint
+
+    Heuristic logic (one viz per GT scalar that lights up an obvious
+    summary visualization):
+    - GT scalar with `<col>_class` sidecar (ClassLabel signal) →
+      aggregated confusion-matrix heatmap. Takes the full lists of
+      `gt_<col>` and `sub_<col>_pred` and returns a PIL image.
+    Other shapes (regression scatter, image-diff grids, etc.) are
+    out of scope for the heuristic — users add those manually.
+    """
+    proposals = []
+    for col, is_classlabel in _scalar_gt_columns(ds):
+        if not is_classlabel:
+            continue
+        global_name = f"confusion_matrix_{col}"
+        target_name = f"confusion matrix ({col})"
+        description = (
+            f"Aggregated confusion matrix between GT `{col}` "
+            f"(ClassLabel index) and submission's `{col}_pred`."
+        )
+        fallback_code = (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"Aggregated confusion matrix as a 256x256 grayscale heatmap.\n\n"
+            f"    `gt` and `pred` are LISTS spanning every sample of a single\n"
+            f"    submission (is_aggregated=True, accepts_aggregated_inputs=True).\n"
+            f"    \"\"\"\n"
+            f"    import numpy as _np\n"
+            f"    from PIL import Image as _PILImage\n"
+            f"    pairs = [(int(g), int(p)) for g, p in zip(gt, pred)\n"
+            f"             if g is not None and p is not None]\n"
+            f"    if not pairs:\n"
+            f"        return _PILImage.new('L', (256, 256), 0)\n"
+            f"    classes = sorted({{g for g, _ in pairs}} | {{p for _, p in pairs}})\n"
+            f"    idx = {{c: i for i, c in enumerate(classes)}}\n"
+            f"    n = len(classes)\n"
+            f"    cm = _np.zeros((n, n), dtype=_np.int32)\n"
+            f"    for g, p in pairs:\n"
+            f"        cm[idx[g], idx[p]] += 1\n"
+            f"    norm = (cm / max(int(cm.max()), 1) * 255).astype(_np.uint8)\n"
+            f"    img = _PILImage.fromarray(norm)\n"
+            f"    return img.resize((256, 256), _PILImage.NEAREST)\n"
+        )
+        llm_hint = (
+            f"Aggregated confusion-matrix visualization between GT "
+            f"integer class index `{col}` and submission's predicted "
+            f"index `{col}_pred`. `gt` and `pred` arrive as PARALLEL "
+            f"lists. Function name MUST be `{global_name}(gt, pred)` "
+            f"and return a PIL.Image (grayscale or RGB, ≤ 512x512)."
+        )
+        proposals.append({
+            'target_name': target_name,
+            'global_name': global_name,
+            'description': description,
+            'fallback_code': fallback_code,
+            'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+            'is_aggregated': True,
+            'accepts_aggregated_inputs': True,
+            'llm_hint': llm_hint,
+            # Same pred contract as the matching metric proposal. The
+            # auto-LB helper unique-deduplicates by name across both
+            # proposers so the user only sees `<col>_pred` once.
+            'pred_fields': [{
+                'name': f'{col}_pred',
+                'kind': 'scalar',
+                'description': f"Per-sample predicted class index for `{col}`.",
+                'gt_field': col,
+            }],
+        })
+    return proposals
+
+
+def _lb_submission_pred_fields(lb):
+    """Derive the prediction-field schema for an LB's submissions by
+    walking its metrics + visualizations and pulling out arg_mappings
+    keys that reference `sub_<x>_pred`. De-duplicates across metrics
+    and visualizations by field name.
+
+    Returns a list of dicts: [{name, gt_field, kind}]. Used by the
+    colab notebook generator and the auto-LB flash message so
+    submitters know what folders their ZIP must include."""
+    seen = {}
+    sources = list(lb.leaderboard_metrics or []) + list(lb.leaderboard_visualizations or [])
+    for source in sources:
+        try:
+            mappings = json.loads(source.arg_mappings or '{}')
+        except (TypeError, ValueError):
+            mappings = {}
+        for ctx_key in mappings.values():
+            if not isinstance(ctx_key, str):
+                continue
+            # Only `sub_<x>_pred` shapes are submission-side prediction
+            # fields; bare `sub_<x>` for precomputed metric values is
+            # a different contract and irrelevant here.
+            if not ctx_key.startswith('sub_') or not ctx_key.endswith('_pred'):
+                continue
+            field_name = ctx_key[len('sub_'):]
+            gt_field = field_name[:-len('_pred')]
+            if field_name in seen:
+                continue
+            seen[field_name] = {
+                'name': field_name,
+                'gt_field': gt_field,
+                'kind': 'scalar',
+            }
+    return list(seen.values())
 
 
 def _llm_generate_metric_code(global_name, llm_hint):
@@ -5164,32 +5325,108 @@ def _llm_generate_metric_code(global_name, llm_hint):
         return None
 
 
+def _llm_generate_visualization_code(global_name, llm_hint,
+                                     is_aggregated, accepts_aggregated_inputs):
+    """Sister to `_llm_generate_metric_code` for visualizations: ask
+    Claude for a function that returns a PIL.Image. Returns the source
+    on success, None when the API key is missing or the function-name
+    safety check fails. Caller falls back to the proposal's
+    `fallback_code`."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+    aggregation_clause = (
+        "The function is AGGREGATED across a single submission's "
+        "samples. `gt` and `pred` arrive as parallel Python lists "
+        "spanning every sample. Reduce them into one image."
+        if is_aggregated and accepts_aggregated_inputs
+        else "The function is PER-SAMPLE. `gt` and `pred` are scalars."
+    )
+    system_prompt = (
+        "You write tiny visualization functions for the BenchHub "
+        "benchmarking platform. Each function returns a PIL.Image "
+        "summarizing a submission's behavior on a leaderboard.\n\n"
+        "Hard requirements:\n"
+        "- Output ONLY Python source (no explanation, no fences).\n"
+        "- Define exactly ONE top-level function. Its name MUST equal "
+        "the `global_name` you are given.\n"
+        "- The function MUST return a PIL.Image (max 512x512). Use "
+        "`from PIL import Image` inside the function body.\n"
+        "- Use only Python stdlib + numpy (already imported as `np` "
+        "by the harness — do not re-import).\n"
+        "- Be defensive: gt/pred may include None entries or be empty.\n\n"
+        f"Aggregation: {aggregation_clause}"
+    )
+    user_msg = (
+        f"global_name: {global_name}\n"
+        f"semantics: {llm_hint}\n"
+    )
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 1500,
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:python)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        if f"def {global_name}(" not in text:
+            return None
+        return text
+    except Exception as e:
+        print(f"_llm_generate_visualization_code failed: {e}")
+        return None
+
+
 def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
-    """Create a Leaderboard backed by `dataset`, propose metrics from
-    its GT fields, reuse any existing GlobalMetric whose name matches
-    a proposal (strict name match), and author new ones via the LLM
-    (with a deterministic fallback). Returns (success, message, lb_id)."""
+    """Create a Leaderboard backed by `dataset`, propose metrics AND
+    visualizations from its GT scalar fields, reuse any existing
+    GlobalMetric / GlobalVisualization whose name matches a proposal
+    (strict name match), and author new ones via the LLM (with a
+    deterministic fallback). Returns (success, message, lb_id)."""
     if not lb_name:
         return False, "Leaderboard name is required.", None
     if Leaderboard.query.filter_by(name=lb_name).first():
         return False, f'A leaderboard named "{lb_name}" already exists.', None
 
-    proposals = _propose_metrics_for_dataset(dataset)
-    if not proposals:
-        return False, ("No metric_* fields detected on the dataset — "
+    metric_proposals = _propose_metrics_for_dataset(dataset)
+    viz_proposals = _propose_visualizations_for_dataset(dataset)
+    if not metric_proposals and not viz_proposals:
+        return False, ("No GT scalar fields detected on the dataset — "
                        "nothing to auto-attach. Create the leaderboard "
                        "manually and add metrics yourself."), None
 
     lb = Leaderboard(
         name=lb_name,
-        summary_metrics=','.join(p['target_name'] for p in proposals),
+        summary_metrics=','.join(p['target_name'] for p in metric_proposals),
         owner_user_id=owner_user_id,
     )
     lb.datasets = [dataset]
     db.session.add(lb)
     db.session.flush()  # get lb.id
 
-    for p in proposals:
+    for p in metric_proposals:
         gm = GlobalMetric.query.filter_by(name=p['global_name']).first()
         if gm is None:
             code = _llm_generate_metric_code(p['global_name'], p['llm_hint']) \
@@ -5214,8 +5451,58 @@ def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
             sort_direction=p['sort_direction'],
         )
         db.session.add(lm)
+
+    for p in viz_proposals:
+        gv = GlobalVisualization.query.filter_by(name=p['global_name']).first()
+        if gv is None:
+            code = _llm_generate_visualization_code(
+                p['global_name'], p['llm_hint'],
+                p['is_aggregated'], p['accepts_aggregated_inputs'],
+            ) or p['fallback_code']
+            gv = GlobalVisualization(
+                name=p['global_name'],
+                description=p['description'],
+                python_code=code,
+                is_aggregated=p['is_aggregated'],
+                accepts_aggregated_inputs=p['accepts_aggregated_inputs'],
+                owner_user_id=owner_user_id,
+                visibility='public',
+            )
+            db.session.add(gv)
+            db.session.flush()
+        lv = LeaderboardVisualization(
+            leaderboard_id=lb.id,
+            global_visualization_id=gv.id,
+            arg_mappings=json.dumps(p['arg_mappings']),
+            target_name=p['target_name'],
+        )
+        db.session.add(lv)
+
     db.session.commit()
-    return True, f'Created leaderboard "{lb_name}" with {len(proposals)} metric(s).', lb.id
+    n_m, n_v = len(metric_proposals), len(viz_proposals)
+    summary = []
+    if n_m:
+        summary.append(f"{n_m} metric{'' if n_m == 1 else 's'}")
+    if n_v:
+        summary.append(f"{n_v} visualization{'' if n_v == 1 else 's'}")
+    # Tell the user what their submissions need to ship — same fields
+    # the colab notebook will template into the prediction loop.
+    pred_field_names = []
+    seen_pred = set()
+    for p in metric_proposals + viz_proposals:
+        for pf in p.get('pred_fields') or []:
+            if pf['name'] in seen_pred:
+                continue
+            seen_pred.add(pf['name'])
+            pred_field_names.append(pf['name'])
+    pred_clause = ''
+    if pred_field_names:
+        pred_clause = (
+            ' Submissions must ship per-sample predictions in: '
+            + ', '.join(f'`{n}`' for n in pred_field_names) + '.'
+        )
+    return True, (f'Created leaderboard "{lb_name}" '
+                  f'with {" and ".join(summary)}.{pred_clause}'), lb.id
 
 
 def _ensure_colab_gist(lb):
@@ -5347,20 +5634,28 @@ def _llm_infer_mapping(features, dataset_repo=None):
         "Allowed target_kind values:\n"
         "- image: 2D RGB visual data (photos, rendered frames)\n"
         "- depth: 2D depth/disparity/distance maps\n"
-        "- metric: scalar score, label, class index, or measurement\n"
+        "- scalar: ground-truth label / numeric value the model is "
+        "  expected to predict (class index, regression target, etc.)\n"
+        "- metric: a USER-PRECOMPUTED per-sample metric value the LB "
+        "  should display directly (e.g. an MSE the user already ran "
+        "  and is shipping alongside the data). RARE — almost never "
+        "  the right pick for a labeled HF dataset.\n"
         "- histogram: count distribution (vector of bin counts)\n"
         "- text: textual descriptions, captions, tags\n"
         "- skip: not useful for benchmarking (file paths, metadata, etc.)\n\n"
         "Rules:\n"
         "- Image() with depth-suggesting name → depth\n"
         "- Image() otherwise → image\n"
-        "- ClassLabel → metric (store the integer index). The importer\n"
-        "  ALSO automatically emits two derived artifacts from the\n"
-        "  ClassLabel.names list, so YOU MUST NOT add separate entries\n"
-        "  for them: (a) a `<col>_class` text column with the human\n"
-        "  class name, (b) per-sample tags. Treat ClassLabel as a single\n"
-        "  source column → one mapping entry, target_kind='metric'.\n"
-        "- Numeric Value (int/float) → metric\n"
+        "- ClassLabel → scalar. Store the integer index as a GT scalar.\n"
+        "  The importer ALSO automatically emits two derived artifacts\n"
+        "  from the ClassLabel.names list, so YOU MUST NOT add separate\n"
+        "  entries for them: (a) a `<col>_class` text column with the\n"
+        "  human class name, (b) per-sample tags. Treat ClassLabel as a\n"
+        "  single source column → one mapping entry, target_kind='scalar'.\n"
+        "- Numeric Value (int/float) → scalar (it's a GT label/value).\n"
+        "  Only choose `metric` when the column name explicitly says\n"
+        "  the value is a precomputed metric result (e.g. `mse_pretrained`,\n"
+        "  `accuracy_baseline`).\n"
         "- Sequence of integers, fixed length → histogram\n"
         "- Strings: 'caption'/'text'/'tags'/'description' → text, others → skip\n"
         "- Use the column name's semantics, not just the dtype.\n\n"
@@ -5371,8 +5666,9 @@ def _llm_infer_mapping(features, dataset_repo=None):
         "  own from the original feature metadata.\n"
         "- Never split one source column into multiple BenchHub fields.\n"
         "- target_field MUST follow BenchHub conventions verbatim:\n"
-        "  image_<col>, raw_<col>, metric_<col>, hist_<col>, or the bare\n"
-        "  column name for text.\n\n"
+        "  image_<col>, raw_<col>, hist_<col>, metric_<col> (only for "
+        "  the rare `metric` kind), or the bare column name for `scalar` "
+        "  and `text`.\n\n"
         "Output a JSON array, one entry per column, with exactly these keys: "
         '`column`, `target_kind`, `target_field`, `reason`. '
         '`reason` is one short sentence (≤ 15 words) explaining the choice. '
@@ -5422,7 +5718,8 @@ def _llm_infer_mapping(features, dataset_repo=None):
         # Validate each entry has the required shape and a known target_kind.
         # Defensive dedupe: keep the FIRST entry per source column. The
         # prompt forbids splitting a column, but model output is best-effort.
-        valid_kinds = {'image', 'depth', 'metric', 'histogram', 'text', 'skip'}
+        valid_kinds = {'image', 'depth', 'scalar', 'metric',
+                       'histogram', 'text', 'skip'}
         by_col = {}
         for entry in parsed:
             if not isinstance(entry, dict):
@@ -5474,9 +5771,13 @@ def _infer_mapping(features):
             if dtype in ('int8', 'int16', 'int32', 'int64',
                          'uint8', 'uint16', 'uint32',
                          'float16', 'float32', 'float64', 'bool'):
-                out.append({'column': col, 'target_kind': 'metric',
-                            'target_field': f'metric_{col}',
-                            'reason': f"Numeric scalar ({dtype}) → metric_*"})
+                out.append({'column': col, 'target_kind': 'scalar',
+                            'target_field': col,
+                            'reason': (f"Numeric scalar ({dtype}) → GT "
+                                       f"scalar field. Pick `metric` "
+                                       f"explicitly only when the column "
+                                       f"already holds a user-precomputed "
+                                       f"metric value.")})
             elif dtype == 'string':
                 if col_lc in ('caption', 'text', 'tag', 'tags'):
                     out.append({'column': col, 'target_kind': 'text',
@@ -5491,9 +5792,11 @@ def _infer_mapping(features):
                             'target_field': '',
                             'reason': f"Unknown dtype '{dtype}'"})
         elif t == 'ClassLabel':
-            out.append({'column': col, 'target_kind': 'metric',
-                        'target_field': f'metric_{col}',
-                        'reason': "ClassLabel → store integer index as metric_*"})
+            out.append({'column': col, 'target_kind': 'scalar',
+                        'target_field': col,
+                        'reason': ("ClassLabel → store integer index as a "
+                                   "GT scalar (metric_* is reserved for "
+                                   "user-precomputed metric values).")})
         elif t.startswith('Sequence:'):
             inner = t.split(':', 1)[1]
             length = desc.get('length', -1)
@@ -5534,6 +5837,10 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
             names = desc.get('names') or []
             if isinstance(names, list) and names:
                 classlabel_names[col] = names
+    # `metric` and `scalar` use identical write logic; the only difference
+    # is whether the on-disk folder name carries the `metric_` prefix.
+    # Pre-create folders for both kinds in the loop below.
+    _metric_like = {'metric', 'scalar'}
     try:
         from datasets import load_dataset
     except ImportError:
@@ -5545,7 +5852,8 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
         # Pre-create folders for each non-skip mapping target.
         for m in mapping:
             kind = m.get('target_kind')
-            if kind in ('image', 'depth', 'histogram', 'metric', 'text'):
+            if kind in ('image', 'depth', 'histogram', 'metric',
+                        'scalar', 'text'):
                 os.makedirs(os.path.join(work_dir, m['target_field']), exist_ok=True)
         # README at root keeps process_dataset_zip from picking the only
         # populated subfolder as the dataset wrapper.
@@ -5614,12 +5922,17 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                         _np.savez(os.path.join(target_dir, f"{sample_id}_{w}x{h}.npz"),
                                   depth=arr)
                         wrote_anything = True
-                    elif kind == 'metric' and value is not None:
+                    elif kind in _metric_like and value is not None:
                         # ClassLabel columns: store the class as an int
                         # (1 not 1.0), plus a parallel text column
                         # carrying the class NAME, and a per-sample tag
                         # in tags/ so users can filter the dataset by
                         # class downstream.
+                        #
+                        # `metric` vs `scalar`: identical write logic.
+                        # The folder-name prefix difference (metric_<col>
+                        # vs <col>) is encoded in m['target_field'] by
+                        # the upstream mapping step.
                         names = classlabel_names.get(col)
                         try:
                             int_val = int(value)

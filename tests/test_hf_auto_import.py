@@ -58,17 +58,21 @@ def test_infer_image_named_depth_maps_to_depth():
     assert result[0]['target_field'].startswith('raw_')
 
 
-def test_infer_numeric_value_maps_to_metric():
+def test_infer_numeric_value_maps_to_scalar():
+    """Numeric Values are GT labels by default. `metric_*` is reserved
+    for user-precomputed metric values, not regression targets."""
     feats = {'score': {'type': 'Value:float32'}}
     result = _infer_mapping(feats)
-    assert result[0]['target_kind'] == 'metric'
-    assert result[0]['target_field'] == 'metric_score'
+    assert result[0]['target_kind'] == 'scalar'
+    assert result[0]['target_field'] == 'score'
 
 
-def test_infer_classlabel_maps_to_metric():
+def test_infer_classlabel_maps_to_scalar():
+    """ClassLabel index is a GT label, stored as a bare-name scalar."""
     feats = {'label': {'type': 'ClassLabel'}}
     result = _infer_mapping(feats)
-    assert result[0]['target_kind'] == 'metric'
+    assert result[0]['target_kind'] == 'scalar'
+    assert result[0]['target_field'] == 'label'
 
 
 def test_infer_sequence_int_at_known_length_maps_to_histogram():
@@ -112,8 +116,8 @@ def test_llm_mapping_dedupes_when_model_splits_one_column(monkeypatch):
     fake_response_text = _json.dumps([
         {'column': 'image', 'target_kind': 'image',
          'target_field': 'image_image', 'reason': 'rgb'},
-        {'column': 'label', 'target_kind': 'metric',
-         'target_field': 'metric_label', 'reason': 'integer index'},
+        {'column': 'label', 'target_kind': 'scalar',
+         'target_field': 'label', 'reason': 'integer index'},
         # Model unhelpfully derived two extra entries for the same column:
         {'column': 'label', 'target_kind': 'text',
          'target_field': 'label_class', 'reason': 'class name'},
@@ -133,8 +137,8 @@ def test_llm_mapping_dedupes_when_model_splits_one_column(monkeypatch):
     # Each source column appears exactly once.
     assert sorted(by_col.keys()) == ['image', 'label']
     # First valid entry per column wins.
-    assert by_col['label']['target_kind'] == 'metric'
-    assert by_col['label']['target_field'] == 'metric_label'
+    assert by_col['label']['target_kind'] == 'scalar'
+    assert by_col['label']['target_field'] == 'label'
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +180,9 @@ def test_preview_renders_inferred_mapping(auth_client, logged_in_user, db_sessio
     assert b'Auto-import preview' in body
     assert b'image' in body
     assert b'image_image' in body  # inferred target_field
-    assert b'metric_label' in body
+    # ClassLabel `label` lands in a bare-name `label` GT scalar folder
+    # (`metric_*` would mean user-precomputed metric value, not a label).
+    assert b'>label<' in body or b'value="label"' in body
 
 
 def test_preview_handles_gated_401(auth_client, db_session):
