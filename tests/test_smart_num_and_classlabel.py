@@ -111,6 +111,67 @@ def test_classlabel_import_writes_class_name_field_and_per_sample_tags(
     assert 'bird' in (by_name['s00002'].tags or '')
 
 
+def test_classlabel_names_inferred_from_ds_features_when_api_blank(
+    client, db_session, monkeypatch, logged_in_user,
+):
+    """Modern parquet datasets (cifar10, mnist) often don't expose
+    ClassLabel.names through HF's /api/datasets endpoint. The
+    `datasets` library DOES resolve them on ds.features, so we read
+    from there as a fallback. Pin: empty `features` arg + ds.features
+    with a ClassLabel object → class names + tags still applied."""
+    import sys, types
+    from PIL import Image as _PILImage
+
+    # Fake ClassLabel that mirrors the datasets lib's API.
+    class _FakeClassLabel:
+        def __init__(self, names):
+            self.names = names
+
+    rows = [
+        {'image': _PILImage.new('RGB', (4, 4), (255, 0, 0)), 'label': 0},
+        {'image': _PILImage.new('RGB', (4, 4), (0, 255, 0)), 'label': 1},
+    ]
+
+    class _FakeIterableDataset:
+        # Mimic datasets.IterableDataset: iterable + .features
+        features = {
+            'image': object(),  # Image() — no names
+            'label': _FakeClassLabel(['airplane', 'automobile']),
+        }
+        def __iter__(self):
+            return iter(rows)
+
+    fake_mod = types.ModuleType('datasets')
+    fake_mod.load_dataset = lambda *a, **kw: _FakeIterableDataset()
+    monkeypatch.setitem(sys.modules, 'datasets', fake_mod)
+
+    mapping = [
+        {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
+        {'column': 'label', 'target_kind': 'metric', 'target_field': 'metric_label'},
+    ]
+    success, message, ds_id = _import_hf_auto(
+        'fake/cifar', 'cifar_subset', mapping,
+        sample_cap=2, owner_user_id=logged_in_user.id,
+        features={},  # API returned no names
+    )
+    assert success, message
+
+    from app import Sample, CustomField, Dataset
+    ds = Dataset.query.get(ds_id)
+    samples = Sample.query.filter_by(dataset_id=ds.id).all()
+    by_name = {s.name: s for s in samples}
+
+    # Class-name parallel column written.
+    cf0 = CustomField.query.filter_by(sample_id=by_name['s00000'].id, name='label_class').first()
+    cf1 = CustomField.query.filter_by(sample_id=by_name['s00001'].id, name='label_class').first()
+    assert cf0 is not None and cf0.value_text == 'airplane'
+    assert cf1 is not None and cf1.value_text == 'automobile'
+
+    # Per-sample tags carry the class name.
+    assert 'airplane' in (by_name['s00000'].tags or '')
+    assert 'automobile' in (by_name['s00001'].tags or '')
+
+
 def test_non_classlabel_metric_still_int_when_int_valued(
     client, db_session, monkeypatch, logged_in_user,
 ):

@@ -4663,6 +4663,28 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
         ds = load_dataset(repo_id, split=split, streaming=True, revision=revision,
                           token=hf_token)
 
+        # Fall back to features inspected from the streamed dataset itself.
+        # The HF API features blob doesn't always include ClassLabel.names
+        # for modern parquet datasets, but `datasets` lib resolves them
+        # from the dataset_info.json on the repo and exposes them on
+        # ds.features as ClassLabel objects.
+        try:
+            ds_feats = getattr(ds, 'features', None) or {}
+            for col_name, feat in (ds_feats.items() if hasattr(ds_feats, 'items') else []):
+                if col_name in classlabel_names:
+                    continue
+                names = getattr(feat, 'names', None)
+                # Some HF feature types (e.g. Sequence(ClassLabel)) wrap the
+                # ClassLabel — peek through one level of wrapper.
+                if not names:
+                    inner = getattr(feat, 'feature', None)
+                    if inner is not None:
+                        names = getattr(inner, 'names', None)
+                if names:
+                    classlabel_names[col_name] = list(names)
+        except Exception as e:
+            print(f"ClassLabel name extraction from ds.features failed: {e}")
+
         from PIL import Image as _PILImage
         import numpy as _np
 
