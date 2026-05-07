@@ -145,12 +145,16 @@
                             id="auto_assign_metrics" name="auto_assign_metrics" value="1">
                         <label class="form-check-label" for="auto_assign_metrics">
                             <i class="bi bi-stars text-warning me-1"></i>
-                            Auto-assign metrics from this dataset's
-                            <code>metric_*</code> fields
+                            Auto-assign metrics &amp; visualizations
                             <span class="text-body-secondary">
-                                &mdash; reuses any matching GlobalMetric by
-                                name; otherwise the LLM authors one (with a
-                                deterministic fallback).
+                                &mdash; walks the dataset's GT scalar
+                                fields and proposes per-field comparisons
+                                (top-1 accuracy for ClassLabel-shaped,
+                                MAE for numeric) plus a confusion-matrix
+                                visualization where applicable. Reuses
+                                any matching GlobalMetric / GlobalVisualization
+                                by name; otherwise the LLM authors one
+                                (deterministic fallback if no API key).
                             </span>
                         </label>
                     </div>
