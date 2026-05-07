@@ -419,46 +419,54 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
             </form>
 
-            <!-- Column Visibility Controls -->
-            <div class="d-flex align-items-center ms-3 mt-2">
-                <label class="form-check-label fw-bold me-3">Display Columns:</label>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" id="select_all_lb_cols"
-                        onclick="handleSelectAllLBCols(this)">
-                    <label class="form-check-label" for="select_all_lb_cols"><strong>All</strong></label>
-                </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="name" id="lb_col_name"
-                        onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_name">Name</label>
-                </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="tags" id="lb_col_tags"
-                        onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_tags">Tags</label>
-                </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="date_uploaded"
-                        id="lb_col_date_uploaded" onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_date_uploaded">Date Uploaded</label>
-                </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="git_info"
-                        id="lb_col_git_info" onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_git_info">Git Info</label>
-                </div>
-                {% for metric in selected_metrics %}
-                {% set display_label = metric_labels.get(metric, metric) %}
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="metric_{{ metric }}"
-                        id="lb_col_metric_{{ metric }}" onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_metric_{{ metric }}">{{ display_label }}</label>
-                </div>
-                {% endfor %}
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input lb-column-checkbox" type="checkbox" value="status" id="lb_col_status"
-                        onchange="updateLBColumnVisibility()">
-                    <label class="form-check-label" for="lb_col_status">Status</label>
+            {# Column visibility — modernized: a Bootstrap dropdown that opens
+               a checkbox menu instead of a long inline row. Same client-side
+               JS hooks (`lb-column-checkbox` + `updateLBColumnVisibility()`)
+               drive the actual show/hide. Default: all visible. #}
+            <div class="d-flex align-items-center ms-3 mt-2 gap-2">
+                <label class="form-label fw-bold mb-0 small text-uppercase text-body-secondary">
+                    Columns
+                </label>
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        <i class="bi bi-eye me-1"></i><span id="lb-cols-summary">All visible</span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="min-width: 240px; max-height: 60vh; overflow-y: auto;">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="select_all_lb_cols"
+                                onclick="handleSelectAllLBCols(this)">
+                            <label class="form-check-label fw-semibold" for="select_all_lb_cols">All</label>
+                        </div>
+                        <hr class="my-2">
+                        {% for col_key, col_label in [
+                            ('name', 'Name'),
+                            ('tags', 'Tags'),
+                            ('date_uploaded', 'Date Uploaded'),
+                            ('git_info', 'Git Info'),
+                        ] %}
+                        <div class="form-check">
+                            <input class="form-check-input lb-column-checkbox" type="checkbox"
+                                value="{{ col_key }}" id="lb_col_{{ col_key }}"
+                                onchange="updateLBColumnVisibility()">
+                            <label class="form-check-label" for="lb_col_{{ col_key }}">{{ col_label }}</label>
+                        </div>
+                        {% endfor %}
+                        {% for metric in selected_metrics %}
+                        {% set display_label = metric_labels.get(metric, metric) %}
+                        <div class="form-check">
+                            <input class="form-check-input lb-column-checkbox" type="checkbox"
+                                value="metric_{{ metric }}" id="lb_col_metric_{{ metric }}"
+                                onchange="updateLBColumnVisibility()">
+                            <label class="form-check-label" for="lb_col_metric_{{ metric }}">{{ display_label }}</label>
+                        </div>
+                        {% endfor %}
+                        <div class="form-check">
+                            <input class="form-check-input lb-column-checkbox" type="checkbox"
+                                value="status" id="lb_col_status" onchange="updateLBColumnVisibility()">
+                            <label class="form-check-label" for="lb_col_status">Status</label>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -499,45 +507,82 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <input type="hidden" name="sample_exclude_tags" value="{{ sample_exclude_tags|join(',') }}">
             <input type="hidden" name="sample_prefix_tags" value="{{ sample_prefix_tags|join(',') }}">
 
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div>
-                    <button type="submit" name="action" value="compare" class="btn btn-primary">Compare
-                        Selected</button>
-                    <button type="button" class="btn btn-warning" onclick="recalculateAsync()">Recalculate
-                        Selected</button>
-                    <button type="button" class="btn btn-success" data-bs-toggle="modal"
-                        data-bs-target="#add-tags-modal">Add Tags to Selected</button>
-                    <button type="submit" name="action" value="archive" class="btn btn-secondary">Archive
-                        Selected</button>
-                    <button type="submit" name="action" value="unarchive" class="btn btn-info">Unarchive
-                        Selected</button>
-                    <button type="submit" name="action" value="delete" class="btn btn-danger"
-                        onclick="return confirm('Are you sure you want to permanently delete the selected submissions?');">Delete
-                        Selected</button>
-                    <!-- Download Selected Button -->
-                    <!-- Download Selected Dropdown -->
+            {# Modernized action bar: one primary action (Compare), one
+               actions menu, one downloads menu, and a danger-zone delete
+               tucked behind a confirm. Less visual noise than the
+               rainbow-buttons row. #}
+            <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
+                <div class="btn-toolbar gap-2" role="toolbar" aria-label="Submission actions">
+                    <button type="submit" name="action" value="compare" class="btn btn-primary">
+                        <i class="bi bi-bar-chart me-1"></i>Compare
+                    </button>
+
+                    {# Actions menu: recalc, tag, archive, unarchive. #}
                     <div class="btn-group">
-                        <button type="button" class="btn btn-dark dropdown-toggle" data-bs-toggle="dropdown"
-                            aria-expanded="false">
-                            Download Selected
+                        <button type="button" class="btn btn-outline-secondary dropdown-toggle"
+                            data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-three-dots me-1"></i>Actions
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li>
+                                <button type="button" class="dropdown-item" onclick="recalculateAsync()">
+                                    <i class="bi bi-arrow-clockwise me-2"></i>Recalculate
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" class="dropdown-item"
+                                    data-bs-toggle="modal" data-bs-target="#add-tags-modal">
+                                    <i class="bi bi-tag me-2"></i>Add tags…
+                                </button>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <button type="submit" name="action" value="archive" class="dropdown-item">
+                                    <i class="bi bi-archive me-2"></i>Archive
+                                </button>
+                            </li>
+                            <li>
+                                <button type="submit" name="action" value="unarchive" class="dropdown-item">
+                                    <i class="bi bi-arrow-up-square me-2"></i>Unarchive
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+
+                    {# Downloads menu — same submenu as before, now visually
+                       siblings of Actions. #}
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-outline-secondary dropdown-toggle"
+                            data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-download me-1"></i>Download
                         </button>
                         <ul class="dropdown-menu">
                             <li><button class="dropdown-item" type="submit"
-                                    formaction="{{ url_for('download_submissions_bulk', leaderboard_id=leaderboard.id) }}">Source
-                                    Zips</button></li>
+                                    formaction="{{ url_for('download_submissions_bulk', leaderboard_id=leaderboard.id) }}">
+                                    Source ZIPs
+                                </button></li>
                             <li><button class="dropdown-item" type="submit"
-                                    formaction="{{ url_for('download_submissions_metrics_bulk', leaderboard_id=leaderboard.id) }}">Aggregated
-                                    Metrics
-                                    (CSV)</button></li>
+                                    formaction="{{ url_for('download_submissions_metrics_bulk', leaderboard_id=leaderboard.id) }}">
+                                    Aggregated metrics (CSV)
+                                </button></li>
                             <li><button class="dropdown-item" type="submit"
-                                    formaction="{{ url_for('download_submissions_sample_metrics_bulk', leaderboard_id=leaderboard.id) }}">Per-Sample
-                                    Metrics & Tags
-                                    (CSV)</button></li>
+                                    formaction="{{ url_for('download_submissions_sample_metrics_bulk', leaderboard_id=leaderboard.id) }}">
+                                    Per-sample metrics &amp; tags (CSV)
+                                </button></li>
                             <li><button class="dropdown-item" type="submit"
-                                    formaction="{{ url_for('download_submissions_full_bulk', leaderboard_id=leaderboard.id) }}">Source
-                                    + Metrics</button></li>
+                                    formaction="{{ url_for('download_submissions_full_bulk', leaderboard_id=leaderboard.id) }}">
+                                    Source + metrics
+                                </button></li>
                         </ul>
                     </div>
+
+                    {# Delete sits separate — danger-styled, ghost-button
+                       version so it doesn't shout but stays distinct. #}
+                    <button type="submit" name="action" value="delete"
+                        class="btn btn-outline-danger"
+                        onclick="return confirm('Permanently delete the selected submissions?');">
+                        <i class="bi bi-trash me-1"></i>Delete
+                    </button>
                 </div>
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="show_archived_switch"
@@ -1930,10 +1975,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // Apply visibility
         applyColumnVisibility(visibleColumns);
 
-        // Update "All" checkbox
+        // Update "All" checkbox + the dropdown-trigger summary so the
+        // user can read the column state without opening the menu.
         const allCheckbox = document.getElementById('select_all_lb_cols');
         if (allCheckbox) {
             allCheckbox.checked = visibleColumns.length === DEFAULT_COLUMNS.length;
+        }
+        const summary = document.getElementById('lb-cols-summary');
+        if (summary) {
+            const total = checkboxes.length;
+            if (visibleColumns.length === total) {
+                summary.textContent = 'All visible';
+            } else {
+                summary.textContent = `${visibleColumns.length} of ${total} visible`;
+            }
         }
     }
 
