@@ -5,10 +5,11 @@ from unittest.mock import patch
 import pytest
 
 from app import (
-    Dataset, Leaderboard, Sample, db,
+    Dataset, Leaderboard, Sample, UserColabGist, db,
     _lb_structure_signature,
     _static_colab_notebook,
     _get_or_generate_colab_notebook,
+    _personalize_notebook_for_user,
 )
 
 
@@ -228,6 +229,240 @@ def test_colab_open_patches_existing_gist_on_second_call(
     patch_mock.assert_called_once()
     post_mock.assert_not_called()
     assert 'colab.research.google.com/gist/testuser/oldgist' in resp.headers['Location']
+
+
+# ---------------------------------------------------------------------------
+# Per-user token autofill: generic notebook → personalized per logged-in user
+# ---------------------------------------------------------------------------
+
+
+def test_personalize_substitutes_empty_token_placeholder():
+    """Generic `API_TOKEN = ''` is replaced with the user's actual token."""
+    from types import SimpleNamespace
+    nb = json.dumps({
+        'cells': [{
+            'cell_type': 'code', 'source': ["API_TOKEN = ''  # paste here\n"],
+        }],
+        'nbformat': 4, 'nbformat_minor': 5, 'metadata': {},
+    })
+    user = SimpleNamespace(api_token='bh_secret_42')
+    out = _personalize_notebook_for_user(nb, user)
+    assert "API_TOKEN = 'bh_secret_42'" in out
+    assert "API_TOKEN = ''" not in out
+
+
+def test_personalize_is_noop_for_anonymous_user():
+    """No user / no token → leave the placeholder untouched."""
+    nb = json.dumps({'cells': [{'cell_type': 'code',
+                                'source': ["API_TOKEN = ''\n"]}],
+                     'nbformat': 4, 'nbformat_minor': 5, 'metadata': {}})
+    assert _personalize_notebook_for_user(nb, None) == nb
+    from types import SimpleNamespace
+    assert _personalize_notebook_for_user(nb, SimpleNamespace(api_token=None)) == nb
+    assert _personalize_notebook_for_user(nb, SimpleNamespace(api_token='')) == nb
+
+
+def test_personalize_handles_double_quoted_placeholder():
+    """LLM-generated cells may use double quotes; we still substitute."""
+    from types import SimpleNamespace
+    nb = json.dumps({'cells': [{'cell_type': 'code',
+                                'source': ['API_TOKEN = ""\n']}],
+                     'nbformat': 4, 'nbformat_minor': 5, 'metadata': {}})
+    out = _personalize_notebook_for_user(nb, SimpleNamespace(api_token='tok123'))
+    assert "API_TOKEN = 'tok123'" in out
+
+
+def test_static_notebook_includes_token_placeholder():
+    """The static template uses the empty single-quoted placeholder so
+    the personalize step has something to find."""
+    ds = Dataset(name='ph_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='ph_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+    raw = _static_colab_notebook(lb)
+    assert "API_TOKEN = ''" in raw
+
+
+def test_colab_open_uses_per_user_gist_when_logged_in_with_token(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """Authed user with an api_token → personalized notebook on a
+    per-user gist (not the LB-level shared one)."""
+    monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    logged_in_user.api_token = 'mytoken_xyz'
+    db.session.commit()
+
+    ds = Dataset(name='per_user_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(dataset_id=ds.id, name='s1'))
+    lb = Leaderboard(name='per_user_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    captured = {}
+
+    class _Created:
+        status_code = 201
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                'id': 'gistuser1',
+                'html_url': 'https://gist.github.com/personalowner/gistuser1',
+                'owner': {'login': 'personalowner'},
+            }
+
+    def _capture(url, **kw):
+        captured['url'] = url
+        captured['payload'] = kw.get('json')
+        return _Created()
+
+    with patch('requests.post', side_effect=_capture):
+        resp = auth_client.get(f'/leaderboard/{lb.id}/colab_open',
+                               follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert 'gist/personalowner/gistuser1' in resp.headers['Location']
+
+    # The gist content carries the user's actual token.
+    files = captured['payload']['files']
+    nb_text = next(iter(files.values()))['content']
+    assert "API_TOKEN = 'mytoken_xyz'" in nb_text
+    assert "API_TOKEN = ''" not in nb_text
+
+    # Per-user mapping is persisted, not the LB-level cache.
+    record = UserColabGist.query.filter_by(
+        user_id=logged_in_user.id, leaderboard_id=lb.id,
+    ).first()
+    assert record is not None
+    assert record.gist_id == 'gistuser1'
+    assert record.gist_owner == 'personalowner'
+
+    # And the LB-level cache is untouched (no anonymous gist created).
+    db.session.refresh(lb)
+    lb_cache = json.loads(lb.colab_notebook_cache or '{}')
+    assert 'gist_id' not in lb_cache or lb_cache.get('gist_id') is None
+
+
+def test_colab_open_authed_without_token_uses_anonymous_gist(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """Logged-in user without an api_token → fall back to the generic
+    LB-level gist (token placeholder stays empty)."""
+    monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    logged_in_user.api_token = None
+    db.session.commit()
+
+    ds = Dataset(name='no_tok_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='no_tok_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    class _Ok:
+        status_code = 201
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                'id': 'gistanon1',
+                'html_url': 'https://gist.github.com/sharedowner/gistanon1',
+                'owner': {'login': 'sharedowner'},
+            }
+
+    captured = {}
+    def _capture(url, **kw):
+        captured['payload'] = kw.get('json')
+        return _Ok()
+
+    with patch('requests.post', side_effect=_capture):
+        resp = auth_client.get(f'/leaderboard/{lb.id}/colab_open',
+                               follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert 'gist/sharedowner/gistanon1' in resp.headers['Location']
+    nb_text = next(iter(captured['payload']['files'].values()))['content']
+    # Placeholder stays empty for the shared/anonymous gist.
+    assert "API_TOKEN = ''" in nb_text
+    # No per-user record.
+    assert UserColabGist.query.filter_by(
+        user_id=logged_in_user.id, leaderboard_id=lb.id,
+    ).first() is None
+
+
+def test_colab_open_per_user_patches_existing_gist_on_second_call(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """Returning user → PATCH their existing per-user gist instead of
+    creating a fresh one."""
+    monkeypatch.setenv('BENCHHUB_GITHUB_GIST_TOKEN', 'ghp_test')
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    logged_in_user.api_token = 'tok_returning'
+    db.session.commit()
+
+    ds = Dataset(name='returning_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='returning_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    db.session.add(UserColabGist(
+        user_id=logged_in_user.id, leaderboard_id=lb.id,
+        gist_id='oldpergist', gist_owner='personalowner', sig='stale',
+    ))
+    db.session.commit()
+
+    class _PatchOk:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                'id': 'oldpergist',
+                'html_url': 'https://gist.github.com/personalowner/oldpergist',
+                'owner': {'login': 'personalowner'},
+            }
+
+    with patch('requests.patch', return_value=_PatchOk()) as patch_mock, \
+         patch('requests.post') as post_mock:
+        resp = auth_client.get(f'/leaderboard/{lb.id}/colab_open')
+
+    assert resp.status_code == 302
+    patch_mock.assert_called_once()
+    post_mock.assert_not_called()
+    assert 'gist/personalowner/oldpergist' in resp.headers['Location']
+
+
+def test_colab_notebook_direct_download_personalizes_for_logged_in_user(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """Direct .ipynb download also embeds the user's token."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    logged_in_user.api_token = 'direct_dl_tok'
+    db.session.commit()
+
+    ds = Dataset(name='dl_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='dl_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    resp = auth_client.get(f'/leaderboard/{lb.id}/colab_notebook.ipynb')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert "API_TOKEN = 'direct_dl_tok'" in body
+    assert "API_TOKEN = ''" not in body
+
+
+def test_colab_notebook_direct_download_anon_keeps_placeholder(
+    client, db_session, monkeypatch,
+):
+    """Anonymous direct download → placeholder stays empty so the user
+    can paste in a token themselves."""
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+    ds = Dataset(name='anon_dl_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='anon_dl_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    resp = client.get(f'/leaderboard/{lb.id}/colab_notebook.ipynb')
+    assert resp.status_code == 200
+    assert "API_TOKEN = ''" in resp.data.decode()
 
 
 def test_colab_notebook_route_404s_for_private_to_anon(client, db_session, monkeypatch):

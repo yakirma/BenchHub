@@ -708,6 +708,22 @@ class User(db.Model):
     )
 
 
+class UserColabGist(db.Model):
+    """Per-(user, leaderboard) GitHub gist holding a Colab notebook with
+    the user's BenchHub API token baked in. The LB-level cache on
+    Leaderboard.colab_notebook_cache keeps the *generic* notebook (token
+    placeholder); this table maps user → personalized gist so each
+    authed user gets their own one-click Colab link."""
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    leaderboard_id = db.Column(
+        db.Integer, db.ForeignKey('leaderboard.id', ondelete='CASCADE'),
+        primary_key=True,
+    )
+    gist_id = db.Column(db.String(64), nullable=True)
+    gist_owner = db.Column(db.String(120), nullable=True)
+    sig = db.Column(db.String(16), nullable=True)
+
+
 def get_canonical_username(username, profiles):
     """Resolve a username to its canonical identity by following merge chains."""
     visited = set()
@@ -3596,7 +3612,11 @@ def leaderboard_colab_open(leaderboard_id):
     a "couldn't open directly, download instead" flash if no GitHub
     token is configured or gist creation fails."""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
-    gist_url, gist_id, gist_owner = _ensure_colab_gist(lb)
+    user = getattr(g, 'current_user', None)
+    if user and getattr(user, 'api_token', None):
+        gist_url, gist_id, gist_owner = _ensure_user_colab_gist(lb, user)
+    else:
+        gist_url, gist_id, gist_owner = _ensure_colab_gist(lb)
     if gist_id:
         # Colab's gist URL pattern is `/gist/<owner>/<gist_id>` — the
         # bare-id form is rejected with "Unexpected GitHub Gist path".
@@ -3619,6 +3639,11 @@ def leaderboard_colab_notebook(leaderboard_id):
     the LB's structure signature drifts."""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
     notebook_json, _source = _get_or_generate_colab_notebook(lb)
+    # Inline-personalize for direct downloads too, so a logged-in user
+    # who clicks "Download notebook" gets their token pre-filled.
+    user = getattr(g, 'current_user', None)
+    if user and getattr(user, 'api_token', None):
+        notebook_json = _personalize_notebook_for_user(notebook_json, user)
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
     resp = app.response_class(
         notebook_json,
@@ -4655,8 +4680,9 @@ def _static_colab_notebook(lb):
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
                 "source": [
                     "# 4b. (Optional) upload directly to BenchHub via API token.\n",
-                    "# Generate a token at /settings/api_tokens, paste below, name it.\n",
-                    "API_TOKEN = ''  # 'hf_...'-style token from BenchHub settings\n",
+                    "# When you're signed in, BenchHub auto-fills your token below.\n",
+                    "# Otherwise, generate one at /settings/api_tokens and paste it here.\n",
+                    "API_TOKEN = ''  # auto-filled per-user; manually paste otherwise\n",
                     "SUBMISSION_NAME = 'my_first_submission'\n",
                     "if API_TOKEN:\n",
                     "    with open(zip_path, 'rb') as fh:\n",
@@ -4806,6 +4832,118 @@ def _get_or_generate_colab_notebook(lb):
         db.session.rollback()
         print(f"colab notebook cache write failed: {e}")
     return nb, source
+
+
+def _personalize_notebook_for_user(notebook_json, user):
+    """Substitute the empty `API_TOKEN = ''` placeholder in a generic
+    notebook with the user's actual BenchHub API token (if they have one).
+    Operates on the raw .ipynb JSON string; safe to apply to either the
+    static or LLM-generated form."""
+    if not user or not getattr(user, 'api_token', None):
+        return notebook_json
+    safe_token = user.api_token.replace("\\", r"\\").replace("'", r"\'")
+    # Match `API_TOKEN = ''` and `API_TOKEN = ""` (single or double quotes).
+    # Inside a JSON-encoded notebook, double quotes appear as `\"`, so also
+    # accept `\"\"` for LLM-generated cells that prefer double-quoted strings.
+    pattern = re.compile(r"API_TOKEN\s*=\s*(?:''|\\\"\\\"|\"\")")
+    return pattern.sub(f"API_TOKEN = '{safe_token}'", notebook_json, count=1)
+
+
+def _ensure_user_colab_gist(lb, user):
+    """Per-user variant of _ensure_colab_gist: pushes a personalized
+    notebook (with the user's API token baked in) to a per-user gist so
+    each authed user gets their own one-click Colab link.
+
+    Falls back to the generic LB-level gist when the user is anonymous
+    or has no api_token configured."""
+    if not user or not getattr(user, 'api_token', None):
+        return _ensure_colab_gist(lb)
+
+    token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN')
+    if not token:
+        return None, None, None
+
+    # Reuse the LB-level generic notebook (LLM/static), then personalize.
+    nb_json, _src = _get_or_generate_colab_notebook(lb)
+    nb_json = _personalize_notebook_for_user(nb_json, user)
+    sig = _lb_structure_signature(lb)
+
+    record = UserColabGist.query.filter_by(
+        user_id=user.id, leaderboard_id=lb.id,
+    ).first()
+    gist_id = record.gist_id if record else None
+    gist_owner = record.gist_owner if record else None
+
+    safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    filename = f'{safe_name}_submit.ipynb'
+    description = (
+        f"BenchHub submission scaffold for leaderboard '{lb.name}' "
+        f"(id={lb.id}) — personalized for {user.email}"
+    )
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    payload = {
+        'description': description,
+        'public': False,
+        'files': {filename: {'content': nb_json}},
+    }
+    try:
+        import requests as _r
+        gist_resp_json = None
+        if gist_id:
+            resp = _r.patch(
+                f'https://api.github.com/gists/{gist_id}',
+                headers=headers, json=payload, timeout=15,
+            )
+            if resp.status_code == 404:
+                gist_id = None
+            else:
+                resp.raise_for_status()
+                gist_resp_json = resp.json()
+        if not gist_id:
+            resp = _r.post(
+                'https://api.github.com/gists',
+                headers=headers, json=payload, timeout=15,
+            )
+            resp.raise_for_status()
+            gist_resp_json = resp.json()
+            gist_id = gist_resp_json.get('id')
+        if not gist_id:
+            return None, None, None
+        if gist_resp_json:
+            new_owner = (gist_resp_json.get('owner') or {}).get('login')
+            if new_owner:
+                gist_owner = new_owner
+        if not gist_owner and gist_resp_json:
+            html_url = gist_resp_json.get('html_url', '')
+            m = re.match(r'https://gist\.github\.com/([^/]+)/[0-9a-f]+', html_url)
+            if m:
+                gist_owner = m.group(1)
+        try:
+            if record:
+                record.gist_id = gist_id
+                record.gist_owner = gist_owner
+                record.sig = sig
+            else:
+                db.session.add(UserColabGist(
+                    user_id=user.id, leaderboard_id=lb.id,
+                    gist_id=gist_id, gist_owner=gist_owner, sig=sig,
+                ))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return (
+            f'https://gist.github.com/{gist_owner}/{gist_id}'
+            if gist_owner else f'https://gist.github.com/{gist_id}',
+            gist_id,
+            gist_owner,
+        )
+    except Exception as e:
+        print(f"_ensure_user_colab_gist failed: {e}")
+        return None, None, None
 
 
 def _ensure_colab_gist(lb):
@@ -8427,6 +8565,27 @@ def check_and_migrate_db():
                         print("Created 'user' table.")
                     except Exception as e:
                         print(f"Failed to create 'user' table: {e}")
+
+                # --- UserColabGist table (per-user Colab gist mapping) ---
+                try:
+                    cursor.execute("SELECT user_id FROM user_colab_gist LIMIT 1")
+                except sqlite3.OperationalError:
+                    print("Migrating DB: Creating 'user_colab_gist' table...")
+                    try:
+                        cursor.execute('''
+                            CREATE TABLE user_colab_gist (
+                                user_id INTEGER NOT NULL,
+                                leaderboard_id INTEGER NOT NULL,
+                                gist_id VARCHAR(64),
+                                gist_owner VARCHAR(120),
+                                sig VARCHAR(16),
+                                PRIMARY KEY (user_id, leaderboard_id)
+                            )
+                        ''')
+                        conn.commit()
+                        print("Created 'user_colab_gist' table.")
+                    except Exception as e:
+                        print(f"Failed to create 'user_colab_gist' table: {e}")
 
                 # --- Owner / visibility columns (Phase 1 Slice 2) ---
                 # Add owner_user_id + visibility to project / dataset /
