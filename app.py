@@ -321,6 +321,18 @@ leaderboard_tags = db.Table('leaderboard_tags',
     db.Column('tag_id', db.Integer, db.ForeignKey('tag.id'), primary_key=True),
 )
 
+# Per-row collaborators: owner can grant other users access to a private
+# dataset / leaderboard. Visibility checks honor the share so 'private'
+# stops being binary owner-only.
+dataset_shares = db.Table('dataset_shares',
+    db.Column('dataset_id', db.Integer, db.ForeignKey('dataset.id'), primary_key=True),
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+)
+leaderboard_shares = db.Table('leaderboard_shares',
+    db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+)
+
 # Association Table for Leaderboards and Datasets
 leaderboard_datasets = db.Table('leaderboard_datasets',
     db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
@@ -360,6 +372,8 @@ class Dataset(db.Model):
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
     tags = db.relationship('Tag', secondary=dataset_tags, lazy='subquery',
                            backref=db.backref('datasets', lazy=True))
+    collaborators = db.relationship('User', secondary=dataset_shares, lazy='subquery',
+                                    backref=db.backref('shared_datasets', lazy=True))
 
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -563,6 +577,8 @@ class Leaderboard(db.Model):
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
     tags = db.relationship('Tag', secondary=leaderboard_tags, lazy='subquery',
                            backref=db.backref('leaderboards', lazy=True))
+    collaborators = db.relationship('User', secondary=leaderboard_shares, lazy='subquery',
+                                    backref=db.backref('shared_leaderboards', lazy=True))
 
 
 class Submission(db.Model):
@@ -1314,10 +1330,11 @@ def visible_in_list(model_cls, user):
     - rows with visibility='public'
     - legacy NULL-owner rows (treated as public until backfill)
     - **owner's own non-unlisted rows** (so I can find my private stuff)
+    - **rows shared with the user** (collaborator on a private row)
 
     Hide:
     - unlisted (URL-only by design — even from the owner's list pages)
-    - other users' private rows
+    - other users' private rows the user isn't a collaborator on
 
     Use as ``Model.query.filter(visible_in_list(Model, g.current_user))``."""
     public_or_legacy = or_(
@@ -1326,13 +1343,27 @@ def visible_in_list(model_cls, user):
     )
     if user is None:
         return public_or_legacy
-    return or_(
-        public_or_legacy,
-        and_(
-            model_cls.owner_user_id == user.id,
-            model_cls.visibility != 'unlisted',
-        ),
+
+    # Collaborator share-table lookup, model-aware.
+    share_clause = None
+    if model_cls is Dataset:
+        share_clause = db.session.query(dataset_shares.c.user_id).filter(
+            dataset_shares.c.dataset_id == model_cls.id,
+            dataset_shares.c.user_id == user.id,
+        ).exists()
+    elif model_cls is Leaderboard:
+        share_clause = db.session.query(leaderboard_shares.c.user_id).filter(
+            leaderboard_shares.c.leaderboard_id == model_cls.id,
+            leaderboard_shares.c.user_id == user.id,
+        ).exists()
+
+    own_clause = and_(
+        model_cls.owner_user_id == user.id,
+        model_cls.visibility != 'unlisted',
     )
+    if share_clause is not None:
+        return or_(public_or_legacy, own_clause, share_clause)
+    return or_(public_or_legacy, own_clause)
 
 
 def visibility_required(model_cls, id_kwarg='id'):
@@ -1368,6 +1399,11 @@ def visibility_required(model_cls, id_kwarg='id'):
                 return view(*args, **kwargs)
             # Admin can view anything (incl. private rows of other users).
             if is_admin(current):
+                return view(*args, **kwargs)
+            # Collaborator: row was explicitly shared with this user.
+            collaborators = getattr(row, 'collaborators', None)
+            if (current is not None and collaborators is not None
+                    and current in collaborators):
                 return view(*args, **kwargs)
             if visibility in ('public', 'unlisted'):
                 return view(*args, **kwargs)
@@ -5647,6 +5683,72 @@ def update_leaderboard_tags(leaderboard_id):
     db.session.commit()
     flash("Tags updated.", "success")
     return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
+
+
+# --- Collaborators (private sharing) ---
+
+
+def _share_helper(row, redirect_url):
+    """Add a collaborator by email. Owner-only (caller already gated)."""
+    email = (request.form.get('email') or '').strip().lower()
+    if not email:
+        flash("Email required.", "warning")
+        return redirect(redirect_url)
+    user = User.query.filter(func.lower(User.email) == email).first()
+    if user is None:
+        flash(f"No BenchHub user with email '{email}'. They need to sign in once first.", "warning")
+        return redirect(redirect_url)
+    if user.id == row.owner_user_id:
+        flash("You're already the owner — no need to share with yourself.", "info")
+        return redirect(redirect_url)
+    if user in row.collaborators:
+        flash(f"{user.display_name or user.email} already has access.", "info")
+        return redirect(redirect_url)
+    row.collaborators.append(user)
+    db.session.commit()
+    flash(f"Granted access to {user.display_name or user.email}.", "success")
+    return redirect(redirect_url)
+
+
+def _unshare_helper(row, user_id, redirect_url):
+    user = User.query.get(user_id)
+    if user and user in row.collaborators:
+        row.collaborators.remove(user)
+        db.session.commit()
+        flash(f"Removed {user.display_name or user.email}.", "success")
+    return redirect(redirect_url)
+
+
+@app.route('/dataset/<int:dataset_id>/share', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def share_dataset(dataset_id):
+    ds = Dataset.query.get_or_404(dataset_id)
+    return _share_helper(ds, url_for('dataset_view', dataset_id=dataset_id))
+
+
+@app.route('/dataset/<int:dataset_id>/unshare/<int:user_id>', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def unshare_dataset(dataset_id, user_id):
+    ds = Dataset.query.get_or_404(dataset_id)
+    return _unshare_helper(ds, user_id, url_for('dataset_view', dataset_id=dataset_id))
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/share', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def share_leaderboard(leaderboard_id):
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    return _share_helper(lb, url_for('leaderboard_view', leaderboard_id=leaderboard_id))
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/unshare/<int:user_id>', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def unshare_leaderboard(leaderboard_id, user_id):
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    return _unshare_helper(lb, user_id, url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
 @app.route('/leaderboard/<int:leaderboard_id>/update_visualizations', methods=['POST'])
 def update_leaderboard_visualizations(leaderboard_id):

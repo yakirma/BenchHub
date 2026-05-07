@@ -814,6 +814,55 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 <!-- Hidden Deletion Form -->
 <form id="single-delete-form" method="post" style="display:none;"></form>
+
+{# Sharing — owner only, only when not fully public. #}
+{% if current_user and leaderboard.owner_user_id == current_user.id and leaderboard.visibility != 'public' %}
+<div class="container my-4">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body">
+            <h5 class="fw-bold mb-2">
+                <i class="bi bi-people me-1"></i>Sharing
+                <span class="badge text-bg-light ms-2 small fw-normal">{{ leaderboard.collaborators|length }}</span>
+            </h5>
+            <p class="text-body-secondary small mb-3">
+                Grant specific users access to this {{ leaderboard.visibility }}
+                leaderboard.
+            </p>
+            {% if leaderboard.collaborators %}
+            <ul class="list-group list-group-flush mb-3">
+                {% for u in leaderboard.collaborators %}
+                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                    <div>
+                        {% if u.avatar_url %}
+                        <img src="{{ u.avatar_url }}" alt="" class="rounded-circle me-2" width="24" height="24">
+                        {% else %}
+                        <i class="bi bi-person-circle me-2 text-body-secondary"></i>
+                        {% endif %}
+                        <span class="fw-semibold">{{ u.display_name or u.email }}</span>
+                        <span class="text-body-secondary small ms-2">{{ u.email }}</span>
+                    </div>
+                    <form method="post" action="{{ url_for('unshare_leaderboard', leaderboard_id=leaderboard.id, user_id=u.id) }}"
+                        onsubmit="return confirm('Remove {{ u.display_name or u.email }}?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            <form method="post" action="{{ url_for('share_leaderboard', leaderboard_id=leaderboard.id) }}"
+                class="d-flex gap-2">
+                <input type="email" name="email" class="form-control"
+                    placeholder="user@example.com" required>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-plus-circle me-1"></i>Add
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
