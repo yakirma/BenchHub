@@ -1,0 +1,77 @@
+{
+  "domain": "language",
+  "_note": "Standard NLP benchmarks. Per-sample auto-metric will land as a top-1 accuracy on whichever ClassLabel-typed column wins the inference; for QA / summarization you'll want to replace it with task-specific metrics (F1, BLEU, ROUGE) after the LB exists.",
+  "datasets": [
+    {
+      "hf_repo_id": "stanfordnlp/sst2",
+      "dataset_name": "sst2",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "SST-2 sentiment"
+    },
+    {
+      "hf_repo_id": "imdb",
+      "dataset_name": "imdb",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "IMDb sentiment"
+    },
+    {
+      "hf_repo_id": "ag_news",
+      "dataset_name": "ag_news",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "AG News topic classification"
+    },
+    {
+      "hf_repo_id": "rajpurkar/squad",
+      "dataset_name": "squad",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "SQuAD QA"
+    },
+    {
+      "hf_repo_id": "EdinburghNLP/xsum",
+      "dataset_name": "xsum",
+      "sample_cap": 300,
+      "auto_create_lb": true,
+      "lb_name": "XSum summarization"
+    },
+    {
+      "hf_repo_id": "abisee/cnn_dailymail",
+      "dataset_name": "cnn_dailymail",
+      "sample_cap": 300,
+      "auto_create_lb": true,
+      "lb_name": "CNN/Daily Mail summarization"
+    },
+    {
+      "hf_repo_id": "nyu-mll/glue",
+      "dataset_name": "mnli",
+      "sample_cap": 500,
+      "revision": "main",
+      "auto_create_lb": true,
+      "lb_name": "MNLI (GLUE)"
+    },
+    {
+      "hf_repo_id": "ucirvine/reuters21578",
+      "dataset_name": "reuters21578",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "Reuters-21578"
+    },
+    {
+      "hf_repo_id": "Rowan/hellaswag",
+      "dataset_name": "hellaswag",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "HellaSwag"
+    },
+    {
+      "hf_repo_id": "allenai/ai2_arc",
+      "dataset_name": "arc_challenge",
+      "sample_cap": 500,
+      "auto_create_lb": true,
+      "lb_name": "ARC Challenge"
+    }
+  ]
+}

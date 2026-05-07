@@ -1,0 +1,76 @@
+{
+  "domain": "denoising",
+  "_note": "Image-restoration / denoising sources. These are GT-clean + noisy-input pairs. The auto-LB heuristic will likely pick MAE for any numeric column it finds, but the metric you'll actually want is PSNR / SSIM between the predicted clean image and the GT — add those manually after the LBs are seeded.",
+  "datasets": [
+    {
+      "hf_repo_id": "irshadg/SIDD-medium",
+      "dataset_name": "sidd_medium",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "SIDD (smartphone denoising)"
+    },
+    {
+      "hf_repo_id": "huggan/div2k",
+      "dataset_name": "div2k",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "DIV2K (high-res baseline)"
+    },
+    {
+      "hf_repo_id": "huggan/cbsd68",
+      "dataset_name": "cbsd68",
+      "sample_cap": 68,
+      "auto_create_lb": true,
+      "lb_name": "CBSD68 colour denoising"
+    },
+    {
+      "hf_repo_id": "huggan/kodak",
+      "dataset_name": "kodak",
+      "sample_cap": 24,
+      "auto_create_lb": true,
+      "lb_name": "Kodak (24 image set)"
+    },
+    {
+      "hf_repo_id": "huggan/set5",
+      "dataset_name": "set5",
+      "sample_cap": 5,
+      "auto_create_lb": true,
+      "lb_name": "Set5"
+    },
+    {
+      "hf_repo_id": "huggan/set14",
+      "dataset_name": "set14",
+      "sample_cap": 14,
+      "auto_create_lb": true,
+      "lb_name": "Set14"
+    },
+    {
+      "hf_repo_id": "amaranth/PolyU-RealWorldNoisyImages",
+      "dataset_name": "polyu_real",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "PolyU real-world denoising"
+    },
+    {
+      "hf_repo_id": "amaranth/Renoir",
+      "dataset_name": "renoir",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "RENOIR low-light denoising"
+    },
+    {
+      "hf_repo_id": "ovshake/urban100",
+      "dataset_name": "urban100",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "Urban100"
+    },
+    {
+      "hf_repo_id": "huggan/bsd100",
+      "dataset_name": "bsd100",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "BSD100 denoising / SR baseline"
+    }
+  ]
+}

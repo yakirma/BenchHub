@@ -1,0 +1,76 @@
+{
+  "domain": "depth",
+  "_note": "Starter list of HF depth-related datasets. Verify each repo exists + is accessible (some are gated) before running the import. Adjust sample_cap to match your storage quota; depth datasets carry large numpy depth maps so 200 is a sane default. The auto-LB will mostly produce MAE-based metrics; replace by-hand with RMSE / a1 / a2 / a3 for serious depth benchmarking.",
+  "datasets": [
+    {
+      "hf_repo_id": "sayakpaul/nyu_depth_v2",
+      "dataset_name": "nyu_depth_v2",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "NYU Depth V2"
+    },
+    {
+      "hf_repo_id": "Adyen/diode-indoor",
+      "dataset_name": "diode_indoor",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "DIODE (indoor)"
+    },
+    {
+      "hf_repo_id": "Adyen/diode-outdoor",
+      "dataset_name": "diode_outdoor",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "DIODE (outdoor)"
+    },
+    {
+      "hf_repo_id": "PixteraInc/scannet-mini",
+      "dataset_name": "scannet_mini",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "ScanNet (mini split)"
+    },
+    {
+      "hf_repo_id": "lcolok/MiddleburyV3",
+      "dataset_name": "middlebury_v3",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "Middlebury V3 stereo depth"
+    },
+    {
+      "hf_repo_id": "tasksource/sintel-depth",
+      "dataset_name": "sintel_depth",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "MPI Sintel depth"
+    },
+    {
+      "hf_repo_id": "tonyassi/kitti-depth",
+      "dataset_name": "kitti_depth",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "KITTI depth"
+    },
+    {
+      "hf_repo_id": "Aliyahjab/cityscapes-depth",
+      "dataset_name": "cityscapes_depth",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "Cityscapes (depth subset)"
+    },
+    {
+      "hf_repo_id": "Wii/2d-3d-s",
+      "dataset_name": "stanford_2d3ds",
+      "sample_cap": 150,
+      "auto_create_lb": true,
+      "lb_name": "Stanford 2D-3D-S"
+    },
+    {
+      "hf_repo_id": "isl-org/zoedepth-data",
+      "dataset_name": "zoedepth_eval",
+      "sample_cap": 150,
+      "auto_create_lb": true,
+      "lb_name": "ZoeDepth eval set"
+    }
+  ]
+}

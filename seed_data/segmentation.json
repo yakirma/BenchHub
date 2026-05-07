@@ -1,0 +1,76 @@
+{
+  "domain": "segmentation",
+  "_note": "Starter list of HF segmentation datasets. Most are images + per-pixel mask labels. The auto-LB proposer will detect the label as a ClassLabel-shaped scalar and propose a top-1 metric; for a serious segmentation LB you'll want to swap that for IoU / mIoU after the LBs are seeded.",
+  "datasets": [
+    {
+      "hf_repo_id": "scene_parse_150",
+      "dataset_name": "scene_parse_150",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "ADE20K (scene_parse_150)"
+    },
+    {
+      "hf_repo_id": "huggan/cityscapes",
+      "dataset_name": "cityscapes_seg",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "Cityscapes semantic seg"
+    },
+    {
+      "hf_repo_id": "nielsr/cocostuff",
+      "dataset_name": "coco_stuff",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "COCO-Stuff"
+    },
+    {
+      "hf_repo_id": "EduardoPacheco/Voc2012Segmentation",
+      "dataset_name": "voc2012_seg",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "Pascal VOC 2012 seg"
+    },
+    {
+      "hf_repo_id": "skytnt/anime-seg",
+      "dataset_name": "anime_seg",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "Anime segmentation"
+    },
+    {
+      "hf_repo_id": "Intel/coco-instance-segmentation",
+      "dataset_name": "coco_instance",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "COCO instance seg"
+    },
+    {
+      "hf_repo_id": "Stanford/pascal-context",
+      "dataset_name": "pascal_context",
+      "sample_cap": 200,
+      "auto_create_lb": true,
+      "lb_name": "Pascal Context"
+    },
+    {
+      "hf_repo_id": "EduardoPacheco/CamVid",
+      "dataset_name": "camvid",
+      "sample_cap": 150,
+      "auto_create_lb": true,
+      "lb_name": "CamVid driving seg"
+    },
+    {
+      "hf_repo_id": "shi-labs/oneformer_demo",
+      "dataset_name": "oneformer_demo",
+      "sample_cap": 100,
+      "auto_create_lb": true,
+      "lb_name": "OneFormer demo set"
+    },
+    {
+      "hf_repo_id": "GATE-engine/mhp_v2",
+      "dataset_name": "mhp_v2",
+      "sample_cap": 150,
+      "auto_create_lb": true,
+      "lb_name": "MHP v2 (multi-human parsing)"
+    }
+  ]
+}
