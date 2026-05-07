@@ -375,6 +375,12 @@ class Dataset(db.Model):
     collaborators = db.relationship('User', secondary=dataset_shares, lazy='subquery',
                                     backref=db.backref('shared_datasets', lazy=True))
 
+    # Provenance for re-import. source_kind ∈ {zip, hf-bench, hf-parquet, hf-webdataset}.
+    # source_metadata stashes the {repo_id, revision, mapping, sample_cap} so a
+    # later "Refresh from HF" can replay the import deterministically.
+    source_kind = db.Column(db.String(32), nullable=True)
+    source_metadata = db.Column(db.Text, nullable=True)
+
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=False)
@@ -4028,6 +4034,370 @@ def import_from_hf():
     return redirect(url_for('datasets_list'))
 
 
+# --- HuggingFace auto-import (Level 2) -----------------------------------
+# Inspect a HF parquet dataset's `features` schema, infer which columns
+# belong in BenchHub's image_/raw_/metric_/hist_ folders, show the user
+# the inferred mapping, and on confirm stream the rows into a
+# BenchHub-shaped folder + run them through process_dataset_zip-equivalent
+# logic. Operator can override the mapping before kicking off.
+#
+# Why parquet only: it's the dominant HF Datasets format and we get
+# typed schema info without downloading shards. WebDataset / Arrow could
+# follow the same pattern, but adapting them is its own slice.
+
+# Pixel-resolutions that look "depth-y" — used in the inference rules.
+_HF_DEPTH_NAMES = {'depth', 'depth_map', 'gt_depth', 'disparity'}
+_HF_RGB_NAMES = {'image', 'rgb', 'color', 'photo', 'pixel_values'}
+_HF_METRIC_NAMES = {'label', 'class', 'score', 'metric', 'target', 'y'}
+
+
+def _hf_fetch_features(repo_id, revision=None, hf_token=None):
+    """Pull the `features` JSON from huggingface.co/api/datasets/<repo>.
+    Returns a dict {column_name: feature_descriptor} or {} if unavailable.
+    Anonymous when no token; uses the token for gated repos.
+    """
+    import requests as _r
+    headers = {}
+    if hf_token:
+        headers['Authorization'] = f'Bearer {hf_token}'
+    url = f"https://huggingface.co/api/datasets/{repo_id}"
+    if revision:
+        url += f"?revision={revision}"
+    resp = _r.get(url, headers=headers, timeout=15)
+    if resp.status_code == 401:
+        raise RuntimeError(
+            "HuggingFace returned 401: gated dataset. "
+            "Accept its terms on huggingface.co and pass an access token."
+        )
+    resp.raise_for_status()
+    info = resp.json()
+    # The features can live in a few nested places depending on how the
+    # dataset was uploaded. Walk the common ones.
+    card = info.get('cardData') or {}
+    dataset_info_blocks = card.get('dataset_info') or info.get('dataset_info') or []
+    if isinstance(dataset_info_blocks, dict):
+        dataset_info_blocks = [dataset_info_blocks]
+    for blk in dataset_info_blocks:
+        feats = blk.get('features')
+        if feats:
+            return _normalize_features(feats)
+    return {}
+
+
+def _normalize_features(feats):
+    """HF stores features as either a list of {name, dtype/...} or a dict.
+    Normalize to {name: {type: <kind>, length: <opt>}} where kind is one
+    of 'Image', 'Audio', 'ClassLabel', 'Value:<dtype>', 'Sequence:<inner>',
+    'unknown'."""
+    out = {}
+    if isinstance(feats, dict):
+        items = feats.items()
+    elif isinstance(feats, list):
+        items = [(f.get('name'), f) for f in feats if isinstance(f, dict) and f.get('name')]
+    else:
+        return out
+    for name, desc in items:
+        if not isinstance(desc, dict):
+            out[name] = {'type': 'unknown'}
+            continue
+        # HF feature `_type` (or the implicit shape via dtype) tells us what it is.
+        kind = desc.get('_type') or desc.get('feature', {}).get('_type') or 'Value'
+        if kind == 'Image':
+            out[name] = {'type': 'Image'}
+        elif kind == 'Audio':
+            out[name] = {'type': 'Audio'}
+        elif kind == 'ClassLabel':
+            out[name] = {'type': 'ClassLabel', 'names': desc.get('names', [])}
+        elif kind == 'Value':
+            out[name] = {'type': f"Value:{desc.get('dtype', 'unknown')}"}
+        elif kind == 'Sequence':
+            inner = desc.get('feature') or {}
+            inner_t = inner.get('_type') or 'Value'
+            inner_dtype = inner.get('dtype', '') if inner_t == 'Value' else inner_t
+            out[name] = {
+                'type': f"Sequence:{inner_dtype}",
+                'length': desc.get('length', -1),
+            }
+        else:
+            out[name] = {'type': kind}
+    return out
+
+
+def _infer_mapping(features):
+    """Heuristic: map each feature into a BenchHub field type, or 'skip'.
+    Returns a list of {column, target_kind, target_field, reason}."""
+    out = []
+    for col, desc in features.items():
+        col_lc = col.lower()
+        t = desc.get('type', '')
+        if t == 'Image':
+            if any(k in col_lc for k in _HF_DEPTH_NAMES):
+                out.append({'column': col, 'target_kind': 'depth',
+                            'target_field': f'raw_{col}',
+                            'reason': "Image-typed column with depth-suggesting name"})
+            else:
+                out.append({'column': col, 'target_kind': 'image',
+                            'target_field': f'image_{col}',
+                            'reason': "Image-typed column → image_*"})
+        elif t.startswith('Value:'):
+            dtype = t.split(':', 1)[1]
+            if dtype in ('int8', 'int16', 'int32', 'int64',
+                         'uint8', 'uint16', 'uint32',
+                         'float16', 'float32', 'float64', 'bool'):
+                out.append({'column': col, 'target_kind': 'metric',
+                            'target_field': f'metric_{col}',
+                            'reason': f"Numeric scalar ({dtype}) → metric_*"})
+            elif dtype == 'string':
+                if col_lc in ('caption', 'text', 'tag', 'tags'):
+                    out.append({'column': col, 'target_kind': 'text',
+                                'target_field': col,
+                                'reason': "Text-shaped column"})
+                else:
+                    out.append({'column': col, 'target_kind': 'skip',
+                                'target_field': '',
+                                'reason': "String column with no obvious mapping"})
+            else:
+                out.append({'column': col, 'target_kind': 'skip',
+                            'target_field': '',
+                            'reason': f"Unknown dtype '{dtype}'"})
+        elif t == 'ClassLabel':
+            out.append({'column': col, 'target_kind': 'metric',
+                        'target_field': f'metric_{col}',
+                        'reason': "ClassLabel → store integer index as metric_*"})
+        elif t.startswith('Sequence:'):
+            inner = t.split(':', 1)[1]
+            length = desc.get('length', -1)
+            if inner in ('int32', 'int64', 'uint8', 'uint16', 'uint32') and length in (256, 512, 1024, 2048):
+                out.append({'column': col, 'target_kind': 'histogram',
+                            'target_field': f'hist_{col}',
+                            'reason': f"Fixed-length int sequence ({length}) → hist_*"})
+            else:
+                out.append({'column': col, 'target_kind': 'skip',
+                            'target_field': '',
+                            'reason': f"Sequence:{inner} (length={length}) — no auto-mapping"})
+        else:
+            out.append({'column': col, 'target_kind': 'skip',
+                        'target_field': '',
+                        'reason': f"Unsupported feature type '{t}'"})
+    return out
+
+
+def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
+                   split='train', revision=None, hf_token=None,
+                   owner_user_id=None):
+    """Stream up to `sample_cap` rows from the HF dataset, lay them out
+    as BenchHub folders per the mapping, and feed the result through the
+    existing process_dataset_zip pipeline by re-zipping the folder.
+
+    `mapping` is a list of {column, target_kind, target_field}. Anything
+    with target_kind='skip' is ignored. Returns (success, message, ds_id).
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        return False, ("HF auto-import needs the `datasets` package; "
+                       "install it (or rebuild the image with it pinned)."), None
+
+    work_dir = tempfile.mkdtemp(prefix='benchhub-hf-auto-')
+    try:
+        # Pre-create folders for each non-skip mapping target.
+        for m in mapping:
+            kind = m.get('target_kind')
+            if kind in ('image', 'depth', 'histogram', 'metric', 'text'):
+                os.makedirs(os.path.join(work_dir, m['target_field']), exist_ok=True)
+        # README at root keeps process_dataset_zip from picking the only
+        # populated subfolder as the dataset wrapper.
+        with open(os.path.join(work_dir, 'README.md'), 'w') as f:
+            f.write(
+                f"# {dataset_name}\n\nAuto-imported from HuggingFace `{repo_id}` "
+                f"(first {sample_cap} samples, revision={revision or 'main'}).\n"
+            )
+
+        ds = load_dataset(repo_id, split=split, streaming=True, revision=revision,
+                          token=hf_token)
+
+        from PIL import Image as _PILImage
+        import numpy as _np
+
+        n_written = 0
+        for example in ds:
+            if n_written >= sample_cap:
+                break
+            sample_id = f"s{n_written:05d}"
+            wrote_anything = False
+            for m in mapping:
+                col = m['column']
+                kind = m.get('target_kind')
+                if kind == 'skip' or col not in example:
+                    continue
+                value = example[col]
+                target_dir = os.path.join(work_dir, m['target_field'])
+                try:
+                    if kind == 'image' and value is not None:
+                        img = value if isinstance(value, _PILImage.Image) else _PILImage.fromarray(_np.array(value))
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        img.save(os.path.join(target_dir, f"{sample_id}.png"), 'PNG')
+                        wrote_anything = True
+                    elif kind == 'depth' and value is not None:
+                        if isinstance(value, _PILImage.Image):
+                            arr = _np.array(value)
+                        else:
+                            arr = _np.array(value)
+                        if arr.ndim == 3 and arr.shape[2] == 1:
+                            arr = arr.squeeze(-1)
+                        h, w = arr.shape[:2]
+                        _np.savez(os.path.join(target_dir, f"{sample_id}_{w}x{h}.npz"),
+                                  depth=arr)
+                        wrote_anything = True
+                    elif kind == 'metric' and value is not None:
+                        with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
+                            f.write(str(float(value)))
+                        wrote_anything = True
+                    elif kind == 'text' and value is not None:
+                        with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
+                            f.write(str(value))
+                        wrote_anything = True
+                    elif kind == 'histogram' and value is not None:
+                        counts = _np.array(value, dtype='int64')
+                        bins = _np.arange(len(counts) + 1, dtype='int64')
+                        _np.savez(os.path.join(target_dir, f"{sample_id}.npz"),
+                                  bins=bins, counts=counts)
+                        wrote_anything = True
+                except Exception as conv_err:
+                    print(f"Skipping sample {sample_id} col {col}: {conv_err}")
+            if wrote_anything:
+                n_written += 1
+
+        if n_written == 0:
+            return False, "No samples could be converted with the chosen mapping.", None
+
+        # Zip the work_dir and feed it to the existing pipeline.
+        zip_base = os.path.join(work_dir, secure_filename(dataset_name) + '_zipped')
+        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=work_dir)
+        success, message, ds_id = process_dataset_zip(
+            zip_path, dataset_name, owner_user_id=owner_user_id,
+        )
+        if success and ds_id is not None:
+            ds = Dataset.query.get(ds_id)
+            if ds is not None:
+                ds.source_kind = 'hf-parquet'
+                ds.source_metadata = json.dumps({
+                    'repo_id': repo_id,
+                    'revision': revision,
+                    'split': split,
+                    'sample_cap': sample_cap,
+                    'mapping': mapping,
+                    'samples_written': n_written,
+                })
+                db.session.commit()
+        return success, message, ds_id
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.route('/import_from_hf/preview', methods=['POST'])
+@login_required
+def import_from_hf_preview():
+    """Step 1 of the auto-import flow: paste repo, get back the inferred
+    mapping for review. Renders a confirmation page.
+    """
+    repo_id = (request.form.get('hf_repo_id') or '').strip()
+    revision = (request.form.get('hf_revision') or '').strip() or None
+    hf_token = (request.form.get('hf_token') or '').strip() or None
+    sample_cap = int(request.form.get('sample_cap') or 200)
+    sample_cap = max(10, min(sample_cap, 2000))
+    dataset_name = (request.form.get('dataset_name') or '').strip()
+    if not dataset_name:
+        dataset_name = repo_id.rstrip('/').split('/')[-1] if repo_id else ''
+
+    if not repo_id:
+        flash("Missing HuggingFace repo ID.", "danger")
+        return redirect(url_for('datasets_list'))
+
+    try:
+        features = _hf_fetch_features(repo_id, revision=revision, hf_token=hf_token)
+    except Exception as e:
+        msg = str(e)
+        if '401' in msg or 'gated' in msg.lower():
+            flash(
+                f"HuggingFace returned 401 — '{repo_id}' is a gated dataset. "
+                "Accept its terms on huggingface.co/datasets/" + repo_id +
+                " first, then paste an access token under Advanced.",
+                "danger",
+            )
+        else:
+            flash(f"Couldn't read schema: {e}", "danger")
+        return redirect(url_for('datasets_list'))
+
+    if not features:
+        flash(
+            f"No `features` schema found in {repo_id}. The dataset may not "
+            "be parquet-formatted; try the manual import path instead.",
+            "warning",
+        )
+        return redirect(url_for('datasets_list'))
+
+    mapping = _infer_mapping(features)
+    return render_template(
+        'hf_import_preview.html',
+        repo_id=repo_id,
+        revision=revision,
+        hf_token=hf_token,
+        dataset_name=dataset_name,
+        sample_cap=sample_cap,
+        features=features,
+        mapping=mapping,
+    )
+
+
+@app.route('/import_from_hf/auto', methods=['POST'])
+@login_required
+def import_from_hf_auto():
+    """Step 2: form has the (potentially edited) mapping; run the import."""
+    repo_id = (request.form.get('hf_repo_id') or '').strip()
+    revision = (request.form.get('hf_revision') or '').strip() or None
+    hf_token = (request.form.get('hf_token') or '').strip() or None
+    dataset_name = (request.form.get('dataset_name') or '').strip()
+    sample_cap = max(10, min(int(request.form.get('sample_cap') or 200), 2000))
+
+    if not repo_id or not dataset_name:
+        flash("Missing repo or dataset name.", "danger")
+        return redirect(url_for('datasets_list'))
+
+    # Mapping comes back as parallel arrays (one per row in the preview).
+    cols = request.form.getlist('mapping_column[]')
+    kinds = request.form.getlist('mapping_target_kind[]')
+    fields = request.form.getlist('mapping_target_field[]')
+    mapping = []
+    for col, kind, field in zip(cols, kinds, fields):
+        if not col:
+            continue
+        mapping.append({
+            'column': col,
+            'target_kind': kind,
+            'target_field': field or col,
+        })
+
+    ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=0)
+    if not ok:
+        flash(msg, "danger")
+        return redirect(url_for('datasets_list'))
+
+    try:
+        success, message, ds_id = _import_hf_auto(
+            repo_id, dataset_name, mapping,
+            sample_cap=sample_cap, revision=revision, hf_token=hf_token,
+            owner_user_id=g.current_user.id,
+        )
+        flash(message, "success" if success else "danger")
+        if success and ds_id:
+            return redirect(url_for('dataset_view', dataset_id=ds_id))
+    except Exception as e:
+        flash(f"HuggingFace auto-import failed: {e}", "danger")
+    return redirect(url_for('datasets_list'))
+
+
 # --- HuggingFace dataset listing (Round C) -------------------------------
 # Proxy the HF public datasets index so users can pick a repo from a
 # searchable list inside BenchHub instead of context-switching to
@@ -6971,6 +7341,9 @@ def check_and_migrate_db():
                     # DB-backed admin flag (env-var allow-list still works
                     # in parallel as the bootstrap mechanism).
                     ("user",                 "is_admin",                       "BOOLEAN NOT NULL DEFAULT 0"),
+                    # HF auto-import provenance.
+                    ("dataset",              "source_kind",                    "VARCHAR(32)"),
+                    ("dataset",              "source_metadata",                "TEXT"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

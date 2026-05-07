@@ -156,14 +156,15 @@
 
                     {# ----- HF form (hidden until tab is picked) ----- #}
                     <div id="form-hf" class="source-form d-none">
-                        <form action="{{ url_for('import_from_hf') }}" method="post" id="hf-import-form">
+                        {# Two HF entry-points share the same input fields:
+                           - "Auto-import": GET schema → inference preview → confirm.
+                           - "Direct import": old path for repos that already
+                             match BenchHub's folder convention. #}
+                        <form id="hf-import-form" method="post">
                             <div class="mb-1">
                                 <input type="text" class="form-control form-control-lg font-monospace"
                                     name="hf_repo_id" id="hf-repo-id-input"
                                     placeholder="user/repo" required autocomplete="off">
-                            </div>
-                            <div class="form-text small mb-3">
-                                <i class="bi bi-info-circle me-1"></i>Repo must follow BenchHub's folder convention.
                             </div>
 
                             <details class="mb-3 small">
@@ -176,13 +177,30 @@
                                     <input type="text" class="form-control form-control-sm font-monospace"
                                         name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
                                     <input type="password" class="form-control form-control-sm font-monospace"
-                                        name="hf_token" placeholder="Access token (private repos only)" autocomplete="off">
+                                        name="hf_token" placeholder="Access token (gated/private repos)" autocomplete="off">
+                                    <input type="number" class="form-control form-control-sm" name="sample_cap"
+                                        placeholder="Sample cap for auto-import (default 200)"
+                                        min="10" max="2000" value="200">
                                 </div>
                             </details>
 
-                            <button type="submit" class="btn btn-primary w-100 py-2">
-                                <i class="bi bi-cloud-arrow-down me-1"></i>Import
-                            </button>
+                            <div class="d-flex flex-column gap-2">
+                                <button type="submit" class="btn btn-primary py-2"
+                                    formaction="{{ url_for('import_from_hf_preview') }}"
+                                    title="Inspect the dataset's schema and preview the inferred field mapping before importing.">
+                                    <i class="bi bi-magic me-1"></i>Auto-import
+                                </button>
+                                <button type="submit" class="btn btn-outline-primary btn-sm py-2"
+                                    formaction="{{ url_for('import_from_hf') }}"
+                                    title="Use only if the HF repo already matches BenchHub's metric_/raw_/image_/hist_ folder convention.">
+                                    <i class="bi bi-cloud-arrow-down me-1"></i>Direct import (BenchHub-shaped)
+                                </button>
+                            </div>
+                            <div class="form-text small mt-2">
+                                <i class="bi bi-info-circle me-1"></i>Auto-import detects parquet schemas
+                                and lays out the folders for you. Direct import skips that and
+                                expects an already-conventional repo.
+                            </div>
                         </form>
 
                         {# Browse-from-HF picker. Lazy-loads on first switch

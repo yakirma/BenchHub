@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}HF auto-import preview — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 900px;">
+    <h1 class="h3 fw-bold mb-1">
+        <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Auto-import preview
+    </h1>
+    <p class="text-body-secondary mb-3">
+        Review the inferred field mapping for
+        <a href="https://huggingface.co/datasets/{{ repo_id }}" target="_blank"
+            class="font-monospace">{{ repo_id }}</a>{% if revision %} @ <code>{{ revision }}</code>{% endif %}.
+        Adjust per-column choices below, then confirm to start streaming
+        the first {{ sample_cap }} samples.
+    </p>
+
+    <form method="post" action="{{ url_for('import_from_hf_auto') }}">
+        {# Pass the upstream context through unchanged. #}
+        <input type="hidden" name="hf_repo_id" value="{{ repo_id }}">
+        <input type="hidden" name="hf_revision" value="{{ revision or '' }}">
+        <input type="hidden" name="hf_token" value="{{ hf_token or '' }}">
+        <input type="hidden" name="sample_cap" value="{{ sample_cap }}">
+
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-8">
+                        <label class="form-label small fw-semibold mb-1" for="ds-name">
+                            Local dataset name
+                        </label>
+                        <input type="text" id="ds-name" name="dataset_name"
+                            class="form-control"
+                            value="{{ dataset_name }}" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1" for="cap">
+                            Sample cap
+                        </label>
+                        <input type="number" id="cap" name="sample_cap"
+                            class="form-control"
+                            min="10" max="2000" value="{{ sample_cap }}">
+                        <div class="form-text small">10–2000.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body p-0">
+                <table class="table table-sm mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="ps-3" style="width: 25%;">HF column</th>
+                            <th style="width: 18%;">Detected type</th>
+                            <th style="width: 22%;">Map to</th>
+                            <th>BenchHub field</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in mapping %}
+                        <tr>
+                            <td class="ps-3 font-monospace small">
+                                {{ row.column }}
+                                <input type="hidden" name="mapping_column[]" value="{{ row.column }}">
+                            </td>
+                            <td class="small text-body-secondary">
+                                {{ features[row.column].type }}
+                            </td>
+                            <td>
+                                <select name="mapping_target_kind[]" class="form-select form-select-sm"
+                                    data-column="{{ row.column }}"
+                                    onchange="syncFieldName(this)">
+                                    <option value="skip" {{ 'selected' if row.target_kind == 'skip' }}>skip</option>
+                                    <option value="image" {{ 'selected' if row.target_kind == 'image' }}>image</option>
+                                    <option value="depth" {{ 'selected' if row.target_kind == 'depth' }}>depth (raw_)</option>
+                                    <option value="metric" {{ 'selected' if row.target_kind == 'metric' }}>metric</option>
+                                    <option value="histogram" {{ 'selected' if row.target_kind == 'histogram' }}>histogram (hist_)</option>
+                                    <option value="text" {{ 'selected' if row.target_kind == 'text' }}>text</option>
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" name="mapping_target_field[]" class="form-control form-control-sm font-monospace"
+                                    value="{{ row.target_field }}"
+                                    placeholder="folder name">
+                                <div class="small text-body-secondary mt-1">
+                                    {{ row.reason }}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between gap-2">
+            <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary">
+                Cancel
+            </a>
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-cloud-arrow-down me-1"></i>Confirm & import
+            </button>
+        </div>
+
+        <p class="small text-body-secondary mt-3">
+            <i class="bi bi-info-circle me-1"></i>The import streams samples from
+            HuggingFace, converts each to BenchHub's folder convention, and runs
+            it through the regular ingest pipeline. Quotas apply.
+        </p>
+    </form>
+</div>
+
+<script>
+    // Keep the BenchHub field name auto-prefixed so users see what folder
+    // their column will land in (image → image_<col>, depth → raw_<col>,
+    // metric → metric_<col>, histogram → hist_<col>).
+    function syncFieldName(sel) {
+        const col = sel.getAttribute('data-column');
+        const fieldInput = sel.closest('tr').querySelector('input[name="mapping_target_field[]"]');
+        if (!fieldInput) return;
+        const kind = sel.value;
+        const prefixes = {image: 'image_', depth: 'raw_', metric: 'metric_', histogram: 'hist_'};
+        if (kind in prefixes) {
+            fieldInput.value = prefixes[kind] + col;
+        } else if (kind === 'text') {
+            fieldInput.value = col;
+        } else {
+            fieldInput.value = '';
+        }
+    }
+</script>
+{% endblock %}
