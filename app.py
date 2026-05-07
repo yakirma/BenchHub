@@ -998,10 +998,19 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
     
     for folder_name in custom_folders:
         folder_path = os.path.join(base_path, folder_name)
-        
+
         # Determine field type
         is_metric = is_submission and folder_name.startswith('metric_')
-        field_type = 'metric' if is_metric else None
+        # The reserved `tags` folder is always text, even when the file
+        # body looks numeric (e.g. ClassLabel names list = ['0','1',...]).
+        # Without this pin, `float("5")` succeeds and the per-sample tag
+        # is misfiled as a scalar — Sample.tags never gets populated.
+        is_tags_folder = (folder_name == 'tags')
+        field_type = (
+            'metric' if is_metric
+            else 'text' if is_tags_folder
+            else None
+        )
         
         # Check what's inside the folder
         field_data = {}
@@ -1024,16 +1033,21 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                 try:
                     with open(os.path.join(folder_path, txt_file_name), 'r') as f:
                         content = f.read().strip()
-                        try:
-                            val = float(content)
-                            if field_type is None or field_type == 'metric':
-                                 field_type = 'metric' if is_metric else 'scalar'
-                            field_data[sample_name] = val
-                        except ValueError:
-                            # If not a float, treat as text (e.g., tags)
-                            if field_type is None:
-                                field_type = 'text'
+                        if field_type == 'text':
+                            # Already pinned (e.g. tags folder) — keep the
+                            # raw string even if it parses as a number.
                             field_data[sample_name] = content
+                        else:
+                            try:
+                                val = float(content)
+                                if field_type is None or field_type == 'metric':
+                                     field_type = 'metric' if is_metric else 'scalar'
+                                field_data[sample_name] = val
+                            except ValueError:
+                                # If not a float, treat as text (e.g., tags)
+                                if field_type is None:
+                                    field_type = 'text'
+                                field_data[sample_name] = content
                 except Exception:
                     pass
             
@@ -5082,14 +5096,27 @@ def _llm_infer_mapping(features, dataset_repo=None):
         "Rules:\n"
         "- Image() with depth-suggesting name → depth\n"
         "- Image() otherwise → image\n"
-        "- ClassLabel or numeric Value → metric\n"
+        "- ClassLabel → metric (store the integer index). The importer\n"
+        "  ALSO automatically emits two derived artifacts from the\n"
+        "  ClassLabel.names list, so YOU MUST NOT add separate entries\n"
+        "  for them: (a) a `<col>_class` text column with the human\n"
+        "  class name, (b) per-sample tags. Treat ClassLabel as a single\n"
+        "  source column → one mapping entry, target_kind='metric'.\n"
+        "- Numeric Value (int/float) → metric\n"
         "- Sequence of integers, fixed length → histogram\n"
         "- Strings: 'caption'/'text'/'tags'/'description' → text, others → skip\n"
         "- Use the column name's semantics, not just the dtype.\n\n"
+        "Output discipline (very important):\n"
+        "- Output EXACTLY ONE entry per source column from the input list.\n"
+        "  Do not invent additional columns (no `<col>_class`, no `tag`,\n"
+        "  no `<col>_name`). The system handles those derivations on its\n"
+        "  own from the original feature metadata.\n"
+        "- Never split one source column into multiple BenchHub fields.\n"
+        "- target_field MUST follow BenchHub conventions verbatim:\n"
+        "  image_<col>, raw_<col>, metric_<col>, hist_<col>, or the bare\n"
+        "  column name for text.\n\n"
         "Output a JSON array, one entry per column, with exactly these keys: "
         '`column`, `target_kind`, `target_field`, `reason`. '
-        '`target_field` follows BenchHub conventions: image_<col>, raw_<col>, '
-        'metric_<col>, hist_<col>, or the bare column name for text. '
         '`reason` is one short sentence (≤ 15 words) explaining the choice. '
         "Return ONLY the JSON array, no prose."
     )
@@ -5135,8 +5162,10 @@ def _llm_infer_mapping(features, dataset_repo=None):
         if not isinstance(parsed, list):
             return None
         # Validate each entry has the required shape and a known target_kind.
+        # Defensive dedupe: keep the FIRST entry per source column. The
+        # prompt forbids splitting a column, but model output is best-effort.
         valid_kinds = {'image', 'depth', 'metric', 'histogram', 'text', 'skip'}
-        cleaned = []
+        by_col = {}
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
@@ -5144,22 +5173,23 @@ def _llm_infer_mapping(features, dataset_repo=None):
             kind = entry.get('target_kind', 'skip')
             if col not in payload_features or kind not in valid_kinds:
                 continue
-            cleaned.append({
+            if col in by_col:
+                continue  # Drop derived/duplicate entries (e.g. label_class).
+            by_col[col] = {
                 'column': col,
                 'target_kind': kind,
                 'target_field': str(entry.get('target_field') or col)[:120],
                 'reason': str(entry.get('reason') or '')[:200],
-            })
+            }
         # Cover any column the model dropped.
-        seen_cols = {e['column'] for e in cleaned}
         for col in payload_features:
-            if col not in seen_cols:
-                cleaned.append({
+            if col not in by_col:
+                by_col[col] = {
                     'column': col, 'target_kind': 'skip',
                     'target_field': '',
                     'reason': 'Not classified by the model — defaulted to skip.',
-                })
-        return cleaned
+                }
+        return list(by_col.values())
     except Exception as e:
         print(f"_llm_infer_mapping failed: {e}")
         return None
@@ -5341,11 +5371,17 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                             class_name = str(names[int_val])
                             with open(os.path.join(target_dir, f"{sample_id}.txt"), 'w') as f:
                                 f.write(str(int_val))
-                            # Side files: class-name text field + per-sample tag.
-                            class_dir = os.path.join(work_dir, f"{col}_class")
-                            os.makedirs(class_dir, exist_ok=True)
-                            with open(os.path.join(class_dir, f"{sample_id}.txt"), 'w') as f:
-                                f.write(class_name)
+                            # If the names list is just stringified indices
+                            # (e.g. ['0','1','2',...]) the side fields would
+                            # duplicate the metric column with the same digit
+                            # everywhere — skip them, but still emit a tag so
+                            # the user can filter by class.
+                            redundant = (class_name == str(int_val))
+                            if not redundant:
+                                class_dir = os.path.join(work_dir, f"{col}_class")
+                                os.makedirs(class_dir, exist_ok=True)
+                                with open(os.path.join(class_dir, f"{sample_id}.txt"), 'w') as f:
+                                    f.write(class_name)
                             tags_dir = os.path.join(work_dir, 'tags')
                             os.makedirs(tags_dir, exist_ok=True)
                             tag_path = os.path.join(tags_dir, f"{sample_id}.txt")

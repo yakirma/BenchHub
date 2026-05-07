@@ -172,6 +172,62 @@ def test_classlabel_names_inferred_from_ds_features_when_api_blank(
     assert 'automobile' in (by_name['s00001'].tags or '')
 
 
+def test_classlabel_skips_redundant_class_field_when_names_are_just_indices(
+    client, db_session, monkeypatch, logged_in_user,
+):
+    """When ClassLabel.names is just stringified indices (['0','1','2',...]),
+    the `<col>_class` side field would mirror the metric column with the
+    same digit on every row — skip it. The per-sample tag still gets the
+    name string so users can filter by class downstream."""
+    import sys, types
+    from PIL import Image as _PILImage
+
+    rows = [
+        {'image': _PILImage.new('RGB', (4, 4), (255, 0, 0)), 'label': 5},
+        {'image': _PILImage.new('RGB', (4, 4), (0, 255, 0)), 'label': 7},
+    ]
+    fake_mod = types.ModuleType('datasets')
+    fake_mod.load_dataset = lambda *a, **kw: iter(rows)
+    monkeypatch.setitem(sys.modules, 'datasets', fake_mod)
+
+    mapping = [
+        {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
+        {'column': 'label', 'target_kind': 'metric', 'target_field': 'metric_label'},
+    ]
+    features = {
+        'image': {'type': 'Image'},
+        # Names list is just stringified integer indices (the case the
+        # user hit on a CIFAR-shaped dataset where the API didn't expose
+        # human class names).
+        'label': {'type': 'ClassLabel',
+                  'names': [str(i) for i in range(10)]},
+    }
+    success, message, ds_id = _import_hf_auto(
+        'fake/numlabels', 'numlabels', mapping,
+        sample_cap=2, owner_user_id=logged_in_user.id,
+        features=features,
+    )
+    assert success, message
+
+    from app import Sample, CustomField, Dataset
+    ds = Dataset.query.get(ds_id)
+    samples = Sample.query.filter_by(dataset_id=ds.id).all()
+    # The integer label survived as the metric_label custom field …
+    label_cfs = [CustomField.query.filter_by(
+        sample_id=s.id, name='metric_label').first() for s in samples]
+    assert all(cf is not None for cf in label_cfs)
+    # … but no `label_class` side field was written for any sample.
+    assert all(
+        CustomField.query.filter_by(
+            sample_id=s.id, name='label_class').first() is None
+        for s in samples
+    )
+    # Per-sample tag still carries the (numeric) class name as a string.
+    by_name = {s.name: s for s in samples}
+    assert '5' in (by_name['s00000'].tags or '')
+    assert '7' in (by_name['s00001'].tags or '')
+
+
 def test_non_classlabel_metric_still_int_when_int_valued(
     client, db_session, monkeypatch, logged_in_user,
 ):

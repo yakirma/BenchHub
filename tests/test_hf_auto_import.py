@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app import _infer_mapping, _normalize_features, Dataset, db
+from app import _infer_mapping, _llm_infer_mapping, _normalize_features, Dataset, db
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,53 @@ def test_infer_known_text_columns_keep_text():
     feats = {'caption': {'type': 'Value:string'}}
     result = _infer_mapping(feats)
     assert result[0]['target_kind'] == 'text'
+
+
+# ---------------------------------------------------------------------------
+# _llm_infer_mapping: dedupe defense — model must not split one source col
+# into multiple BenchHub fields. The prompt forbids it; the cleaning step
+# enforces it as a hard backstop.
+# ---------------------------------------------------------------------------
+
+
+def test_llm_mapping_dedupes_when_model_splits_one_column(monkeypatch):
+    """Model returns multiple entries for the same source column (the
+    failure mode behind the user's CIFAR `metric_label` + `label_class` +
+    `tag` triple-up). We keep the first valid entry per column and drop
+    the rest — the importer's deterministic ClassLabel-sidecar logic
+    handles class-name + tag derivations on its own."""
+    import json as _json
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-test')
+    features = {
+        'image': {'type': 'Image'},
+        'label': {'type': 'ClassLabel', 'names': ['cat', 'dog']},
+    }
+    fake_response_text = _json.dumps([
+        {'column': 'image', 'target_kind': 'image',
+         'target_field': 'image_image', 'reason': 'rgb'},
+        {'column': 'label', 'target_kind': 'metric',
+         'target_field': 'metric_label', 'reason': 'integer index'},
+        # Model unhelpfully derived two extra entries for the same column:
+        {'column': 'label', 'target_kind': 'text',
+         'target_field': 'label_class', 'reason': 'class name'},
+        {'column': 'label', 'target_kind': 'text',
+         'target_field': 'tags', 'reason': 'tag'},
+    ])
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'content': [{'type': 'text', 'text': fake_response_text}]}
+
+    with patch('requests.post', return_value=_Resp()):
+        cleaned = _llm_infer_mapping(features, dataset_repo='fake/cifar')
+
+    by_col = {entry['column']: entry for entry in cleaned}
+    # Each source column appears exactly once.
+    assert sorted(by_col.keys()) == ['image', 'label']
+    # First valid entry per column wins.
+    assert by_col['label']['target_kind'] == 'metric'
+    assert by_col['label']['target_field'] == 'metric_label'
 
 
 # ---------------------------------------------------------------------------
