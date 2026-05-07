@@ -653,27 +653,30 @@
             </div>
             <div class="modal-body text-center" style="position: relative;">
                 <div id="modal-content-wrapper"
-                    style="width: 100%; height: 100%; min-height: 500px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+                    style="width: 100%; height: 100%; min-height: 500px; position: relative; display: flex; align-items: center; justify-content: center; flex-direction: column;">
                     <div id="modal-error-container" style="display: none; width: 100%;"></div>
-                    {# Base + overlay layered. The overlay is positioned to
-                       exactly cover the base, with adjustable opacity. #}
-                    <div id="modal-image-stack" style="position: relative; display: inline-block;">
-                        <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
-                        <img id="modal-overlay-img" src=""
-                            style="display: none; position: absolute; top: 0; left: 0;
-                                   width: 100%; height: 100%; opacity: 0.5;
-                                   pointer-events: none;">
-                    </div>
+                    {# Base layers: either #modal-custom-field-img (image
+                       fields) or #modal-plotly-div (depth heatmap). The
+                       overlay sits absolutely positioned over the wrapper,
+                       so it covers either base regardless of which is
+                       active. #}
+                    <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
+                    <img id="modal-overlay-img" src=""
+                        style="display: none; position: absolute; top: 0; left: 0;
+                               width: 100%; height: 100%;
+                               object-fit: contain;
+                               opacity: 0.5;
+                               pointer-events: none;">
                     <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
                         style="display: none;">
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
                 {# Overlay opacity control + clear button. Hidden until an
-                   overlay is set. #}
-                <div id="overlay-controls" class="d-flex align-items-center justify-content-center gap-3 mt-2"
-                    style="display: none !important;">
+                   overlay is set. Use d-none for hide/show — pure inline
+                   `display: none` (no !important) so JS can flip it. #}
+                <div id="overlay-controls" class="d-none align-items-center justify-content-center gap-3 mt-2">
                     <label class="small text-body-secondary mb-0" for="overlay-opacity">
                         Overlay opacity:
                     </label>
@@ -1229,8 +1232,10 @@
         window.setCustomFieldOverlay = function (button) {
             const visType = button.getAttribute('data-vis-type');
             const imgUrl = button.getAttribute('data-img-url');
-            // Plotly heatmap can't be overlaid trivially. Re-fetch the
-            // matplotlib-rendered PNG version of the depth field instead.
+            // Depth fields' default URL is the JSON heatmap-data endpoint;
+            // for overlay we want the PNG that the matplotlib endpoint
+            // produces, so the layer composes as a normal image on top of
+            // whatever base is shown.
             const pngUrl = (visType === 'depth')
                 ? imgUrl.replace('/api/custom_field_depth_data/', '/custom_field_image/')
                 : imgUrl;
@@ -1239,7 +1244,8 @@
             if (!overlayImg || !controls) return;
             overlayImg.src = pngUrl;
             overlayImg.style.display = 'block';
-            controls.style.display = 'flex';
+            controls.classList.remove('d-none');
+            controls.classList.add('d-flex');
         };
 
         window.clearCustomFieldOverlay = function () {
@@ -1249,7 +1255,10 @@
                 overlayImg.src = '';
                 overlayImg.style.display = 'none';
             }
-            if (controls) controls.style.display = 'none';
+            if (controls) {
+                controls.classList.add('d-none');
+                controls.classList.remove('d-flex');
+            }
         };
 
         // Wire up overlay controls.
