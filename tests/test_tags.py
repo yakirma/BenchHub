@@ -92,6 +92,40 @@ def test_explore_tag_cloud_renders_with_counts(client, db_session):
     assert int(depth_anchor.group(1)) > int(seg_anchor.group(1))
 
 
+def test_dataset_tags_render_on_dataset_list(client, db_session):
+    """Tags must show up on /datasets, not just on the detail page."""
+    ds = Dataset(name='listed_with_tags', visibility='public')
+    db.session.add(ds); db.session.flush()
+    ds.samples.append(__import__('app').Sample(dataset_id=ds.id, name='s1'))
+    seg_tag = Tag(name='segmentation')
+    db.session.add(seg_tag); db.session.flush()
+    ds.tags.append(seg_tag)
+    db.session.commit()
+    # Need a folder so the inline prune doesn't sweep it.
+    import os
+    from app import app as flask_app
+    folder = os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', 'listed_with_tags')
+    os.makedirs(folder, exist_ok=True)
+
+    body = client.get('/datasets').data
+    assert b'listed_with_tags' in body
+    assert b'segmentation' in body
+
+
+def test_dataset_tags_render_on_home_card(auth_client, logged_in_user, db_session):
+    """Owned-dataset cards on /home show tag chips."""
+    ds = Dataset(name='home_with_tags', owner_user_id=logged_in_user.id)
+    db.session.add(ds); db.session.flush()
+    depth_tag = Tag(name='depth')
+    db.session.add(depth_tag); db.session.flush()
+    ds.tags.append(depth_tag)
+    db.session.commit()
+
+    body = auth_client.get('/home').data
+    assert b'home_with_tags' in body
+    assert b'depth' in body
+
+
 def test_explore_tag_filter_empty_when_no_matches(client, db_session):
     """Filtering on a tag with zero matches still renders the page,
     just with the empty-state copy."""

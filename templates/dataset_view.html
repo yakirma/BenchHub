@@ -36,22 +36,26 @@
             </p>
             {% endif %}
 
-            {# Tags: read-only view for visitors, inline edit for the owner. #}
-            <div class="mt-2">
+            {# Tags: read-only view for visitors, inline edit for the owner.
+               Prominent — sits right under the title, badges sized like the
+               adjacent visibility/HF badges so they read as primary metadata. #}
+            <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
                 {% if dataset.tags %}
                 {% for t in dataset.tags %}
                 <a href="{{ url_for('explore', tag=t.name) }}"
-                    class="badge text-bg-light border text-decoration-none me-1">
-                    <i class="bi bi-tag me-1"></i>{{ t.name }}
+                    class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
+                    <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
                 </a>
                 {% endfor %}
+                {% elif current_user and dataset.owner_user_id == current_user.id %}
+                <span class="text-body-secondary small fst-italic">No tags yet —</span>
                 {% endif %}
                 {% if current_user and dataset.owner_user_id == current_user.id %}
-                <button class="btn btn-sm btn-outline-secondary py-0 px-2 align-baseline ms-1"
+                <button class="btn btn-sm btn-outline-secondary py-0 px-2"
                     type="button" data-bs-toggle="collapse" data-bs-target="#dataset-tags-edit">
-                    <i class="bi bi-pencil"></i>
+                    <i class="bi bi-pencil me-1"></i>{{ 'Edit tags' if dataset.tags else 'Add tags' }}
                 </button>
-                <div class="collapse mt-2" id="dataset-tags-edit">
+                <div class="collapse mt-2 w-100" id="dataset-tags-edit">
                     <form method="post"
                         action="{{ url_for('update_dataset_tags', dataset_id=dataset.id) }}"
                         class="d-flex gap-2 align-items-center">
@@ -61,6 +65,7 @@
                             style="max-width: 480px;">
                         <button type="submit" class="btn btn-sm btn-primary">Save</button>
                     </form>
+                    <div class="form-text small">Comma-separated. Click any tag to find datasets/leaderboards with the same tag.</div>
                 </div>
                 {% endif %}
             </div>
