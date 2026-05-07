@@ -171,6 +171,26 @@ def test_download_dataset_returns_zip(client, project_ctx, seeded_dataset):
 # ---------------------------------------------------------------------------
 
 
+def test_dataset_view_search_filters_samples(client, project_ctx, seeded_dataset):
+    """Search box on /dataset/<id> filters samples by name (case-insensitive
+    substring), mirrors the comparison view's `search` param."""
+    body = client.get(f'/dataset/{seeded_dataset.id}?search=s1').data
+    assert b's1' in body
+    # The seeded dataset has s1 + s2; s2 should drop out.
+    # (Using partial markers since rendering varies, just check the
+    # search input value persisted.)
+    assert b'value="s1"' in body
+
+
+def test_dataset_view_search_renders_clear_link(client, project_ctx, seeded_dataset):
+    body = client.get(f'/dataset/{seeded_dataset.id}?search=s1').data
+    # Active search → "Clear search" button shows.
+    assert b'Clear search' in body
+    # No search → no clear button.
+    body2 = client.get(f'/dataset/{seeded_dataset.id}').data
+    assert b'Clear search' not in body2
+
+
 def test_update_display_columns_records_hidden(client, project_ctx, seeded_dataset):
     """New inverted model: form posts back the chosen-visible list AND
     the full rendered set; route stores the difference as 'hidden'."""

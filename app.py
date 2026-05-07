@@ -6541,6 +6541,12 @@ def dataset_view(dataset_id):
     all_dataset_prefixes = sorted(list(all_dataset_prefixes))
 
     samples_query = Sample.query.filter_by(dataset_id=dataset.id)
+    # Sample-name search (case-insensitive substring match), mirrors the
+    # comparison view's `search` query param so the URL contract is the
+    # same in both places.
+    sample_search_query = (request.args.get('search') or '').strip()
+    if sample_search_query:
+        samples_query = samples_query.filter(Sample.name.ilike(f'%{sample_search_query}%'))
     # Apply tag filters (port from comparison view)
     samples_query = apply_tag_filters(samples_query, request.args)
 
@@ -6738,7 +6744,8 @@ def dataset_view(dataset_id):
                            active_metrics=active_metrics,
                            custom_field_names=sorted(list(custom_field_names)),
                            custom_fields_map=custom_fields_map,
-                           custom_scalar_metrics=custom_scalar_metrics)
+                           custom_scalar_metrics=custom_scalar_metrics,
+                           sample_search_query=sample_search_query)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])
