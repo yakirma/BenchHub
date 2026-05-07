@@ -37,13 +37,31 @@
             {% if datasets %}
             <div class="list-group mb-4 shadow-sm">
                 {% for dataset in datasets %}
-                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
-                    <div>
+                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3">
+                    {# Per-dataset thumbnail (image or depth field). Falls
+                       back to a tinted database icon for metric-only sets. #}
+                    {% set thumb = dataset_thumbs.get(dataset.id) if dataset_thumbs else None %}
+                    {% if thumb %}
+                    <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                        class="flex-shrink-0"
+                        style="display:block; width:64px; height:64px; border-radius:6px;
+                               background-image: url('{{ thumb }}');
+                               background-size: cover; background-position: center;"
+                        title="{{ dataset.name }}"
+                        aria-label="{{ dataset.name }} thumbnail"></a>
+                    {% else %}
+                    <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
+                        style="width:64px; height:64px; border-radius:6px;
+                               background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
+                        <i class="bi bi-database fs-3 opacity-50"></i>
+                    </div>
+                    {% endif %}
+                    <div class="flex-grow-1 min-w-0">
                         <div class="d-flex align-items-center mb-1">
                             <div class="author-avatar-init me-2" data-author="{{ dataset.git_author or '' }}"
                                 data-size="32"></div>
                             <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
-                                class="text-decoration-none text-body fw-bold fs-5">
+                                class="text-decoration-none text-body fw-bold fs-5 text-truncate">
                                 {{ dataset.name }}
                             </a>
                             {% if dataset.visibility == 'public' %}

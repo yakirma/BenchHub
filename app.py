@@ -6132,7 +6132,12 @@ def datasets_list():
     # Sort datasets by their last associated activity (most recent first)
     datasets.sort(key=lambda x: x.last_associated_activity, reverse=True)
             
-    return render_template('datasets.html', datasets=datasets)
+    # Same thumbnail-picking pass /home does — first image-or-depth
+    # custom field on any sample, rendered to PNG by the existing
+    # /custom_field_image endpoint. None when the dataset is metric-only.
+    dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
+    return render_template('datasets.html', datasets=datasets,
+                           dataset_thumbs=dataset_thumbs)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):
