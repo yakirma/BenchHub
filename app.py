@@ -5016,6 +5016,208 @@ def _ensure_user_colab_gist(lb, user):
         return None, None, None
 
 
+def _propose_metrics_for_dataset(ds):
+    """Heuristic metric proposer: walk the GT custom fields and propose
+    one metric per `metric_<col>` field. Each proposal carries:
+        target_name, global_name, description, fallback_code,
+        arg_mappings, sort_direction, pooling_type, llm_hint
+    The caller turns these into GlobalMetric + LeaderboardMetric rows.
+
+    Heuristic logic:
+    - `metric_<col>` next to a sibling `<col>_class` text field (HF
+      ClassLabel signal) → accuracy-style metric (0/1 per sample,
+      higher is better).
+    - other numeric `metric_<col>` → mean-absolute-error (lower is
+      better) so the LB ranks low-error submissions on top.
+    Image-mse / PSNR / depth-RMSE are out of scope here; users add
+    those manually in the LB editor.
+    """
+    if not ds or not ds.samples:
+        return []
+    first = ds.samples[0]
+    field_types = {cf.name: cf.field_type for cf in (first.custom_fields or [])}
+    proposals = []
+    for cf in (first.custom_fields or []):
+        if not cf.name.startswith('metric_'):
+            continue
+        col = cf.name[len('metric_'):]
+        sibling_class = f"{col}_class"
+        is_classlabel = sibling_class in field_types
+        if is_classlabel:
+            global_name = f"accuracy_{col}"
+            target_name = f"accuracy ({col})"
+            description = (
+                f"Per-sample accuracy on the `{col}` ClassLabel column: "
+                f"1.0 when prediction equals ground-truth class index, 0.0 otherwise."
+            )
+            fallback_code = (
+                f"def {global_name}(gt, pred):\n"
+                f"    \"\"\"1.0 if predicted class index matches the GT, else 0.0.\"\"\"\n"
+                f"    try:\n"
+                f"        return 1.0 if int(gt) == int(pred) else 0.0\n"
+                f"    except (TypeError, ValueError):\n"
+                f"        return 0.0\n"
+            )
+            sort_direction = 'higher_is_better'
+            llm_hint = (
+                f"Per-sample accuracy on a HuggingFace ClassLabel column "
+                f"named `{col}` (integer index). Function signature should "
+                f"be `{global_name}(gt, pred)`."
+            )
+        else:
+            global_name = f"mae_{col}"
+            target_name = f"MAE ({col})"
+            description = (
+                f"Per-sample mean absolute error between predicted and "
+                f"ground-truth `{col}`."
+            )
+            fallback_code = (
+                f"def {global_name}(gt, pred):\n"
+                f"    \"\"\"|gt - pred| as a float.\"\"\"\n"
+                f"    return float(abs(float(gt) - float(pred)))\n"
+            )
+            sort_direction = 'lower_is_better'
+            llm_hint = (
+                f"Mean absolute error between the GT and the submitted "
+                f"value of a numeric column `{col}`. Function signature "
+                f"should be `{global_name}(gt, pred)`."
+            )
+        proposals.append({
+            'target_name': target_name,
+            'global_name': global_name,
+            'description': description,
+            'fallback_code': fallback_code,
+            'arg_mappings': {'gt': f'gt_metric_{col}', 'pred': f'sub_metric_{col}'},
+            'sort_direction': sort_direction,
+            'pooling_type': 'mean',
+            'llm_hint': llm_hint,
+        })
+    return proposals
+
+
+def _llm_generate_metric_code(global_name, llm_hint):
+    """Ask Claude for the body of a per-sample metric. Returns Python
+    source defining a single function whose name matches `global_name`,
+    or None if the API key is missing / the call fails.
+
+    The callee takes named kwargs `gt` and `pred` (per the proposer's
+    arg_mappings) and returns a float. The caller falls back to the
+    proposal's `fallback_code` on None."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+    system_prompt = (
+        "You write tiny per-sample metric functions for the BenchHub "
+        "benchmarking platform.\n\n"
+        "Hard requirements:\n"
+        "- Output ONLY Python source (no explanation, no fences).\n"
+        "- Define exactly ONE top-level function. Its name MUST equal "
+        "the `global_name` you are given.\n"
+        "- Keyword arguments must be `gt` and `pred` (ground-truth + "
+        "submitted value).\n"
+        "- The function returns a Python float.\n"
+        "- Use only Python stdlib + numpy (already imported as `np` "
+        "by the harness — do not re-import).\n"
+        "- Be defensive about types: gt/pred may arrive as int, float, "
+        "or numeric strings.\n"
+    )
+    user_msg = (
+        f"global_name: {global_name}\n"
+        f"semantics: {llm_hint}\n"
+    )
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 800,
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:python)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        # Sanity-check: the function name must be present.
+        if f"def {global_name}(" not in text:
+            return None
+        return text
+    except Exception as e:
+        print(f"_llm_generate_metric_code failed: {e}")
+        return None
+
+
+def _auto_create_lb_with_metrics(dataset, lb_name, owner_user_id):
+    """Create a Leaderboard backed by `dataset`, propose metrics from
+    its GT fields, reuse any existing GlobalMetric whose name matches
+    a proposal (strict name match), and author new ones via the LLM
+    (with a deterministic fallback). Returns (success, message, lb_id)."""
+    if not lb_name:
+        return False, "Leaderboard name is required.", None
+    if Leaderboard.query.filter_by(name=lb_name).first():
+        return False, f'A leaderboard named "{lb_name}" already exists.', None
+
+    proposals = _propose_metrics_for_dataset(dataset)
+    if not proposals:
+        return False, ("No metric_* fields detected on the dataset — "
+                       "nothing to auto-attach. Create the leaderboard "
+                       "manually and add metrics yourself."), None
+
+    lb = Leaderboard(
+        name=lb_name,
+        summary_metrics=','.join(p['target_name'] for p in proposals),
+        owner_user_id=owner_user_id,
+    )
+    lb.datasets = [dataset]
+    db.session.add(lb)
+    db.session.flush()  # get lb.id
+
+    for p in proposals:
+        gm = GlobalMetric.query.filter_by(name=p['global_name']).first()
+        if gm is None:
+            code = _llm_generate_metric_code(p['global_name'], p['llm_hint']) \
+                or p['fallback_code']
+            gm = GlobalMetric(
+                name=p['global_name'],
+                description=p['description'],
+                python_code=code,
+                is_aggregated=False,
+                accepts_aggregated_inputs=False,
+                owner_user_id=owner_user_id,
+                visibility='public',
+            )
+            db.session.add(gm)
+            db.session.flush()
+        lm = LeaderboardMetric(
+            leaderboard_id=lb.id,
+            global_metric_id=gm.id,
+            arg_mappings=json.dumps(p['arg_mappings']),
+            target_name=p['target_name'],
+            pooling_type=p['pooling_type'],
+            sort_direction=p['sort_direction'],
+        )
+        db.session.add(lm)
+    db.session.commit()
+    return True, f'Created leaderboard "{lb_name}" with {len(proposals)} metric(s).', lb.id
+
+
 def _ensure_colab_gist(lb):
     """Materialize the LB's notebook as a GitHub gist so Colab's URL
     importer (which only whitelists github.com / gist.github.com /
@@ -5631,6 +5833,20 @@ def import_from_hf_auto():
         )
         flash(message, "success" if success else "danger")
         if success and ds_id:
+            # Optional: also auto-create a Leaderboard with metrics
+            # picked by the heuristic + LLM fallback for any new metric.
+            if request.form.get('auto_create_lb'):
+                lb_name = (request.form.get('auto_lb_name') or '').strip() \
+                    or f"{dataset_name}_leaderboard"
+                ds = Dataset.query.get(ds_id)
+                ok, lb_msg, lb_id = _auto_create_lb_with_metrics(
+                    ds, lb_name, owner_user_id=g.current_user.id,
+                )
+                flash(lb_msg, "success" if ok else "warning")
+                if ok and lb_id:
+                    return redirect(url_for(
+                        'leaderboard_view', leaderboard_id=lb_id,
+                    ))
             return redirect(url_for('dataset_view', dataset_id=ds_id))
     except Exception as e:
         msg = str(e)
