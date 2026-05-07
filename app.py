@@ -2227,6 +2227,18 @@ def explore():
     else:
         tag_cloud = []
 
+    # Per-LB thumbnail (first dataset's thumb) so the explore cards
+    # match the visual treatment on /home and the LB header.
+    leaderboard_thumbs = {}
+    for row in rows:
+        # `rows` mixes dataclass / dict shapes depending on the path —
+        # use [] indexing or attribute access defensively.
+        lb = row['lb'] if isinstance(row, dict) else row.lb
+        lb_datasets = list(lb.datasets)
+        leaderboard_thumbs[lb.id] = (
+            _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
+        )
+
     return render_template(
         'explore.html',
         rows=rows,
@@ -2234,6 +2246,7 @@ def explore():
         sort=sort,
         tag_cloud=tag_cloud,
         active_tag=tag_filter,
+        leaderboard_thumbs=leaderboard_thumbs,
     )
 
 

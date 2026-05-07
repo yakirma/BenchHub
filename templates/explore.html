@@ -70,6 +70,21 @@
         text-decoration: none;
         margin-right: 0.25em;
     }
+
+    /* LB thumbnail — matches the home grid treatment. */
+    .lb-card-thumb {
+        height: 140px;
+        background-size: cover;
+        background-position: center;
+        background-color: var(--bs-tertiary-bg);
+        border-top-left-radius: var(--bs-card-inner-border-radius);
+        border-top-right-radius: var(--bs-card-inner-border-radius);
+    }
+    .lb-card-thumb.lb-card-placeholder {
+        display: flex; align-items: center; justify-content: center;
+        color: var(--bs-body-secondary);
+        font-size: 2.5rem;
+    }
 </style>
 
 <div class="container py-4">
@@ -141,7 +156,15 @@
         {% for row in rows %}
         {% set lb = row.lb %}
         <div class="col">
-            <div class="card h-100 border-0 shadow-sm">
+            <div class="card h-100 border-0 shadow-sm overflow-hidden">
+                {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
+                {% if thumb %}
+                <div class="lb-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                {% else %}
+                <div class="lb-card-thumb lb-card-placeholder">
+                    <i class="bi bi-trophy"></i>
+                </div>
+                {% endif %}
                 <div class="card-body p-4 d-flex flex-column">
                     <div class="d-flex justify-content-between align-items-start mb-2">
                         <h5 class="card-title fw-semibold mb-0 text-truncate" title="{{ lb.name }}">
@@ -153,10 +176,6 @@
                         </span>
                         {% endif %}
                     </div>
-
-                    {% if lb %}
-                    
-                    {% endif %}
 
                     {% if lb.tags %}
                     <div class="mb-2">
@@ -172,10 +191,8 @@
                         <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
                     </div>
 
-                    {% if lb %}
                     <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                         class="stretched-link" aria-label="Open {{ lb.name }}"></a>
-                    {% endif %}
                 </div>
             </div>
         </div>
