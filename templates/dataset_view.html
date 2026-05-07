@@ -139,6 +139,22 @@
                         <i class="bi bi-plus-circle me-1"></i>Create
                     </button>
                 </div>
+                <div class="col-12">
+                    <div class="form-check small mt-1">
+                        <input class="form-check-input" type="checkbox"
+                            id="auto_assign_metrics" name="auto_assign_metrics" value="1">
+                        <label class="form-check-label" for="auto_assign_metrics">
+                            <i class="bi bi-stars text-warning me-1"></i>
+                            Auto-assign metrics from this dataset's
+                            <code>metric_*</code> fields
+                            <span class="text-body-secondary">
+                                &mdash; reuses any matching GlobalMetric by
+                                name; otherwise the LLM authors one (with a
+                                deterministic fallback).
+                            </span>
+                        </label>
+                    </div>
+                </div>
             </form>
             <p class="form-text small mb-0 mt-2">
                 Tied to <strong>{{ dataset.name }}</strong> by default. Add

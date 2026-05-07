@@ -5833,20 +5833,6 @@ def import_from_hf_auto():
         )
         flash(message, "success" if success else "danger")
         if success and ds_id:
-            # Optional: also auto-create a Leaderboard with metrics
-            # picked by the heuristic + LLM fallback for any new metric.
-            if request.form.get('auto_create_lb'):
-                lb_name = (request.form.get('auto_lb_name') or '').strip() \
-                    or f"{dataset_name}_leaderboard"
-                ds = Dataset.query.get(ds_id)
-                ok, lb_msg, lb_id = _auto_create_lb_with_metrics(
-                    ds, lb_name, owner_user_id=g.current_user.id,
-                )
-                flash(lb_msg, "success" if ok else "warning")
-                if ok and lb_id:
-                    return redirect(url_for(
-                        'leaderboard_view', leaderboard_id=lb_id,
-                    ))
             return redirect(url_for('dataset_view', dataset_id=ds_id))
     except Exception as e:
         msg = str(e)
@@ -5944,17 +5930,39 @@ def create_leaderboard():
             flash(f'Leaderboard "{leaderboard_name}" already exists. Choose a different name or check "Overwrite".', 'danger')
             return redirect(url_for('datasets_list'))
 
+    # When the user opts into auto-assigned metrics, hand off to the
+    # dedicated helper so the proposer / LLM-fallback path stays in one
+    # place. The helper handles LB row creation + metric attachment in
+    # a single transaction.
+    auto_assign = bool(request.form.get('auto_assign_metrics'))
+    if auto_assign:
+        dataset_ids = request.form.getlist('dataset_ids')
+        if not dataset_ids and 'dataset_id' in request.form:
+            dataset_ids = [request.form['dataset_id']]
+        ds = (Dataset.query.filter(Dataset.id.in_(dataset_ids)).first()
+              if dataset_ids else None)
+        if ds is None:
+            flash("Auto-assign metrics needs a dataset attached to the LB.", "danger")
+            return redirect(url_for('datasets_list'))
+        ok, msg, lb_id = _auto_create_lb_with_metrics(
+            ds, leaderboard_name, owner_user_id=g.current_user.id,
+        )
+        flash(msg, "success" if ok else "warning")
+        if ok and lb_id:
+            return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
+        return redirect(url_for('dataset_view', dataset_id=ds.id))
+
     new_leaderboard = Leaderboard(
         name=leaderboard_name,
         summary_metrics=','.join(request.form.getlist('summary_metrics')),
         owner_user_id=g.current_user.id,
     )
-    
+
     # Handle multiple datasets
     dataset_ids = request.form.getlist('dataset_ids')
     if not dataset_ids and 'dataset_id' in request.form:
         dataset_ids = [request.form['dataset_id']] # Fallback to single ID if present
-        
+
     if dataset_ids:
         # Link all selected datasets
         datasets = Dataset.query.filter(Dataset.id.in_(dataset_ids)).all()

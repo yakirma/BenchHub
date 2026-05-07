@@ -260,55 +260,68 @@ def test_auto_create_lb_returns_clear_error_when_no_metric_fields(db_session, lo
 
 
 # ---------------------------------------------------------------------------
-# /import_from_hf/auto: end-to-end with auto_create_lb=1
+# /create_leaderboard end-to-end with auto_assign_metrics=1
 # ---------------------------------------------------------------------------
 
 
-def test_auto_import_with_auto_create_lb_redirects_to_new_lb(
+def test_create_leaderboard_with_auto_assign_metrics(
     auth_client, logged_in_user, db_session, monkeypatch,
+    dataset_classlabel_shape,
 ):
-    """Posting auto_create_lb=1 to the auto-import endpoint creates
-    the dataset, then a leaderboard with metrics, and lands the user
-    on the LB page."""
-    import sys, types
-    from PIL import Image as _PILImage
-
-    rows = [
-        {'image': _PILImage.new('RGB', (4, 4), (255, 0, 0)), 'label': 0},
-        {'image': _PILImage.new('RGB', (4, 4), (0, 255, 0)), 'label': 1},
-    ]
-
-    class _FakeIterableDataset:
-        features = {'image': object(),
-                    'label': type('CL', (), {'names': ['cat', 'dog']})()}
-        def __iter__(self):
-            return iter(rows)
-
-    fake_mod = types.ModuleType('datasets')
-    fake_mod.load_dataset = lambda *a, **kw: _FakeIterableDataset()
-    monkeypatch.setitem(sys.modules, 'datasets', fake_mod)
+    """The 'New leaderboard' form on the dataset page can opt into
+    auto-assigned metrics. The handler hands off to
+    _auto_create_lb_with_metrics, lands the user on the new LB."""
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
-
     resp = auth_client.post(
-        '/import_from_hf/auto',
+        '/create_leaderboard',
         data={
-            'hf_repo_id': 'fake/auto_lb',
-            'dataset_name': 'auto_lb_ds',
-            'sample_cap': '10',
-            'mapping_column[]': ['image', 'label'],
-            'mapping_target_kind[]': ['image', 'metric'],
-            'mapping_target_field[]': ['image_image', 'metric_label'],
-            'auto_create_lb': '1',
-            'auto_lb_name': 'auto_lb_ds_leaderboard',
+            'leaderboard_name': 'auto_lb_from_form',
+            'dataset_ids': str(dataset_classlabel_shape.id),
+            'auto_assign_metrics': '1',
         },
         follow_redirects=False,
     )
-    assert resp.status_code == 302, resp.data[:200]
+    assert resp.status_code == 302
     assert '/leaderboard/' in resp.headers['Location']
 
-    # The new leaderboard exists with one metric attached.
-    lb = Leaderboard.query.filter_by(name='auto_lb_ds_leaderboard').first()
+    lb = Leaderboard.query.filter_by(name='auto_lb_from_form').first()
     assert lb is not None
     assert len(lb.leaderboard_metrics) == 1
-    lm = lb.leaderboard_metrics[0]
-    assert lm.global_metric.name == 'accuracy_label'
+    assert lb.leaderboard_metrics[0].global_metric.name == 'accuracy_label'
+
+
+def test_create_leaderboard_without_auto_assign_metrics_path_unchanged(
+    auth_client, logged_in_user, db_session, dataset_classlabel_shape,
+):
+    """When the box is unchecked, the legacy create_leaderboard path
+    runs unchanged — empty LB, no metrics attached."""
+    resp = auth_client.post(
+        '/create_leaderboard',
+        data={
+            'leaderboard_name': 'manual_lb',
+            'dataset_ids': str(dataset_classlabel_shape.id),
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert '/leaderboard/' in resp.headers['Location']
+    lb = Leaderboard.query.filter_by(name='manual_lb').first()
+    assert lb is not None
+    assert lb.leaderboard_metrics == []
+
+
+def test_create_leaderboard_auto_assign_requires_a_dataset(
+    auth_client, logged_in_user, db_session,
+):
+    """Auto-assign needs a dataset to inspect — flash + redirect when
+    the form arrives without one (defensive UI fallback)."""
+    resp = auth_client.post(
+        '/create_leaderboard',
+        data={
+            'leaderboard_name': 'no_ds',
+            'auto_assign_metrics': '1',
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert Leaderboard.query.filter_by(name='no_ds').first() is None
