@@ -639,6 +639,12 @@ class Submission(db.Model):
     is_archived = db.Column(db.Boolean, default=False, nullable=False)
     processing_status = db.Column(db.String(50), default='Pending')
     last_sample_filter = db.Column(db.Text, nullable=True) # JSON store of filters used for metrics
+    # Colab provenance: when a submission was uploaded via the API
+    # from a Colab notebook, store the gist URL so reviewers can re-open
+    # the exact notebook that produced these predictions. Set by the
+    # API endpoint when the form includes `source_colab_url`, or
+    # auto-populated from the user's per-user gist for this LB.
+    source_colab_url = db.Column(db.String(500), nullable=True)
     # Phase 1 multi-tenancy. Submissions don't get their own visibility — they
     # inherit the leaderboard's. Owner is whoever uploaded the submission.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
@@ -4661,7 +4667,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v4-bare-pred-folders'
+_COLAB_TEMPLATE_VERSION = 'v5-source-colab-url'
 
 
 def _lb_structure_signature(lb):
@@ -4870,12 +4876,16 @@ def _static_colab_notebook(lb):
                     "# Otherwise, generate one at /settings/api_tokens and paste it here.\n",
                     "API_TOKEN = ''  # auto-filled per-user; manually paste otherwise\n",
                     "SUBMISSION_NAME = 'my_first_submission'\n",
+                    "# BenchHub also stores this URL on the submission so reviewers\n",
+                    "# can re-open the exact notebook that produced the predictions.\n",
+                    "SOURCE_COLAB_URL = ''  # auto-filled per-user; safe to leave blank\n",
                     "if API_TOKEN:\n",
                     "    with open(zip_path, 'rb') as fh:\n",
                     "        r = requests.post(\n",
                     f"            f'{{BENCHHUB}}/api/leaderboard/{lb.id}/submission/upload',\n",
                     "            headers={'Authorization': f'Bearer {API_TOKEN}'},\n",
-                    "            data={'submission_name': SUBMISSION_NAME},\n",
+                    "            data={'submission_name': SUBMISSION_NAME,\n",
+                    "                  'source_colab_url': SOURCE_COLAB_URL},\n",
                     "            files={'submission_zip': ('submission.zip', fh)},\n",
                     "            timeout=300,\n",
                     "        )\n",
@@ -5053,19 +5063,28 @@ def _get_or_generate_colab_notebook(lb):
     return nb, source
 
 
-def _personalize_notebook_for_user(notebook_json, user):
-    """Substitute the empty `API_TOKEN = ''` placeholder in a generic
-    notebook with the user's actual BenchHub API token (if they have one).
-    Operates on the raw .ipynb JSON string; safe to apply to either the
-    static or LLM-generated form."""
-    if not user or not getattr(user, 'api_token', None):
-        return notebook_json
-    safe_token = user.api_token.replace("\\", r"\\").replace("'", r"\'")
-    # Match `API_TOKEN = ''` and `API_TOKEN = ""` (single or double quotes).
-    # Inside a JSON-encoded notebook, double quotes appear as `\"`, so also
-    # accept `\"\"` for LLM-generated cells that prefer double-quoted strings.
-    pattern = re.compile(r"API_TOKEN\s*=\s*(?:''|\\\"\\\"|\"\")")
-    return pattern.sub(f"API_TOKEN = '{safe_token}'", notebook_json, count=1)
+def _personalize_notebook_for_user(notebook_json, user, source_colab_url=None):
+    """Substitute the empty `API_TOKEN = ''` placeholder with the
+    user's actual BenchHub API token, and optionally the empty
+    `SOURCE_COLAB_URL = ''` placeholder with this notebook's gist URL
+    so the upload back-references itself. Safe to apply to either the
+    static or LLM-generated notebook form."""
+    out = notebook_json
+    if user and getattr(user, 'api_token', None):
+        safe_token = user.api_token.replace("\\", r"\\").replace("'", r"\'")
+        out = re.sub(
+            r"API_TOKEN\s*=\s*(?:''|\\\"\\\"|\"\")",
+            f"API_TOKEN = '{safe_token}'",
+            out, count=1,
+        )
+    if source_colab_url:
+        safe_url = source_colab_url.replace("\\", r"\\").replace("'", r"\'")
+        out = re.sub(
+            r"SOURCE_COLAB_URL\s*=\s*(?:''|\\\"\\\"|\"\")",
+            f"SOURCE_COLAB_URL = '{safe_url}'",
+            out, count=1,
+        )
+    return out
 
 
 def _ensure_user_colab_gist(lb, user):
@@ -5082,9 +5101,8 @@ def _ensure_user_colab_gist(lb, user):
     if not token:
         return None, None, None
 
-    # Reuse the LB-level generic notebook (LLM/static), then personalize.
+    # Reuse the LB-level generic notebook (LLM/static).
     nb_json, _src = _get_or_generate_colab_notebook(lb)
-    nb_json = _personalize_notebook_for_user(nb_json, user)
     sig = _lb_structure_signature(lb)
 
     record = UserColabGist.query.filter_by(
@@ -5092,6 +5110,19 @@ def _ensure_user_colab_gist(lb, user):
     ).first()
     gist_id = record.gist_id if record else None
     gist_owner = record.gist_owner if record else None
+
+    # When a record already exists we know the gist URL upfront and can
+    # bake it into the SOURCE_COLAB_URL placeholder so the cell shows
+    # the back-link verbatim. First-time creation uses the empty
+    # placeholder; the API endpoint's UserColabGist fallback fills the
+    # URL onto the Submission row regardless.
+    known_url = None
+    if gist_id:
+        path = f'{gist_owner}/{gist_id}' if gist_owner else gist_id
+        known_url = f'https://colab.research.google.com/gist/{path}'
+    nb_json = _personalize_notebook_for_user(
+        nb_json, user, source_colab_url=known_url,
+    )
 
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
     filename = f'{safe_name}_submit.ipynb'
@@ -6636,11 +6667,14 @@ def create_leaderboard_auto_finalize():
     return redirect(url_for('dataset_view', dataset_id=ds.id))
 
 
-def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user_id=None):
+def process_submission_zip(leaderboard_id, submission_name, zip_path,
+                           owner_user_id=None, source_colab_url=None):
     """
     Helper function to process a single submission zip file.
     Create DB entry, extract files, and queue processing task.
     owner_user_id (Phase 1 multi-tenancy): the User who uploaded.
+    source_colab_url: optional gist URL recorded on the Submission so
+    reviewers can re-open the exact notebook that produced the upload.
     """
     try:
         new_submission = Submission(
@@ -6648,6 +6682,7 @@ def process_submission_zip(leaderboard_id, submission_name, zip_path, owner_user
             leaderboard_id=leaderboard_id,
             processing_status='Queued',
             owner_user_id=owner_user_id,
+            source_colab_url=source_colab_url,
         )
         db.session.add(new_submission)
         db.session.commit() # Commit immediately to release lock and get ID
@@ -9043,6 +9078,19 @@ def submission_upload_api(leaderboard_id):
         return jsonify({'error': msg}), 429
 
     submission_name = request.form.get('submission_name', file.filename.replace('.zip', ''))
+    # Colab provenance: prefer the URL the form sent (the colab notebook
+    # bakes its own gist URL into the upload call). Fall back to looking
+    # up the per-user gist for this LB so anyone using the unmodified
+    # generated notebook still gets a back-link.
+    source_colab_url = (request.form.get('source_colab_url') or '').strip() or None
+    if not source_colab_url:
+        ucg = UserColabGist.query.filter_by(
+            user_id=g.current_user.id, leaderboard_id=leaderboard.id,
+        ).first()
+        if ucg and ucg.gist_id:
+            path = (f'{ucg.gist_owner}/{ucg.gist_id}'
+                    if ucg.gist_owner else ucg.gist_id)
+            source_colab_url = f'https://colab.research.google.com/gist/{path}'
 
     temp_zip_path = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_upload_zip', secure_filename(file.filename))
     os.makedirs(os.path.dirname(temp_zip_path), exist_ok=True)
@@ -9052,6 +9100,7 @@ def submission_upload_api(leaderboard_id):
         success, error = process_submission_zip(
             leaderboard.id, submission_name, temp_zip_path,
             owner_user_id=g.current_user.id,
+            source_colab_url=source_colab_url,
         )
         if success:
              return jsonify({'success': True, 'message': 'Submission queued'})
@@ -9578,6 +9627,10 @@ def check_and_migrate_db():
                     ("leaderboard",          "hidden_comparison_display_columns", "TEXT"),
                     # Cached Colab submission notebook (self-invalidating).
                     ("leaderboard",          "colab_notebook_cache",             "TEXT"),
+                    # Per-submission Colab gist URL (provenance — lets a
+                    # reviewer re-open the exact notebook that produced
+                    # the predictions). NULL for non-Colab submissions.
+                    ("submission",           "source_colab_url",                 "VARCHAR(500)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
