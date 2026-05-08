@@ -320,13 +320,20 @@
         </div>
         {% endif %}
 
+        <p class="small text-body-secondary mb-2">
+            <i class="bi bi-info-circle me-1"></i>You can add, remove, or edit
+            metrics and visualizations on the leaderboard's
+            <strong>Settings</strong> page after it's created &mdash; nothing
+            here is permanent.
+        </p>
+
         <div class="d-flex justify-content-between gap-2">
             {% if dataset %}
             <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}" class="btn btn-outline-secondary">
                 Cancel
             </a>
             {% else %}
-            <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary">
+            <a href="{{ url_for('create_lb_chooser') }}" class="btn btn-outline-secondary">
                 Cancel
             </a>
             {% endif %}
