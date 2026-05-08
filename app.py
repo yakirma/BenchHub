@@ -4421,8 +4421,13 @@ def _hf_features_via_streaming(repo_id, revision=None, hf_token=None):
     # Try a few common splits; many repos only ship one of these.
     for split in ('train', 'validation', 'test', 'default'):
         try:
+            # `trust_remote_code=True` is required for script-backed
+            # repos (like NYU Depth V2 that ships nyu_depth_v2.py).
+            # We're pinned to datasets<3.0 because 3.x removed script
+            # support entirely.
             ds = load_dataset(repo_id, split=split, streaming=True,
-                              revision=revision, token=hf_token)
+                              revision=revision, token=hf_token,
+                              trust_remote_code=True)
         except Exception:
             continue
         feats = getattr(ds, 'features', None)
@@ -6282,7 +6287,7 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
             )
 
         ds = load_dataset(repo_id, split=split, streaming=True, revision=revision,
-                          token=hf_token)
+                          token=hf_token, trust_remote_code=True)
 
         # Fall back to features inspected from the streamed dataset itself.
         # The HF API features blob doesn't always include ClassLabel.names
