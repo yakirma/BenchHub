@@ -5533,8 +5533,9 @@ _MASK_NAME_HINTS = ('mask', 'seg', 'label', 'parsing', 'class')
 def _gt_columns(ds):
     """Yield (col_name, kind, hints) for each evaluable GT column on
     the first sample. `kind` is one of 'scalar' / 'depth' / 'image' /
-    'mask'. `hints` carries domain-specific extras:
+    'mask' / 'text'. `hints` carries domain-specific extras:
       - scalar: {'is_classlabel': bool}
+      - text: {} (treated as classlabel-style: exact-string-match)
       - depth, image, mask: {} (reserved)
     Class-name sidecars (`<col>_class`) are skipped — they're not
     evaluable on their own."""
@@ -5556,6 +5557,15 @@ def _gt_columns(ds):
                 yield cf.name, 'mask', {}
             else:
                 yield cf.name, 'image', {}
+        elif cf.field_type == 'text':
+            # Treat short text fields as classlabel-style GT (e.g.
+            # 'neg' / 'pos' for sentiment, 'cat' / 'dog' / ... for
+            # animals). Long captions get skipped — `len > 80` is a
+            # cheap heuristic to avoid proposing exact-match against
+            # free-form prose.
+            val = (getattr(cf, 'value_text', None) or '').strip()
+            if val and len(val) <= 80:
+                yield cf.name, 'text', {}
 
 
 # Backwards-compat shim — some callers still iterate scalar-only.
@@ -5629,6 +5639,42 @@ def _proposal_mae_scalar(col):
         'pred_fields': [{
             'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
             'description': f"Per-sample predicted value for `{col}` (.txt with the number).",
+        }],
+    }
+
+
+def _proposal_exact_match_text(col):
+    """Exact-string-match accuracy for text-typed GT columns (e.g.
+    sentiment 'neg'/'pos', species 'cat'/'dog', plain string class
+    names that aren't ClassLabel-encoded)."""
+    global_name = "exact_match"
+    return {
+        'target_name': f"exact match ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample exact-string match on `{col}`: 1.0 when the "
+            f"submission's `{col}_pred` equals GT `{col}` (case-sensitive, "
+            f"after strip), 0.0 otherwise. Mean-pooled across samples."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"1.0 if predicted string matches GT, else 0.0.\"\"\"\n"
+            f"    return 1.0 if str(gt).strip() == str(pred).strip() else 0.0\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample exact string match for `{col}`. Return 1.0 if "
+            f"str(gt).strip() == str(pred).strip(), else 0.0. "
+            f"Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+            'description': (
+                f"Predicted text label for `{col}` "
+                f"(per-sample string, ship as `<sample>.txt`)."
+            ),
         }],
     }
 
@@ -5891,6 +5937,8 @@ def _propose_metrics_for_dataset(ds):
                 proposals.append(_proposal_top1_classlabel(col))
             else:
                 proposals.append(_proposal_mae_scalar(col))
+        elif kind == 'text':
+            proposals.append(_proposal_exact_match_text(col))
         elif kind == 'depth':
             proposals.append(_proposal_rmse_depth(col))
             proposals.append(_proposal_abs_rel_depth(col))
@@ -6140,6 +6188,12 @@ def _lb_submission_pred_fields(lb):
                     f"Predicted image for `{gt_name}` "
                     f"(ship as `<sample>.png` matching GT shape)."
                 )
+        elif gt_type == 'text':
+            entry['kind'] = 'scalar'  # ship as <sample>.txt
+            entry['description'] = (
+                f"Predicted text label for `{gt_name}` "
+                f"(per-sample string, ship as `<sample>.txt`)."
+            )
         else:
             entry['kind'] = 'scalar'
             entry['description'] = (
@@ -6962,6 +7016,16 @@ def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
                     cfs.append(_VirtualCustomField(
                         name=target_field, field_type='scalar',
                         value_float=fv, source_column=col,
+                    ))
+                elif isinstance(value, str) and value.strip():
+                    # Scalar mapping but the value is a plain string
+                    # (e.g. sentiment 'neg'/'pos', species 'cat'/'dog'
+                    # without a ClassLabel feature). Store as text so
+                    # the proposer's text-kind dispatch picks it up
+                    # with an exact-match metric.
+                    cfs.append(_VirtualCustomField(
+                        name=target_field, field_type='text',
+                        value_text=value.strip(), source_column=col,
                     ))
         elif kind == 'text' and value is not None:
             cfs.append(_VirtualCustomField(

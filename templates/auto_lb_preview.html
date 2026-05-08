@@ -110,8 +110,10 @@
                 <div class="alert alert-warning small mb-3" role="alert">
                     <i class="bi bi-exclamation-triangle me-1"></i>
                     No metrics could be auto-proposed for this dataset.
-                    BenchHub looks for GT columns of type <code>scalar</code>,
-                    <code>image</code>, or <code>depth</code>{% if dataset %} on the dataset's first sample{% endif %}.
+                    BenchHub looks for GT columns of type
+                    <code>scalar</code>, <code>image</code>, <code>depth</code>,
+                    or short <code>text</code> (e.g. <code>neg</code>/<code>pos</code>
+                    sentiment){% if dataset %} on the dataset's first sample{% endif %}.
                     Use <strong>Add a metric</strong> below to attach one manually.
                 </div>
                 {% endif %}

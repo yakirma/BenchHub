@@ -385,13 +385,19 @@ def _load_sub_pred_for_sample(submission_folder, folder_name, sample_name):
                 return np.asarray(data[first])
         except Exception as e:
             print(f"DEBUG: load npz pred failed for {candidates[0]}: {e}")
-    # Scalar
+    # Scalar — default to numeric. If the contents aren't a number
+    # (e.g. text-label submission like 'neg' / 'pos'), surface the raw
+    # stripped string so exact-match metrics can still consume it.
     p = os.path.join(folder, f"{sample_name}.txt")
     if os.path.exists(p):
         try:
-            return float(open(p).read().strip())
-        except (ValueError, OSError):
+            raw = open(p).read().strip()
+        except OSError:
             return None
+        try:
+            return float(raw)
+        except ValueError:
+            return raw or None
     return None
 
 
