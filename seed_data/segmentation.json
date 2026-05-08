@@ -1,76 +1,16 @@
 {
   "domain": "segmentation",
-  "_note": "Starter list of HF segmentation datasets. Most are images + per-pixel mask labels. The auto-LB proposer will detect the label as a ClassLabel-shaped scalar and propose a top-1 metric; for a serious segmentation LB you'll want to swap that for IoU / mIoU after the LBs are seeded.",
+  "_note": "Repo IDs verified live on HuggingFace 2026-05-08 via /api/datasets. Mix of indoor scene parsing, street/road, aerial/satellite, medical, anime/specialty, instance seg. The auto-LB metric proposer creates a top-1 metric on the inferred ClassLabel-shaped GT; replace with IoU/mIoU on the LB edit page once the LBs are seeded.",
   "datasets": [
-    {
-      "hf_repo_id": "scene_parse_150",
-      "dataset_name": "scene_parse_150",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "ADE20K (scene_parse_150)"
-    },
-    {
-      "hf_repo_id": "huggan/cityscapes",
-      "dataset_name": "cityscapes_seg",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "Cityscapes semantic seg"
-    },
-    {
-      "hf_repo_id": "nielsr/cocostuff",
-      "dataset_name": "coco_stuff",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "COCO-Stuff"
-    },
-    {
-      "hf_repo_id": "EduardoPacheco/Voc2012Segmentation",
-      "dataset_name": "voc2012_seg",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "Pascal VOC 2012 seg"
-    },
-    {
-      "hf_repo_id": "skytnt/anime-seg",
-      "dataset_name": "anime_seg",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "Anime segmentation"
-    },
-    {
-      "hf_repo_id": "Intel/coco-instance-segmentation",
-      "dataset_name": "coco_instance",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "COCO instance seg"
-    },
-    {
-      "hf_repo_id": "Stanford/pascal-context",
-      "dataset_name": "pascal_context",
-      "sample_cap": 200,
-      "auto_create_lb": true,
-      "lb_name": "Pascal Context"
-    },
-    {
-      "hf_repo_id": "EduardoPacheco/CamVid",
-      "dataset_name": "camvid",
-      "sample_cap": 150,
-      "auto_create_lb": true,
-      "lb_name": "CamVid driving seg"
-    },
-    {
-      "hf_repo_id": "shi-labs/oneformer_demo",
-      "dataset_name": "oneformer_demo",
-      "sample_cap": 100,
-      "auto_create_lb": true,
-      "lb_name": "OneFormer demo set"
-    },
-    {
-      "hf_repo_id": "GATE-engine/mhp_v2",
-      "dataset_name": "mhp_v2",
-      "sample_cap": 150,
-      "auto_create_lb": true,
-      "lb_name": "MHP v2 (multi-human parsing)"
-    }
+    {"hf_repo_id": "zhoubolei/scene_parse_150",                      "dataset_name": "scene_parse_150",         "sample_cap": 200, "auto_create_lb": true, "lb_name": "Scene Parse 150 (ADE20K)"},
+    {"hf_repo_id": "nateraw/ade20k-tiny",                            "dataset_name": "ade20k_tiny",             "sample_cap": 150, "auto_create_lb": true, "lb_name": "ADE20K Tiny Semantic Seg"},
+    {"hf_repo_id": "skytnt/anime-segmentation",                      "dataset_name": "anime_segmentation",      "sample_cap": 200, "auto_create_lb": true, "lb_name": "Anime Foreground Segmentation"},
+    {"hf_repo_id": "keremberke/pothole-segmentation",                "dataset_name": "pothole_segmentation",    "sample_cap": 150, "auto_create_lb": true, "lb_name": "Road Pothole Segmentation"},
+    {"hf_repo_id": "keremberke/satellite-building-segmentation",     "dataset_name": "satellite_buildings",     "sample_cap": 200, "auto_create_lb": true, "lb_name": "Satellite Building Segmentation"},
+    {"hf_repo_id": "fcakyon/crack-instance-segmentation",            "dataset_name": "crack_instance_seg",      "sample_cap": 100, "auto_create_lb": true, "lb_name": "Concrete Crack Instance Seg"},
+    {"hf_repo_id": "Xpitfire/cmp_facade",                            "dataset_name": "cmp_facade",              "sample_cap": 100, "auto_create_lb": true, "lb_name": "CMP Building Facade Parsing"},
+    {"hf_repo_id": "DarthReca/california_burned_areas",              "dataset_name": "california_burned_areas", "sample_cap": 100, "auto_create_lb": true, "lb_name": "California Burned Areas (Sentinel-2)"},
+    {"hf_repo_id": "SerdarHelli/SegmentationOfTeethPanoramicXRayImages", "dataset_name": "teeth_panoramic_xray","sample_cap": 100, "auto_create_lb": true, "lb_name": "Teeth Panoramic X-Ray Seg"},
+    {"hf_repo_id": "winvoker/lvis",                                  "dataset_name": "lvis_instance",           "sample_cap": 200, "auto_create_lb": true, "lb_name": "LVIS Instance Segmentation"}
   ]
 }
