@@ -23,7 +23,7 @@ backed by a single bounded-LRU disk cache.
 | **Pointer-mode for HF datasets** (no byte cloning) | ✅ landed | `Dataset.storage_mode`, `Sample.source_ref_json`, `_import_hf_pointer`, `_pointer_gt_resolver`, 10 tests |
 | **Remote submissions** (HF Hub + raw URL, hash-pinned) | ✅ landed | `Submission.storage_mode/remote_url/content_hash`, `_fetch_remote_submission_zip`, `/api/leaderboard/<id>/submission/from_url`, 9 tests |
 | **Paired-dataset support via LB settings** | ✅ landed | `leaderboard_datasets.role`, `_make_paired_gt_provider`, role dropdown on LB edit page, 12 tests |
-| **Hash-mismatch enforcement on re-eval** | 🟡 next | recalc path verifies `Submission.content_hash` against re-fetched bytes |
+| **Hash-mismatch enforcement on re-eval** | ✅ landed | `_verify_remote_submission_hash` called from `_process_submission_impl`; LB page shows a danger badge on drift; 7 tests |
 | **Evict extracted submission folder after eval** | 🟡 after | recalc re-extracts from cached ZIP; closes the disk-savings loop |
 
 Architecture sketch:
@@ -66,19 +66,9 @@ re-ranking.
 
 ### Concrete next steps (pick up here)
 
-The original three-piece refactor + paired-datasets are all in.
-Two follow-ups remain to close the storage-savings loop:
+One follow-up left to close the disk-savings loop:
 
-1. **Hash-mismatch enforcement on re-eval (remote submissions).**
-   - On recalc path: re-fetch via `_fetch_remote_submission_zip`
-     (which is cache-aware) → compare returned hash against
-     `Submission.content_hash` → on mismatch, set
-     `processing_status='Error: submission file changed; please
-     resubmit'` and bail.
-   - Surface a clear UI badge on the LB row when this happens.
-   - Estimated effort: ~1-2 hours.
-
-2. **Evict extracted submission folder after eval (close the
+1. **Evict extracted submission folder after eval (close the
    disk-savings loop for remote subs).**
    - Currently a remote submission's bytes live in two places: the
      cached ZIP AND the extracted `uploads/submissions/<id>/`
