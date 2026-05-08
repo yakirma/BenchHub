@@ -4813,7 +4813,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v5-source-colab-url'
+_COLAB_TEMPLATE_VERSION = 'v6-structured-pred-fields'
 
 
 def _lb_structure_signature(lb):
@@ -4963,14 +4963,24 @@ def _static_colab_notebook(lb):
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
                 "source": [
                     "# 2. >>> EDIT THIS <<< Plug your model in here.\n",
-                    "# Required prediction fields for this leaderboard:\n",
-                    f"PRED_FIELDS = {json.dumps([p['name'] for p in pred_fields])}\n",
+                    "# Each field's `kind` tells the writer below how to serialize the\n",
+                    "# prediction: 'scalar' → .txt, 'image'/'mask' → .png, 'depth' → .npz.\n",
+                    f"PRED_FIELDS = {json.dumps(pred_fields)}\n",
                     "def my_model(sample_name, sample_inputs):\n",
                     "    \"\"\"sample_inputs is a dict of {field_name: numpy_array_or_PIL_image}.\n",
-                    "    Return a dict whose keys match PRED_FIELDS — one numeric prediction per\n",
-                    "    sample for each entry. Each value lands in `<key>/<sample>.txt`.\n",
+                    "    Return a dict keyed by PRED_FIELDS[*]['name']; values match the\n",
+                    "    field kind: scalar ⇒ float, image/mask ⇒ HxWx3 numpy or PIL.Image,\n",
+                    "    depth ⇒ HxW numpy float array.\n",
                     "    \"\"\"\n",
-                    "    return {f: 0 for f in PRED_FIELDS}  # placeholder\n",
+                    "    out = {}\n",
+                    "    for f in PRED_FIELDS:\n",
+                    "        if f['kind'] == 'scalar':\n",
+                    "            out[f['name']] = 0\n",
+                    "        elif f['kind'] in ('image', 'mask'):\n",
+                    "            out[f['name']] = np.zeros((4, 4, 3), dtype=np.uint8)  # placeholder\n",
+                    "        elif f['kind'] == 'depth':\n",
+                    "            out[f['name']] = np.zeros((4, 4), dtype=np.float32)  # placeholder\n",
+                    "    return out\n",
                 ],
             },
             {
@@ -4992,16 +5002,34 @@ def _static_colab_notebook(lb):
                     "sample_names = sorted(sample_names)\n",
                     "print(f'Found {len(sample_names)} samples')\n",
                     "\n",
+                    "PRED_KIND = {f['name']: f['kind'] for f in PRED_FIELDS}\n",
+                    "from PIL import Image\n",
                     "for name in sample_names:\n",
                     "    # Build per-sample inputs by reading whatever GT files match.\n",
                     "    inputs = {}  # populate with reads as needed\n",
                     "    preds = my_model(name, inputs)\n",
-                    "    # Each predicted field becomes its own folder. PRED_FIELDS is\n",
-                    "    # the canonical naming the LB's metrics + visualizations expect.\n",
+                    "    # Each predicted field becomes its own folder. The kind decides\n",
+                    "    # the file extension so the BenchHub engine loads it correctly:\n",
+                    "    #   scalar → <sample>.txt              (float)\n",
+                    "    #   image  → <sample>.png              (HxWx3 RGB)\n",
+                    "    #   mask   → <sample>.png              (HxW class IDs OR HxWx3 RGB)\n",
+                    "    #   depth  → <sample>_<W>x<H>.npz      (HxW float, key 'depth')\n",
                     "    for field, value in preds.items():\n",
                     "        out_dir = OUT / field\n",
                     "        out_dir.mkdir(exist_ok=True)\n",
-                    "        (out_dir / f'{name}.txt').write_text(str(value))\n",
+                    "        kind = PRED_KIND.get(field, 'scalar')\n",
+                    "        if kind in ('image', 'mask'):\n",
+                    "            arr = value if isinstance(value, np.ndarray) else np.asarray(value)\n",
+                    "            if arr.ndim == 2:\n",
+                    "                arr = np.stack([arr, arr, arr], axis=-1)\n",
+                    "            arr_u8 = arr.astype(np.uint8) if arr.dtype != np.uint8 else arr\n",
+                    "            Image.fromarray(arr_u8).save(out_dir / f'{name}.png')\n",
+                    "        elif kind == 'depth':\n",
+                    "            arr = np.asarray(value, dtype=np.float32)\n",
+                    "            h, w = arr.shape[:2]\n",
+                    "            np.savez(out_dir / f'{name}_{w}x{h}.npz', depth=arr)\n",
+                    "        else:\n",
+                    "            (out_dir / f'{name}.txt').write_text(str(value))\n",
                     "print('Submission folder built at', OUT)\n",
                 ],
             },
@@ -5342,130 +5370,463 @@ def _ensure_user_colab_gist(lb, user):
         return None, None, None
 
 
-def _scalar_gt_columns(ds):
-    """Yield (col_name, is_classlabel) for each GT scalar column on
-    the first sample. ClassLabel-shaped is detected by the presence of
-    a sibling `<col>_class` text field (the HF auto-importer's
-    ClassLabel sidecar)."""
+# Heuristic for naming a GT image column as a segmentation mask
+# rather than an RGB regression target. Cheap upfront check; metrics
+# are still safe-to-run if the heuristic miscategorizes, just less
+# semantically apt.
+_MASK_NAME_HINTS = ('mask', 'seg', 'label', 'parsing', 'class')
+
+
+def _gt_columns(ds):
+    """Yield (col_name, kind, hints) for each evaluable GT column on
+    the first sample. `kind` is one of 'scalar' / 'depth' / 'image' /
+    'mask'. `hints` carries domain-specific extras:
+      - scalar: {'is_classlabel': bool}
+      - depth, image, mask: {} (reserved)
+    Class-name sidecars (`<col>_class`) are skipped — they're not
+    evaluable on their own."""
     if not ds or not ds.samples:
         return
     first = ds.samples[0]
     field_types = {cf.name: cf.field_type for cf in (first.custom_fields or [])}
     for cf in (first.custom_fields or []):
-        if cf.field_type != 'scalar':
-            continue
-        # Skip the class-name sidecars themselves.
         if cf.name.endswith('_class'):
             continue
-        is_classlabel = f"{cf.name}_class" in field_types
-        yield cf.name, is_classlabel
+        if cf.field_type == 'scalar':
+            is_classlabel = f"{cf.name}_class" in field_types
+            yield cf.name, 'scalar', {'is_classlabel': is_classlabel}
+        elif cf.field_type == 'depth':
+            yield cf.name, 'depth', {}
+        elif cf.field_type == 'image':
+            name_lc = cf.name.lower()
+            if any(h in name_lc for h in _MASK_NAME_HINTS):
+                yield cf.name, 'mask', {}
+            else:
+                yield cf.name, 'image', {}
+
+
+# Backwards-compat shim — some callers still iterate scalar-only.
+def _scalar_gt_columns(ds):
+    for name, kind, hints in _gt_columns(ds):
+        if kind == 'scalar':
+            yield name, hints['is_classlabel']
+
+
+# ---------------------------------------------------------------------------
+# Per-kind metric proposal builders. Each returns a single dict matching
+# the proposal schema (target_name, global_name, description, fallback_code,
+# arg_mappings, sort_direction, pooling_type, llm_hint, pred_fields).
+# ---------------------------------------------------------------------------
+
+
+def _proposal_top1_classlabel(col):
+    global_name = f"top1_{col}"
+    return {
+        'target_name': f"top-1 accuracy ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample top-1 accuracy on the `{col}` ClassLabel: "
+            f"1.0 when the submission's `{col}_pred` equals GT `{col}`, "
+            f"0.0 otherwise. Mean-pooled."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"1.0 if predicted class index matches GT, else 0.0.\"\"\"\n"
+            f"    try:\n"
+            f"        return 1.0 if int(gt) == int(pred) else 0.0\n"
+            f"    except (TypeError, ValueError):\n"
+            f"        return 0.0\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample top-1 accuracy: GT integer class index `{col}` "
+            f"vs submission's predicted index `{col}_pred`. Function name "
+            f"MUST be `{global_name}(gt, pred)`. Returns 1.0 or 0.0."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+            'description': f"Per-sample predicted class index for `{col}` (.txt with the integer).",
+        }],
+    }
+
+
+def _proposal_mae_scalar(col):
+    global_name = f"mae_{col}"
+    return {
+        'target_name': f"MAE ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample mean absolute error between submission's "
+            f"`{col}_pred` and GT `{col}`."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"|gt - pred| as a float.\"\"\"\n"
+            f"    return float(abs(float(gt) - float(pred)))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'lower_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Mean absolute error between GT scalar `{col}` and submission's "
+            f"`{col}_pred`. Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+            'description': f"Per-sample predicted value for `{col}` (.txt with the number).",
+        }],
+    }
+
+
+def _proposal_rmse_depth(col):
+    """Standard depth RMSE on the valid-mask. The metric receives the
+    GT and predicted depth maps as numpy arrays (engine-side loader
+    handles the NPZ → array unmarshalling)."""
+    global_name = f"rmse_{col}"
+    return {
+        'target_name': f"RMSE ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample RMSE between predicted depth (`{col}_pred`) and "
+            f"GT depth (`{col}`), restricted to the GT-valid mask "
+            f"(non-zero, finite). Mean-pooled across samples."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    if gt is None or pred is None:\n"
+            f"        return float('nan')\n"
+            f"    g = np.asarray(gt, dtype=np.float32)\n"
+            f"    p = np.asarray(pred, dtype=np.float32)\n"
+            f"    if g.shape != p.shape:\n"
+            f"        # Resize predicted to GT via simple slicing on the\n"
+            f"        # common rectangle — keeps the metric well-defined\n"
+            f"        # even when models output a different resolution.\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        g, p = g[:h, :w], p[:h, :w]\n"
+            f"    valid = (g > 0) & np.isfinite(g) & np.isfinite(p)\n"
+            f"    if not valid.any():\n"
+            f"        return float('nan')\n"
+            f"    diff = g[valid] - p[valid]\n"
+            f"    return float(np.sqrt(np.mean(diff * diff)))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'lower_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample RMSE between predicted depth and GT depth, "
+            f"masking out invalid (zero/NaN) GT pixels. Both inputs are "
+            f"numpy 2D arrays. Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'depth', 'gt_field': col,
+            'description': (
+                f"Per-sample predicted depth map. Ship as "
+                f"`{col}_pred/<sample>_<W>x<H>.npz` with the array under "
+                f"key `depth`, matching GT shape."
+            ),
+        }],
+    }
+
+
+def _proposal_abs_rel_depth(col):
+    global_name = f"abs_rel_{col}"
+    return {
+        'target_name': f"abs-rel ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample absolute-relative depth error: mean of "
+            f"|gt - pred| / gt over the GT-valid mask."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    if gt is None or pred is None:\n"
+            f"        return float('nan')\n"
+            f"    g = np.asarray(gt, dtype=np.float32)\n"
+            f"    p = np.asarray(pred, dtype=np.float32)\n"
+            f"    if g.shape != p.shape:\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        g, p = g[:h, :w], p[:h, :w]\n"
+            f"    valid = (g > 0) & np.isfinite(g) & np.isfinite(p)\n"
+            f"    if not valid.any():\n"
+            f"        return float('nan')\n"
+            f"    return float(np.mean(np.abs(g[valid] - p[valid]) / g[valid]))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'lower_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample absolute-relative depth error: mean of "
+            f"|gt - pred| / gt over the GT-valid mask. Function name MUST "
+            f"be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'depth', 'gt_field': col,
+            'description': (
+                f"Per-sample predicted depth map (same shape as GT)."
+            ),
+        }],
+    }
+
+
+def _proposal_a1_depth(col):
+    """Depth-thresholded accuracy: fraction of pixels where
+    max(gt/pred, pred/gt) < 1.25."""
+    global_name = f"a1_{col}"
+    return {
+        'target_name': f"δ < 1.25 ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample fraction of pixels whose ratio max(gt/pred, "
+            f"pred/gt) is below 1.25 — the standard 'a1' depth accuracy."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    if gt is None or pred is None:\n"
+            f"        return float('nan')\n"
+            f"    g = np.asarray(gt, dtype=np.float32)\n"
+            f"    p = np.asarray(pred, dtype=np.float32)\n"
+            f"    if g.shape != p.shape:\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        g, p = g[:h, :w], p[:h, :w]\n"
+            f"    valid = (g > 0) & np.isfinite(g) & np.isfinite(p) & (p > 0)\n"
+            f"    if not valid.any():\n"
+            f"        return float('nan')\n"
+            f"    ratio = np.maximum(g[valid] / p[valid], p[valid] / g[valid])\n"
+            f"    return float(np.mean(ratio < 1.25))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Standard 'a1' depth accuracy on per-pixel ratios (max of "
+            f"gt/pred and pred/gt) below 1.25. Function name MUST be "
+            f"`{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'depth', 'gt_field': col,
+            'description': "Per-sample predicted depth map (same shape as GT).",
+        }],
+    }
+
+
+def _proposal_psnr_image(col):
+    """PSNR on RGB arrays; auto-normalizes if input looks uint8."""
+    global_name = f"psnr_{col}"
+    return {
+        'target_name': f"PSNR ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample peak signal-to-noise ratio between predicted "
+            f"image (`{col}_pred`) and GT image (`{col}`), in dB."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    if gt is None or pred is None:\n"
+            f"        return float('nan')\n"
+            f"    g = np.asarray(gt, dtype=np.float32)\n"
+            f"    p = np.asarray(pred, dtype=np.float32)\n"
+            f"    if g.shape != p.shape:\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        g, p = g[:h, :w], p[:h, :w]\n"
+            f"    # Normalize to [0, 1] for either uint8-range or already-normalized inputs.\n"
+            f"    if max(float(g.max()), float(p.max())) > 1.5:\n"
+            f"        g = g / 255.0\n"
+            f"        p = p / 255.0\n"
+            f"    mse = float(np.mean((g - p) ** 2))\n"
+            f"    if mse < 1e-10:\n"
+            f"        return 100.0\n"
+            f"    return float(-10.0 * np.log10(mse))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample PSNR (dB) between GT and predicted RGB images. "
+            f"Inputs are HxWx3 numpy arrays (uint8 or float; auto-detect). "
+            f"Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'image', 'gt_field': col,
+            'description': (
+                f"Per-sample predicted RGB image. Ship as "
+                f"`{col}_pred/<sample>.png`."
+            ),
+        }],
+    }
+
+
+def _proposal_miou_mask(col):
+    """Mean IoU across the union of class IDs present in either GT or
+    pred mask. Both are integer-valued image arrays."""
+    global_name = f"miou_{col}"
+    return {
+        'target_name': f"mean IoU ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-sample mean intersection-over-union across the class "
+            f"IDs present in either GT mask (`{col}`) or prediction "
+            f"(`{col}_pred`)."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    if gt is None or pred is None:\n"
+            f"        return float('nan')\n"
+            f"    g = np.asarray(gt).astype(np.int64)\n"
+            f"    p = np.asarray(pred).astype(np.int64)\n"
+            f"    # Color-encoded masks → flatten to a single channel by\n"
+            f"    # treating each unique RGB tuple as one class.\n"
+            f"    if g.ndim == 3:\n"
+            f"        g = g[..., 0] * 256 * 256 + g[..., 1] * 256 + g[..., 2]\n"
+            f"    if p.ndim == 3:\n"
+            f"        p = p[..., 0] * 256 * 256 + p[..., 1] * 256 + p[..., 2]\n"
+            f"    if g.shape != p.shape:\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        g, p = g[:h, :w], p[:h, :w]\n"
+            f"    g, p = g.flatten(), p.flatten()\n"
+            f"    classes = np.unique(np.concatenate([g, p]))\n"
+            f"    ious = []\n"
+            f"    for c in classes:\n"
+            f"        if c < 0:\n"
+            f"            continue\n"
+            f"        inter = int(((g == c) & (p == c)).sum())\n"
+            f"        union = int(((g == c) | (p == c)).sum())\n"
+            f"        if union > 0:\n"
+            f"            ious.append(inter / union)\n"
+            f"    return float(np.mean(ious)) if ious else float('nan')\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',
+        'llm_hint': (
+            f"Per-sample mean IoU between GT segmentation mask and "
+            f"predicted mask. Both are integer-valued (or RGB-encoded) "
+            f"image arrays. Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'mask', 'gt_field': col,
+            'description': (
+                f"Per-sample predicted segmentation mask. Ship as "
+                f"`{col}_pred/<sample>.png` with class IDs as pixel values "
+                f"(matching GT encoding)."
+            ),
+        }],
+    }
 
 
 def _propose_metrics_for_dataset(ds):
-    """Heuristic metric proposer: walk the GT scalar columns and
-    propose one comparison metric per column, against the submission's
-    `<col>_pred` field. Each proposal carries:
-        target_name, global_name, description, fallback_code,
-        arg_mappings, sort_direction, pooling_type, llm_hint
-
-    Heuristic logic:
-    - GT scalar with sibling `<col>_class` (HF ClassLabel signal)
-      → top-1 accuracy (higher is better, mean-pooled).
-    - Other numeric GT scalar → MAE (lower is better, mean-pooled).
-
-    Submissions are expected to ship `<col>_pred/<sample>.txt`
-    containing their predicted value. The convention is intentionally
-    distinct from `metric_*` (which is reserved for user-precomputed
-    metric values that the LB just averages and displays).
+    """Walk the GT columns and propose per-column metrics. Dispatches
+    per kind:
+      - scalar (ClassLabel-shaped) → top-1 accuracy
+      - scalar (numeric)           → MAE
+      - depth                      → RMSE + abs-rel + a1 (3 metrics per column)
+      - image                      → PSNR
+      - mask                       → mean IoU
+    Submissions are expected to ship `<col>_pred/<sample>.<ext>` per
+    GT column — extension depends on the kind (.txt / .npz / .png).
     """
     proposals = []
-    for col, is_classlabel in _scalar_gt_columns(ds):
-        if is_classlabel:
-            global_name = f"top1_{col}"
-            target_name = f"top-1 accuracy ({col})"
-            description = (
-                f"Per-sample top-1 accuracy on the `{col}` ClassLabel: "
-                f"1.0 when the submission's `{col}_pred` equals GT `{col}`, "
-                f"0.0 otherwise. Mean-pooled across the dataset."
-            )
-            fallback_code = (
-                f"def {global_name}(gt, pred):\n"
-                f"    \"\"\"1.0 if predicted class index matches the GT, else 0.0.\"\"\"\n"
-                f"    try:\n"
-                f"        return 1.0 if int(gt) == int(pred) else 0.0\n"
-                f"    except (TypeError, ValueError):\n"
-                f"        return 0.0\n"
-            )
-            sort_direction = 'higher_is_better'
-            llm_hint = (
-                f"Per-sample top-1 accuracy: GT integer class index "
-                f"`{col}` versus submission's predicted index `{col}_pred`. "
-                f"Function name MUST be `{global_name}(gt, pred)` and "
-                f"return 1.0 / 0.0."
-            )
-        else:
-            global_name = f"mae_{col}"
-            target_name = f"MAE ({col})"
-            description = (
-                f"Per-sample mean absolute error between submission's "
-                f"`{col}_pred` and GT `{col}`. Mean-pooled."
-            )
-            fallback_code = (
-                f"def {global_name}(gt, pred):\n"
-                f"    \"\"\"|gt - pred| as a float.\"\"\"\n"
-                f"    return float(abs(float(gt) - float(pred)))\n"
-            )
-            sort_direction = 'lower_is_better'
-            llm_hint = (
-                f"Mean absolute error between GT scalar `{col}` and "
-                f"submission's `{col}_pred`. Function name MUST be "
-                f"`{global_name}(gt, pred)`."
-            )
-        proposals.append({
-            'target_name': target_name,
-            'global_name': global_name,
-            'description': description,
-            'fallback_code': fallback_code,
-            'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
-            'sort_direction': sort_direction,
-            'pooling_type': 'mean',
-            'llm_hint': llm_hint,
-            # The contract this metric expects from submissions: one
-            # bare-name scalar field per GT column. The submission ships
-            # `<col>_pred/<sample>.txt`. Surfaced via flash message + the
-            # colab notebook so submitters know what to write.
-            'pred_fields': [{
-                'name': f'{col}_pred',
-                'kind': 'scalar',
-                'description': (
-                    f"Per-sample predicted class index for `{col}`."
-                    if is_classlabel
-                    else f"Per-sample predicted value for `{col}`."
-                ),
-                'gt_field': col,
-            }],
-        })
+    for col, kind, hints in _gt_columns(ds):
+        if kind == 'scalar':
+            if hints['is_classlabel']:
+                proposals.append(_proposal_top1_classlabel(col))
+            else:
+                proposals.append(_proposal_mae_scalar(col))
+        elif kind == 'depth':
+            proposals.append(_proposal_rmse_depth(col))
+            proposals.append(_proposal_abs_rel_depth(col))
+            proposals.append(_proposal_a1_depth(col))
+        elif kind == 'image':
+            proposals.append(_proposal_psnr_image(col))
+        elif kind == 'mask':
+            proposals.append(_proposal_miou_mask(col))
     return proposals
+
+
+def _viz_depth_error_heatmap(col):
+    """Aggregated per-pixel mean-abs-error heatmap. `gt` and `pred`
+    arrive as parallel lists of HxW depth arrays (is_aggregated=True,
+    accepts_aggregated_inputs=True). Pads to common shape via simple
+    crop so a heterogeneous-resolution submission still renders."""
+    global_name = f"depth_error_heatmap_{col}"
+    return {
+        'target_name': f"depth error heatmap ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Per-pixel mean absolute depth error averaged across all "
+            f"samples of a submission, rendered as a 256x256 grayscale "
+            f"PIL image (brighter = larger error)."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"Aggregated depth error heatmap. gt and pred are\n"
+            f"    parallel lists of HxW numpy arrays.\"\"\"\n"
+            f"    import numpy as _np\n"
+            f"    from PIL import Image as _PILImage\n"
+            f"    pairs = []\n"
+            f"    for g, p in zip(gt, pred):\n"
+            f"        if g is None or p is None:\n"
+            f"            continue\n"
+            f"        g = _np.asarray(g, dtype=_np.float32)\n"
+            f"        p = _np.asarray(p, dtype=_np.float32)\n"
+            f"        h = min(g.shape[0], p.shape[0])\n"
+            f"        w = min(g.shape[1], p.shape[1])\n"
+            f"        if h == 0 or w == 0:\n"
+            f"            continue\n"
+            f"        pairs.append((g[:h, :w], p[:h, :w]))\n"
+            f"    if not pairs:\n"
+            f"        return _PILImage.new('L', (256, 256), 0)\n"
+            f"    H = min(pp[0].shape[0] for pp in pairs)\n"
+            f"    W = min(pp[0].shape[1] for pp in pairs)\n"
+            f"    acc = _np.zeros((H, W), dtype=_np.float64)\n"
+            f"    for g, p in pairs:\n"
+            f"        acc += _np.abs(g[:H, :W] - p[:H, :W])\n"
+            f"    acc /= len(pairs)\n"
+            f"    norm = (acc / max(float(acc.max()), 1e-6) * 255).astype(_np.uint8)\n"
+            f"    return _PILImage.fromarray(norm).resize((256, 256), _PILImage.NEAREST)\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'is_aggregated': True,
+        'accepts_aggregated_inputs': True,
+        'llm_hint': (
+            f"Aggregated depth-error heatmap. `gt` and `pred` are PARALLEL "
+            f"lists of 2D depth arrays. Compute mean per-pixel |gt - pred|, "
+            f"normalize to [0, 255] grayscale, return a 256x256 PIL.Image. "
+            f"Function name MUST be `{global_name}(gt, pred)`."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'depth', 'gt_field': col,
+            'description': "Per-sample predicted depth map (.npz, matches GT shape).",
+        }],
+    }
 
 
 def _propose_visualizations_for_dataset(ds):
     """Mirror of _propose_metrics_for_dataset for visualizations.
-    Each proposal carries:
-        target_name, global_name, description, fallback_code,
-        arg_mappings, is_aggregated, accepts_aggregated_inputs,
-        llm_hint
+    One viz per GT column where the auto-proposer can pick a
+    canonical summary plot.
 
-    Heuristic logic (one viz per GT scalar that lights up an obvious
-    summary visualization):
-    - GT scalar with `<col>_class` sidecar (ClassLabel signal) →
-      aggregated confusion-matrix heatmap. Takes the full lists of
-      `gt_<col>` and `sub_<col>_pred` and returns a PIL image.
-    Other shapes (regression scatter, image-diff grids, etc.) are
-    out of scope for the heuristic — users add those manually.
+    Per kind:
+    - scalar (ClassLabel): aggregated confusion-matrix heatmap.
+    - depth: aggregated mean-abs-error heatmap (per-pixel mean of
+      |gt - pred| across all submission samples).
+    - image: not auto-proposed (side-by-side strips need padding to a
+      common shape; left for manual authoring).
+    - mask: not auto-proposed (per-sample diff is more useful than an
+      aggregated mIoU bar; left for manual authoring).
     """
     proposals = []
-    for col, is_classlabel in _scalar_gt_columns(ds):
-        if not is_classlabel:
+    for col, kind, hints in _gt_columns(ds):
+        if kind == 'depth':
+            proposals.append(_viz_depth_error_heatmap(col))
+            continue
+        if kind != 'scalar' or not hints.get('is_classlabel'):
             continue
         global_name = f"confusion_matrix_{col}"
         target_name = f"confusion matrix ({col})"
@@ -5590,17 +5951,44 @@ def _lb_submission_pred_fields(lb):
     for entry in seen.values():
         gt_name = entry['gt_field']
         sibling_class = f"{gt_name}_class"
+        gt_type = gt_field_meta.get(gt_name)
+        # Kind drives the submission file extension: scalar → .txt,
+        # depth → .npz, image/mask → .png. Match what the proposer set
+        # at metric-creation time.
         if sibling_class in gt_field_meta:
+            entry['kind'] = 'scalar'
             entry['description'] = (
                 f"Predicted class index for `{gt_name}` "
-                f"(per-sample integer)."
+                f"(per-sample integer, ship as `<sample>.txt`)."
             )
-        elif gt_field_meta.get(gt_name) == 'scalar':
+        elif gt_type == 'scalar':
+            entry['kind'] = 'scalar'
             entry['description'] = (
                 f"Predicted numeric value for `{gt_name}` "
-                f"(per-sample float)."
+                f"(per-sample float, ship as `<sample>.txt`)."
             )
+        elif gt_type == 'depth':
+            entry['kind'] = 'depth'
+            entry['description'] = (
+                f"Predicted depth map for `{gt_name}` "
+                f"(ship as `<sample>_<W>x<H>.npz` with array key `depth`)."
+            )
+        elif gt_type == 'image':
+            name_lc = gt_name.lower()
+            if any(h in name_lc for h in _MASK_NAME_HINTS):
+                entry['kind'] = 'mask'
+                entry['description'] = (
+                    f"Predicted segmentation mask for `{gt_name}` "
+                    f"(ship as `<sample>.png` with class IDs / RGB encoding)."
+                )
+            else:
+                entry['kind'] = 'image'
+                entry['description'] = (
+                    f"Predicted image for `{gt_name}` "
+                    f"(ship as `<sample>.png` matching GT shape)."
+                )
         else:
+            entry['kind'] = 'scalar'
             entry['description'] = (
                 f"Per-sample prediction paired against GT `{gt_name}`."
             )

@@ -181,7 +181,12 @@ def test_gt_scalars_exposed_with_and_without_prefix(db_session, sample):
     assert ctx["snr"] == 42.0
 
 
-def test_non_scalar_gt_fields_excluded(db_session, sample):
+def test_non_scalar_gt_fields_loaded_lazily(db_session, sample):
+    """`image` and `depth` GT custom fields used to be excluded from
+    the context. After Option B they're loaded lazily as numpy arrays
+    (or None on failure) so structured-GT metrics like RMSE / PSNR
+    can consume them. JSON / text GT fields stay excluded — they're
+    not metric inputs."""
     db_session.add_all(
         [
             CustomField(sample_id=sample.id, name="thumbnail", field_type="image", value_text="path/x.png"),
@@ -191,8 +196,12 @@ def test_non_scalar_gt_fields_excluded(db_session, sample):
     db_session.commit()
 
     ctx = get_metric_context(sample)
-    assert "thumbnail" not in ctx
-    assert "gt_thumbnail" not in ctx
+    # Image GT now appears in the context; the path doesn't exist on
+    # disk so the loader returns None, but the key IS present so the
+    # metric can detect "missing GT" via context.get().
+    assert "thumbnail" in ctx and ctx["thumbnail"] is None
+    assert "gt_thumbnail" in ctx and ctx["gt_thumbnail"] is None
+    # JSON fields still not exposed (they're not metric inputs).
     assert "meta" not in ctx
 
 

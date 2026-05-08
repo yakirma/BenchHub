@@ -310,17 +310,110 @@ def sandbox_evaluate_one(global_metric, context, arg_mappings_json, **kwargs):
     return results[0] if results else (None, "sandbox returned no result")
 
 
-def get_metric_context(sample, sub=None, submission_folder=None):
+def _load_gt_array(cf, upload_folder):
+    """Load a depth/image GT custom field into a numpy array. Returns
+    None on any failure so the metric just gets a missing key it can
+    treat as "skip this sample".
+
+    `cf.value_text` is a path relative to the BenchHub upload folder;
+    the actual file is `<upload_folder>/<value_text>`.
+    """
+    import os
+    rel = cf.value_text
+    if not rel:
+        return None
+    full = os.path.join(upload_folder, rel)
+    if not os.path.exists(full):
+        return None
+    try:
+        if cf.field_type == 'depth':
+            with np.load(full) as data:
+                # The HF auto-importer stores depth under key 'depth';
+                # legacy uploads may use the first array key.
+                if 'depth' in data:
+                    return np.asarray(data['depth'])
+                first = next(iter(data.keys()))
+                return np.asarray(data[first])
+        if cf.field_type == 'image':
+            from PIL import Image as _PILImage
+            return np.asarray(_PILImage.open(full).convert('RGB'))
+    except Exception as e:
+        print(f"DEBUG: _load_gt_array failed for {cf.name}: {e}")
+    return None
+
+
+def _load_sub_pred_for_sample(submission_folder, folder_name, sample_name):
+    """Load a submission's prediction for one sample under one
+    `<folder_name>/` directory. Recognizes:
+      - `<sample>.txt`              → float (scalar prediction)
+      - `<sample>.png`/.jpg/.jpeg   → numpy RGB array (image)
+      - `<sample>_<W>x<H>.npz`      → numpy array (depth)
+      - `<sample>.npz`              → numpy array (depth, dim-suffix-less)
+    Returns None when no matching file exists for this sample."""
+    import os
+    folder = os.path.join(submission_folder, folder_name)
+    if not os.path.isdir(folder):
+        return None
+    # Image
+    for ext in ('.png', '.jpg', '.jpeg', '.bmp', '.tiff'):
+        p = os.path.join(folder, f"{sample_name}{ext}")
+        if os.path.exists(p):
+            try:
+                from PIL import Image as _PILImage
+                return np.asarray(_PILImage.open(p).convert('RGB'))
+            except Exception as e:
+                print(f"DEBUG: load image pred failed for {p}: {e}")
+                return None
+    # Depth (with or without dim suffix)
+    candidates = []
+    try:
+        for fname in os.listdir(folder):
+            if fname == f"{sample_name}.npz":
+                candidates.append(fname)
+            elif (fname.startswith(f"{sample_name}_") and fname.endswith('.npz')):
+                tail = fname[len(sample_name) + 1:-len('.npz')]
+                if 'x' in tail and all(p.isdigit() for p in tail.split('x', 1)):
+                    candidates.append(fname)
+    except OSError:
+        return None
+    if candidates:
+        try:
+            with np.load(os.path.join(folder, candidates[0])) as data:
+                if 'depth' in data:
+                    return np.asarray(data['depth'])
+                first = next(iter(data.keys()))
+                return np.asarray(data[first])
+        except Exception as e:
+            print(f"DEBUG: load npz pred failed for {candidates[0]}: {e}")
+    # Scalar
+    p = os.path.join(folder, f"{sample_name}.txt")
+    if os.path.exists(p):
+        try:
+            return float(open(p).read().strip())
+        except (ValueError, OSError):
+            return None
+    return None
+
+
+def get_metric_context(sample, sub=None, submission_folder=None,
+                       upload_folder=None):
     """
     Builds a context dictionary for metric evaluation.
     Includes GT fields and optionally Submission fields for a specific sample.
-    
-    submission_folder: Path to the root of the submission contents.
-    """
-    context = {}
-    
 
-    
+    submission_folder: Path to the root of the submission contents.
+    upload_folder: Root of the BenchHub upload tree (resolves the
+    relative paths stored in CustomField.value_text into absolute paths).
+    Falls back to the env var BENCHHUB_UPLOAD_FOLDER when not provided.
+    """
+    import os
+    context = {}
+    if upload_folder is None:
+        upload_folder = (
+            os.environ.get('BENCHHUB_UPLOAD_FOLDER')
+            or os.path.expanduser('~/.dtofbenchmarking/uploads')
+        )
+
     # GT Entropy calculation
     if sample.histogram_data:
         try:
@@ -334,11 +427,19 @@ def get_metric_context(sample, sub=None, submission_folder=None):
         except:
              context['gt_entropy'] = 0.0
 
-    # GT Custom Fields (Scalars)
+    # GT Custom Fields. Scalars stay as floats; image/depth load lazily
+    # as numpy arrays so a metric like rmse_<col>(gt, pred) can consume
+    # them directly. Failures (missing file, corrupt NPZ) just skip
+    # the field — the metric will see context.get('gt_<name>') is None
+    # and can fall through to None / NaN rather than crash the eval.
     for cf in sample.custom_fields:
         if cf.field_type == 'scalar':
              context[f"gt_{cf.name}"] = cf.value_float
              context[cf.name] = cf.value_float
+        elif cf.field_type in ('image', 'depth'):
+            arr = _load_gt_array(cf, upload_folder)
+            context[f"gt_{cf.name}"] = arr
+            context[cf.name] = arr
 
     if sub:
         # Submission fields (using CustomField)
@@ -370,12 +471,13 @@ def get_metric_context(sample, sub=None, submission_folder=None):
         
         # Load standard file-based metrics if submission_folder is provided
         if submission_folder:
-                # Dynamic Histograms
-                # Scan for folders starting with 'hist_' or 'raw_histogram'
             try:
                 for folder_name in os.listdir(submission_folder):
                     folder_path = os.path.join(submission_folder, folder_name)
-                    if os.path.isdir(folder_path) and (folder_name.startswith('hist_') or folder_name == 'raw_histogram'):
+                    if not os.path.isdir(folder_path):
+                        continue
+                    # Histogram entropy convenience.
+                    if folder_name.startswith('hist_') or folder_name == 'raw_histogram':
                         hist_file = os.path.join(folder_path, f'{sample.name}.npz')
                         if os.path.exists(hist_file):
                             try:
@@ -390,8 +492,25 @@ def get_metric_context(sample, sub=None, submission_folder=None):
                                         context[f'sub_entropy_{folder_name}'] = 0.0
                             except Exception as e:
                                 print(f"DEBUG: Error reading histogram {folder_name} for {sample.name}: {e}")
+                        continue
+                    # `metric_*` folders are picked up via Submission.custom_fields above.
+                    if folder_name.startswith('metric_'):
+                        continue
+                    # Bare-name prediction folder (the auto-LB convention:
+                    # `<col>_pred/`). Load the per-sample file as scalar /
+                    # image / depth depending on the file extension and
+                    # surface it as `sub_<folder_name>` in the context.
+                    arr = _load_sub_pred_for_sample(
+                        submission_folder, folder_name, sample.name,
+                    )
+                    if arr is not None:
+                        context[f'sub_{folder_name}'] = arr
+                        # Also expose under bare name so dependency-chained
+                        # metrics can reference the prediction directly,
+                        # matching the scalar-side convention.
+                        context.setdefault(folder_name, arr)
             except Exception as e:
-                print(f"DEBUG: Error scanning submission folder for histograms: {e}")
+                print(f"DEBUG: Error scanning submission folder: {e}")
 
     return context
 def sort_metrics_by_dependency(metrics):

@@ -84,12 +84,12 @@ def test_propose_classlabel_picks_top1_accuracy(dataset_classlabel_shape):
     assert 'def top1_label' in p['fallback_code']
     # The proposer surfaces the submission contract so the colab notebook
     # + flash message can tell the user what folders to ship.
-    assert p['pred_fields'] == [{
-        'name': 'label_pred',
-        'kind': 'scalar',
-        'description': "Per-sample predicted class index for `label`.",
-        'gt_field': 'label',
-    }]
+    pf = p['pred_fields']
+    assert len(pf) == 1
+    assert pf[0]['name'] == 'label_pred'
+    assert pf[0]['kind'] == 'scalar'
+    assert pf[0]['gt_field'] == 'label'
+    assert 'class index' in pf[0]['description']
 
 
 def test_propose_numeric_picks_mae(dataset_numeric_shape):
@@ -102,29 +102,163 @@ def test_propose_numeric_picks_mae(dataset_numeric_shape):
     assert 'def mae_score' in p['fallback_code']
 
 
-def test_propose_skips_non_scalar_fields(db_session):
-    """Image-only datasets have nothing for the auto-proposer to chew on."""
-    ds = Dataset(name='img_only', visibility='public')
+def test_propose_skips_unhandled_field_types(db_session):
+    """Datasets with only JSON / text / histogram GT yield no
+    proposals — nothing the structured-GT proposer can metric."""
+    ds = Dataset(name='json_only', visibility='public')
     db.session.add(ds); db.session.flush()
     s = Sample(dataset_id=ds.id, name='s00000')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        sample_id=s.id, name='image_image', field_type='image',
-        value_text='/path/to/img.png',
+        sample_id=s.id, name='meta', field_type='json',
+        value_text='/path/to/m.json',
     ))
     db.session.commit()
     assert _propose_metrics_for_dataset(ds) == []
 
 
+def test_propose_image_field_picks_psnr(db_session):
+    """RGB image GT (denoising / super-res shape) → PSNR proposal,
+    higher_is_better, pred field kind = 'image'."""
+    ds = Dataset(name='img_psnr', visibility='public')
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s00000')
+    db.session.add(s); db.session.flush()
+    db.session.add(CustomField(
+        sample_id=s.id, name='clean', field_type='image',
+        value_text='clean/s00000.png',
+    ))
+    db.session.commit()
+    proposals = _propose_metrics_for_dataset(ds)
+    assert len(proposals) == 1
+    p = proposals[0]
+    assert p['global_name'] == 'psnr_clean'
+    assert p['sort_direction'] == 'higher_is_better'
+    assert p['arg_mappings'] == {'gt': 'gt_clean', 'pred': 'sub_clean_pred'}
+    assert p['pred_fields'][0]['kind'] == 'image'
+
+
+def test_propose_mask_named_image_picks_miou(db_session):
+    """Image GT whose name contains 'mask' / 'seg' / 'label' → mIoU
+    proposal (not PSNR), pred field kind = 'mask'."""
+    ds = Dataset(name='seg_miou', visibility='public')
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s00000')
+    db.session.add(s); db.session.flush()
+    db.session.add(CustomField(
+        sample_id=s.id, name='annotation_mask', field_type='image',
+        value_text='masks/s00000.png',
+    ))
+    db.session.commit()
+    proposals = _propose_metrics_for_dataset(ds)
+    names = [p['global_name'] for p in proposals]
+    assert names == ['miou_annotation_mask']
+    assert proposals[0]['sort_direction'] == 'higher_is_better'
+    assert proposals[0]['pred_fields'][0]['kind'] == 'mask'
+
+
+def test_propose_depth_field_picks_three_metrics(db_session):
+    """Depth GT → RMSE + abs-rel + a1 (three metrics from one column).
+    Sort directions split: RMSE / abs-rel are lower-better, a1 is
+    higher-better. All three pred-fields agree on kind='depth'."""
+    ds = Dataset(name='depth_three', visibility='public')
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s00000')
+    db.session.add(s); db.session.flush()
+    db.session.add(CustomField(
+        sample_id=s.id, name='depth_map', field_type='depth',
+        value_text='depth_maps/s00000_4x4.npz',
+    ))
+    db.session.commit()
+    proposals = _propose_metrics_for_dataset(ds)
+    names = sorted(p['global_name'] for p in proposals)
+    assert names == ['a1_depth_map', 'abs_rel_depth_map', 'rmse_depth_map']
+    sort_dirs = {p['global_name']: p['sort_direction'] for p in proposals}
+    assert sort_dirs['rmse_depth_map'] == 'lower_is_better'
+    assert sort_dirs['abs_rel_depth_map'] == 'lower_is_better'
+    assert sort_dirs['a1_depth_map'] == 'higher_is_better'
+    for p in proposals:
+        assert p['pred_fields'][0]['kind'] == 'depth'
+        assert p['pred_fields'][0]['name'] == 'depth_map_pred'
+
+
+def test_propose_depth_visualization_emits_error_heatmap(db_session):
+    from app import _propose_visualizations_for_dataset
+    ds = Dataset(name='depth_viz', visibility='public')
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s00000')
+    db.session.add(s); db.session.flush()
+    db.session.add(CustomField(
+        sample_id=s.id, name='depth_map', field_type='depth',
+        value_text='depth_maps/s00000_4x4.npz',
+    ))
+    db.session.commit()
+    viz = _propose_visualizations_for_dataset(ds)
+    assert len(viz) == 1
+    v = viz[0]
+    assert v['global_name'] == 'depth_error_heatmap_depth_map'
+    assert v['is_aggregated'] is True
+    assert v['accepts_aggregated_inputs'] is True
+
+
+def test_static_depth_metric_runs_on_real_arrays():
+    """Smoke-test the deterministic fallback code: exec the source
+    and call it on a couple of arrays to confirm the math is sane."""
+    from app import _proposal_rmse_depth, _proposal_abs_rel_depth, _proposal_a1_depth
+    import numpy as _np
+    scope = {'np': _np}
+    for proposal_fn in (_proposal_rmse_depth, _proposal_abs_rel_depth, _proposal_a1_depth):
+        p = proposal_fn('depth_map')
+        exec(p['fallback_code'], scope)
+    rmse = scope['rmse_depth_map']
+    abs_rel = scope['abs_rel_depth_map']
+    a1 = scope['a1_depth_map']
+    gt = _np.array([[1.0, 2.0], [4.0, 5.0]])
+    pred = gt.copy()  # perfect prediction
+    assert rmse(gt, pred) == 0.0
+    assert abs_rel(gt, pred) == 0.0
+    assert a1(gt, pred) == 1.0
+    pred_off = gt + 1.0
+    assert rmse(gt, pred_off) == pytest.approx(1.0)
+    assert rmse(None, pred) != rmse(None, pred)  # NaN propagation
+
+
+def test_static_psnr_runs_on_real_images():
+    from app import _proposal_psnr_image
+    import numpy as _np
+    scope = {'np': _np}
+    p = _proposal_psnr_image('clean')
+    exec(p['fallback_code'], scope)
+    psnr = scope['psnr_clean']
+    gt = _np.full((4, 4, 3), 100, dtype=_np.uint8)
+    assert psnr(gt, gt) == 100.0  # identical → clamp
+    pred = gt.astype(_np.int32) + 25
+    assert psnr(gt, pred.clip(0, 255).astype(_np.uint8)) > 10  # finite + reasonable
+
+
+def test_static_miou_runs_on_real_masks():
+    from app import _proposal_miou_mask
+    import numpy as _np
+    scope = {'np': _np}
+    p = _proposal_miou_mask('annotation_mask')
+    exec(p['fallback_code'], scope)
+    miou = scope['miou_annotation_mask']
+    # Two-class mask, perfect overlap.
+    gt = _np.array([[0, 0], [1, 1]])
+    assert miou(gt, gt) == 1.0
+    # Disjoint prediction → IoU = 0 for both classes.
+    pred = _np.array([[1, 1], [0, 0]])
+    assert miou(gt, pred) == 0.0
+
+
 def test_propose_numeric_pred_fields_describe_regression_target(dataset_numeric_shape):
     proposals = _propose_metrics_for_dataset(dataset_numeric_shape)
     pf = proposals[0]['pred_fields']
-    assert pf == [{
-        'name': 'score_pred',
-        'kind': 'scalar',
-        'description': "Per-sample predicted value for `score`.",
-        'gt_field': 'score',
-    }]
+    assert len(pf) == 1
+    assert pf[0]['name'] == 'score_pred'
+    assert pf[0]['kind'] == 'scalar'
+    assert pf[0]['gt_field'] == 'score'
+    assert 'numeric' in pf[0]['description'] or 'value' in pf[0]['description']
 
 
 def test_propose_skips_class_name_sidecar(dataset_classlabel_shape):
@@ -494,16 +628,18 @@ def test_auto_create_lb_refuses_duplicate_name(
     assert 'already exists' in msg.lower()
 
 
-def test_auto_create_lb_returns_clear_error_when_no_scalar_fields(
+def test_auto_create_lb_returns_clear_error_when_no_evaluable_gt(
     db_session, logged_in_user,
 ):
-    ds = Dataset(name='img_only_ds', visibility='public')
+    """Dataset with only JSON / text GT (nothing the proposer recognizes)
+    yields no metrics — surface that instead of creating an empty LB."""
+    ds = Dataset(name='json_only_ds', visibility='public')
     db.session.add(ds); db.session.flush()
     s = Sample(dataset_id=ds.id, name='s00000')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        sample_id=s.id, name='image_rgb', field_type='image',
-        value_text='/x.png',
+        sample_id=s.id, name='meta', field_type='json',
+        value_text='/m.json',
     ))
     db.session.commit()
     ok, msg, lb_id = _auto_create_lb_with_metrics(
