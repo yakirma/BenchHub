@@ -730,6 +730,30 @@ class UserColabGist(db.Model):
     sig = db.Column(db.String(16), nullable=True)
 
 
+class CacheEntry(db.Model):
+    """Disk-bounded LRU cache backing pointer-mode HF datasets and
+    remote submissions. Each row is one cached blob; bench_cache.py
+    is the only thing that should write to this table.
+
+    `cache_key` is a free-form string — typically
+    `gt:<repo_id>@<revision>:<split>:<row_idx>` for HF GT rows, or
+    `sub:<submission_id>:<col>:<sample>` for streamed submission
+    bytes. The on-disk filename is sha256(cache_key) so the keyspace
+    can carry slashes / colons / query-strings safely.
+
+    `origin` ∈ {'gt', 'submission'}; submissions evict first when
+    budget tightens (they're cheap to re-fetch from the user's
+    external store, GT is on HF and rate-limited).
+    """
+    cache_key = db.Column(db.String(512), primary_key=True)
+    size_bytes = db.Column(db.BigInteger, nullable=False, default=0)
+    origin = db.Column(db.String(16), nullable=False)
+    last_accessed_at = db.Column(db.DateTime, nullable=False,
+                                 default=datetime.utcnow, index=True)
+    created_at = db.Column(db.DateTime, nullable=False,
+                           default=datetime.utcnow)
+
+
 def get_canonical_username(username, profiles):
     """Resolve a username to its canonical identity by following merge chains."""
     visited = set()
@@ -10123,6 +10147,30 @@ def check_and_migrate_db():
                         print("Created 'user_colab_gist' table.")
                     except Exception as e:
                         print(f"Failed to create 'user_colab_gist' table: {e}")
+
+                # --- CacheEntry table (pointer-mode + remote-submission cache) ---
+                try:
+                    cursor.execute("SELECT cache_key FROM cache_entry LIMIT 1")
+                except sqlite3.OperationalError:
+                    print("Migrating DB: Creating 'cache_entry' table...")
+                    try:
+                        cursor.execute('''
+                            CREATE TABLE cache_entry (
+                                cache_key VARCHAR(512) PRIMARY KEY,
+                                size_bytes BIGINT NOT NULL DEFAULT 0,
+                                origin VARCHAR(16) NOT NULL,
+                                last_accessed_at DATETIME NOT NULL,
+                                created_at DATETIME NOT NULL
+                            )
+                        ''')
+                        cursor.execute(
+                            'CREATE INDEX ix_cache_entry_last_accessed_at '
+                            'ON cache_entry (last_accessed_at)'
+                        )
+                        conn.commit()
+                        print("Created 'cache_entry' table.")
+                    except Exception as e:
+                        print(f"Failed to create 'cache_entry' table: {e}")
 
                 # --- Owner / visibility columns (Phase 1 Slice 2) ---
                 # Add owner_user_id + visibility to project / dataset /
