@@ -7429,8 +7429,6 @@ def import_from_hf_preview():
     repo_id = (request.form.get('hf_repo_id') or '').strip()
     revision = (request.form.get('hf_revision') or '').strip() or None
     hf_token = _resolve_hf_token(request.form.get('hf_token'))
-    sample_cap = int(request.form.get('sample_cap') or 200)
-    sample_cap = max(10, min(sample_cap, 2000))
     dataset_name = (request.form.get('dataset_name') or '').strip()
     if not dataset_name:
         dataset_name = repo_id.rstrip('/').split('/')[-1] if repo_id else ''
@@ -7449,7 +7447,7 @@ def import_from_hf_preview():
             return redirect(url_for(
                 'import_from_hf_gated_wizard',
                 repo_id=repo_id, dataset_name=dataset_name,
-                revision=revision or '', sample_cap=sample_cap, flow='auto',
+                revision=revision or '', flow='auto',
             ))
         flash(f"Couldn't read schema: {e}", "danger")
         return redirect(url_for('datasets_list'))
@@ -7479,7 +7477,6 @@ def import_from_hf_preview():
         revision=revision,
         hf_token=hf_token,
         dataset_name=dataset_name,
-        sample_cap=sample_cap,
         features=features,
         mapping=mapping,
         inference_source=inference_source,
@@ -7494,7 +7491,6 @@ def import_from_hf_auto():
     revision = (request.form.get('hf_revision') or '').strip() or None
     hf_token = _resolve_hf_token(request.form.get('hf_token'))
     dataset_name = (request.form.get('dataset_name') or '').strip()
-    sample_cap = max(10, min(int(request.form.get('sample_cap') or 200), 2000))
 
     if not repo_id or not dataset_name:
         flash("Missing repo or dataset name.", "danger")
@@ -7546,7 +7542,7 @@ def import_from_hf_auto():
             return redirect(url_for(
                 'import_from_hf_gated_wizard',
                 repo_id=repo_id, dataset_name=dataset_name,
-                revision=revision or '', sample_cap=sample_cap, flow='auto',
+                revision=revision or '', flow='auto',
             ))
         flash(f"HuggingFace stream failed: {e}", "danger")
         return redirect(url_for('datasets_list'))

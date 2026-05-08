@@ -11,8 +11,9 @@
         Review the inferred field types for
         <a href="https://huggingface.co/datasets/{{ repo_id }}" target="_blank"
             class="font-monospace">{{ repo_id }}</a>{% if revision %} @ <code>{{ revision }}</code>{% endif %}.
-        Adjust per-column choices below, then confirm to start streaming
-        the first {{ sample_cap }} samples.
+        Adjust per-column choices below, then confirm to propose metrics &amp;
+        create the leaderboard. The dataset stays on HuggingFace; submissions
+        stream from it at eval time.
         {# Tiny indicator for whether Claude or the heuristic produced
            the initial guesses, so an operator who's surprised by an
            inference knows which way to think about overrides. #}
@@ -41,28 +42,18 @@
         <input type="hidden" name="hf_repo_id" value="{{ repo_id }}">
         <input type="hidden" name="hf_revision" value="{{ revision or '' }}">
         <input type="hidden" name="hf_token" value="{{ hf_token or '' }}">
-        <input type="hidden" name="sample_cap" value="{{ sample_cap }}">
 
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
-                <div class="row g-2 align-items-end">
-                    <div class="col-md-8">
-                        <label class="form-label small fw-semibold mb-1" for="ds-name">
-                            Local dataset name
-                        </label>
-                        <input type="text" id="ds-name" name="dataset_name"
-                            class="form-control"
-                            value="{{ dataset_name }}" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small fw-semibold mb-1" for="cap">
-                            Sample cap
-                        </label>
-                        <input type="number" id="cap" name="sample_cap"
-                            class="form-control"
-                            min="10" max="2000" value="{{ sample_cap }}">
-                        <div class="form-text small">10–2000.</div>
-                    </div>
+                <label class="form-label small fw-semibold mb-1" for="ds-name">
+                    Leaderboard name
+                </label>
+                <input type="text" id="ds-name" name="dataset_name"
+                    class="form-control"
+                    value="{{ dataset_name }}" required>
+                <div class="form-text small">
+                    Used as the LB display name. The next page will append
+                    a <code>_leaderboard</code> suffix; you can edit it there.
                 </div>
             </div>
         </div>
