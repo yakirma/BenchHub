@@ -240,6 +240,28 @@
             </div>
         </div>
 
+        {# ---- Required pred fields without metrics ---- #}
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-3">
+                <h2 class="h6 fw-semibold mb-2">
+                    <i class="bi bi-upload text-primary me-1"></i>Required prediction fields without metrics
+                    <span class="text-body-secondary fw-normal small ms-1">— optional</span>
+                </h2>
+                <p class="small text-body-secondary mb-2">
+                    Folders submissions must include even when no scoring metric
+                    consumes them. Useful when you want to host raw predictions
+                    for human review or future analysis. Fields tied to a metric
+                    above are already required automatically &mdash; don't repeat them here.
+                </p>
+                <div id="extra-pred-list"></div>
+                <button type="button" id="add-extra-pred-btn"
+                        class="btn btn-sm btn-outline-primary mt-1">
+                    <i class="bi bi-plus-circle me-1"></i>Add a prediction field
+                </button>
+                <input type="hidden" name="extra_pred_fields_json" id="extra-pred-fields-json" value="[]">
+            </div>
+        </div>
+
         {# ---- Visualization proposals ---- #}
         {% if viz_proposals %}
         <div class="card border-0 shadow-sm mb-3">
@@ -503,6 +525,61 @@
         }
     });
 
+    // ---- Required pred fields without metrics (Phase 9) ----
+    // Each row carries name + kind + description. The hidden JSON is
+    // re-serialized on submit so the backend sees the latest values.
+    const epList = document.getElementById('extra-pred-list');
+    const epHidden = document.getElementById('extra-pred-fields-json');
+    const epAddBtn = document.getElementById('add-extra-pred-btn');
+
+    function renderEpRow() {
+        const row = document.createElement('div');
+        row.className = 'extra-pred-row d-flex gap-2 align-items-start mb-2';
+        row.innerHTML = `
+            <input type="text" class="form-control form-control-sm ep-name"
+                   placeholder="Folder name (e.g. caption_pred)"
+                   style="flex: 2;">
+            <select class="form-select form-select-sm ep-kind" style="flex: 1; max-width: 140px;">
+                <option value="scalar">scalar (.txt)</option>
+                <option value="image">image (.png)</option>
+                <option value="mask">mask (.png)</option>
+                <option value="depth">depth (.npz)</option>
+            </select>
+            <input type="text" class="form-control form-control-sm ep-desc"
+                   placeholder="Description (optional)"
+                   style="flex: 2;">
+            <button type="button" class="btn btn-link btn-sm p-1 text-danger ep-remove"
+                    title="Remove this field">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        `;
+        row.querySelector('.ep-remove').addEventListener('click', () => {
+            epList.removeChild(row);
+            syncEp();
+        });
+        ['input', 'change'].forEach(ev => {
+            row.addEventListener(ev, syncEp);
+        });
+        epList.appendChild(row);
+        syncEp();
+    }
+
+    function syncEp() {
+        const items = [];
+        epList.querySelectorAll('.extra-pred-row').forEach(row => {
+            const name = row.querySelector('.ep-name').value.trim();
+            if (!name) return;
+            items.push({
+                name,
+                kind: row.querySelector('.ep-kind').value,
+                description: row.querySelector('.ep-desc').value.trim(),
+            });
+        });
+        epHidden.value = JSON.stringify(items);
+    }
+
+    if (epAddBtn) epAddBtn.addEventListener('click', renderEpRow);
+
     // ---- On submit, scrape edits from the rendered rows back into
     //      the hidden JSON so the backend sees what the user sees. ----
     const form = document.querySelector('form[action$="/auto_finalize"]');
@@ -519,6 +596,7 @@
                 if (code) p.python_code = code.value;
             });
             syncHidden();
+            syncEp();
         });
     }
 })();

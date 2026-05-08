@@ -670,6 +670,12 @@ class Leaderboard(db.Model):
     # (e.g. 'cifar10', 'sayakpaul/nyu_depth_v2'). At most one row per
     # repo with this set — enforced at promote time.
     canonical_for_repo = db.Column(db.String(200), nullable=True, index=True)
+    # Pred fields the LB requires submissions to ship even when no
+    # metric/viz consumes them — e.g. an organizer wants to host
+    # raw predictions for human review. JSON list of dicts:
+    # [{name, gt_field, kind, description}]. Surfaced in the
+    # "Submission contract" widget alongside metric-derived fields.
+    required_pred_fields_json = db.Column(db.Text, nullable=True)
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
@@ -6139,6 +6145,31 @@ def _lb_submission_pred_fields(lb):
             entry['description'] = (
                 f"Per-sample prediction paired against GT `{gt_name}`."
             )
+
+    # Phase 9: required pred fields declared independently of any
+    # metric/viz. Organizer might want raw predictions for human
+    # review even without scoring. Merge in (don't override metric-
+    # derived entries — those have richer used_by context).
+    try:
+        extras = json.loads(lb.required_pred_fields_json or '[]')
+    except (TypeError, ValueError):
+        extras = []
+    for entry in (extras or []):
+        if not isinstance(entry, dict):
+            continue
+        name = (entry.get('name') or '').strip()
+        if not name or name in seen:
+            continue
+        seen[name] = {
+            'name': name,
+            'gt_field': (entry.get('gt_field') or name.removesuffix('_pred')) or name,
+            'kind': entry.get('kind') or 'scalar',
+            'description': entry.get('description') or (
+                f"Required prediction field `{name}` (no scoring "
+                "metric — organizer wants the raw values)."
+            ),
+            'used_by': ['(no metric — required by LB)'],
+        }
     return list(seen.values())
 
 
@@ -7978,6 +8009,13 @@ def create_leaderboard_auto_finalize():
     extra_metrics = _parse_extra_metrics(
         request.form.get('extra_metrics_json') or '[]'
     )
+    # Pred fields required even without a scoring metric (organizer
+    # wants the raw predictions on disk for human review). Persisted
+    # to Leaderboard.required_pred_fields_json so the submission-
+    # contract widget surfaces them.
+    extra_pred_fields = _parse_extra_pred_fields(
+        request.form.get('extra_pred_fields_json') or '[]'
+    )
 
     if hf_repo_id:
         # ---- HF-ref flow ----
@@ -8008,6 +8046,8 @@ def create_leaderboard_auto_finalize():
             revision=revision, split=split,
             metric_proposals=kept_metrics, viz_proposals=kept_viz,
         )
+        if ok and lb_id and extra_pred_fields:
+            _persist_required_pred_fields(lb_id, extra_pred_fields)
         flash(msg, "success" if ok else "warning")
         if ok and lb_id:
             return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
@@ -8035,6 +8075,8 @@ def create_leaderboard_auto_finalize():
         ds, leaderboard_name, owner_user_id=g.current_user.id,
         metric_proposals=kept_metrics, viz_proposals=kept_viz,
     )
+    if ok and lb_id and extra_pred_fields:
+        _persist_required_pred_fields(lb_id, extra_pred_fields)
     flash(msg, "success" if ok else "warning")
     if ok and lb_id:
         return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
@@ -8113,6 +8155,60 @@ def api_lb_preview_llm_metric():
         sort_direction='higher_is_better',
         code_source='llm',
     )
+
+
+_EXTRA_PRED_KINDS = ('scalar', 'image', 'mask', 'depth')
+
+
+def _persist_required_pred_fields(lb_id, fields):
+    """Write the validated extra_pred_fields list onto the LB. Best
+    effort: a JSON-encode failure is logged but doesn't fail the
+    create call — the LB row already exists at this point."""
+    if not fields:
+        return
+    try:
+        lb = Leaderboard.query.get(lb_id)
+        if lb is None:
+            return
+        lb.required_pred_fields_json = json.dumps(fields)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"persist required_pred_fields_json failed for lb {lb_id}: {e}")
+
+
+def _parse_extra_pred_fields(raw_json):
+    """Validate the `extra_pred_fields_json` payload from the auto-LB
+    preview's "Required prediction fields" UI. Bad JSON / wrong shape
+    → []. Each entry must have a non-empty `name` and a `kind` from
+    the small allow-list; gt_field defaults to the bare name (strip
+    a trailing `_pred` if present)."""
+    try:
+        items = json.loads(raw_json or '[]')
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get('name') or '').strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        kind = item.get('kind') or 'scalar'
+        if kind not in _EXTRA_PRED_KINDS:
+            kind = 'scalar'
+        gt_field = (item.get('gt_field') or '').strip() or name.removesuffix('_pred')
+        out.append({
+            'name': name,
+            'gt_field': gt_field,
+            'kind': kind,
+            'description': (item.get('description') or '').strip(),
+        })
+    return out
 
 
 def _parse_extra_metrics(raw_json):
@@ -11719,6 +11815,10 @@ def check_and_migrate_db():
                     # uniquely binds a public LB to one HF repo.
                     ("leaderboard",          "canonicality",                     "VARCHAR(20) NOT NULL DEFAULT 'personal'"),
                     ("leaderboard",          "canonical_for_repo",               "VARCHAR(200)"),
+                    # Phase 9: required pred fields decoupled from metrics
+                    # (organizer wants to receive predictions even when no
+                    # scoring metric consumes them).
+                    ("leaderboard",          "required_pred_fields_json",        "TEXT"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
