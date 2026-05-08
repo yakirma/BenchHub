@@ -255,7 +255,7 @@
             hfList.innerHTML = rows.map(r => `
                 <div class="hf-picker-row d-flex align-items-start gap-2 px-2 py-1"
                      style="border-bottom: 1px solid var(--bs-border-color);">
-                  <a href="https://huggingface.co/datasets/${encodeURIComponent(r.id)}"
+                  <a href="https://huggingface.co/datasets/${r.id.split('/').map(encodeURIComponent).join('/')}"
                      target="_blank" rel="noopener"
                      class="text-decoration-none text-body flex-grow-1 d-block py-1"
                      title="Open ${escapeHtml(r.id)} on HuggingFace">
