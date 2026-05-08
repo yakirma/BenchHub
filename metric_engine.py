@@ -396,7 +396,7 @@ def _load_sub_pred_for_sample(submission_folder, folder_name, sample_name):
 
 
 def get_metric_context(sample, sub=None, submission_folder=None,
-                       upload_folder=None):
+                       upload_folder=None, pointer_resolver=None):
     """
     Builds a context dictionary for metric evaluation.
     Includes GT fields and optionally Submission fields for a specific sample.
@@ -405,6 +405,12 @@ def get_metric_context(sample, sub=None, submission_folder=None,
     upload_folder: Root of the BenchHub upload tree (resolves the
     relative paths stored in CustomField.value_text into absolute paths).
     Falls back to the env var BENCHHUB_UPLOAD_FOLDER when not provided.
+
+    pointer_resolver: optional `(sample, cf) -> numpy_array_or_None`
+    callback for pointer-mode datasets where the CustomField has no
+    on-disk file. Caller (app.py) injects the bench_cache-backed
+    resolver; the engine stays decoupled from the cache layer so this
+    module is testable in isolation.
     """
     import os
     context = {}
@@ -438,6 +444,16 @@ def get_metric_context(sample, sub=None, submission_folder=None,
              context[cf.name] = cf.value_float
         elif cf.field_type in ('image', 'depth'):
             arr = _load_gt_array(cf, upload_folder)
+            if arr is None and pointer_resolver is not None and getattr(cf, 'source_column', None):
+                # Pointer-mode CustomField: no on-disk file, just a
+                # reference to a row + column in an HF repo. Hand off
+                # to the caller-supplied resolver, which is wired to
+                # bench_cache (lazy fetch + LRU cache + eviction).
+                try:
+                    arr = pointer_resolver(sample, cf)
+                except Exception as e:
+                    print(f"DEBUG: pointer_resolver raised for {cf.name}: {e}")
+                    arr = None
             context[f"gt_{cf.name}"] = arr
             context[cf.name] = arr
 

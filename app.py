@@ -27,6 +27,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from metric_engine import evaluate_dynamic_metric, get_metric_context, sort_metrics_by_dependency
+import bench_cache
 import subprocess
 from functools import wraps
 from authlib.integrations.flask_client import OAuth
@@ -184,6 +185,16 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 # Ensure upload directory exists
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Pointer-mode + remote-submission cache. Bytes streamed from HF / from
+# user-owned remote storage land here under a bounded LRU. Default
+# location is alongside uploads so the same Fly volume covers both.
+app.config.setdefault(
+    'CACHE_FOLDER',
+    os.environ.get('BENCHHUB_CACHE_FOLDER')
+    or os.path.join(app.config['UPLOAD_FOLDER'], '_cache'),
+)
+os.makedirs(app.config['CACHE_FOLDER'], exist_ok=True)
 
 
 # --- OAuth (Phase 1 multi-tenancy) ---
@@ -385,6 +396,12 @@ class Dataset(db.Model):
     # later "Refresh from HF" can replay the import deterministically.
     source_kind = db.Column(db.String(32), nullable=True)
     source_metadata = db.Column(db.Text, nullable=True)
+    # 'local'      → samples have on-disk files (images / depth NPZs).
+    # 'hf-pointer' → samples carry source_ref_json + per-CustomField
+    #                source_column; the engine streams from HF on
+    #                demand and caches via bench_cache.
+    storage_mode = db.Column(db.String(20), nullable=False,
+                             default='local', server_default='local')
 
     @property
     def source_metadata_parsed(self):
@@ -403,6 +420,12 @@ class Sample(db.Model):
     dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=False)
     name = db.Column(db.String(100), nullable=False)
     tags = db.Column(db.String(500)) # Stores comma-separated tags
+    # Pointer-mode storage. Populated only for samples that come from
+    # a streaming HF dataset; NULL for everything imported as bytes-on-
+    # disk. Stores a JSON blob {repo_id, revision, split, row_idx} so
+    # the engine can fetch this row's image / depth on-demand via
+    # bench_cache. See Dataset.storage_mode.
+    source_ref_json = db.Column(db.Text, nullable=True)
 
     histogram_data = db.relationship('HistogramData', backref='sample', uselist=False, lazy=True, cascade="all, delete-orphan")
 
@@ -482,6 +505,13 @@ class CustomField(db.Model):
     sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submission.id'), nullable=True)
     sample_name = db.Column(db.String(100), nullable=True)  # Sample name for submission custom fields
+    # Pointer-mode: name of the column in the upstream HF row that
+    # produces this CustomField when fetched. Populated only when the
+    # parent Sample's source_ref_json is set (i.e. the dataset is
+    # storage_mode='hf-pointer'). value_text stays NULL for image /
+    # depth pointer fields; the engine resolves them via bench_cache
+    # using (sample.source_ref_json, source_column) as the cache key.
+    source_column = db.Column(db.String(120), nullable=True)
 
     def get_value(self):
         """Helper to get the appropriate value based on type"""
@@ -6650,6 +6680,356 @@ def _infer_mapping(features):
     return out
 
 
+def _pointer_gt_resolver(sample, cf):
+    """Bench-cache-backed resolver passed to `get_metric_context` so
+    pointer-mode samples can serve image / depth GT to metrics
+    on-demand. Returns a numpy array on success, None on any failure.
+
+    Cache key shape:
+        gt:<repo_id>@<revision>:<split>:<row_idx>:<source_column>
+
+    Submissions evict before GT (see bench_cache.cache_gc) so the
+    GT side stays warm across re-evals."""
+    if not (sample is not None and getattr(sample, 'source_ref_json', None)
+            and getattr(cf, 'source_column', None)):
+        return None
+    try:
+        ref = json.loads(sample.source_ref_json)
+    except (TypeError, ValueError):
+        return None
+    repo_id = ref.get('repo_id')
+    if not repo_id:
+        return None
+    revision = ref.get('revision') or 'main'
+    split = ref.get('split') or 'train'
+    try:
+        row_idx = int(ref.get('row_idx'))
+    except (TypeError, ValueError):
+        return None
+    cache_key = f"gt:{repo_id}@{revision}:{split}:{row_idx}:{cf.source_column}"
+    cache_root = app.config.get('CACHE_FOLDER')
+
+    # Pull the user's HF token if the dataset's owner has one saved —
+    # gated repos otherwise 401 here at metric-eval time.
+    hf_token = None
+    try:
+        owner = sample.dataset.owner if sample.dataset else None
+        hf_token = getattr(owner, 'hf_token', None)
+    except Exception:
+        pass
+
+    def _writer(path):
+        from datasets import load_dataset
+        ds = load_dataset(
+            repo_id, split=split, streaming=True,
+            revision=ref.get('revision'),  # keep None if unpinned at import
+            token=hf_token, trust_remote_code=True,
+        )
+        # `skip(N).take(1)` is the streaming-friendly shape for HF
+        # datasets; iterating + breaking works equally and avoids
+        # methods that only exist on IterableDataset in some versions.
+        target = None
+        for i, row in enumerate(ds):
+            if i == row_idx:
+                target = row
+                break
+        if target is None:
+            raise RuntimeError(
+                f"row {row_idx} unreachable in {repo_id}@{revision}/{split}"
+            )
+        value = target.get(cf.source_column)
+        if value is None:
+            raise RuntimeError(
+                f"column {cf.source_column!r} missing in row {row_idx}"
+            )
+        # `np.savez` and `np.save` auto-append a file extension when
+        # the path doesn't already have one — which collides with
+        # bench_cache's hashed (extension-less) filename. Stage to a
+        # BytesIO and dump the buffer to the exact path we were given.
+        import io as _io
+        if cf.field_type == 'image':
+            from PIL import Image as _PILImage
+            buf = _io.BytesIO()
+            if hasattr(value, 'mode') and hasattr(value, 'save'):
+                value.convert('RGB').save(buf, 'PNG')
+            else:
+                arr = np.asarray(value)
+                if arr.ndim == 2:
+                    arr = np.stack([arr] * 3, axis=-1)
+                _PILImage.fromarray(arr.astype(np.uint8)).save(buf, 'PNG')
+            with open(path, 'wb') as f:
+                f.write(buf.getvalue())
+        elif cf.field_type == 'depth':
+            arr = np.asarray(value)
+            if arr.ndim == 3 and arr.shape[2] == 1:
+                arr = arr.squeeze(-1)
+            buf = _io.BytesIO()
+            np.savez(buf, depth=arr.astype(np.float32))
+            with open(path, 'wb') as f:
+                f.write(buf.getvalue())
+        else:
+            # Fallback: serialize via numpy savez under key 'value'.
+            buf = _io.BytesIO()
+            np.savez(buf, value=np.asarray(value))
+            with open(path, 'wb') as f:
+                f.write(buf.getvalue())
+
+    try:
+        cached_path = bench_cache.cache_put(
+            db.session, CacheEntry,
+            cache_root=cache_root, key=cache_key,
+            origin='gt', writer=_writer,
+        )
+    except Exception as e:
+        print(f"DEBUG: pointer fetch failed for {cache_key}: {e}")
+        return None
+
+    # Read back via the existing in-memory loader. The bench_cache
+    # filename is sha256 of the key (no extension); both PIL and
+    # np.load handle that fine.
+    try:
+        if cf.field_type == 'image':
+            from PIL import Image as _PILImage
+            return np.asarray(_PILImage.open(cached_path).convert('RGB'))
+        if cf.field_type == 'depth':
+            with np.load(cached_path) as data:
+                if 'depth' in data:
+                    return np.asarray(data['depth'])
+                first = next(iter(data.keys()))
+                return np.asarray(data[first])
+    except Exception as e:
+        print(f"DEBUG: pointer read-back failed for {cache_key}: {e}")
+    return None
+
+
+def _import_hf_pointer(repo_id, dataset_name, mapping, *, sample_cap=200,
+                       split='train', revision=None, hf_token=None,
+                       owner_user_id=None, features=None):
+    """Pointer-mode HF import: streams the first `sample_cap` rows for
+    metadata only (no image/depth bytes touch disk), then creates
+    Dataset + Sample + CustomField rows that carry references back
+    to the upstream HF rows. The engine resolves the actual image /
+    depth pixels on-demand via bench_cache when a metric runs.
+
+    What lands inline (cheap to keep, fast for the dataset page):
+      - scalar GT values (Value:int64 / float — stored on
+        CustomField.value_float)
+      - text GT values (captions, premise/hypothesis — stored on
+        CustomField.value_text)
+      - ClassLabel sidecars (`<col>_class` text + `tags/`
+        per-sample tag string on Sample.tags)
+
+    What's pointer-only (fetched + cached at eval time):
+      - image columns (target_kind='image')
+      - depth columns (target_kind='depth')
+
+    Histogram and json columns also go pointer-only.
+
+    Same `mapping` contract as `_import_hf_auto`; same return
+    `(success, message, ds_id)`.
+    """
+    if Dataset.query.filter_by(name=dataset_name).first() is not None:
+        return False, f'A dataset named "{dataset_name}" already exists.', None
+
+    classlabel_names = {}
+    for col, desc in (features or {}).items():
+        if isinstance(desc, dict) and desc.get('type') == 'ClassLabel':
+            names = desc.get('names') or []
+            if isinstance(names, list) and names:
+                classlabel_names[col] = names
+
+    # Stream the dataset for metadata; we DON'T extract bytes here.
+    # Each row contributes a (row_idx, scalar_values, text_values, ...)
+    # slice that we record on the Sample / CustomField rows.
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        return False, ("HF auto-import needs the `datasets` package; "
+                       "install it (or rebuild the image with it pinned)."), None
+    try:
+        ds_stream = load_dataset(
+            repo_id, split=split, streaming=True, revision=revision,
+            token=hf_token, trust_remote_code=True,
+        )
+    except Exception as e:
+        # Re-raise gated / auth errors so the route handler can route
+        # the user to the unlock wizard (same shape as the bytes-mode
+        # importer). Other errors → friendly message.
+        msg = str(e)
+        low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'authenticated' in low
+                or 'restricted' in low or 'access denied' in low):
+            raise
+        return False, f"Could not stream {repo_id}: {e}", None
+
+    # Augment classlabel_names with whatever ds.features exposes — same
+    # rationale as in `_import_hf_auto`. Cheap; only walks once.
+    try:
+        ds_feats = getattr(ds_stream, 'features', None) or {}
+        for col_name, feat in (
+            ds_feats.items() if hasattr(ds_feats, 'items') else []
+        ):
+            if col_name in classlabel_names:
+                continue
+            names = getattr(feat, 'names', None)
+            if not names:
+                inner = getattr(feat, 'feature', None)
+                if inner is not None:
+                    names = getattr(inner, 'names', None)
+            if names:
+                classlabel_names[col_name] = list(names)
+    except Exception as e:
+        print(f"ClassLabel name extraction (pointer) failed: {e}")
+
+    # Resolve the effective revision so the cache key is deterministic
+    # even when the user passed `revision=None` (HF's default 'main' is
+    # a moving target). Best-effort; falls back to 'main' on failure.
+    effective_revision = revision or 'main'
+    try:
+        from huggingface_hub import HfApi
+        head = HfApi().dataset_info(
+            repo_id, revision=revision, token=hf_token,
+        ).sha
+        if head:
+            effective_revision = head
+    except Exception as e:
+        print(f"revision pin (pointer) failed: {e}")
+
+    # Build the Dataset row before the per-sample loop so the FK exists.
+    new_dataset = Dataset(
+        name=dataset_name,
+        owner_user_id=owner_user_id,
+        visibility='public',
+        source_kind='hf-pointer',
+        source_metadata=json.dumps({
+            'repo_id': repo_id, 'revision': effective_revision,
+            'split': split, 'sample_cap': sample_cap,
+            'mapping': mapping,
+        }),
+        storage_mode='hf-pointer',
+    )
+    db.session.add(new_dataset)
+    db.session.flush()
+
+    # Per-row loop: only metadata-shape columns get materialized inline.
+    n_written = 0
+    sample_tag_strings = {}  # sample_name -> list[str]
+    for row_idx, example in enumerate(ds_stream):
+        if n_written >= sample_cap:
+            break
+        sample_name = f"s{n_written:05d}"
+        sample = Sample(
+            dataset_id=new_dataset.id,
+            name=sample_name,
+            source_ref_json=json.dumps({
+                'repo_id': repo_id,
+                'revision': effective_revision,
+                'split': split,
+                'row_idx': row_idx,
+            }),
+        )
+        db.session.add(sample)
+        db.session.flush()
+        wrote_anything = False
+
+        for m in mapping:
+            col = m['column']
+            kind = m.get('target_kind')
+            if kind == 'skip' or col not in example:
+                continue
+            value = example[col]
+            target_field = m['target_field']
+
+            if kind == 'image' or kind == 'depth' or kind == 'histogram':
+                # Pointer field: value_text NULL, source_column set so
+                # the engine knows which HF column to fetch.
+                cf = CustomField(
+                    name=target_field, sample_id=sample.id,
+                    field_type=('depth' if kind == 'depth'
+                                else 'histogram' if kind == 'histogram'
+                                else 'image'),
+                    value_text=None,
+                    source_column=col,
+                )
+                db.session.add(cf)
+                wrote_anything = True
+            elif kind in ('scalar', 'metric') and value is not None:
+                # ClassLabel-aware: also persist the class name + tag.
+                names = classlabel_names.get(col)
+                try:
+                    int_val = int(value)
+                except (TypeError, ValueError):
+                    int_val = None
+                if names is not None and int_val is not None and 0 <= int_val < len(names):
+                    class_name = str(names[int_val])
+                    db.session.add(CustomField(
+                        name=target_field, sample_id=sample.id,
+                        field_type='scalar', value_float=float(int_val),
+                        source_column=col,
+                    ))
+                    redundant = (class_name == str(int_val))
+                    if not redundant:
+                        db.session.add(CustomField(
+                            name=f"{target_field}_class",
+                            sample_id=sample.id, field_type='text',
+                            value_text=class_name,
+                        ))
+                    sample_tag_strings.setdefault(sample_name, []).append(class_name)
+                else:
+                    try:
+                        fv = float(value)
+                    except (TypeError, ValueError):
+                        fv = None
+                    if fv is not None:
+                        db.session.add(CustomField(
+                            name=target_field, sample_id=sample.id,
+                            field_type='scalar', value_float=fv,
+                            source_column=col,
+                        ))
+                wrote_anything = True
+            elif kind == 'text' and value is not None:
+                db.session.add(CustomField(
+                    name=target_field, sample_id=sample.id,
+                    field_type='text', value_text=str(value),
+                    source_column=col,
+                ))
+                wrote_anything = True
+            # Unknown kinds silently skipped — same as the bytes-mode
+            # importer.
+
+        if wrote_anything:
+            n_written += 1
+            # Materialize the per-sample tag string from any class-name
+            # sidecars accumulated above.
+            tags_list = sample_tag_strings.get(sample_name) or []
+            if tags_list:
+                sample.tags = ','.join(tags_list)
+        else:
+            # Roll back the sample to keep the row count honest.
+            db.session.delete(sample)
+
+    if n_written == 0:
+        db.session.rollback()
+        return False, "No samples could be ingested in pointer mode.", None
+
+    # Optional: auto-tag the dataset (same as bytes mode).
+    try:
+        auto_tags = _auto_tags_for_hf(repo_id, hf_token=hf_token,
+                                      revision=revision)
+        if auto_tags:
+            new_dataset.tags = _resolve_tags(', '.join(auto_tags))
+    except Exception as e:
+        print(f"auto-tags (pointer) failed: {e}")
+
+    db.session.commit()
+    return (
+        True,
+        (f"Imported '{dataset_name}' (pointer mode, {n_written} samples). "
+         f"Bytes stay on HF; metric eval streams + caches per row."),
+        new_dataset.id,
+    )
+
+
 def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
                    split='train', revision=None, hf_token=None,
                    owner_user_id=None, features=None):
@@ -6973,12 +7353,24 @@ def import_from_hf_auto():
     except Exception:
         features = {}
 
+    # Pointer mode by default — bytes stay on HF, BenchHub streams
+    # + caches per row at metric-eval time. The legacy bytes-on-disk
+    # importer stays available behind `?storage_mode=local` for the
+    # rare case where someone needs byte-for-byte custody.
+    storage_mode = request.form.get('storage_mode', 'hf-pointer')
     try:
-        success, message, ds_id = _import_hf_auto(
-            repo_id, dataset_name, mapping,
-            sample_cap=sample_cap, revision=revision, hf_token=hf_token,
-            owner_user_id=g.current_user.id, features=features,
-        )
+        if storage_mode == 'hf-pointer':
+            success, message, ds_id = _import_hf_pointer(
+                repo_id, dataset_name, mapping,
+                sample_cap=sample_cap, revision=revision, hf_token=hf_token,
+                owner_user_id=g.current_user.id, features=features,
+            )
+        else:
+            success, message, ds_id = _import_hf_auto(
+                repo_id, dataset_name, mapping,
+                sample_cap=sample_cap, revision=revision, hf_token=hf_token,
+                owner_user_id=g.current_user.id, features=features,
+            )
         flash(message, "success" if success else "danger")
         if success and ds_id:
             return redirect(url_for('dataset_view', dataset_id=ds_id))
@@ -7811,7 +8203,7 @@ def comparison_view(leaderboard_id):
                     else:
                         # Fallback to dynamic calculation
                         if target_lm:
-                            context = get_metric_context(s, target_sub, submission_folder=submission_folder)
+                            context = get_metric_context(s, target_sub, submission_folder=submission_folder, pointer_resolver=_pointer_gt_resolver)
                             val, err = evaluate_dynamic_metric(target_lm.global_metric, context, target_lm.arg_mappings)
                         else:
                             val = None
@@ -7966,7 +8358,7 @@ def comparison_view(leaderboard_id):
             #          log_safe_metrics[k] = get_log_safe_value(v)
             
             # Add Dynamic Metrics
-            dynamic_ctx = get_metric_context(sample, sub)
+            dynamic_ctx = get_metric_context(sample, sub, pointer_resolver=_pointer_gt_resolver)
             # Add calculated standard metrics to ctx for dynamic functions
             for km, vm in current_sample_metrics.items():
                  if vm is not None: dynamic_ctx[km] = vm
@@ -10219,6 +10611,19 @@ def check_and_migrate_db():
                     # reviewer re-open the exact notebook that produced
                     # the predictions). NULL for non-Colab submissions.
                     ("submission",           "source_colab_url",                 "VARCHAR(500)"),
+                    # Pointer-mode storage. NEW (2026-05-08).
+                    # storage_mode marks whether a Dataset's samples
+                    # carry on-disk files ('local') or get streamed
+                    # from HF on-demand ('hf-pointer').
+                    ("dataset",              "storage_mode",                     "VARCHAR(20) NOT NULL DEFAULT 'local'"),
+                    # source_ref_json on Sample pins the upstream row
+                    # (repo_id, revision, split, row_idx) for pointer-
+                    # mode samples. NULL for local samples.
+                    ("sample",               "source_ref_json",                  "TEXT"),
+                    # source_column on CustomField names the HF column
+                    # this field pulls from when its parent Sample is
+                    # pointer-backed. NULL otherwise.
+                    ("custom_field",         "source_column",                    "VARCHAR(120)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
