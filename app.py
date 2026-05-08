@@ -11665,14 +11665,25 @@ def prune_incomplete_datasets():
     removed = 0
 
     for ds in Dataset.query.all():
+        # Pointer-mode datasets INTENTIONALLY have no on-disk folder —
+        # bytes live on HF and stream through bench_cache. Skip the
+        # folder check for them; sample-count > 0 is the only signal
+        # of completion.
+        is_pointer = (ds.storage_mode == 'hf-pointer')
         sample_count = Sample.query.filter_by(dataset_id=ds.id).count()
         folder_path = os.path.join(datasets_root, secure_filename(ds.name))
         folder_ok = os.path.isdir(folder_path)
 
-        if sample_count == 0 or not folder_ok:
+        if is_pointer:
+            incomplete = sample_count == 0
+        else:
+            incomplete = sample_count == 0 or not folder_ok
+
+        if incomplete:
             print(
                 f"prune_incomplete_datasets: removing dataset {ds.id} "
-                f"'{ds.name}' (samples={sample_count}, folder_present={folder_ok})"
+                f"'{ds.name}' (storage={ds.storage_mode}, "
+                f"samples={sample_count}, folder_present={folder_ok})"
             )
             # Remove on-disk folder if it exists at all (may be partially
             # extracted bytes even when the row says zero samples).

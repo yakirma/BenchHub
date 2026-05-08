@@ -68,6 +68,38 @@ def test_prune_removes_dataset_when_folder_missing(client, db_session, make_zip)
     assert Dataset.query.get(ds_id) is None
 
 
+def test_prune_keeps_pointer_mode_dataset_with_no_folder(client, db_session):
+    """Pointer-mode datasets INTENTIONALLY have no on-disk folder —
+    bytes live on HF, samples carry source_ref_json. The prune routine
+    must not treat the missing folder as "incomplete" or it will
+    silently delete every successful HF auto-import."""
+    ds = Dataset(
+        name='pointer_keepalive_ds', visibility='public',
+        storage_mode='hf-pointer', source_kind='hf-pointer',
+    )
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(
+        dataset_id=ds.id, name='s00000',
+        source_ref_json='{"repo_id": "fake/x", "row_idx": 0}',
+    ))
+    db.session.commit()
+    assert prune_incomplete_datasets() == 0
+    assert Dataset.query.get(ds.id) is not None
+
+
+def test_prune_still_drops_pointer_dataset_with_zero_samples(client, db_session):
+    """Even pointer-mode rows aren't immune to the zero-sample sweep —
+    that signals a half-finished import where the metadata stream
+    yielded nothing usable."""
+    ds = Dataset(
+        name='pointer_empty_ds', visibility='public',
+        storage_mode='hf-pointer', source_kind='hf-pointer',
+    )
+    db.session.add(ds); db.session.commit()
+    assert prune_incomplete_datasets() == 1
+    assert Dataset.query.get(ds.id) is None
+
+
 def test_prune_returns_zero_when_nothing_to_clean(client, db_session):
     """No datasets at all → no-op, returns 0."""
     assert prune_incomplete_datasets() == 0
