@@ -15,14 +15,16 @@ shape — see "Insights" below. Instead we're refactoring to
 **live-streaming GT from HF + decentralized submission storage**,
 backed by a single bounded-LRU disk cache.
 
-### Active refactor: three pieces in flight
+### Active refactor: pieces in flight
 
 | Piece | Status | Where |
 | ----- | ------ | ----- |
 | **Disk-bounded LRU cache** (`bench_cache.py`) | ✅ landed | `bench_cache.py`, `CacheEntry` model, 15 tests |
-| **Pointer-mode for HF datasets** (no byte cloning) | 🟡 next | adds `Dataset.storage_mode`, `Sample.source_ref_json`, engine integration |
-| **Remote submissions** (HF Hub + raw URL, hash-pinned) | 🟡 after | adds `Submission.storage_mode`, `Submission.remote_url`, `Submission.content_hash` |
-| **Paired-dataset support via LB settings** | 🟡 after | adds `leaderboard_datasets.role` ('primary' / 'gt_source') |
+| **Pointer-mode for HF datasets** (no byte cloning) | ✅ landed | `Dataset.storage_mode`, `Sample.source_ref_json`, `_import_hf_pointer`, `_pointer_gt_resolver`, 10 tests |
+| **Remote submissions** (HF Hub + raw URL, hash-pinned) | ✅ landed | `Submission.storage_mode/remote_url/content_hash`, `_fetch_remote_submission_zip`, `/api/leaderboard/<id>/submission/from_url`, 9 tests |
+| **Paired-dataset support via LB settings** | 🟡 next | adds `leaderboard_datasets.role` ('primary' / 'gt_source') |
+| **Hash-mismatch enforcement on re-eval** | 🟡 after | recalc path verifies `Submission.content_hash` against re-fetched bytes |
+| **Evict extracted submission folder after eval** | 🟡 after | recalc re-extracts from cached ZIP; closes the disk-savings loop |
 
 Architecture sketch:
 
@@ -64,47 +66,48 @@ re-ranking.
 
 ### Concrete next steps (pick up here)
 
-1. **Wire pointer-mode for datasets.**
-   - Add `Dataset.storage_mode` enum + `Sample.source_ref_json`.
-   - Migration entries.
-   - New `_import_hf_pointer(repo_id, dataset_name, mapping, ...)`
-     that creates Sample rows with `source_ref_json` populated and
-     writes ZERO bytes. Schema + ClassLabel names harvested via
-     metadata-only stream of `datasets.load_dataset(streaming=True)`.
-   - `metric_engine._load_gt_array`: when the CustomField row has
-     no `value_text` AND the parent Dataset is `storage_mode='hf-pointer'`,
-     resolve via `bench_cache.cache_get/put` keyed on
-     `gt:<repo_id>@<revision>:<split>:<row_idx>`. Cache writer pulls
-     one row via streaming + serializes to NPZ/PNG.
-   - Replace `_import_hf_auto`'s default with pointer mode for new
-     imports; keep the cloning path behind a flag for the rare case
-     where a user wants byte-for-byte custody.
+Most of the original three-piece refactor is in. The last piece +
+two follow-ups remain:
 
-2. **Wire remote submissions.**
-   - Add `Submission.storage_mode`, `Submission.remote_url`,
-     `Submission.remote_auth_ref` (encrypted token reference),
-     `Submission.content_hash`.
-   - New endpoints:
-     - `POST /api/leaderboard/<id>/submission/from_hf_hub`
-       (body: `{repo_id, path, hf_token?}`).
-     - `POST /api/leaderboard/<id>/submission/from_url`
-       (body: `{url, headers?}`).
-   - Both compute SHA-256 on first read and reject mismatches on
-     re-eval.
-   - Engine's submission-folder scanner (`_load_sub_pred_for_sample`)
-     gets a "fetch via cache" branch when the Submission is remote.
-
-3. **Paired-dataset LB role column.**
-   - `leaderboard_datasets.role` (`'primary'` | `'gt_source'`).
-   - LB edit-page UI: per-dataset role dropdown in the attached-
-     datasets list.
+1. **Paired-dataset `role` column on `leaderboard_datasets`.**
+   - Add `role` VARCHAR(20) DEFAULT 'primary' (`'primary'` |
+     `'gt_source'`).
+   - Migration entry.
+   - LB edit page UI: per-dataset role dropdown in the attached-
+     datasets list. Auto-LB preview: when the user hands two
+     datasets to a single auto-LB, prompt which is which.
    - `get_metric_context` walks BOTH datasets, populating `gt_<col>`
      from whichever has the column (gt_source wins on conflict).
-   - Auto-LB preview, when the user hands two datasets to a single
-     auto-LB: ask which is which.
+   - Solves the dirty-docs `-train`/`-cleaned` shape and SIDD-style
+     splits without merging upstream repos.
+   - Estimated effort: ~3-4 hours.
 
-Estimated remaining effort: **~2-3 days** for the three pieces above
-together, mostly mechanical now that the cache is in place.
+2. **Hash-mismatch enforcement on re-eval (remote submissions).**
+   - On recalc path: re-fetch via `_fetch_remote_submission_zip`
+     (which is cache-aware) → compare returned hash against
+     `Submission.content_hash` → on mismatch, set
+     `processing_status='Error: submission file changed; please
+     resubmit'` and bail.
+   - Surface a clear UI badge on the LB row when this happens.
+   - Estimated effort: ~1-2 hours.
+
+3. **Evict extracted submission folder after eval (close the
+   disk-savings loop for remote subs).**
+   - Currently a remote submission's bytes live in two places: the
+     cached ZIP AND the extracted `uploads/submissions/<id>/`
+     folder. Real disk savings need eviction of the extracted form.
+   - Add a context manager `_with_extracted_submission(submission)`
+     that, for remote submissions, extracts the cached ZIP into a
+     transient folder, yields the path, and removes the folder on
+     exit. Local submissions yield `uploads/submissions/<id>/`
+     unchanged.
+   - Move tasks.py + the recalc paths to use the context manager.
+   - Estimated effort: ~3-4 hours.
+
+After 1-3 land, the storage refactor is feature-complete: GT bytes,
+submission bytes, and per-row caching all live in `bench_cache`,
+which is bounded + LRU + origin-prioritized. Disk usage scales with
+recently-accessed-bytes, not total-imported-bytes.
 
 ---
 
