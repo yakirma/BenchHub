@@ -7455,6 +7455,11 @@ def import_from_hf_preview():
         features=features,
         mapping=mapping,
         inference_source=inference_source,
+        # Carry through the "I came from the 'Create leaderboard with
+        # this dataset' CTA on /hf/<repo_id>" intent so the post-confirm
+        # path can redirect to the auto-LB preview instead of the
+        # dataset page.
+        auto_create_lb=bool(request.form.get('auto_create_lb')),
     )
 
 
@@ -7519,6 +7524,35 @@ def import_from_hf_auto():
             )
         flash(message, "success" if success else "danger")
         if success and ds_id:
+            # If the user came in via the "Create leaderboard with this
+            # dataset" CTA on /hf/<repo_id>, fast-path them straight
+            # into the auto-LB preview (where they confirm the proposed
+            # metrics + viz). Otherwise land on the dataset page as
+            # before.
+            if request.form.get('auto_create_lb'):
+                ds = Dataset.query.get(ds_id)
+                metric_props, viz_props = _collect_auto_lb_proposals(ds)
+                if metric_props or viz_props:
+                    seen_pred = {}
+                    for p in metric_props + viz_props:
+                        for pf in (p.get('pred_fields') or []):
+                            seen_pred.setdefault(pf['name'], pf)
+                    return render_template(
+                        'auto_lb_preview.html',
+                        leaderboard_name=f"{dataset_name}_leaderboard",
+                        dataset=ds,
+                        metric_proposals=metric_props,
+                        viz_proposals=viz_props,
+                        pred_field_schema=list(seen_pred.values()),
+                    )
+                # No metric/viz could be proposed — flash a hint + fall
+                # through to the dataset page.
+                flash(
+                    "Dataset imported, but no metrics could be auto-proposed "
+                    "(needs scalar / image / depth GT columns). "
+                    "Open the dataset and add a leaderboard manually.",
+                    "warning",
+                )
             return redirect(url_for('dataset_view', dataset_id=ds_id))
     except Exception as e:
         msg = str(e)
