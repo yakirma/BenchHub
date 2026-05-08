@@ -5420,7 +5420,7 @@ def _scalar_gt_columns(ds):
 
 
 def _proposal_top1_classlabel(col):
-    global_name = f"top1_{col}"
+    global_name = "top1"
     return {
         'target_name': f"top-1 accuracy ({col})",
         'global_name': global_name,
@@ -5453,7 +5453,7 @@ def _proposal_top1_classlabel(col):
 
 
 def _proposal_mae_scalar(col):
-    global_name = f"mae_{col}"
+    global_name = "mae"
     return {
         'target_name': f"MAE ({col})",
         'global_name': global_name,
@@ -5484,7 +5484,7 @@ def _proposal_rmse_depth(col):
     """Standard depth RMSE on the valid-mask. The metric receives the
     GT and predicted depth maps as numpy arrays (engine-side loader
     handles the NPZ → array unmarshalling)."""
-    global_name = f"rmse_{col}"
+    global_name = "rmse"
     return {
         'target_name': f"RMSE ({col})",
         'global_name': global_name,
@@ -5532,7 +5532,7 @@ def _proposal_rmse_depth(col):
 
 
 def _proposal_abs_rel_depth(col):
-    global_name = f"abs_rel_{col}"
+    global_name = "abs_rel"
     return {
         'target_name': f"abs-rel ({col})",
         'global_name': global_name,
@@ -5575,7 +5575,7 @@ def _proposal_abs_rel_depth(col):
 def _proposal_a1_depth(col):
     """Depth-thresholded accuracy: fraction of pixels where
     max(gt/pred, pred/gt) < 1.25."""
-    global_name = f"a1_{col}"
+    global_name = "a1"
     return {
         'target_name': f"δ < 1.25 ({col})",
         'global_name': global_name,
@@ -5616,7 +5616,7 @@ def _proposal_a1_depth(col):
 
 def _proposal_psnr_image(col):
     """PSNR on RGB arrays; auto-normalizes if input looks uint8."""
-    global_name = f"psnr_{col}"
+    global_name = "psnr"
     return {
         'target_name': f"PSNR ({col})",
         'global_name': global_name,
@@ -5664,7 +5664,7 @@ def _proposal_psnr_image(col):
 def _proposal_miou_mask(col):
     """Mean IoU across the union of class IDs present in either GT or
     pred mask. Both are integer-valued image arrays."""
-    global_name = f"miou_{col}"
+    global_name = "miou"
     return {
         'target_name': f"mean IoU ({col})",
         'global_name': global_name,
@@ -5754,7 +5754,7 @@ def _viz_depth_error_heatmap(col):
     arrive as parallel lists of HxW depth arrays (is_aggregated=True,
     accepts_aggregated_inputs=True). Pads to common shape via simple
     crop so a heterogeneous-resolution submission still renders."""
-    global_name = f"depth_error_heatmap_{col}"
+    global_name = "depth_error_heatmap"
     return {
         'target_name': f"depth error heatmap ({col})",
         'global_name': global_name,
@@ -5828,7 +5828,7 @@ def _propose_visualizations_for_dataset(ds):
             continue
         if kind != 'scalar' or not hints.get('is_classlabel'):
             continue
-        global_name = f"confusion_matrix_{col}"
+        global_name = "confusion_matrix"
         target_name = f"confusion matrix ({col})"
         description = (
             f"Aggregated confusion matrix between GT `{col}` "
