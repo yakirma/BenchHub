@@ -675,6 +675,18 @@ class Submission(db.Model):
     # API endpoint when the form includes `source_colab_url`, or
     # auto-populated from the user's per-user gist for this LB.
     source_colab_url = db.Column(db.String(500), nullable=True)
+    # Storage:
+    #   'local'  → ZIP was uploaded directly to BenchHub's volume.
+    #   'remote' → ZIP lives at `remote_url` (https:// or hf://).
+    #              Fetched on-demand into bench_cache; extracted to
+    #              `uploads/submissions/<id>/` for eval, may evict.
+    storage_mode = db.Column(db.String(20), nullable=False,
+                             default='local', server_default='local')
+    remote_url = db.Column(db.String(500), nullable=True)
+    # SHA-256 of the submission ZIP captured at first eval. On re-eval
+    # the bytes get hashed again and rejected on mismatch — strict
+    # reproducibility (same posture as `revision` pinning for HF GT).
+    content_hash = db.Column(db.String(64), nullable=True)
     # Phase 1 multi-tenancy. Submissions don't get their own visibility — they
     # inherit the leaderboard's. Owner is whoever uploaded the submission.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
@@ -10015,6 +10027,132 @@ def api_download_dataset(dataset_id):
         sys.stderr.flush()
         return jsonify({'error': str(e)}), 500
 
+def _fetch_remote_submission_zip(remote_url, *, hf_token=None,
+                                 sub_id=None):
+    """Resolve a `remote_url` (https:// or hf://owner/repo/path) to a
+    local file path via bench_cache. Returns (local_path, sha256_hex).
+
+    Cache key shape: `sub:zip:<remote_url>` (one cache entry per
+    URL, NOT per submission, so two submissions referencing the same
+    URL share the cached bytes — correct under hash-pin semantics).
+    Hash captured + returned so the caller can persist /
+    cross-check it on the Submission row.
+    """
+    import hashlib
+    import urllib.parse
+    cache_root = app.config.get('CACHE_FOLDER')
+    cache_key = f"sub:zip:{remote_url}"
+
+    def _writer(path):
+        scheme = urllib.parse.urlparse(remote_url).scheme
+        if scheme == 'hf':
+            # hf://<repo_id>/<path>[@<revision>]
+            spec = remote_url[len('hf://'):]
+            revision = None
+            if '@' in spec:
+                spec, revision = spec.rsplit('@', 1)
+            parts = spec.split('/', 2)
+            if len(parts) < 3:
+                raise ValueError(
+                    f"hf:// URL needs `owner/repo/path`, got {remote_url!r}"
+                )
+            owner, repo, file_path = parts[0], parts[1], parts[2]
+            from huggingface_hub import hf_hub_download
+            downloaded = hf_hub_download(
+                repo_id=f"{owner}/{repo}", filename=file_path,
+                repo_type='dataset', revision=revision, token=hf_token,
+            )
+            shutil.copy2(downloaded, path)
+        elif scheme in ('http', 'https'):
+            import requests as _r
+            with _r.get(remote_url, stream=True, timeout=120) as resp:
+                resp.raise_for_status()
+                with open(path, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            f.write(chunk)
+        else:
+            raise ValueError(f"unsupported URL scheme: {remote_url!r}")
+
+    cached_path = bench_cache.cache_put(
+        db.session, CacheEntry,
+        cache_root=cache_root, key=cache_key,
+        origin='submission', writer=_writer,
+    )
+    sha = hashlib.sha256()
+    with open(cached_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 16), b''):
+            sha.update(chunk)
+    return cached_path, sha.hexdigest()
+
+
+@app.route('/api/leaderboard/<int:leaderboard_id>/submission/from_url',
+           methods=['POST'])
+@require_api_token
+def submission_from_url_api(leaderboard_id):
+    """Submit by URL — the user's submission ZIP lives at a public
+    https:// or hf://owner/repo/path location, BenchHub fetches it
+    on-demand and caches via bench_cache. SHA-256 captured at first
+    fetch; recalcs verify the hash hasn't drifted.
+
+    JSON body: {url, submission_name?, source_colab_url?}.
+    Or form-data with the same fields.
+    """
+    leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
+    payload = request.get_json(silent=True) or request.form
+    remote_url = (payload.get('url') or '').strip()
+    if not remote_url:
+        return jsonify({'error': 'url is required'}), 400
+
+    ok, msg = check_quota(g.current_user, kind='submission')
+    if not ok:
+        return jsonify({'error': msg}), 429
+
+    submission_name = (payload.get('submission_name') or '').strip() \
+        or remote_url.rsplit('/', 1)[-1].replace('.zip', '') or 'remote_submission'
+    source_colab_url = (payload.get('source_colab_url') or '').strip() or None
+
+    # Fetch into cache + capture hash. The user's saved hf_token
+    # unlocks gated HF Hub repos.
+    try:
+        cached_path, content_hash = _fetch_remote_submission_zip(
+            remote_url, hf_token=getattr(g.current_user, 'hf_token', None),
+        )
+    except Exception as e:
+        return jsonify({'error': f'fetch failed: {e}'}), 400
+
+    try:
+        success, error = process_submission_zip(
+            leaderboard.id, submission_name, cached_path,
+            owner_user_id=g.current_user.id,
+            source_colab_url=source_colab_url,
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    if not success:
+        return jsonify({'error': error}), 500
+
+    # process_submission_zip created a Submission row keyed by
+    # whichever was the most recent for the user. Stamp it with
+    # storage_mode + remote_url + content_hash so re-eval can verify.
+    sub = (Submission.query
+           .filter_by(leaderboard_id=leaderboard.id,
+                      owner_user_id=g.current_user.id,
+                      name=submission_name)
+           .order_by(Submission.id.desc())
+           .first())
+    if sub is not None:
+        sub.storage_mode = 'remote'
+        sub.remote_url = remote_url
+        sub.content_hash = content_hash
+        db.session.commit()
+    return jsonify({
+        'success': True, 'message': 'Submission queued',
+        'submission_id': sub.id if sub else None,
+        'content_hash': content_hash,
+    })
+
+
 @app.route('/api/leaderboard/<int:leaderboard_id>/submission/upload', methods=['POST'])
 @require_api_token
 def submission_upload_api(leaderboard_id):
@@ -10624,6 +10762,10 @@ def check_and_migrate_db():
                     # this field pulls from when its parent Sample is
                     # pointer-backed. NULL otherwise.
                     ("custom_field",         "source_column",                    "VARCHAR(120)"),
+                    # Remote submissions (NEW 2026-05-08).
+                    ("submission",           "storage_mode",                     "VARCHAR(20) NOT NULL DEFAULT 'local'"),
+                    ("submission",           "remote_url",                       "VARCHAR(500)"),
+                    ("submission",           "content_hash",                     "VARCHAR(64)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
