@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}Create leaderboard from HuggingFace — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1000px;">
+    <h1 class="h3 fw-bold mb-1">
+        <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Create leaderboard from HuggingFace
+    </h1>
+    <p class="text-body-secondary mb-3">
+        Paste a HuggingFace dataset repo. We'll inspect its schema, propose
+        per-field metrics, and create a leaderboard where the dataset stays
+        on HuggingFace — submissions evaluate by streaming on demand.
+        No local copy is materialized.
+    </p>
+
+    {# Token banner — shows only when logged in but no token saved. #}
+    {% set hf_banner_context = "Gated datasets (ImageNet-1k, some medical imaging) need a personal access token; saving one once unlocks them for every future leaderboard." %}
+    {% include "_hf_token_banner.html" %}
+
+    <div class="row g-3">
+        <div class="col-lg-7">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+                    <h2 class="h5 fw-semibold mb-3">Pick a repo</h2>
+                    <form method="post" action="{{ url_for('import_from_hf_preview') }}">
+                        <div class="mb-3">
+                            <input type="text" class="form-control form-control-lg font-monospace"
+                                name="hf_repo_id" id="hf-repo-id-input"
+                                placeholder="user/repo" required autocomplete="off">
+                        </div>
+
+                        <details class="mb-3 small">
+                            <summary class="text-body-secondary user-select-none" style="cursor:pointer;">
+                                Advanced
+                            </summary>
+                            <div class="mt-2 vstack gap-2">
+                                <input type="text" class="form-control form-control-sm font-monospace"
+                                    name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
+                                <input type="password" class="form-control form-control-sm font-monospace"
+                                    name="hf_token"
+                                    placeholder="Access token (gated/private repos — auto-saved for next time)"
+                                    autocomplete="off">
+                                <input type="number" class="form-control form-control-sm" name="sample_cap"
+                                    placeholder="Sample cap for proposal preview (default 200)"
+                                    min="10" max="2000" value="200">
+                            </div>
+                        </details>
+
+                        <button type="submit" class="btn btn-primary py-2 w-100">
+                            <i class="bi bi-magic me-1"></i>Inspect schema &amp; propose metrics
+                        </button>
+                        <p class="form-text small mt-2 mb-0">
+                            We'll auto-detect field types and propose comparison
+                            metrics. You'll review + edit before the leaderboard is created.
+                        </p>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+                        <h2 class="h6 fw-semibold mb-0">
+                            <i class="bi bi-search me-1 text-body-secondary"></i>Browse HuggingFace
+                        </h2>
+                        <select id="hf-picker-sort" class="form-select form-select-sm" style="width: auto;">
+                            <option value="likes">Most likes</option>
+                            <option value="downloads">Most downloads</option>
+                            <option value="trending">Trending</option>
+                        </select>
+                    </div>
+                    <input type="search" id="hf-picker-q" class="form-control form-control-sm mb-2"
+                        placeholder="Filter HF datasets…" autocomplete="off">
+                    <div id="hf-picker-list"
+                        style="max-height: 360px; overflow-y: auto;
+                               border: 1px solid var(--bs-border-color); border-radius: 6px;
+                               padding: 0.25rem;">
+                        <div class="text-center small text-body-secondary py-3">Loading…</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if (recent_hf and current_user) or trending_hf %}
+    <div class="row g-3 mt-3">
+        {% if recent_hf and current_user %}
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <h2 class="h6 fw-semibold mb-2">
+                        <i class="bi bi-clock-history me-1 text-primary"></i>
+                        Your recent HF picks
+                    </h2>
+                    <ul class="list-unstyled mb-0 small">
+                        {% for v in recent_hf %}
+                        <li class="d-flex justify-content-between align-items-baseline mb-1">
+                            <a href="https://huggingface.co/datasets/{{ v.repo_id }}"
+                               target="_blank" rel="noopener"
+                               class="font-monospace text-decoration-none text-truncate me-2"
+                               title="Open on HuggingFace: {{ v.repo_id }}">{{ v.repo_id }}</a>
+                            <span class="text-body-secondary small flex-shrink-0">
+                                {{ v.visit_count }}× &middot;
+                                {{ v.last_visited_at.strftime('%Y-%m-%d') }}
+                            </span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        {% if trending_hf %}
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <h2 class="h6 fw-semibold mb-2">
+                        <i class="bi bi-graph-up-arrow me-1 text-warning"></i>
+                        Trending across BenchHub <span class="text-body-secondary fw-normal">(7d)</span>
+                    </h2>
+                    <ul class="list-unstyled mb-0 small">
+                        {% for t in trending_hf %}
+                        <li class="d-flex justify-content-between align-items-baseline mb-1">
+                            <a href="https://huggingface.co/datasets/{{ t.repo_id }}"
+                               target="_blank" rel="noopener"
+                               class="font-monospace text-decoration-none text-truncate me-2"
+                               title="Open on HuggingFace: {{ t.repo_id }}">{{ t.repo_id }}</a>
+                            <span class="text-body-secondary small flex-shrink-0">
+                                {{ t.users }} user{{ '' if t.users == 1 else 's' }} &middot;
+                                {{ t.visits }} visits
+                            </span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const hfList = document.getElementById('hf-picker-list');
+    const hfSort = document.getElementById('hf-picker-sort');
+    const hfQ = document.getElementById('hf-picker-q');
+    const hfRepoIdInput = document.getElementById('hf-repo-id-input');
+    let hfFetchSeq = 0;
+
+    function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => (
+            {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+        ));
+    }
+
+    async function loadHfPicker() {
+        const seq = ++hfFetchSeq;
+        hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">Loading…</div>';
+        const params = new URLSearchParams({sort: hfSort.value, q: hfQ.value});
+        try {
+            const resp = await fetch(`/api/hf/datasets?${params}`);
+            if (seq !== hfFetchSeq) return;
+            if (!resp.ok || !(resp.headers.get('content-type') || '').includes('application/json')) {
+                hfList.innerHTML = `<div class="text-center small text-danger py-3">
+                    Couldn't reach the HF picker (status ${resp.status}).
+                </div>`;
+                return;
+            }
+            const body = await resp.json();
+            const rows = body.rows || [];
+            if (!rows.length) {
+                hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">No matches.</div>';
+                return;
+            }
+            hfList.innerHTML = rows.map(r => `
+                <div class="hf-picker-row d-flex align-items-start gap-2 px-2 py-1"
+                     style="border-bottom: 1px solid var(--bs-border-color);">
+                  <a href="https://huggingface.co/datasets/${encodeURIComponent(r.id)}"
+                     target="_blank" rel="noopener"
+                     class="text-decoration-none text-body flex-grow-1 d-block py-1"
+                     title="Open ${escapeHtml(r.id)} on HuggingFace">
+                    <div class="d-flex justify-content-between align-items-baseline">
+                        <span class="font-monospace small">${escapeHtml(r.id)}</span>
+                        <span class="small text-body-secondary ms-2">
+                            <i class="bi bi-heart-fill text-danger me-1"></i>${r.likes}
+                            <i class="bi bi-download ms-2 me-1"></i>${r.downloads.toLocaleString()}
+                        </span>
+                    </div>
+                    ${(r.tags || []).slice(0, 4).map(t =>
+                        `<span class="badge text-bg-light border me-1 mt-1 small">${escapeHtml(t)}</span>`
+                    ).join('')}
+                  </a>
+                  <button type="button"
+                          class="btn btn-link btn-sm py-1 px-1 text-body-secondary hf-pick-btn"
+                          data-repo-id="${escapeHtml(r.id)}"
+                          title="Use this repo id in the form">
+                    <i class="bi bi-arrow-down-circle"></i>
+                  </button>
+                </div>
+            `).join('');
+            hfList.querySelectorAll('.hf-pick-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    if (hfRepoIdInput) {
+                        hfRepoIdInput.value = btn.getAttribute('data-repo-id');
+                        hfRepoIdInput.focus();
+                        hfRepoIdInput.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    }
+                });
+            });
+        } catch (err) {
+            if (seq !== hfFetchSeq) return;
+            hfList.innerHTML = '<div class="text-center small text-danger py-3">Failed to load.</div>';
+        }
+    }
+
+    let hfQTimer = null;
+    if (hfQ) {
+        hfQ.addEventListener('input', () => {
+            clearTimeout(hfQTimer);
+            hfQTimer = setTimeout(loadHfPicker, 300);
+        });
+    }
+    if (hfSort) hfSort.addEventListener('change', loadHfPicker);
+
+    loadHfPicker();
+})();
+</script>
+{% endblock %}

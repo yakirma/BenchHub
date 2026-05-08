@@ -4455,103 +4455,6 @@ def upload_dataset():
 # design problem that needs explicit user input on which datasets to support.
 # This path is "snapshot a structured repo + reuse the existing ZIP pipeline."
 
-def import_dataset_from_hf(repo_id, dataset_name, *, revision=None,
-                           hf_token=None, owner_user_id=None):
-    """Pull an HF repo to a temp dir, zip it, and feed it to
-    process_dataset_zip. Returns the same (success, message, ds_id) tuple.
-
-    `huggingface_hub` is imported lazily so the rest of the app boots
-    without it (and so tests can patch the import path).
-    """
-    from huggingface_hub import snapshot_download
-
-    work_dir = tempfile.mkdtemp(prefix='benchhub-hf-')
-    try:
-        snap_dir = snapshot_download(
-            repo_id=repo_id,
-            repo_type='dataset',
-            revision=revision,
-            token=hf_token,
-            local_dir=os.path.join(work_dir, 'snap'),
-        )
-        # Re-zip the snapshot so process_dataset_zip can ingest it without
-        # needing a directory-mode branch. The cost is one extra
-        # write/read of the bytes; cheap relative to the network pull.
-        zip_base = os.path.join(work_dir, secure_filename(dataset_name))
-        zip_path = shutil.make_archive(zip_base, 'zip', root_dir=snap_dir)
-        success, message, ds_id = process_dataset_zip(
-            zip_path, dataset_name,
-            owner_user_id=owner_user_id,
-        )
-        if success and ds_id is not None:
-            ds = Dataset.query.get(ds_id)
-            if ds is not None:
-                ds.source_kind = 'hf-bench'
-                ds.source_metadata = json.dumps({
-                    'repo_id': repo_id, 'revision': revision,
-                })
-                try:
-                    auto_tags = _auto_tags_for_hf(
-                        repo_id, hf_token=hf_token, revision=revision,
-                    )
-                    if auto_tags:
-                        ds.tags = _resolve_tags(', '.join(auto_tags))
-                except Exception as e:
-                    print(f"auto-tag attach failed (direct): {e}")
-                db.session.commit()
-        return success, message, ds_id
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-
-@app.route('/import_from_hf', methods=['POST'])
-@login_required
-def import_from_hf():
-    repo_id = (request.form.get('hf_repo_id') or '').strip()
-    dataset_name = (request.form.get('dataset_name') or '').strip()
-    revision = (request.form.get('hf_revision') or '').strip() or None
-    hf_token = _resolve_hf_token(request.form.get('hf_token'))
-
-    if not repo_id:
-        flash("Missing HuggingFace repo ID.", "danger")
-        return redirect(url_for('datasets_list'))
-    if not dataset_name:
-        # Default to the repo's last segment.
-        dataset_name = repo_id.rstrip('/').split('/')[-1]
-
-    # Quota gate: count check only (we don't know the size until we pull).
-    # The storage cap re-checks after extraction inside process_dataset_zip
-    # would be ideal, but we trust the count gate + the post-pull caller
-    # to abort if the resulting dataset would push storage over.
-    ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=0)
-    if not ok:
-        flash(msg, "danger")
-        return redirect(url_for('datasets_list'))
-
-    try:
-        success, message, _ = import_dataset_from_hf(
-            repo_id, dataset_name,
-            revision=revision, hf_token=hf_token,
-            owner_user_id=g.current_user.id,
-        )
-        flash(message, "success" if success else "danger")
-    except ImportError:
-        flash("HuggingFace import is not available on this server (huggingface_hub not installed).", "danger")
-    except Exception as e:
-        msg = str(e)
-        low = msg.lower()
-        if ('401' in msg or 'gated' in low or 'authenticated' in low
-                or 'restricted' in low or 'access denied' in low):
-            return redirect(url_for(
-                'import_from_hf_gated_wizard',
-                repo_id=repo_id, dataset_name=dataset_name,
-                revision=revision or '', flow='direct',
-            ))
-        flash(f"HuggingFace import failed: {e}", "danger")
-
-    return redirect(url_for('datasets_list'))
-
-
 @app.route('/import_from_hf/gated', methods=['GET'])
 @login_required
 def import_from_hf_gated_wizard():
@@ -7480,6 +7383,32 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+@app.route('/create_lb/from_hf', methods=['GET'])
+@login_required
+def create_lb_from_hf():
+    """Entry page for "Create a leaderboard from a HuggingFace dataset".
+
+    No Dataset row gets materialized at any step — the LB created on
+    the next page will hold the HF repo as a primary attachment, and
+    submissions evaluate by streaming from HF on demand.
+
+    Page surfaces:
+      - Direct repo input (`user/repo`) → /import_from_hf/preview.
+      - HF picker (sorts by likes/downloads/trending) — selecting a
+        row drops its id into the input above.
+      - User's recent HF picks + cross-user trending (same widgets that
+        used to live on /datasets).
+    """
+    user = g.current_user
+    recent_hf = _user_recent_hf_visits(user.id if user else None, limit=8)
+    trending_hf = _trending_hf_visits(days=7, limit=8)
+    return render_template(
+        'create_lb_from_hf.html',
+        recent_hf=recent_hf,
+        trending_hf=trending_hf,
+    )
+
+
 @app.route('/import_from_hf/preview', methods=['POST'])
 @login_required
 def import_from_hf_preview():
@@ -7543,11 +7472,6 @@ def import_from_hf_preview():
         features=features,
         mapping=mapping,
         inference_source=inference_source,
-        # Carry through the "I came from the 'Create leaderboard with
-        # this dataset' CTA on /hf/<repo_id>" intent so the post-confirm
-        # path can redirect to the auto-LB preview instead of the
-        # dataset page.
-        auto_create_lb=bool(request.form.get('auto_create_lb')),
     )
 
 
@@ -9485,13 +9409,8 @@ def datasets_list():
     # custom field on any sample, rendered to PNG by the existing
     # /custom_field_image endpoint. None when the dataset is metric-only.
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
-    user = getattr(g, 'current_user', None)
-    recent_hf = _user_recent_hf_visits(user.id if user else None, limit=8)
-    trending_hf = _trending_hf_visits(days=7, limit=8)
     return render_template('datasets.html', datasets=datasets,
-                           dataset_thumbs=dataset_thumbs,
-                           recent_hf=recent_hf,
-                           trending_hf=trending_hf)
+                           dataset_thumbs=dataset_thumbs)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):

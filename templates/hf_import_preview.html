@@ -42,13 +42,6 @@
         <input type="hidden" name="hf_revision" value="{{ revision or '' }}">
         <input type="hidden" name="hf_token" value="{{ hf_token or '' }}">
         <input type="hidden" name="sample_cap" value="{{ sample_cap }}">
-        {# Carry the auto_create_lb intent through to /import_from_hf/auto
-           so the post-import redirect lands on the auto-LB preview
-           rather than the dataset page when the user came from the
-           "Create leaderboard with this dataset" CTA. #}
-        {% if auto_create_lb %}
-        <input type="hidden" name="auto_create_lb" value="1">
-        {% endif %}
 
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">

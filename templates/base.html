@@ -232,6 +232,15 @@
                                 <i class="bi bi-trophy me-1"></i> Leaderboards
                             </a>
                         </li>
+                        {% if current_user %}
+                        <li class="nav-item">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'create_lb_from_hf' }}"
+                                href="{{ url_for('create_lb_from_hf') }}"
+                                title="Start a leaderboard backed by a HuggingFace dataset">
+                                <i class="bi bi-cloud-arrow-down me-1"></i> New from HF
+                            </a>
+                        </li>
+                        {% endif %}
                         <li class="nav-item">
                             <a class="nav-link {{ 'active' if request.endpoint == 'metrics_view' }}"
                                 href="{{ url_for('metrics_view') }}">

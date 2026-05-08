@@ -78,9 +78,9 @@
                 </span>
                 <div class="flex-grow-1">
                     <h5 class="fw-bold mb-2">Paste your token and import</h5>
-                    {# Both flows route through /import_from_hf/preview so
-                       the user lands back on the auto-import preview with
-                       their token, ready to confirm. #}
+                    {# Re-runs through /import_from_hf/preview so the user
+                       lands back on the schema-mapping preview with their
+                       token attached, ready to confirm. #}
                     <form method="post" action="{{ url_for('import_from_hf_preview') }}"
                         class="d-flex flex-column gap-2">
                         <input type="hidden" name="hf_repo_id" value="{{ repo_id }}">

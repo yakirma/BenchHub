@@ -132,199 +132,40 @@
             {% endif %}
         </div>
 
-        <!-- Upload Section (modernized: segmented source picker + drop zone +
-             collapsed Advanced. Stays sticky so it's reachable while scrolling
-             the dataset list on the left.) -->
+        {# Upload card. Sticky so it stays in view as the user scrolls
+           the list on the left. HF flow lives on /create_lb/from_hf
+           — datasets here are local ZIP uploads only; HF refs become
+           leaderboard attachments without a Dataset row. #}
         <div class="col-lg-5">
             <div class="card border-0 shadow-sm sticky-top" style="top: 100px; z-index: 900;">
                 <div class="card-body p-4">
-                    <h5 class="fw-bold mb-1">Add a dataset</h5>
+                    <h5 class="fw-bold mb-1">Upload a dataset ZIP</h5>
                     <p class="text-body-secondary small mb-3">
-                        Upload a ZIP or pull from a structured HuggingFace repo.
+                        For HuggingFace datasets, go to
+                        <a href="{{ url_for('create_lb_from_hf') }}" class="text-decoration-none">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>Create leaderboard from HF
+                        </a>
+                        — they don't need a local copy.
                     </p>
 
-                    {# ----- Source picker ----- #}
-                    <div class="btn-group w-100 mb-4" role="group" aria-label="Dataset source">
-                        <input type="radio" class="btn-check" name="source-tab" id="src-zip" autocomplete="off" checked>
-                        <label class="btn btn-outline-primary" for="src-zip">
-                            <i class="bi bi-file-earmark-zip me-1"></i>ZIP file
+                    <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
+                        <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
+                            <i class="bi bi-cloud-arrow-up display-5 text-body-secondary d-block mb-2"></i>
+                            <span class="fw-semibold">Drop ZIP here or click to choose</span>
+                            <div class="small text-body-secondary mt-1">One or more .zip files</div>
+                            <div id="zip-filenames" class="small text-primary mt-2 d-none"></div>
                         </label>
-                        <input type="radio" class="btn-check" name="source-tab" id="src-hf" autocomplete="off">
-                        <label class="btn btn-outline-primary" for="src-hf">
-                            <i class="bi bi-cloud-arrow-down me-1"></i>HuggingFace
-                        </label>
-                    </div>
+                        <input type="file" id="dataset_zip" name="dataset_zip" accept=".zip" multiple required class="d-none">
 
-                    {# ----- ZIP form (default) ----- #}
-                    <div id="form-zip" class="source-form">
-                        <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
-                            <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
-                                <i class="bi bi-cloud-arrow-up display-5 text-body-secondary d-block mb-2"></i>
-                                <span class="fw-semibold">Drop ZIP here or click to choose</span>
-                                <div class="small text-body-secondary mt-1">One or more .zip files</div>
-                                <div id="zip-filenames" class="small text-primary mt-2 d-none"></div>
-                            </label>
-                            <input type="file" id="dataset_zip" name="dataset_zip" accept=".zip" multiple required class="d-none">
+                        <input type="text" class="form-control mb-3" id="dataset_name" name="dataset_name"
+                            placeholder="Name (auto from filename)" autocomplete="off">
 
-                            <input type="text" class="form-control mb-3" id="dataset_name" name="dataset_name"
-                                placeholder="Name (auto from filename)" autocomplete="off">
-
-                            <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
-                        </form>
-                    </div>
-
-                    {# ----- HF form (hidden until tab is picked) ----- #}
-                    <div id="form-hf" class="source-form d-none">
-                        {# Token banner — surfaces only when the user is
-                           logged in but hasn't saved a token. Quiet
-                           otherwise. #}
-                        {% set hf_banner_context = "Gated datasets (ImageNet-1k, some medical imaging) need a personal access token; saving one once unlocks them for every future import." %}
-                        {% include "_hf_token_banner.html" %}
-                        {# Two HF entry-points share the same input fields:
-                           - "Auto-import": GET schema → inference preview → confirm.
-                           - "Direct import": old path for repos that already
-                             match BenchHub's folder convention. #}
-                        <form id="hf-import-form" method="post">
-                            <div class="mb-1">
-                                <input type="text" class="form-control form-control-lg font-monospace"
-                                    name="hf_repo_id" id="hf-repo-id-input"
-                                    placeholder="user/repo" required autocomplete="off">
-                            </div>
-
-                            <details class="mb-3 small">
-                                <summary class="text-body-secondary user-select-none" style="cursor:pointer;">
-                                    Advanced
-                                </summary>
-                                <div class="mt-2 vstack gap-2">
-                                    <input type="text" class="form-control form-control-sm" name="dataset_name"
-                                        placeholder="Dataset name (default: repo)" autocomplete="off">
-                                    <input type="text" class="form-control form-control-sm font-monospace"
-                                        name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
-                                    <input type="password" class="form-control form-control-sm font-monospace"
-                                        name="hf_token"
-                                        placeholder="Access token (gated/private repos — auto-saved for next time)"
-                                        autocomplete="off">
-                                    <input type="number" class="form-control form-control-sm" name="sample_cap"
-                                        placeholder="Sample cap for auto-import (default 200)"
-                                        min="10" max="2000" value="200">
-                                </div>
-                            </details>
-
-                            <div class="d-flex flex-column gap-2">
-                                <button type="submit" class="btn btn-primary py-2"
-                                    formaction="{{ url_for('import_from_hf_preview') }}"
-                                    title="Inspect the dataset's schema and preview the inferred field mapping before importing.">
-                                    <i class="bi bi-magic me-1"></i>Auto-import
-                                </button>
-                                <button type="submit" class="btn btn-outline-primary btn-sm py-2"
-                                    formaction="{{ url_for('import_from_hf') }}"
-                                    title="Use only if the HF repo already matches BenchHub's metric_/raw_/image_/hist_ folder convention.">
-                                    <i class="bi bi-cloud-arrow-down me-1"></i>Direct import (BenchHub-shaped)
-                                </button>
-                            </div>
-                            <div class="form-text small mt-2">
-                                <i class="bi bi-info-circle me-1"></i>Auto-import detects parquet schemas
-                                and lays out the folders for you. Direct import skips that and
-                                expects an already-conventional repo.
-                            </div>
-                        </form>
-
-                        {# Browse-from-HF picker. Lazy-loads on first switch
-                           into this tab; click any row to populate the
-                           repo-id field above. #}
-                        <div class="mt-4 pt-3 border-top">
-                            <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
-                                <small class="fw-semibold text-body-secondary">
-                                    <i class="bi bi-search me-1"></i>Browse HuggingFace
-                                </small>
-                                <select id="hf-picker-sort" class="form-select form-select-sm" style="width: auto;">
-                                    <option value="likes">Sort: Most likes</option>
-                                    <option value="downloads">Sort: Most downloads</option>
-                                    <option value="trending">Sort: Trending</option>
-                                </select>
-                            </div>
-                            <input type="search" id="hf-picker-q" class="form-control form-control-sm mb-2"
-                                placeholder="Filter HF datasets…" autocomplete="off">
-                            <div id="hf-picker-list"
-                                style="max-height: 280px; overflow-y: auto;
-                                       border: 1px solid var(--bs-border-color); border-radius: 6px;
-                                       padding: 0.25rem;">
-                                <div class="text-center small text-body-secondary py-3" id="hf-picker-hint">
-                                    Switch to this tab to load the list.
-                                </div>
-                            </div>
-                            <div class="form-text small mt-1">
-                                Many HF datasets store data as parquet/arrow tables and
-                                won't import directly — only repos with the BenchHub
-                                folder convention work right now.
-                            </div>
-                        </div>
-                    </div>
+                        <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
+                    </form>
                 </div>
             </div>
         </div>
     </div>
-
-    {# ---- Recent + trending HF (visit history surfaces from
-            HfDatasetVisit). Visible alongside the picker; users
-            click through to /hf/<repo_id> to browse without
-            committing to an import. ---- #}
-    {% if (recent_hf and current_user) or trending_hf %}
-    <div class="row g-3 mt-3">
-        {% if recent_hf and current_user %}
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm h-100">
-                <div class="card-body p-3">
-                    <h2 class="h6 fw-semibold mb-2">
-                        <i class="bi bi-clock-history me-1 text-primary"></i>
-                        Your recent HF picks
-                    </h2>
-                    <ul class="list-unstyled mb-0 small">
-                        {% for v in recent_hf %}
-                        <li class="d-flex justify-content-between align-items-baseline mb-1">
-                            <a href="https://huggingface.co/datasets/{{ v.repo_id }}"
-                               target="_blank" rel="noopener"
-                               class="font-monospace text-decoration-none text-truncate me-2"
-                               title="Open on HuggingFace: {{ v.repo_id }}">{{ v.repo_id }}</a>
-                            <span class="text-body-secondary small flex-shrink-0">
-                                {{ v.visit_count }}× &middot;
-                                {{ v.last_visited_at.strftime('%Y-%m-%d') }}
-                            </span>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        {% if trending_hf %}
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm h-100">
-                <div class="card-body p-3">
-                    <h2 class="h6 fw-semibold mb-2">
-                        <i class="bi bi-graph-up-arrow me-1 text-warning"></i>
-                        Trending across BenchHub <span class="text-body-secondary fw-normal">(7d)</span>
-                    </h2>
-                    <ul class="list-unstyled mb-0 small">
-                        {% for t in trending_hf %}
-                        <li class="d-flex justify-content-between align-items-baseline mb-1">
-                            <a href="https://huggingface.co/datasets/{{ t.repo_id }}"
-                               target="_blank" rel="noopener"
-                               class="font-monospace text-decoration-none text-truncate me-2"
-                               title="Open on HuggingFace: {{ t.repo_id }}">{{ t.repo_id }}</a>
-                            <span class="text-body-secondary small flex-shrink-0">
-                                {{ t.users }} user{{ '' if t.users == 1 else 's' }} &middot;
-                                {{ t.visits }} visits
-                            </span>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
 </div>
 {% endblock %}
 
@@ -344,109 +185,6 @@
 </style>
 <script>
     (function () {
-        // ---- Source-tab switch (ZIP <-> HuggingFace) ----
-        const zipForm = document.getElementById('form-zip');
-        const hfForm = document.getElementById('form-hf');
-        document.getElementById('src-zip').addEventListener('change', () => {
-            zipForm.classList.remove('d-none');
-            hfForm.classList.add('d-none');
-        });
-        document.getElementById('src-hf').addEventListener('change', () => {
-            zipForm.classList.add('d-none');
-            hfForm.classList.remove('d-none');
-            // Lazy-load the HF picker list on first activation.
-            if (!window._hfPickerLoaded) {
-                window._hfPickerLoaded = true;
-                loadHfPicker();
-            }
-        });
-
-        // ---- HuggingFace picker ----
-        const hfList = document.getElementById('hf-picker-list');
-        const hfHint = document.getElementById('hf-picker-hint');
-        const hfSort = document.getElementById('hf-picker-sort');
-        const hfQ = document.getElementById('hf-picker-q');
-        const hfRepoIdInput = document.getElementById('hf-repo-id-input');
-        let hfFetchSeq = 0;
-
-        function escapeHtml(s) {
-            return (s || '').replace(/[&<>"']/g, c => (
-                {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
-            ));
-        }
-
-        async function loadHfPicker() {
-            const seq = ++hfFetchSeq;
-            hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">Loading…</div>';
-            const params = new URLSearchParams({sort: hfSort.value, q: hfQ.value});
-            try {
-                const resp = await fetch(`/api/hf/datasets?${params}`);
-                if (seq !== hfFetchSeq) return;  // stale response, newer fetch in flight
-                if (!resp.ok || !(resp.headers.get('content-type') || '').includes('application/json')) {
-                    // 302/HTML/etc — surface a clear hint instead of letting
-                    // resp.json() throw into the generic "Failed to load."
-                    hfList.innerHTML = `<div class="text-center small text-danger py-3">
-                        Couldn’t reach the HF picker (status ${resp.status}).
-                        Sign in or try again in a moment.
-                    </div>`;
-                    return;
-                }
-                const body = await resp.json();
-                const rows = body.rows || [];
-                if (!rows.length) {
-                    hfList.innerHTML = '<div class="text-center small text-body-secondary py-3">No matches.</div>';
-                    return;
-                }
-                hfList.innerHTML = rows.map(r => `
-                    <div class="hf-picker-row d-flex align-items-start gap-2 px-2 py-1"
-                         style="border-bottom: 1px solid var(--bs-border-color);">
-                      <a href="https://huggingface.co/datasets/${encodeURIComponent(r.id)}"
-                         target="_blank" rel="noopener"
-                         class="text-decoration-none text-body flex-grow-1 d-block py-1"
-                         title="Open ${escapeHtml(r.id)} on HuggingFace">
-                        <div class="d-flex justify-content-between align-items-baseline">
-                            <span class="font-monospace small">${escapeHtml(r.id)}</span>
-                            <span class="small text-body-secondary ms-2">
-                                <i class="bi bi-heart-fill text-danger me-1"></i>${r.likes}
-                                <i class="bi bi-download ms-2 me-1"></i>${r.downloads.toLocaleString()}
-                            </span>
-                        </div>
-                        ${(r.tags || []).slice(0, 4).map(t =>
-                            `<span class="badge text-bg-light border me-1 mt-1 small">${escapeHtml(t)}</span>`
-                        ).join('')}
-                      </a>
-                      <button type="button"
-                              class="btn btn-link btn-sm py-1 px-1 text-body-secondary hf-pick-btn"
-                              data-repo-id="${escapeHtml(r.id)}"
-                              title="Use this repo id in the form below — Configure leaderboard">
-                        <i class="bi bi-arrow-down-circle"></i>
-                      </button>
-                    </div>
-                `).join('');
-                hfList.querySelectorAll('.hf-pick-btn').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        if (hfRepoIdInput) {
-                            hfRepoIdInput.value = btn.getAttribute('data-repo-id');
-                            hfRepoIdInput.focus();
-                        }
-                    });
-                });
-            } catch (err) {
-                if (seq !== hfFetchSeq) return;
-                hfList.innerHTML = '<div class="text-center small text-danger py-3">Failed to load. Try again.</div>';
-            }
-        }
-
-        // Debounced search.
-        let hfQTimer = null;
-        if (hfQ) {
-            hfQ.addEventListener('input', () => {
-                clearTimeout(hfQTimer);
-                hfQTimer = setTimeout(loadHfPicker, 300);
-            });
-        }
-        if (hfSort) hfSort.addEventListener('change', loadHfPicker);
-
         // ---- ZIP drop zone ----
         const dropzone = document.querySelector('.upload-dropzone');
         const fileInput = document.getElementById('dataset_zip');

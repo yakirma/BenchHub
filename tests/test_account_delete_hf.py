@@ -128,86 +128,9 @@ def test_account_settings_page_requires_login(client):
 # ===========================================================================
 # HuggingFace BYO
 # ===========================================================================
-
-
-def test_hf_import_route_requires_login(client, project_ctx):
-    resp = client.post(
-        '/import_from_hf',
-        data={'hf_repo_id': 'user/repo'},
-        follow_redirects=False,
-    )
-    assert resp.status_code == 302
-    assert '/login' in resp.headers['Location']
-
-
-def test_hf_import_with_blank_repo_flashes_error(auth_client, project_ctx, db_session):
-    resp = auth_client.post(
-        '/import_from_hf',
-        data={'hf_repo_id': '', 'dataset_name': 'whatever'},
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    assert b'Missing HuggingFace repo' in resp.data
-
-
-def test_hf_import_calls_snapshot_download_and_creates_dataset(
-    auth_client, project_ctx, logged_in_user, db_session, tmp_path,
-):
-    """Patch snapshot_download to lay down a BenchHub-conventional folder
-    structure on disk; assert the dataset is ingested as if it were a ZIP."""
-    # Build a fake snapshot directory mimicking a structured HF repo.
-    # README at the root prevents the single-folder unwrap heuristic in
-    # process_dataset_zip from treating metric_score/ as the dataset root.
-    snap_root = tmp_path / 'fake_snap'
-    snap_root.mkdir()
-    (snap_root / 'README.md').write_text('Fake HF dataset.')
-    metric_dir = snap_root / 'metric_score'
-    metric_dir.mkdir()
-    (metric_dir / 's1.txt').write_text('0.5')
-    (metric_dir / 's2.txt').write_text('0.7')
-
-    def fake_snapshot_download(repo_id, repo_type, revision, token, local_dir):
-        # Mimic the real function: copy the fake snapshot into local_dir.
-        import shutil as _sh
-        _sh.copytree(snap_root, local_dir)
-        return local_dir
-
-    # Inject a fake huggingface_hub module — the real package isn't a
-    # test dependency. The lazy `from huggingface_hub import ...` inside
-    # the importer picks this up via sys.modules.
-    fake_hub = types.ModuleType('huggingface_hub')
-    fake_hub.snapshot_download = fake_snapshot_download
-    with patch.dict(sys.modules, {'huggingface_hub': fake_hub}):
-        resp = auth_client.post(
-            '/import_from_hf',
-            data={
-                'hf_repo_id': 'fake-org/fake-dataset',
-                'dataset_name': 'hf_imported_ds',
-            },
-            follow_redirects=True,
-        )
-
-    assert resp.status_code == 200
-    ds = Dataset.query.filter_by(name='hf_imported_ds').first()
-    assert ds is not None
-    assert ds.owner_user_id == logged_in_user.id
-    # Samples derived from the metric files.
-    sample_names = {s.name for s in Sample.query.filter_by(dataset_id=ds.id).all()}
-    assert sample_names == {'s1', 's2'}
-
-
-def test_hf_import_quota_blocks_when_dataset_count_at_cap(
-    auth_client, project_ctx, logged_in_user, db_session,
-):
-    logged_in_user.quota_max_datasets = 0
-    db.session.commit()
-
-    resp = auth_client.post(
-        '/import_from_hf',
-        data={'hf_repo_id': 'org/ds', 'dataset_name': 'over_cap'},
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    # Should NOT have created the dataset.
-    assert Dataset.query.filter_by(name='over_cap').first() is None
-    assert b'limit' in resp.data.lower() or b'reached' in resp.data.lower()
+# The legacy POST /import_from_hf direct-import route has been removed
+# in Phase 5; HF datasets become leaderboard attachments via
+# /import_from_hf/preview, never local Dataset rows. The login_required
+# guard on the new entry page is covered by tests/test_canonicality.py
+# (auto_lb_preview flow) and the schema/quota gates by
+# tests/test_attachment_iter.py + tests/test_canonicality.py.
