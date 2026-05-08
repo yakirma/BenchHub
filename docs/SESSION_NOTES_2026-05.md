@@ -22,8 +22,8 @@ backed by a single bounded-LRU disk cache.
 | **Disk-bounded LRU cache** (`bench_cache.py`) | ✅ landed | `bench_cache.py`, `CacheEntry` model, 15 tests |
 | **Pointer-mode for HF datasets** (no byte cloning) | ✅ landed | `Dataset.storage_mode`, `Sample.source_ref_json`, `_import_hf_pointer`, `_pointer_gt_resolver`, 10 tests |
 | **Remote submissions** (HF Hub + raw URL, hash-pinned) | ✅ landed | `Submission.storage_mode/remote_url/content_hash`, `_fetch_remote_submission_zip`, `/api/leaderboard/<id>/submission/from_url`, 9 tests |
-| **Paired-dataset support via LB settings** | 🟡 next | adds `leaderboard_datasets.role` ('primary' / 'gt_source') |
-| **Hash-mismatch enforcement on re-eval** | 🟡 after | recalc path verifies `Submission.content_hash` against re-fetched bytes |
+| **Paired-dataset support via LB settings** | ✅ landed | `leaderboard_datasets.role`, `_make_paired_gt_provider`, role dropdown on LB edit page, 12 tests |
+| **Hash-mismatch enforcement on re-eval** | 🟡 next | recalc path verifies `Submission.content_hash` against re-fetched bytes |
 | **Evict extracted submission folder after eval** | 🟡 after | recalc re-extracts from cached ZIP; closes the disk-savings loop |
 
 Architecture sketch:
@@ -66,23 +66,10 @@ re-ranking.
 
 ### Concrete next steps (pick up here)
 
-Most of the original three-piece refactor is in. The last piece +
-two follow-ups remain:
+The original three-piece refactor + paired-datasets are all in.
+Two follow-ups remain to close the storage-savings loop:
 
-1. **Paired-dataset `role` column on `leaderboard_datasets`.**
-   - Add `role` VARCHAR(20) DEFAULT 'primary' (`'primary'` |
-     `'gt_source'`).
-   - Migration entry.
-   - LB edit page UI: per-dataset role dropdown in the attached-
-     datasets list. Auto-LB preview: when the user hands two
-     datasets to a single auto-LB, prompt which is which.
-   - `get_metric_context` walks BOTH datasets, populating `gt_<col>`
-     from whichever has the column (gt_source wins on conflict).
-   - Solves the dirty-docs `-train`/`-cleaned` shape and SIDD-style
-     splits without merging upstream repos.
-   - Estimated effort: ~3-4 hours.
-
-2. **Hash-mismatch enforcement on re-eval (remote submissions).**
+1. **Hash-mismatch enforcement on re-eval (remote submissions).**
    - On recalc path: re-fetch via `_fetch_remote_submission_zip`
      (which is cache-aware) → compare returned hash against
      `Submission.content_hash` → on mismatch, set
@@ -91,7 +78,7 @@ two follow-ups remain:
    - Surface a clear UI badge on the LB row when this happens.
    - Estimated effort: ~1-2 hours.
 
-3. **Evict extracted submission folder after eval (close the
+2. **Evict extracted submission folder after eval (close the
    disk-savings loop for remote subs).**
    - Currently a remote submission's bytes live in two places: the
      cached ZIP AND the extracted `uploads/submissions/<id>/`
