@@ -8822,6 +8822,12 @@ def dataset_view(dataset_id):
             available_display_options[field_name] = {'label': field_name, 'type': 'depth', 'default_width': '150px'}
         elif field_type == 'json':
             available_display_options[field_name] = {'label': field_name, 'type': 'json', 'default_width': '150px'}
+        elif field_type == 'text' and field_name != 'tags':
+            # Text columns (AG News `text`, NLI `premise`/`hypothesis`,
+            # captions, etc.) need their own column too. Skip the
+            # reserved `tags` field — that one is already surfaced via
+            # the dataset's tag widget.
+            available_display_options[field_name] = {'label': field_name, 'type': 'text', 'default_width': '300px'}
         # Scalars are not added as individual columns - they appear in per_source_stats
     
     # Check if any sample has data for these fields
