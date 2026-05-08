@@ -7566,11 +7566,17 @@ def _fetch_hf_datasets(*, sort='likes', q='', limit=50):
 
 
 @app.route('/api/hf/datasets')
-@login_required
 def api_hf_datasets():
     """JSON listing of HuggingFace datasets, used by the picker on /datasets.
 
     Query string: ?sort=likes|downloads|trending  ?q=<keyword>
+
+    Public on purpose: this endpoint just relays huggingface.co's
+    public dataset index (server-side cached so we stay under their
+    anonymous rate limit). No user-specific data, no quota, no auth.
+    Was @login_required by accident — the JS picker breaks on any
+    non-JSON response, so a session-expired user would see
+    "Failed to load" instead of the dataset list.
     """
     sort = request.args.get('sort', 'likes')
     if sort not in ('likes', 'downloads', 'trending'):

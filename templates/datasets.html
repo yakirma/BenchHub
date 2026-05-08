@@ -314,6 +314,15 @@
             try {
                 const resp = await fetch(`/api/hf/datasets?${params}`);
                 if (seq !== hfFetchSeq) return;  // stale response, newer fetch in flight
+                if (!resp.ok || !(resp.headers.get('content-type') || '').includes('application/json')) {
+                    // 302/HTML/etc — surface a clear hint instead of letting
+                    // resp.json() throw into the generic "Failed to load."
+                    hfList.innerHTML = `<div class="text-center small text-danger py-3">
+                        Couldn’t reach the HF picker (status ${resp.status}).
+                        Sign in or try again in a moment.
+                    </div>`;
+                    return;
+                }
                 const body = await resp.json();
                 const rows = body.rows || [];
                 if (!rows.length) {

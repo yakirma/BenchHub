@@ -4,10 +4,16 @@ from unittest.mock import patch
 import pytest
 
 
-def test_api_hf_datasets_requires_login(client):
-    resp = client.get('/api/hf/datasets', follow_redirects=False)
-    assert resp.status_code == 302
-    assert '/login' in resp.headers['Location']
+def test_api_hf_datasets_is_public(client):
+    """The picker just relays public HF data; no auth required.
+    Was @login_required before — anonymous users got a 302 to /login
+    that the JS fetch couldn't parse, surfacing as 'Failed to load'."""
+    with patch('requests.get') as mock:
+        mock.return_value.raise_for_status = lambda: None
+        mock.return_value.json = lambda: []
+        resp = client.get('/api/hf/datasets', follow_redirects=False)
+    assert resp.status_code == 200
+    assert resp.headers.get('Content-Type', '').startswith('application/json')
 
 
 def test_api_hf_datasets_returns_normalized_rows(auth_client):
