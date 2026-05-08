@@ -7971,6 +7971,14 @@ def create_leaderboard_auto_finalize():
     hf_repo_id = (request.form.get('hf_repo_id') or '').strip()
     dataset_id = request.form.get('dataset_id')
 
+    # User-added metrics from the inline "Add a metric" UI (library
+    # picks + AI-authored). Each entry is a full proposal dict the
+    # client edited inline before submit. Merged into kept_metrics
+    # alongside the auto-proposals.
+    extra_metrics = _parse_extra_metrics(
+        request.form.get('extra_metrics_json') or '[]'
+    )
+
     if hf_repo_id:
         # ---- HF-ref flow ----
         try:
@@ -7988,6 +7996,7 @@ def create_leaderboard_auto_finalize():
         )
         kept_metrics = [m for m in (_override_proposal(p, 'metric')
                                     for p in metric_proposals_all) if m]
+        kept_metrics.extend(extra_metrics)
         kept_viz = [v for v in (_override_proposal(p, 'viz')
                                 for p in viz_proposals_all) if v]
         if not kept_metrics and not kept_viz:
@@ -8016,6 +8025,7 @@ def create_leaderboard_auto_finalize():
     metric_proposals_all, viz_proposals_all = _collect_auto_lb_proposals(ds)
     kept_metrics = [m for m in (_override_proposal(p, 'metric')
                                 for p in metric_proposals_all) if m]
+    kept_metrics.extend(extra_metrics)
     kept_viz = [v for v in (_override_proposal(p, 'viz')
                             for p in viz_proposals_all) if v]
     if not kept_metrics and not kept_viz:
@@ -8029,6 +8039,122 @@ def create_leaderboard_auto_finalize():
     if ok and lb_id:
         return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
     return redirect(url_for('dataset_view', dataset_id=ds.id))
+
+
+@app.route('/api/lb_preview/library_metrics', methods=['GET'])
+@login_required
+def api_lb_preview_library_metrics():
+    """Return all GlobalMetric rows so the auto-LB preview's
+    "Pick from library" dropdown can offer them. Read-only; cheap query."""
+    rows = (GlobalMetric.query
+            .order_by(GlobalMetric.is_aggregated, GlobalMetric.name)
+            .all())
+    return jsonify(metrics=[
+        {
+            'id': r.id,
+            'name': r.name,
+            'description': r.description,
+            'python_code': r.python_code,
+            'is_aggregated': bool(r.is_aggregated),
+        }
+        for r in rows
+    ])
+
+
+@app.route('/api/lb_preview/llm_metric', methods=['POST'])
+@login_required
+def api_lb_preview_llm_metric():
+    """Author a metric on demand from a free-form description.
+
+    Input JSON: {name?: string, description: string}
+    Output JSON: full proposal dict ready for the preview to render
+    (global_name, target_name, description, python_code, arg_mappings,
+    sort_direction). Errors return 4xx/5xx with {error: ...}.
+
+    Falls back to a defensive 503 if no ANTHROPIC_API_KEY is set —
+    the user gets a clean error rather than a silent generic stub."""
+    body = request.get_json(silent=True) or {}
+    description = (body.get('description') or '').strip()
+    if not description:
+        return jsonify(error='description is required'), 400
+    raw_name = (body.get('name') or '').strip()
+    # Sanitize the user's name into a valid Python identifier; if they
+    # didn't give one, hash the description for a stable global_name.
+    if raw_name:
+        ident = re.sub(r'[^A-Za-z0-9_]+', '_', raw_name).strip('_').lower()
+    else:
+        ident = ''
+    if not ident or not re.match(r'^[A-Za-z_]', ident):
+        import hashlib as _h
+        ident = 'custom_' + _h.sha1(description.encode('utf-8')).hexdigest()[:8]
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return jsonify(error=(
+            "AI authoring needs ANTHROPIC_API_KEY on the server. "
+            "Either pick a metric from the library, or ask an admin "
+            "to set the key."
+        )), 503
+
+    # Reuse the existing per-sample metric prompt shape — it's good
+    # enough for the user-described case. Pass the description through
+    # as the `llm_hint`.
+    code = _llm_generate_metric_code(ident, description)
+    if not code:
+        return jsonify(error="Claude couldn't produce a metric for that description. Try rephrasing or be more specific about gt/pred shapes."), 502
+    return jsonify(
+        global_name=ident,
+        target_name=raw_name or ident.replace('_', ' '),
+        description=description,
+        python_code=code,
+        # Default arg-mappings: gt/pred. The user edits these on the
+        # preview row if their dataset uses other field names.
+        arg_mappings={'gt': 'gt_unknown', 'pred': 'sub_unknown_pred'},
+        sort_direction='higher_is_better',
+        code_source='llm',
+    )
+
+
+def _parse_extra_metrics(raw_json):
+    """Validate + normalize the `extra_metrics_json` payload from the
+    auto-LB preview's "Add a metric" UI. Defensive parsing: bad JSON
+    or a wrong shape returns []. Each accepted entry must have a
+    Python-identifier global_name and non-empty python_code; everything
+    else has a default."""
+    try:
+        items = json.loads(raw_json or '[]')
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        gn = (item.get('global_name') or '').strip()
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', gn):
+            continue
+        code = (item.get('python_code') or '').strip()
+        if f"def {gn}(" not in code:
+            # Code missing or doesn't define the named function — skip
+            # rather than persist a metric that can't run.
+            continue
+        am = item.get('arg_mappings') if isinstance(item.get('arg_mappings'), dict) else {}
+        sd = item.get('sort_direction')
+        if sd not in ('higher_is_better', 'lower_is_better'):
+            sd = 'higher_is_better'
+        out.append({
+            'global_name': gn,
+            'target_name': (item.get('target_name') or gn).strip(),
+            'description': (item.get('description') or '').strip(),
+            'python_code': code,
+            'arg_mappings': am,
+            'sort_direction': sd,
+            'pooling_type': item.get('pooling_type') or 'mean',
+            'code_source': item.get('code_source') or 'llm',
+            'pred_fields': item.get('pred_fields') or [],
+        })
+    return out
 
 
 def _override_proposal(p, prefix):
