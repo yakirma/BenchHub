@@ -10092,6 +10092,29 @@ def delete_submission(submission_id):
     db.session.commit()
     return redirect(url_for('leaderboard_view', leaderboard_id=submission.leaderboard_id))
 
+@app.route('/api/submission_viz/<int:submission_id>/<path:rel>')
+def serve_submission_viz(submission_id, rel):
+    """Serve a per-sample viz thumbnail PNG written by the post-eval
+    pipeline (`_generate_submission_viz_assets`). `rel` is `<col>/<sample>.png`.
+
+    No auth: viz assets are derived from prediction outputs and inherit
+    the leaderboard's visibility. If the leaderboard is private the
+    submission row's owner check is enforced via `visible_in_list`
+    on the comparison page that links here; the file path itself is
+    not enumerable since it requires submission_id + col + sample_name.
+    """
+    sub = Submission.query.get_or_404(submission_id)
+    # Block path traversal — `..` segments must not climb out of viz/.
+    safe_rel = os.path.normpath(rel)
+    if safe_rel.startswith('..') or os.path.isabs(safe_rel):
+        abort(400)
+    base = _submission_viz_dir(sub)
+    full = os.path.join(base, safe_rel)
+    if not os.path.exists(full):
+        abort(404)
+    return send_file(full, mimetype='image/png')
+
+
 @app.route('/custom_field_image/<int:field_id>')
 def serve_custom_field_image(field_id):
     """Serve a custom field image or depth map"""
@@ -10648,6 +10671,137 @@ def _with_extracted_submission(submission):
         shutil.rmtree(tempdir, ignore_errors=True)
 
 
+# Cap + target size for the per-sample viz PNGs we keep on disk so the
+# comparison page can show dense predictions (depth maps, seg masks)
+# without re-loading the raw prediction bytes per request. ImageNet-
+# scale runs would be hundreds of GB at full res — at 256×256 colormap
+# PNG it's ~30 KB/sample, ~300 MB for a 10k-sample cap.
+SUBMISSION_VIZ_MAX_SAMPLES = 10_000
+SUBMISSION_VIZ_TARGET_SIZE = 256
+
+
+def _write_depth_viz_png(arr, dest_path):
+    """Normalize → downscale → turbo colormap → PNG. Best-effort: any
+    failure is logged and the file simply isn't written, since viz
+    assets are non-essential."""
+    from PIL import Image
+    try:
+        a = np.asarray(arr, dtype=np.float32)
+        if a.ndim == 3 and a.shape[-1] == 1:
+            a = a[..., 0]
+        if a.ndim != 2 or a.size == 0:
+            return False
+        finite = a[np.isfinite(a)]
+        if finite.size == 0:
+            return False
+        lo, hi = float(np.percentile(finite, 1)), float(np.percentile(finite, 99))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            hi = lo + 1.0
+        norm = np.clip((a - lo) / (hi - lo), 0.0, 1.0)
+        img = Image.fromarray((norm * 255).astype(np.uint8), mode='L')
+        img.thumbnail((SUBMISSION_VIZ_TARGET_SIZE, SUBMISSION_VIZ_TARGET_SIZE))
+        try:
+            import matplotlib.cm as _cm
+            rgba = (_cm.turbo(np.asarray(img) / 255.0) * 255).astype(np.uint8)
+            Image.fromarray(rgba[..., :3], 'RGB').save(dest_path, optimize=True)
+        except Exception:
+            # Matplotlib missing in some envs — fall back to grayscale.
+            img.save(dest_path, optimize=True)
+        return True
+    except Exception as e:
+        print(f"DEBUG: depth viz png failed for {dest_path}: {e}")
+        return False
+
+
+def _write_image_viz_png(arr, dest_path):
+    """Downscale an RGB/seg-mask prediction to a thumbnail PNG."""
+    from PIL import Image
+    try:
+        a = np.asarray(arr)
+        if a.ndim == 2:
+            # Single-channel mask: treat as class IDs, give each a
+            # deterministic hue via a small LUT so adjacent classes
+            # are visually distinct.
+            lut = ((np.arange(256, dtype=np.int32) * 31 + 17) % 256).astype(np.uint8)
+            idx = a.astype(np.int32) & 0xFF
+            r = lut[idx]
+            g = lut[(idx + 85) & 0xFF]
+            b = lut[(idx + 170) & 0xFF]
+            a = np.stack([r, g, b], axis=-1).astype(np.uint8)
+        elif a.ndim == 3 and a.shape[-1] == 4:
+            a = a[..., :3]
+        if a.dtype != np.uint8:
+            a = np.clip(a, 0, 255).astype(np.uint8)
+        img = Image.fromarray(a)
+        img.thumbnail((SUBMISSION_VIZ_TARGET_SIZE, SUBMISSION_VIZ_TARGET_SIZE))
+        img.save(dest_path, optimize=True)
+        return True
+    except Exception as e:
+        print(f"DEBUG: image viz png failed for {dest_path}: {e}")
+        return False
+
+
+def _submission_viz_dir(submission):
+    """Persistent path where this submission's viz PNGs live, regardless
+    of whether the submission is local (always-on disk) or remote
+    (extraction is transient). Survives `_evict_extracted_submission_folder`."""
+    return os.path.join(
+        app.config['UPLOAD_FOLDER'], 'submissions',
+        str(submission.id), 'viz',
+    )
+
+
+def _generate_submission_viz_assets(submission, leaderboard, pred_source_folder):
+    """Post-eval pass: write small colormap PNGs for each dense-GT
+    prediction so the comparison page can render at-a-glance previews
+    without re-decoding the original prediction bytes. Per-submission
+    cap of SUBMISSION_VIZ_MAX_SAMPLES (currently 10k) keeps the
+    storage footprint bounded on ImageNet-scale runs.
+
+    Reads from `pred_source_folder` (which may be a tempdir for remote
+    submissions); writes to `_submission_viz_dir(submission)` (always
+    on the persistent volume) so viz survives the post-eval eviction.
+
+    Best-effort throughout — a single bad sample shouldn't poison the
+    submission's status. Non-dense fields (scalar, text) are skipped
+    because there's nothing visual to thumbnail.
+    """
+    pred_schema = _lb_submission_pred_fields(leaderboard) or []
+    dense_fields = [pf for pf in pred_schema
+                    if pf.get('kind') in ('image', 'mask', 'depth')]
+    if not dense_fields:
+        return 0
+
+    from metric_engine import _load_sub_pred_for_sample
+    viz_root = _submission_viz_dir(submission)
+    written = 0
+    for sample, _att in _iter_lb_eval_samples(leaderboard):
+        if written >= SUBMISSION_VIZ_MAX_SAMPLES:
+            break
+        for pf in dense_fields:
+            # Predictions land in `<bare-name>/<sample>.<ext>` where
+            # bare-name is the GT field (mirrored on the submission side).
+            # `pf['name']` is the arg-mappings shape (`<gt>_pred`); the
+            # actual folder on disk is `pf['gt_field']`.
+            col = pf.get('gt_field') or pf['name']
+            kind = pf['kind']
+            arr = _load_sub_pred_for_sample(pred_source_folder, col, sample.name)
+            if arr is None:
+                continue
+            out_dir = os.path.join(viz_root, col)
+            os.makedirs(out_dir, exist_ok=True)
+            dest = os.path.join(out_dir, f"{sample.name}.png")
+            if kind == 'depth':
+                ok = _write_depth_viz_png(arr, dest)
+            else:
+                ok = _write_image_viz_png(arr, dest)
+            if ok:
+                written += 1
+                if written >= SUBMISSION_VIZ_MAX_SAMPLES:
+                    break
+    return written
+
+
 def _evict_extracted_submission_folder(submission):
     """Tear down `uploads/submissions/<id>/` for a remote submission
     once eval has persisted CustomField rows. The cached ZIP under
@@ -10663,8 +10817,20 @@ def _evict_extracted_submission_folder(submission):
     )
     if not os.path.isdir(folder):
         return
+    # Preserve `viz/` — those are the post-eval thumbnail PNGs the
+    # comparison page reads. They're tiny (~30 KB/sample at 256×256)
+    # and re-generating them would require re-extracting the entire
+    # submission ZIP. Everything else (raw predictions) is gone after
+    # this call; the bench_cache ZIP is the canonical source.
     try:
-        shutil.rmtree(folder)
+        for entry in os.listdir(folder):
+            if entry == 'viz':
+                continue
+            path = os.path.join(folder, entry)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
     except OSError as e:
         # Best-effort: a cleanup failure shouldn't poison the eval.
         # Volume might be busy / a file might be open in another worker.

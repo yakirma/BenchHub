@@ -92,11 +92,57 @@ def test_evict_no_op_for_local_submission(local_sub_with_folder):
     assert os.path.exists(os.path.join(folder, 'placeholder.txt'))
 
 
-def test_evict_removes_folder_for_remote_submission(remote_sub_with_folder):
+def test_evict_removes_contents_for_remote_submission(remote_sub_with_folder):
+    """Phase 4: eviction preserves the submission folder shell (so the
+    post-eval `viz/` thumbnails survive) but clears every other entry —
+    extraction artifacts, raw prediction folders, etc. The bench_cache
+    ZIP is the canonical source for re-eval."""
     sub, folder = remote_sub_with_folder
     assert os.path.isdir(folder)
     _evict_extracted_submission_folder(sub)
-    assert not os.path.exists(folder)
+    # Folder itself stays so we can keep viz/ side-by-side.
+    assert os.path.isdir(folder)
+    # But everything inside is gone.
+    leftover = [
+        e for e in os.listdir(folder)
+        if e != 'viz'
+    ]
+    assert leftover == []
+
+
+def test_evict_preserves_viz_dir(tmp_path, db_session):
+    """If viz/ exists at eviction time, it survives the cleanup."""
+    from app import (
+        Dataset, Leaderboard, Submission,
+        _evict_extracted_submission_folder, app, db,
+    )
+    ds = Dataset(name='evict_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='evict_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    sub = Submission(
+        name='preserve_viz', leaderboard_id=lb.id, storage_mode='remote',
+        remote_url='https://x/y.zip',
+    )
+    db.session.add(sub); db.session.commit()
+    folder = os.path.join(
+        app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id),
+    )
+    os.makedirs(folder, exist_ok=True)
+    # Mark a raw prediction file + a viz thumbnail.
+    with open(os.path.join(folder, 'pred.npz'), 'wb') as f:
+        f.write(b'\x00')
+    viz_dir = os.path.join(folder, 'viz', 'depth')
+    os.makedirs(viz_dir, exist_ok=True)
+    viz_png = os.path.join(viz_dir, 's0.png')
+    with open(viz_png, 'wb') as f:
+        f.write(b'\x89PNG\r\n')
+
+    _evict_extracted_submission_folder(sub)
+
+    assert not os.path.exists(os.path.join(folder, 'pred.npz'))
+    assert os.path.exists(viz_png)
 
 
 def test_evict_silent_when_folder_already_gone(remote_sub_with_folder):

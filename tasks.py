@@ -325,7 +325,7 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             
         submission.processing_status = 'Generating Visualizations'
         session.commit()
-        
+
         # Determine if we should optionally cache Visualizations
         if leaderboard.leaderboard_visualizations:
             from app import generate_and_cache_agg_viz
@@ -337,6 +337,32 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                      except Exception as e:
                          logger.error(f"Error pre-caching visualization {lv.id}: {e}")
 
+        # Per-sample viz assets: small colormap PNGs of dense
+        # predictions (depth maps, seg masks, image outputs) so
+        # the comparison page can render thumbnails cheaply without
+        # decoding the raw prediction bytes per request. Bounded by
+        # SUBMISSION_VIZ_MAX_SAMPLES so ImageNet-scale runs stay sane.
+        # Run inside _with_extracted_submission so remote submissions
+        # see a populated folder even though their primary extraction
+        # has already been torn down.
+        try:
+            from app import (
+                _generate_submission_viz_assets,
+                _with_extracted_submission,
+            )
+            with _with_extracted_submission(submission) as sub_folder:
+                n_viz = _generate_submission_viz_assets(
+                    submission, leaderboard, sub_folder,
+                )
+                if n_viz:
+                    logger.info(
+                        f"Wrote {n_viz} viz PNG(s) for submission {submission_id}"
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Submission {submission_id} viz-asset generation failed: {e}"
+            )
+
         submission.processing_status = 'Processed'
         session.commit()
         logger.info(f"Processing submission {submission_id} done.")
@@ -346,6 +372,12 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
         # CustomFields are persisted. The cached ZIP under bench_cache
         # is the canonical source; subsequent recalcs re-extract on
         # demand via `_with_extracted_submission`.
+        # NOTE: viz/ subdir under the submission folder (written
+        # above) survives this evict because it lives at the top of
+        # the submission folder; for *remote* subs, viz writes have
+        # to land somewhere persistent — see the dedicated viz dir
+        # logic in _generate_submission_viz_assets's caller below if
+        # we ever break that invariant.
         try:
             from app import _evict_extracted_submission_folder
             _evict_extracted_submission_folder(submission)
