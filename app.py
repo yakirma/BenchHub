@@ -1,3 +1,4 @@
+import contextlib
 import shutil
 import urllib.parse
 from urllib.parse import quote
@@ -10197,6 +10198,96 @@ def _fetch_remote_submission_zip(remote_url, *, hf_token=None,
         for chunk in iter(lambda: f.read(1 << 16), b''):
             sha.update(chunk)
     return cached_path, sha.hexdigest()
+
+
+@contextlib.contextmanager
+def _with_extracted_submission(submission):
+    """Yield a directory containing the submission's extracted
+    contents — `uploads/submissions/<id>/` for local subs, a transient
+    re-extraction for remote subs whose on-disk folder has already
+    been evicted.
+
+    Cleanup behavior:
+    - Local: never deletes the folder.
+    - Remote, on-disk folder still present: yields it without cleanup
+      (initial-eval path; the post-eval evictor will tear it down once
+      that eval completes).
+    - Remote, on-disk folder missing: extracts cached ZIP into a
+      tempfile.mkdtemp(), yields, ALWAYS cleans up on exit.
+
+    Raises RuntimeError if the row is `storage_mode='remote'` without
+    a `remote_url` (corrupted state)."""
+    folder = os.path.join(
+        app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id),
+    )
+    storage = getattr(submission, 'storage_mode', 'local') or 'local'
+
+    if storage != 'remote':
+        yield folder
+        return
+
+    # On-disk extraction still around (e.g. the initial eval for a
+    # freshly-uploaded remote submission) → use it as-is.
+    if os.path.isdir(folder) and any(
+        name for name in os.listdir(folder)
+        if name not in ('__MACOSX',) and not name.startswith('.')
+    ):
+        yield folder
+        return
+
+    if not submission.remote_url:
+        raise RuntimeError(
+            f"Submission {submission.id} marked remote but has no remote_url"
+        )
+    owner_token = None
+    try:
+        owner_token = (submission.owner.hf_token if submission.owner else None)
+    except Exception:
+        pass
+    cached_path, _ = _fetch_remote_submission_zip(
+        submission.remote_url, hf_token=owner_token,
+    )
+    tempdir = tempfile.mkdtemp(prefix=f'benchhub-sub-{submission.id}-')
+    try:
+        with zipfile.ZipFile(cached_path) as zf:
+            zf.extractall(tempdir)
+        # If the ZIP contained a single top-level folder (the common
+        # case from `make_archive` style packagers), descend into it
+        # so the metric scanner sees the same shape it would for a
+        # local submission whose ZIP was unwrapped at upload time.
+        entries = [
+            e for e in os.listdir(tempdir)
+            if e != '__MACOSX' and not e.startswith('.')
+        ]
+        target = tempdir
+        if len(entries) == 1 and os.path.isdir(os.path.join(tempdir, entries[0])):
+            target = os.path.join(tempdir, entries[0])
+        yield target
+    finally:
+        shutil.rmtree(tempdir, ignore_errors=True)
+
+
+def _evict_extracted_submission_folder(submission):
+    """Tear down `uploads/submissions/<id>/` for a remote submission
+    once eval has persisted CustomField rows. The cached ZIP under
+    bench_cache is the canonical source from here on; recalcs
+    re-extract on demand via `_with_extracted_submission`.
+
+    No-op for local submissions (their bytes are immutable on Fly disk
+    and there's nowhere else to fetch them from)."""
+    if getattr(submission, 'storage_mode', 'local') != 'remote':
+        return
+    folder = os.path.join(
+        app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id),
+    )
+    if not os.path.isdir(folder):
+        return
+    try:
+        shutil.rmtree(folder)
+    except OSError as e:
+        # Best-effort: a cleanup failure shouldn't poison the eval.
+        # Volume might be busy / a file might be open in another worker.
+        print(f"DEBUG: evict extracted folder for sub {submission.id} failed: {e}")
 
 
 def _verify_remote_submission_hash(submission):

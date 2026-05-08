@@ -119,25 +119,31 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
 
             # Store the filters used for this calculation
             submission.last_sample_filter = json.dumps(sample_filters, sort_keys=True) if sample_filters else None
-            
-            # Submission folder path
-            submission_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id))
-            
-            samples_context = []
-            logger.info(f"Building context for {len(dataset_samples)} samples from folder: {submission_folder}")
-            # Pull the pointer resolver + paired-GT provider from app
-            # so pointer-mode samples can stream lazily through
-            # bench_cache and gt_source-paired datasets fold their
-            # matching-named samples into the context.
-            from app import _pointer_gt_resolver, _make_paired_gt_provider
+
+            # Submission folder. For local subs this is the always-on
+            # `uploads/submissions/<id>/`. For remote subs it might be
+            # a transient re-extraction from the cached ZIP — the
+            # context manager handles either case + cleans up after.
+            from app import (
+                _pointer_gt_resolver, _make_paired_gt_provider,
+                _with_extracted_submission,
+            )
             paired_provider = _make_paired_gt_provider(submission.leaderboard)
-            for sample in dataset_samples:
-                ctx = get_metric_context(
-                    sample, submission, submission_folder=submission_folder,
-                    pointer_resolver=_pointer_gt_resolver,
-                    paired_gt_provider=paired_provider,
+
+            with _with_extracted_submission(submission) as submission_folder:
+                samples_context = []
+                logger.info(
+                    f"Building context for {len(dataset_samples)} samples "
+                    f"from folder: {submission_folder}"
                 )
-                samples_context.append(ctx)
+                for sample in dataset_samples:
+                    ctx = get_metric_context(
+                        sample, submission,
+                        submission_folder=submission_folder,
+                        pointer_resolver=_pointer_gt_resolver,
+                        paired_gt_provider=paired_provider,
+                    )
+                    samples_context.append(ctx)
             
             if not samples_context:
                  logger.warning(f"No samples matched filters for submission {submission.id}. Metrics will be null.")
@@ -334,6 +340,19 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
         submission.processing_status = 'Processed'
         session.commit()
         logger.info(f"Processing submission {submission_id} done.")
+
+        # Disk-savings closeout: for remote submissions, tear down
+        # the extracted `uploads/submissions/<id>/` folder now that
+        # CustomFields are persisted. The cached ZIP under bench_cache
+        # is the canonical source; subsequent recalcs re-extract on
+        # demand via `_with_extracted_submission`.
+        try:
+            from app import _evict_extracted_submission_folder
+            _evict_extracted_submission_folder(submission)
+        except Exception as e:
+            logger.warning(
+                f"Submission {submission_id} extracted-folder evict failed: {e}"
+            )
 
     except Exception as e:
         session.rollback()
