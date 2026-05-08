@@ -786,6 +786,26 @@ class UserColabGist(db.Model):
     sig = db.Column(db.String(16), nullable=True)
 
 
+class HfDatasetVisit(db.Model):
+    """Lightweight log of HF datasets a user has explored via the
+    /hf/<repo_id> live-preview page. NOT a materialized Dataset —
+    the user hasn't committed to creating an LB yet. Used for the
+    'Your recent HF picks' widget + the 'Trending across the
+    platform' aggregate.
+
+    Composite PK keeps each (user, repo) at one row; revisits bump
+    `last_visited_at` + `visit_count` rather than appending.
+    """
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'),
+                        primary_key=True)
+    repo_id = db.Column(db.String(200), primary_key=True)
+    last_visited_at = db.Column(db.DateTime, nullable=False,
+                                default=datetime.utcnow,
+                                index=True)
+    visit_count = db.Column(db.Integer, nullable=False, default=1,
+                            server_default='1')
+
+
 class CacheEntry(db.Model):
     """Disk-bounded LRU cache backing pointer-mode HF datasets and
     remote submissions. Each row is one cached blob; bench_cache.py
@@ -7586,6 +7606,277 @@ def api_hf_datasets():
     return jsonify({'rows': rows, 'sort': sort, 'q': q})
 
 
+def _record_hf_visit(user_id, repo_id):
+    """Upsert one row of HfDatasetVisit. No-op if user_id is None
+    (anonymous browsing — we don't track those)."""
+    if not user_id or not repo_id:
+        return
+    visit = HfDatasetVisit.query.filter_by(
+        user_id=user_id, repo_id=repo_id,
+    ).first()
+    now = datetime.utcnow()
+    if visit is None:
+        visit = HfDatasetVisit(
+            user_id=user_id, repo_id=repo_id,
+            last_visited_at=now, visit_count=1,
+        )
+        db.session.add(visit)
+    else:
+        visit.last_visited_at = now
+        visit.visit_count = (visit.visit_count or 0) + 1
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _hf_preview_rows(repo_id, *, n=5, hf_token=None, revision=None):
+    """Stream the first `n` rows of the HF dataset for a live-preview
+    panel. Each cell that's image / depth gets cached via
+    bench_cache (origin='gt', same lane as pointer-mode GT) so the
+    /hf/<repo_id>/preview_cell/... endpoint can serve it back without
+    re-streaming.
+
+    Returns (rows, schema):
+      rows: list of dicts with keys row_idx + per-column entries.
+            Per-column entry shape: {kind: str, value: str|None,
+            cell_url: str|None}.
+            * scalar / text: kind matches, value is a string.
+            * image / depth: kind matches, cell_url points at the
+              cached bytes via the preview-cell route.
+            * unknown: kind='unknown', value=stringified repr.
+      schema: dict {column_name: BenchHub-style type string}.
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        return [], {}
+    try:
+        ds = load_dataset(
+            repo_id, split='train', streaming=True, revision=revision,
+            token=hf_token, trust_remote_code=True,
+        )
+    except Exception as e:
+        msg = str(e); low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'unauthorized' in low
+                or 'access denied' in low):
+            raise
+        print(f"_hf_preview_rows load_dataset failed: {e}")
+        return [], {}
+
+    schema = {}
+    try:
+        ds_features = getattr(ds, 'features', None) or {}
+        for col, feat in (ds_features.items()
+                          if hasattr(ds_features, 'items') else []):
+            schema[col] = _describe_feature(feat).get('type', 'unknown')
+    except Exception as e:
+        print(f"_hf_preview_rows schema introspection failed: {e}")
+
+    cache_root = app.config.get('CACHE_FOLDER')
+    rows = []
+    for i, example in enumerate(ds):
+        if i >= n:
+            break
+        row_repr = {'row_idx': i, 'columns': {}}
+        for col, value in (example.items() if isinstance(example, dict) else []):
+            kind = _classify_preview_value(value)
+            cell = {'kind': kind, 'value': None, 'cell_url': None}
+            if kind in ('image', 'depth'):
+                # Stash the bytes via bench_cache so the preview-cell
+                # endpoint can serve them. Same key shape as a real
+                # pointer-mode GT entry, so cache eviction reuses
+                # the existing LRU policy.
+                cache_key = (
+                    f"gt:{repo_id}@{revision or 'main'}:train:{i}:{col}"
+                )
+
+                def _writer(path, _value=value, _kind=kind):
+                    import io as _io
+                    if _kind == 'image':
+                        from PIL import Image as _PILImage
+                        buf = _io.BytesIO()
+                        if hasattr(_value, 'save'):
+                            _value.convert('RGB').save(buf, 'PNG')
+                        else:
+                            arr = np.asarray(_value)
+                            if arr.ndim == 2:
+                                arr = np.stack([arr] * 3, axis=-1)
+                            _PILImage.fromarray(arr.astype(np.uint8)).save(buf, 'PNG')
+                        with open(path, 'wb') as f:
+                            f.write(buf.getvalue())
+                    else:  # depth
+                        arr = np.asarray(_value)
+                        if arr.ndim == 3 and arr.shape[2] == 1:
+                            arr = arr.squeeze(-1)
+                        buf = _io.BytesIO()
+                        np.savez(buf, depth=arr.astype(np.float32))
+                        with open(path, 'wb') as f:
+                            f.write(buf.getvalue())
+
+                try:
+                    bench_cache.cache_put(
+                        db.session, CacheEntry,
+                        cache_root=cache_root, key=cache_key,
+                        origin='gt', writer=_writer,
+                    )
+                    cell['cell_url'] = url_for(
+                        'hf_preview_cell',
+                        repo_id=repo_id, row_idx=i, col=col,
+                    )
+                except Exception as e:
+                    print(f"_hf_preview_rows cache_put failed for {col}@{i}: {e}")
+            elif kind in ('scalar', 'text'):
+                cell['value'] = str(value)
+            else:
+                cell['value'] = repr(value)[:120]
+            row_repr['columns'][col] = cell
+        rows.append(row_repr)
+    return rows, schema
+
+
+def _classify_preview_value(value):
+    """Coarse classification used by the preview helper. Cheaper +
+    different than _describe_feature — operates on a runtime value
+    rather than a feature object."""
+    if value is None:
+        return 'unknown'
+    if hasattr(value, 'mode') and hasattr(value, 'save'):  # PIL
+        return 'image'
+    try:
+        import numpy as _np
+        if isinstance(value, _np.ndarray):
+            return 'depth' if value.ndim == 2 else 'image'
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return 'scalar'
+    if isinstance(value, (int, float)):
+        return 'scalar'
+    if isinstance(value, str):
+        return 'text'
+    return 'unknown'
+
+
+@app.route('/hf/<path:repo_id>')
+def hf_dataset_preview(repo_id):
+    """Live preview of a HuggingFace dataset — no DB write. The page
+    streams metadata + a few sample rows, surfaces tags + license
+    + schema, and offers two CTAs:
+      - 'Create leaderboard with this dataset' → goes through the
+        existing /import_from_hf/preview flow with auto-LB
+        opt-in pre-checked.
+      - 'Just import as a dataset' → same flow without the LB.
+
+    Visiting this page does NOT create a Dataset row. Visit history
+    is tracked separately (HfDatasetVisit) for the recent + trending
+    widgets on /datasets.
+    """
+    user = getattr(g, 'current_user', None)
+    hf_token = user.hf_token if (user is not None and user.hf_token) else None
+
+    # Repo-level metadata (cheap, cached).
+    try:
+        meta = _hf_fetch_repo_metadata(repo_id, hf_token=hf_token)
+    except RuntimeError as e:
+        # Gated repo → bounce to the unlock wizard.
+        return redirect(url_for(
+            'import_from_hf_gated_wizard',
+            repo_id=repo_id, dataset_name=repo_id.replace('/', '_'),
+            revision='', sample_cap=200, flow='auto',
+        ))
+
+    # Live row preview. Errors degrade to "no rows" instead of breaking
+    # the page — schema + tags + description are still useful.
+    try:
+        preview_rows, schema = _hf_preview_rows(
+            repo_id, n=5, hf_token=hf_token,
+        )
+    except RuntimeError:
+        return redirect(url_for(
+            'import_from_hf_gated_wizard',
+            repo_id=repo_id, dataset_name=repo_id.replace('/', '_'),
+            revision='', sample_cap=200, flow='auto',
+        ))
+    except Exception as e:
+        print(f"hf_dataset_preview row stream failed: {e}")
+        preview_rows, schema = [], {}
+
+    # Mark visited.
+    if user is not None:
+        _record_hf_visit(user.id, repo_id)
+
+    return render_template(
+        'hf_preview.html',
+        repo_id=repo_id,
+        meta=meta,
+        schema=schema,
+        preview_rows=preview_rows,
+        already_imported=Dataset.query.filter_by(
+            source_kind='hf-pointer',
+        ).filter(
+            Dataset.source_metadata.like(f'%"{repo_id}"%')
+        ).first(),
+    )
+
+
+@app.route('/hf/<path:repo_id>/preview_cell/<int:row_idx>/<col>')
+def hf_preview_cell(repo_id, row_idx, col):
+    """Serve the cached bytes for a single preview cell. The
+    /hf/<repo_id> page populated bench_cache via
+    `gt:<repo>@main:train:<idx>:<col>`; this route maps that key to
+    a file response. Falls back to a 404 if the cache entry was
+    evicted between page load and the browser fetching the cell —
+    the user can refresh to re-warm."""
+    cache_key = f"gt:{repo_id}@main:train:{row_idx}:{col}"
+    cache_root = app.config.get('CACHE_FOLDER')
+    path = bench_cache.cache_get(
+        db.session, CacheEntry, cache_root=cache_root, key=cache_key,
+    )
+    if not path or not os.path.exists(path):
+        return jsonify({'error': 'preview cell evicted; refresh page'}), 404
+    # We don't know the kind from the URL alone — peek the file's
+    # first bytes. PNG magic = b'\x89PNG'; otherwise treat as NPZ
+    # and serve as octet-stream.
+    with open(path, 'rb') as f:
+        head = f.read(8)
+    if head.startswith(b'\x89PNG'):
+        return send_file(path, mimetype='image/png')
+    return send_file(path, mimetype='application/octet-stream')
+
+
+def _user_recent_hf_visits(user_id, *, limit=10):
+    """Last `limit` HF repos this user has explored, newest first."""
+    if not user_id:
+        return []
+    return (HfDatasetVisit.query
+            .filter_by(user_id=user_id)
+            .order_by(HfDatasetVisit.last_visited_at.desc())
+            .limit(limit)
+            .all())
+
+
+def _trending_hf_visits(*, days=7, limit=10):
+    """Most-visited HF repos across the platform in the last `days`.
+    Returns list of (repo_id, total_visits, distinct_users)."""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = (db.session.query(
+                HfDatasetVisit.repo_id,
+                func.sum(HfDatasetVisit.visit_count).label('total'),
+                func.count(HfDatasetVisit.user_id.distinct()).label('users'),
+            )
+            .filter(HfDatasetVisit.last_visited_at >= cutoff)
+            .group_by(HfDatasetVisit.repo_id)
+            .order_by(func.sum(HfDatasetVisit.visit_count).desc())
+            .limit(limit)
+            .all())
+    return [
+        {'repo_id': r.repo_id, 'visits': int(r.total or 0),
+         'users': int(r.users or 0)}
+        for r in rows
+    ]
+
+
 @app.route('/create_leaderboard', methods=['POST'])
 @login_required
 def create_leaderboard():
@@ -9115,8 +9406,13 @@ def datasets_list():
     # custom field on any sample, rendered to PNG by the existing
     # /custom_field_image endpoint. None when the dataset is metric-only.
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
+    user = getattr(g, 'current_user', None)
+    recent_hf = _user_recent_hf_visits(user.id if user else None, limit=8)
+    trending_hf = _trending_hf_visits(days=7, limit=8)
     return render_template('datasets.html', datasets=datasets,
-                           dataset_thumbs=dataset_thumbs)
+                           dataset_thumbs=dataset_thumbs,
+                           recent_hf=recent_hf,
+                           trending_hf=trending_hf)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):
@@ -10964,6 +11260,30 @@ def check_and_migrate_db():
                         print("Created 'user_colab_gist' table.")
                     except Exception as e:
                         print(f"Failed to create 'user_colab_gist' table: {e}")
+
+                # --- HfDatasetVisit (browse-without-import history) ---
+                try:
+                    cursor.execute("SELECT user_id FROM hf_dataset_visit LIMIT 1")
+                except sqlite3.OperationalError:
+                    print("Migrating DB: Creating 'hf_dataset_visit' table...")
+                    try:
+                        cursor.execute('''
+                            CREATE TABLE hf_dataset_visit (
+                                user_id INTEGER NOT NULL,
+                                repo_id VARCHAR(200) NOT NULL,
+                                last_visited_at DATETIME NOT NULL,
+                                visit_count INTEGER NOT NULL DEFAULT 1,
+                                PRIMARY KEY (user_id, repo_id)
+                            )
+                        ''')
+                        cursor.execute(
+                            'CREATE INDEX ix_hf_dataset_visit_last_visited_at '
+                            'ON hf_dataset_visit (last_visited_at)'
+                        )
+                        conn.commit()
+                        print("Created 'hf_dataset_visit' table.")
+                    except Exception as e:
+                        print(f"Failed to create 'hf_dataset_visit' table: {e}")
 
                 # --- CacheEntry table (pointer-mode + remote-submission cache) ---
                 try:
