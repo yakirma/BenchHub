@@ -4370,6 +4370,14 @@ def _hf_fetch_features(repo_id, revision=None, hf_token=None):
     """Pull the `features` JSON from huggingface.co/api/datasets/<repo>.
     Returns a dict {column_name: feature_descriptor} or {} if unavailable.
     Anonymous when no token; uses the token for gated repos.
+
+    When the REST API blob doesn't carry `cardData.dataset_info`
+    (common for community datasets uploaded as raw image folders or
+    backed by a script rather than parquet), fall back to actually
+    streaming the dataset via the `datasets` library and reading
+    `ds.features`. That works for any repo `datasets.load_dataset`
+    can open, which is a much wider set than the ones HF chooses to
+    surface in dataset_info.
     """
     import requests as _r
     headers = {}
@@ -4396,7 +4404,93 @@ def _hf_fetch_features(repo_id, revision=None, hf_token=None):
         feats = blk.get('features')
         if feats:
             return _normalize_features(feats)
+    # API didn't expose features → ask the datasets lib to introspect.
+    return _hf_features_via_streaming(repo_id, revision=revision, hf_token=hf_token)
+
+
+def _hf_features_via_streaming(repo_id, revision=None, hf_token=None):
+    """Fallback path for repos with no dataset_info in the API response:
+    open the dataset in streaming mode (no full download) and read its
+    `.features` directly. Returns the same normalized dict shape as
+    `_normalize_features`. {} on any failure so the caller falls
+    through cleanly."""
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        return {}
+    # Try a few common splits; many repos only ship one of these.
+    for split in ('train', 'validation', 'test', 'default'):
+        try:
+            ds = load_dataset(repo_id, split=split, streaming=True,
+                              revision=revision, token=hf_token)
+        except Exception:
+            continue
+        feats = getattr(ds, 'features', None)
+        if not feats:
+            # No declared schema even via streaming; try to peek a row.
+            try:
+                example = next(iter(ds))
+            except Exception:
+                continue
+            return _features_from_example(example)
+        return _features_from_datasets_features(feats)
     return {}
+
+
+def _features_from_datasets_features(features):
+    """Convert a `datasets.Features` mapping into BenchHub's normalized
+    feature dict."""
+    out = {}
+    for name, feat in (features.items() if hasattr(features, 'items') else []):
+        out[name] = _describe_feature(feat)
+    return out
+
+
+def _describe_feature(feat):
+    """One feature object → {type: ...[, names, length]} dict."""
+    cls_name = type(feat).__name__
+    if cls_name == 'Image':
+        return {'type': 'Image'}
+    if cls_name == 'Audio':
+        return {'type': 'Audio'}
+    if cls_name == 'ClassLabel':
+        return {'type': 'ClassLabel',
+                'names': list(getattr(feat, 'names', []) or [])}
+    if cls_name == 'Value':
+        return {'type': f"Value:{getattr(feat, 'dtype', 'unknown')}"}
+    if cls_name in ('Sequence', 'List'):
+        inner = getattr(feat, 'feature', None)
+        inner_desc = _describe_feature(inner) if inner is not None else {}
+        inner_type = inner_desc.get('type', 'unknown')
+        # `Sequence:<inner_dtype>` (e.g. 'int32') matches the API shape.
+        if inner_type.startswith('Value:'):
+            inner_type = inner_type[len('Value:'):]
+        return {'type': f"Sequence:{inner_type}",
+                'length': getattr(feat, 'length', -1)}
+    return {'type': 'unknown'}
+
+
+def _features_from_example(example):
+    """Last-resort schema inference: peek one row and guess the type
+    from the Python type of each value. Used only when streaming
+    couldn't surface a declared schema."""
+    out = {}
+    for name, value in (example.items() if isinstance(example, dict) else []):
+        if hasattr(value, 'mode') and hasattr(value, 'size'):  # PIL.Image
+            out[name] = {'type': 'Image'}
+        elif isinstance(value, bool):
+            out[name] = {'type': 'Value:bool'}
+        elif isinstance(value, int):
+            out[name] = {'type': 'Value:int64'}
+        elif isinstance(value, float):
+            out[name] = {'type': 'Value:float32'}
+        elif isinstance(value, str):
+            out[name] = {'type': 'Value:string'}
+        elif isinstance(value, (list, tuple)):
+            out[name] = {'type': 'Sequence:unknown', 'length': -1}
+        else:
+            out[name] = {'type': 'unknown'}
+    return out
 
 
 def _normalize_features(feats):
