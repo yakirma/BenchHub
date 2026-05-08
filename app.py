@@ -10199,6 +10199,67 @@ def _fetch_remote_submission_zip(remote_url, *, hf_token=None,
     return cached_path, sha.hexdigest()
 
 
+def _verify_remote_submission_hash(submission):
+    """Strict hash-pinning: re-fetch the submission's bytes via
+    bench_cache and compare SHA-256 to the stored content_hash. The
+    cache makes the common case (hot LRU) free; an evicted entry
+    forces a re-fetch from upstream which catches any post-submission
+    edit on the remote URL.
+
+    Returns (ok: bool, message: str). For local submissions this is
+    always ok=True (the bytes are immutable on Fly disk). For remote
+    submissions with a populated content_hash, mismatch sets the
+    Submission's processing_status to a clear error and the caller
+    should bail.
+
+    First re-eval after a hash was captured but never verified is
+    treated as a populate, not a mismatch — content_hash NULL is the
+    "I haven't seen this submission yet" case.
+    """
+    if submission is None:
+        return False, "Submission missing."
+    if getattr(submission, 'storage_mode', 'local') != 'remote':
+        return True, ''
+    remote_url = submission.remote_url
+    if not remote_url:
+        # storage_mode='remote' but no URL: corrupted row.
+        return False, "Submission marked remote but has no remote_url."
+    owner_token = None
+    try:
+        owner_token = (submission.owner.hf_token if submission.owner else None)
+    except Exception:
+        pass
+    try:
+        _path, current_hash = _fetch_remote_submission_zip(
+            remote_url, hf_token=owner_token,
+        )
+    except Exception as e:
+        return False, f"Could not refetch submission for hash check: {e}"
+    expected = submission.content_hash
+    if not expected:
+        # First time we're seeing this submission's hash → record + pass.
+        submission.content_hash = current_hash
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return True, ''
+    if current_hash == expected:
+        return True, ''
+    # Mismatch — refuse to evaluate against drifted bytes.
+    submission.processing_status = (
+        'Error: submission file changed; please resubmit'
+    )
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return False, (
+        f"Hash mismatch on remote submission {submission.id} "
+        f"(expected {expected[:12]}…, got {current_hash[:12]}…)"
+    )
+
+
 @app.route('/api/leaderboard/<int:leaderboard_id>/submission/from_url',
            methods=['POST'])
 @require_api_token

@@ -999,8 +999,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 </div>
                             </td>
                             <td data-lb-column="status">
+                                {% set _is_drift = (submission.processing_status or '').startswith('Error: submission file changed') %}
+                                {% set _is_other_err = (submission.processing_status or '').startswith('Error') and not _is_drift %}
                                 <span id="status-{{ submission.id }}"
-                                    class="badge {{ 'bg-success' if submission.processing_status == 'Processed' else 'bg-warning' }}">
+                                    class="badge {{ 'bg-danger' if _is_drift else ('bg-success' if submission.processing_status == 'Processed' else ('bg-danger' if _is_other_err else 'bg-warning')) }}"
+                                    {% if _is_drift %}title="The remote URL's bytes no longer match the SHA-256 captured at submission time. Re-submit to record the new hash + re-run metrics."{% endif %}>
+                                    {% if _is_drift %}<i class="bi bi-shield-exclamation me-1"></i>{% endif %}
                                     {{ submission.processing_status }}
                                 </span>
                             </td>

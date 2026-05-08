@@ -49,6 +49,18 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                     logger.error(f"Submission {submission_id} not found after retries.")
             return
 
+        # Strict hash-pin: for remote submissions, refuse to recalc
+        # against drifted bytes. Cheap when the cache is warm; on a
+        # cache miss this re-fetches from upstream and catches any
+        # post-submission edit on the remote URL.
+        from app import _verify_remote_submission_hash
+        ok, msg = _verify_remote_submission_hash(submission)
+        if not ok:
+            logger.warning(
+                f"Submission {submission_id} rejected: {msg}"
+            )
+            return
+
         submission.processing_status = 'Processing'
         session.commit() # Commit the status change
         
