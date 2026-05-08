@@ -24,6 +24,21 @@
         Toggle, rename, or edit before creating the leaderboard.
     </p>
 
+    {% if canonical_existing %}
+    <div class="alert alert-info d-flex align-items-start gap-2 mb-3" role="alert">
+        <i class="bi bi-info-circle-fill mt-1"></i>
+        <div>
+            <strong>A canonical leaderboard already exists for
+                <span class="font-monospace">{{ hf_ref.repo_id }}</span>:</strong>
+            <a href="{{ url_for('leaderboard_view', leaderboard_id=canonical_existing.id) }}"
+                class="alert-link">{{ canonical_existing.name }}</a>.
+            Most users want to <em>submit there</em> rather than fork a personal copy —
+            results land on the same public leaderboard everyone else compares against.
+            You can still create your own personal leaderboard below if you have a reason to.
+        </div>
+    </div>
+    {% endif %}
+
     <form method="post" action="{{ url_for('create_leaderboard_auto_finalize') }}">
         <input type="hidden" name="leaderboard_name" value="{{ leaderboard_name }}">
         {% if dataset %}
@@ -205,9 +220,15 @@
         {% endif %}
 
         <div class="d-flex justify-content-between gap-2">
+            {% if dataset %}
             <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}" class="btn btn-outline-secondary">
                 Cancel
             </a>
+            {% else %}
+            <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary">
+                Cancel
+            </a>
+            {% endif %}
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-lg me-1"></i>Create leaderboard with these
             </button>

@@ -50,10 +50,15 @@ def _mk_dataset(name, *, owner_user_id=None, visibility='public'):
     return ds
 
 
-def _mk_lb(project, dataset, name, *, owner_user_id=None, visibility='public'):
+def _mk_lb(project, dataset, name, *, owner_user_id=None, visibility='public',
+           canonicality='public'):
+    # Tests in this module assert /explore behavior, so default to
+    # canonicality='public' — /explore filters out personal LBs by
+    # design (see admin_promote_leaderboard).
     lb = Leaderboard(
         name=name, summary_metrics='',
         owner_user_id=owner_user_id, visibility=visibility,
+        canonicality=canonicality,
     )
     lb.datasets.append(dataset)
     db.session.add(lb)

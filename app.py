@@ -659,6 +659,17 @@ class Leaderboard(db.Model):
     # Self-invalidating: when the LB's datasets/metrics change, the
     # signature drifts and the next request regenerates.
     colab_notebook_cache = db.Column(db.Text, nullable=True)
+    # Personal vs admin-promoted canonical. /explore + /home filter
+    # to canonicality='public' by default; personal LBs stay visible
+    # to their owner + collaborators only.
+    canonicality = db.Column(
+        db.String(20), nullable=False,
+        default='personal', server_default='personal',
+    )
+    # When set, this LB is the canonical surface for the named HF repo
+    # (e.g. 'cifar10', 'sayakpaul/nyu_depth_v2'). At most one row per
+    # repo with this set — enforced at promote time.
+    canonical_for_repo = db.Column(db.String(200), nullable=True, index=True)
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
@@ -2054,6 +2065,56 @@ def admins_revoke(user_id):
     return redirect(url_for('admins_settings'))
 
 
+@app.route('/admin/leaderboard/<int:lb_id>/promote', methods=['POST'])
+@login_required
+def admin_promote_leaderboard(lb_id):
+    """Mark an LB as the canonical public leaderboard for an HF repo.
+
+    Why: anyone can fork a public dataset into their own personal LB; we
+    only want one entry on /explore per repo so the catalog stays
+    legible. Admin-curated single-source-of-truth.
+
+    Form params:
+      - canonicality: 'public' (promote) or 'personal' (demote)
+      - canonical_for_repo: HF repo id (only used on 'public')
+    """
+    if not is_admin(g.current_user):
+        abort(403)
+    lb = Leaderboard.query.get_or_404(lb_id)
+    target = (request.form.get('canonicality') or 'public').strip()
+    if target not in ('public', 'personal'):
+        flash("canonicality must be 'public' or 'personal'.", "warning")
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    if target == 'personal':
+        lb.canonicality = 'personal'
+        lb.canonical_for_repo = None
+        db.session.commit()
+        flash(f"Demoted '{lb.name}' to personal.", "info")
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+    # Promotion path. Repo binding is optional (a public LB can exist
+    # without a 1:1 HF repo binding), but if provided, enforce uniqueness.
+    repo = (request.form.get('canonical_for_repo') or '').strip() or None
+    if repo:
+        clash = (Leaderboard.query
+                 .filter(Leaderboard.canonical_for_repo == repo,
+                         Leaderboard.id != lb.id)
+                 .first())
+        if clash is not None:
+            flash(
+                f"Repo '{repo}' is already canonicalized by leaderboard "
+                f"'{clash.name}' (id={clash.id}). Demote that one first.",
+                "warning",
+            )
+            return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    lb.canonicality = 'public'
+    lb.canonical_for_repo = repo
+    db.session.commit()
+    label = f"public canonical for {repo}" if repo else "public"
+    flash(f"Promoted '{lb.name}' to {label}.", "success")
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
 # ===================== Account deletion (GDPR) =====================
 # Right-to-be-forgotten flow. Wipes everything the user owns plus their
 # user row. Submissions sitting in someone *else's* leaderboard get their
@@ -2234,15 +2295,27 @@ def home():
         .limit(24)
         .all()
     )
-    leaderboards = (
+    # Split user's LBs into "public canonical" (admin-promoted, also
+    # appear on /explore) and "personal" (their own work that hasn't
+    # been promoted). /home shows both, public first.
+    public_lbs = (
         Leaderboard.query
-        .filter(Leaderboard.owner_user_id == user.id)
+        .filter(Leaderboard.owner_user_id == user.id,
+                Leaderboard.canonicality == 'public')
         .order_by(Leaderboard.upload_date.desc())
         .limit(24)
         .all()
     )
+    personal_lbs = (
+        Leaderboard.query
+        .filter(Leaderboard.owner_user_id == user.id,
+                Leaderboard.canonicality != 'public')
+        .order_by(Leaderboard.upload_date.desc())
+        .limit(24)
+        .all()
+    )
+    leaderboards = public_lbs + personal_lbs  # legacy template var
 
-    # For each leaderboard, pick a thumbnail from its first dataset.
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
     leaderboard_thumbs = {}
     for lb in leaderboards:
@@ -2255,6 +2328,8 @@ def home():
         'home.html',
         datasets=datasets,
         leaderboards=leaderboards,
+        public_lbs=public_lbs,
+        personal_lbs=personal_lbs,
         dataset_thumbs=dataset_thumbs,
         leaderboard_thumbs=leaderboard_thumbs,
     )
@@ -2309,6 +2384,10 @@ def explore():
         .outerjoin(recent_activity, Leaderboard.id == recent_activity.c.lb_id)
         .outerjoin(total_activity, Leaderboard.id == total_activity.c.lb_id)
         .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
+        # /explore is the canonical catalog. Personal LBs live on their
+        # owner's /home; surfacing every fork here makes the page noisy
+        # and dilutes admin-promoted entries.
+        .filter(Leaderboard.canonicality == 'public')
     )
 
 
@@ -7551,6 +7630,16 @@ def import_from_hf_auto():
         for pf in (p.get('pred_fields') or []):
             seen_pred.setdefault(pf['name'], pf)
 
+    # Canonicality nudge: if an admin-promoted public LB already exists
+    # for this repo, surface a "submit there instead" callout. Doesn't
+    # block creation — users can still fork into a personal LB.
+    canonical_existing = (
+        Leaderboard.query
+        .filter(Leaderboard.canonical_for_repo == repo_id,
+                Leaderboard.canonicality == 'public')
+        .first()
+    )
+
     return render_template(
         'auto_lb_preview.html',
         leaderboard_name=f"{dataset_name}_leaderboard",
@@ -7563,6 +7652,7 @@ def import_from_hf_auto():
         metric_proposals=metric_props,
         viz_proposals=viz_props,
         pred_field_schema=list(seen_pred.values()),
+        canonical_existing=canonical_existing,
     )
 
 
@@ -11406,6 +11496,11 @@ def check_and_migrate_db():
                     # vs 'gt_source' so an LB can fold a separate GT
                     # repo's same-named samples into the metric context.
                     ("leaderboard_datasets", "role",                             "VARCHAR(20) NOT NULL DEFAULT 'primary'"),
+                    # Canonicality (NEW 2026-05-08). 'personal' (default)
+                    # vs 'public' (admin-promoted). canonical_for_repo
+                    # uniquely binds a public LB to one HF repo.
+                    ("leaderboard",          "canonicality",                     "VARCHAR(20) NOT NULL DEFAULT 'personal'"),
+                    ("leaderboard",          "canonical_for_repo",               "VARCHAR(200)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

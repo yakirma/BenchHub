@@ -51,10 +51,10 @@ def test_explore_tag_filter_narrows_to_matching_lbs(client, db_session):
     depth_tag = Tag(name='depth')
     db.session.add(depth_tag); db.session.flush()
 
-    matched = Leaderboard(name='depth_lb', summary_metrics='', visibility='public')
+    matched = Leaderboard(name='depth_lb', summary_metrics='', visibility='public', canonicality='public')
     matched.datasets.append(ds)
     matched.tags.append(depth_tag)
-    other = Leaderboard(name='untagged_lb', summary_metrics='', visibility='public')
+    other = Leaderboard(name='untagged_lb', summary_metrics='', visibility='public', canonicality='public')
     other.datasets.append(ds)
     db.session.add_all([matched, other]); db.session.commit()
 
@@ -70,9 +70,9 @@ def test_explore_tag_cloud_renders_with_counts(client, db_session):
     seg_tag = Tag(name='segmentation')
     db.session.add_all([depth_tag, seg_tag]); db.session.flush()
 
-    lb1 = Leaderboard(name='lb_d1', summary_metrics='', visibility='public')
-    lb2 = Leaderboard(name='lb_d2', summary_metrics='', visibility='public')
-    lb3 = Leaderboard(name='lb_seg', summary_metrics='', visibility='public')
+    lb1 = Leaderboard(name='lb_d1', summary_metrics='', visibility='public', canonicality='public')
+    lb2 = Leaderboard(name='lb_d2', summary_metrics='', visibility='public', canonicality='public')
+    lb3 = Leaderboard(name='lb_seg', summary_metrics='', visibility='public', canonicality='public')
     for lb in (lb1, lb2, lb3):
         lb.datasets.append(ds)
     lb1.tags.append(depth_tag)
@@ -101,9 +101,9 @@ def test_explore_tag_cloud_assigns_distinct_colors_by_name(client, db_session):
     a = Tag(name='alpha-tag')
     b = Tag(name='beta-tag')
     db.session.add_all([a, b]); db.session.flush()
-    lb_a = Leaderboard(name='lb_alpha_only', summary_metrics='', visibility='public')
+    lb_a = Leaderboard(name='lb_alpha_only', summary_metrics='', visibility='public', canonicality='public')
     lb_a.datasets.append(ds); lb_a.tags.append(a)
-    lb_b = Leaderboard(name='lb_beta_only', summary_metrics='', visibility='public')
+    lb_b = Leaderboard(name='lb_beta_only', summary_metrics='', visibility='public', canonicality='public')
     lb_b.datasets.append(ds); lb_b.tags.append(b)
     db.session.add_all([lb_a, lb_b]); db.session.commit()
 

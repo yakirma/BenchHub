@@ -350,6 +350,47 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
+{% if current_user_is_admin %}
+{# Admin-only canonicality control. Public LBs appear on /explore and
+   are the "submit-here" target when others import the same HF repo. #}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body p-3 d-flex flex-wrap align-items-center gap-2">
+        <span class="small text-body-secondary me-2">
+            <i class="bi bi-shield-lock me-1"></i>Admin:
+        </span>
+        <span class="badge text-bg-{{ 'success-subtle text-success' if leaderboard.canonicality == 'public' else 'secondary-subtle text-secondary' }} border small">
+            {{ leaderboard.canonicality }}
+            {% if leaderboard.canonical_for_repo %}
+            · canonical for <span class="font-monospace">{{ leaderboard.canonical_for_repo }}</span>
+            {% endif %}
+        </span>
+        {% set hf_attach = none %}
+        {% for att in leaderboard.attachments %}
+            {% if att.kind == 'hf' and att.role == 'primary' and not hf_attach %}
+                {% set hf_attach = att %}
+            {% endif %}
+        {% endfor %}
+        <form method="post" action="{{ url_for('admin_promote_leaderboard', lb_id=leaderboard.id) }}"
+            class="d-inline-flex flex-wrap align-items-center gap-2 ms-auto">
+            {% if leaderboard.canonicality == 'public' %}
+                <input type="hidden" name="canonicality" value="personal">
+                <button type="submit" class="btn btn-sm btn-outline-secondary">
+                    <i class="bi bi-arrow-down me-1"></i>Demote to personal
+                </button>
+            {% else %}
+                <input type="hidden" name="canonicality" value="public">
+                <input type="text" name="canonical_for_repo" class="form-control form-control-sm font-monospace"
+                    placeholder="owner/repo (optional)" style="max-width: 220px;"
+                    value="{{ hf_attach.hf_repo_id if hf_attach else '' }}">
+                <button type="submit" class="btn btn-sm btn-success">
+                    <i class="bi bi-arrow-up me-1"></i>Promote to public
+                </button>
+            {% endif %}
+        </form>
+    </div>
+</div>
+{% endif %}
+
 {# --- Submission contract: which folders the user must include in their ZIP --- #}
 {% if pred_field_schema %}
 <div class="card border-0 shadow-sm mb-3">
