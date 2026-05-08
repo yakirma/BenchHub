@@ -786,6 +786,58 @@ class UserColabGist(db.Model):
     sig = db.Column(db.String(16), nullable=True)
 
 
+# Default cap on how many rows we iterate from an HF-ref attachment
+# during metric eval. Override per-attachment via Attachment.hf_sample_cap.
+HF_DEFAULT_SAMPLE_CAP = 10_000
+
+
+class Attachment(db.Model):
+    """Replaces the legacy `leaderboard_datasets` association table.
+    Each row attaches one source to one Leaderboard. The source is
+    EITHER a BH-managed Dataset (uploaded ZIP, samples on disk) OR a
+    HuggingFace reference (live-streamed at eval time, no DB rows).
+
+    Contract:
+      - `dataset_id` set, hf_* null  → BH attachment.
+      - `dataset_id` null, `hf_repo_id` set → HF-ref attachment.
+      - `role` ∈ {'primary', 'gt_source'}: gt_source attachments fold
+        their fields into the metric context for primary samples whose
+        names match (paired-dataset shape).
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    leaderboard_id = db.Column(
+        db.Integer, db.ForeignKey('leaderboard.id', ondelete='CASCADE'),
+        nullable=False, index=True,
+    )
+    dataset_id = db.Column(
+        db.Integer, db.ForeignKey('dataset.id', ondelete='CASCADE'),
+        nullable=True,
+    )
+    hf_repo_id = db.Column(db.String(200), nullable=True, index=True)
+    hf_revision = db.Column(db.String(120), nullable=True)
+    hf_split = db.Column(db.String(50), nullable=True)
+    # Mapping from HF column name → BH semantic field, persisted as JSON
+    # list of {column, target_kind, target_field}. Same shape the
+    # importer's preview produces, just attached to the LB rather than
+    # consumed at import time.
+    hf_mapping_json = db.Column(db.Text, nullable=True)
+    role = db.Column(db.String(20), nullable=False,
+                     default='primary', server_default='primary')
+    # Per-attachment cap on iterated rows. NULL → use HF_DEFAULT_SAMPLE_CAP.
+    hf_sample_cap = db.Column(db.Integer, nullable=True)
+
+    leaderboard = db.relationship(
+        'Leaderboard',
+        backref=db.backref('attachments', lazy='subquery',
+                           cascade='all, delete-orphan'),
+    )
+    dataset = db.relationship('Dataset')
+
+    @property
+    def kind(self):
+        return 'bh' if self.dataset_id is not None else 'hf'
+
+
 class HfDatasetVisit(db.Model):
     """Lightweight log of HF datasets a user has explored via the
     /hf/<repo_id> live-preview page. NOT a materialized Dataset —
@@ -6796,6 +6848,184 @@ def _gt_source_datasets_for_lb(lb):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Virtual-sample iteration for HF-ref attachments. The Engine works on
+# Sample-row-shaped objects today; for HF-ref attachments we synthesize
+# in-memory equivalents on demand. No DB rows; bytes (image/depth)
+# stream from HF via the same `_pointer_gt_resolver` path.
+# ---------------------------------------------------------------------------
+
+
+class _VirtualCustomField:
+    """Quack-like-CustomField for HF-ref iteration. The Engine's
+    `_load_gt_array` + `pointer_resolver` paths inspect: name,
+    field_type, value_text, value_float, source_column."""
+    __slots__ = (
+        'name', 'field_type', 'value_text', 'value_float',
+        'source_column', 'sample_id', 'submission_id',
+    )
+
+    def __init__(self, name, field_type, value_text=None,
+                 value_float=None, source_column=None):
+        self.name = name
+        self.field_type = field_type
+        self.value_text = value_text
+        self.value_float = value_float
+        self.source_column = source_column
+        self.sample_id = None
+        self.submission_id = None
+
+
+class _VirtualSample:
+    """Quack-like-Sample for HF-ref iteration."""
+    __slots__ = (
+        'id', 'name', 'tags', 'custom_fields', 'source_ref_json',
+        'histogram_data', 'dataset',
+    )
+
+    def __init__(self, name, source_ref_json, custom_fields, tags=''):
+        self.id = None
+        self.name = name
+        self.tags = tags
+        self.custom_fields = custom_fields
+        self.source_ref_json = source_ref_json
+        self.histogram_data = None
+        # Set by the iterator so `pointer_resolver` can find the
+        # attachment's owner for HF-token resolution.
+        self.dataset = None
+
+
+def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
+    """Build (_VirtualSample, list_of_inline_field_descriptions) from
+    one streamed HF row + the attachment's mapping. Handles the same
+    field-kind dispatch the importer used to do; image/depth columns
+    become pointer-only fields (engine streams via bench_cache)."""
+    sample_name = f"s_{row_idx:06d}"
+    cfs = []
+    tags_list = []
+    try:
+        mapping = json.loads(att.hf_mapping_json or '[]')
+    except (TypeError, ValueError):
+        mapping = []
+    for m in mapping:
+        col = m.get('column')
+        kind = m.get('target_kind')
+        target_field = m.get('target_field') or col
+        if not col or kind == 'skip' or col not in row:
+            continue
+        value = row[col]
+        if kind in ('image', 'depth', 'histogram') and value is not None:
+            cfs.append(_VirtualCustomField(
+                name=target_field, source_column=col,
+                field_type=('depth' if kind == 'depth'
+                            else 'histogram' if kind == 'histogram'
+                            else 'image'),
+            ))
+        elif kind in ('scalar', 'metric') and value is not None:
+            names = classlabel_names.get(col)
+            try:
+                int_val = int(value)
+            except (TypeError, ValueError):
+                int_val = None
+            if (names is not None and int_val is not None
+                    and 0 <= int_val < len(names)):
+                class_name = str(names[int_val])
+                cfs.append(_VirtualCustomField(
+                    name=target_field, field_type='scalar',
+                    value_float=float(int_val), source_column=col,
+                ))
+                if class_name != str(int_val):
+                    cfs.append(_VirtualCustomField(
+                        name=f"{target_field}_class", field_type='text',
+                        value_text=class_name,
+                    ))
+                tags_list.append(class_name)
+            else:
+                try:
+                    fv = float(value)
+                except (TypeError, ValueError):
+                    fv = None
+                if fv is not None:
+                    cfs.append(_VirtualCustomField(
+                        name=target_field, field_type='scalar',
+                        value_float=fv, source_column=col,
+                    ))
+        elif kind == 'text' and value is not None:
+            cfs.append(_VirtualCustomField(
+                name=target_field, field_type='text',
+                value_text=str(value), source_column=col,
+            ))
+    return _VirtualSample(
+        name=sample_name,
+        source_ref_json=json.dumps({
+            'repo_id': att.hf_repo_id,
+            'revision': att.hf_revision,
+            'split': att.hf_split or 'train',
+            'row_idx': row_idx,
+        }),
+        custom_fields=cfs,
+        tags=','.join(tags_list) if tags_list else '',
+    )
+
+
+def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
+    """Stream the HF dataset behind `att` and yield _VirtualSample
+    objects, one per row, capped at `cap` (or the attachment's
+    own cap, or HF_DEFAULT_SAMPLE_CAP)."""
+    cap = cap or att.hf_sample_cap or HF_DEFAULT_SAMPLE_CAP
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        return
+    try:
+        ds = load_dataset(
+            att.hf_repo_id, split=att.hf_split or 'train',
+            streaming=True, revision=att.hf_revision,
+            token=hf_token, trust_remote_code=True,
+        )
+    except Exception as e:
+        print(f"_iter_hf_attachment_samples load failed: {e}")
+        return
+
+    classlabel_names = {}
+    try:
+        feats = getattr(ds, 'features', None) or {}
+        for col, feat in (feats.items() if hasattr(feats, 'items') else []):
+            names = getattr(feat, 'names', None)
+            if not names:
+                inner = getattr(feat, 'feature', None)
+                if inner is not None:
+                    names = getattr(inner, 'names', None)
+            if names:
+                classlabel_names[col] = list(names)
+    except Exception:
+        pass
+
+    for i, row in enumerate(ds):
+        if i >= cap:
+            break
+        yield _virtual_sample_from_hf_row(att, row, i, classlabel_names)
+
+
+def _iter_lb_eval_samples(lb, *, hf_token=None):
+    """Yield (sample_handle, attachment) tuples for every sample the
+    LB evaluates against. Walks every primary attachment in order:
+      - BH-dataset attachments → real Sample rows.
+      - HF-ref attachments → _VirtualSample stream.
+    """
+    for att in lb.attachments:
+        if att.role != 'primary':
+            continue
+        if att.kind == 'bh':
+            if att.dataset is None:
+                continue
+            for s in att.dataset.samples:
+                yield s, att
+        else:
+            for vs in _iter_hf_attachment_samples(att, hf_token=hf_token):
+                yield vs, att
+
+
 def _make_paired_gt_provider(lb):
     """Closure factory: returns a `(primary_sample) -> iterable` that
     yields (CustomField, sample) tuples from gt_source datasets
@@ -11294,6 +11524,46 @@ def check_and_migrate_db():
                         print("Created 'user_colab_gist' table.")
                     except Exception as e:
                         print(f"Failed to create 'user_colab_gist' table: {e}")
+
+                # --- Attachment table (BH dataset OR HF ref) ---
+                try:
+                    cursor.execute("SELECT id FROM attachment LIMIT 1")
+                except sqlite3.OperationalError:
+                    print("Migrating DB: Creating 'attachment' table...")
+                    try:
+                        cursor.execute('''
+                            CREATE TABLE attachment (
+                                id INTEGER PRIMARY KEY,
+                                leaderboard_id INTEGER NOT NULL,
+                                dataset_id INTEGER,
+                                hf_repo_id VARCHAR(200),
+                                hf_revision VARCHAR(120),
+                                hf_split VARCHAR(50),
+                                hf_mapping_json TEXT,
+                                role VARCHAR(20) NOT NULL DEFAULT 'primary',
+                                hf_sample_cap INTEGER
+                            )
+                        ''')
+                        cursor.execute(
+                            'CREATE INDEX ix_attachment_leaderboard_id '
+                            'ON attachment (leaderboard_id)'
+                        )
+                        cursor.execute(
+                            'CREATE INDEX ix_attachment_hf_repo_id '
+                            'ON attachment (hf_repo_id)'
+                        )
+                        # Backfill from the legacy m2m table so existing
+                        # LBs keep working through the new iteration path.
+                        cursor.execute('''
+                            INSERT INTO attachment
+                                (leaderboard_id, dataset_id, role)
+                            SELECT leaderboard_id, dataset_id, role
+                            FROM leaderboard_datasets
+                        ''')
+                        conn.commit()
+                        print("Created 'attachment' table + backfilled.")
+                    except Exception as e:
+                        print(f"Failed to create 'attachment' table: {e}")
 
                 # --- HfDatasetVisit (browse-without-import history) ---
                 try:
