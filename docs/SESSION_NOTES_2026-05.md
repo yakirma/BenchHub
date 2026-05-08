@@ -24,7 +24,7 @@ backed by a single bounded-LRU disk cache.
 | **Remote submissions** (HF Hub + raw URL, hash-pinned) | ✅ landed | `Submission.storage_mode/remote_url/content_hash`, `_fetch_remote_submission_zip`, `/api/leaderboard/<id>/submission/from_url`, 9 tests |
 | **Paired-dataset support via LB settings** | ✅ landed | `leaderboard_datasets.role`, `_make_paired_gt_provider`, role dropdown on LB edit page, 12 tests |
 | **Hash-mismatch enforcement on re-eval** | ✅ landed | `_verify_remote_submission_hash` called from `_process_submission_impl`; LB page shows a danger badge on drift; 7 tests |
-| **Evict extracted submission folder after eval** | 🟡 after | recalc re-extracts from cached ZIP; closes the disk-savings loop |
+| **Evict extracted submission folder after eval** | ✅ landed | `_with_extracted_submission` + `_evict_extracted_submission_folder` in tasks.py recalc; 7 tests |
 
 Architecture sketch:
 
@@ -66,25 +66,28 @@ re-ranking.
 
 ### Concrete next steps (pick up here)
 
-One follow-up left to close the disk-savings loop:
+The storage refactor is **feature-complete**. GT bytes, submission
+bytes, and per-row caching all live in `bench_cache`, which is
+bounded + LRU + origin-prioritized. Disk usage scales with
+recently-accessed-bytes, not total-imported-bytes. SHA-256 pinning
+on remote submissions means the LB rankings can't silently drift.
 
-1. **Evict extracted submission folder after eval (close the
-   disk-savings loop for remote subs).**
-   - Currently a remote submission's bytes live in two places: the
-     cached ZIP AND the extracted `uploads/submissions/<id>/`
-     folder. Real disk savings need eviction of the extracted form.
-   - Add a context manager `_with_extracted_submission(submission)`
-     that, for remote submissions, extracts the cached ZIP into a
-     transient folder, yields the path, and removes the folder on
-     exit. Local submissions yield `uploads/submissions/<id>/`
-     unchanged.
-   - Move tasks.py + the recalc paths to use the context manager.
-   - Estimated effort: ~3-4 hours.
+**Likely next workstream** (low-priority, no concrete pin yet — pick
+based on whatever you want to build next):
 
-After 1-3 land, the storage refactor is feature-complete: GT bytes,
-submission bytes, and per-row caching all live in `bench_cache`,
-which is bounded + LRU + origin-prioritized. Disk usage scales with
-recently-accessed-bytes, not total-imported-bytes.
+- Resume the seeding mission against pointer-mode datasets. With
+  bytes-stay-on-HF, "seeding 100 datasets" becomes ~free
+  (metadata only). The existing `scripts/seed_datasets.py` already
+  defaults to pointer mode after the storage refactor.
+- HF-Hub-native submission UX: a one-click "submit from your HF Hub
+  repo" flow on the LB page (today the API endpoint exists, but
+  there's no UI to drive it).
+- Sandboxed eval that supports Option B's array-in-context pattern
+  (`evaluate_in_sandbox` doesn't yet accept numpy arrays through
+  JSON serialization). Required before opening submissions to
+  untrusted users.
+- Real `predictor_fn` stubs in the baseline runners (today they
+  return naive scalars to verify the upload pipe).
 
 ---
 
