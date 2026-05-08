@@ -6984,6 +6984,13 @@ def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
             token=hf_token, trust_remote_code=True,
         )
     except Exception as e:
+        # Re-raise gated/auth errors so the route can route to the
+        # unlock wizard. Plain transport errors degrade to "no rows".
+        msg = str(e)
+        low = msg.lower()
+        if ('401' in msg or 'gated' in low or 'authenticated' in low
+                or 'restricted' in low or 'access denied' in low):
+            raise
         print(f"_iter_hf_attachment_samples load failed: {e}")
         return
 
@@ -7176,234 +7183,6 @@ def _pointer_gt_resolver(sample, cf):
     except Exception as e:
         print(f"DEBUG: pointer read-back failed for {cache_key}: {e}")
     return None
-
-
-def _import_hf_pointer(repo_id, dataset_name, mapping, *, sample_cap=200,
-                       split='train', revision=None, hf_token=None,
-                       owner_user_id=None, features=None):
-    """Pointer-mode HF import: streams the first `sample_cap` rows for
-    metadata only (no image/depth bytes touch disk), then creates
-    Dataset + Sample + CustomField rows that carry references back
-    to the upstream HF rows. The engine resolves the actual image /
-    depth pixels on-demand via bench_cache when a metric runs.
-
-    What lands inline (cheap to keep, fast for the dataset page):
-      - scalar GT values (Value:int64 / float — stored on
-        CustomField.value_float)
-      - text GT values (captions, premise/hypothesis — stored on
-        CustomField.value_text)
-      - ClassLabel sidecars (`<col>_class` text + `tags/`
-        per-sample tag string on Sample.tags)
-
-    What's pointer-only (fetched + cached at eval time):
-      - image columns (target_kind='image')
-      - depth columns (target_kind='depth')
-
-    Histogram and json columns also go pointer-only.
-
-    Same `mapping` contract as `_import_hf_auto`; same return
-    `(success, message, ds_id)`.
-    """
-    if Dataset.query.filter_by(name=dataset_name).first() is not None:
-        return False, f'A dataset named "{dataset_name}" already exists.', None
-
-    classlabel_names = {}
-    for col, desc in (features or {}).items():
-        if isinstance(desc, dict) and desc.get('type') == 'ClassLabel':
-            names = desc.get('names') or []
-            if isinstance(names, list) and names:
-                classlabel_names[col] = names
-
-    # Stream the dataset for metadata; we DON'T extract bytes here.
-    # Each row contributes a (row_idx, scalar_values, text_values, ...)
-    # slice that we record on the Sample / CustomField rows.
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        return False, ("HF auto-import needs the `datasets` package; "
-                       "install it (or rebuild the image with it pinned)."), None
-    try:
-        ds_stream = load_dataset(
-            repo_id, split=split, streaming=True, revision=revision,
-            token=hf_token, trust_remote_code=True,
-        )
-    except Exception as e:
-        # Re-raise gated / auth errors so the route handler can route
-        # the user to the unlock wizard (same shape as the bytes-mode
-        # importer). Other errors → friendly message.
-        msg = str(e)
-        low = msg.lower()
-        if ('401' in msg or 'gated' in low or 'authenticated' in low
-                or 'restricted' in low or 'access denied' in low):
-            raise
-        return False, f"Could not stream {repo_id}: {e}", None
-
-    # Augment classlabel_names with whatever ds.features exposes — same
-    # rationale as in `_import_hf_auto`. Cheap; only walks once.
-    try:
-        ds_feats = getattr(ds_stream, 'features', None) or {}
-        for col_name, feat in (
-            ds_feats.items() if hasattr(ds_feats, 'items') else []
-        ):
-            if col_name in classlabel_names:
-                continue
-            names = getattr(feat, 'names', None)
-            if not names:
-                inner = getattr(feat, 'feature', None)
-                if inner is not None:
-                    names = getattr(inner, 'names', None)
-            if names:
-                classlabel_names[col_name] = list(names)
-    except Exception as e:
-        print(f"ClassLabel name extraction (pointer) failed: {e}")
-
-    # Resolve the effective revision so the cache key is deterministic
-    # even when the user passed `revision=None` (HF's default 'main' is
-    # a moving target). Best-effort; falls back to 'main' on failure.
-    effective_revision = revision or 'main'
-    try:
-        from huggingface_hub import HfApi
-        head = HfApi().dataset_info(
-            repo_id, revision=revision, token=hf_token,
-        ).sha
-        if head:
-            effective_revision = head
-    except Exception as e:
-        print(f"revision pin (pointer) failed: {e}")
-
-    # Build the Dataset row before the per-sample loop so the FK exists.
-    new_dataset = Dataset(
-        name=dataset_name,
-        owner_user_id=owner_user_id,
-        visibility='public',
-        source_kind='hf-pointer',
-        source_metadata=json.dumps({
-            'repo_id': repo_id, 'revision': effective_revision,
-            'split': split, 'sample_cap': sample_cap,
-            'mapping': mapping,
-        }),
-        storage_mode='hf-pointer',
-    )
-    db.session.add(new_dataset)
-    db.session.flush()
-
-    # Per-row loop: only metadata-shape columns get materialized inline.
-    n_written = 0
-    sample_tag_strings = {}  # sample_name -> list[str]
-    for row_idx, example in enumerate(ds_stream):
-        if n_written >= sample_cap:
-            break
-        sample_name = f"s{n_written:05d}"
-        sample = Sample(
-            dataset_id=new_dataset.id,
-            name=sample_name,
-            source_ref_json=json.dumps({
-                'repo_id': repo_id,
-                'revision': effective_revision,
-                'split': split,
-                'row_idx': row_idx,
-            }),
-        )
-        db.session.add(sample)
-        db.session.flush()
-        wrote_anything = False
-
-        for m in mapping:
-            col = m['column']
-            kind = m.get('target_kind')
-            if kind == 'skip' or col not in example:
-                continue
-            value = example[col]
-            target_field = m['target_field']
-
-            if kind == 'image' or kind == 'depth' or kind == 'histogram':
-                # Pointer field: value_text NULL, source_column set so
-                # the engine knows which HF column to fetch.
-                cf = CustomField(
-                    name=target_field, sample_id=sample.id,
-                    field_type=('depth' if kind == 'depth'
-                                else 'histogram' if kind == 'histogram'
-                                else 'image'),
-                    value_text=None,
-                    source_column=col,
-                )
-                db.session.add(cf)
-                wrote_anything = True
-            elif kind in ('scalar', 'metric') and value is not None:
-                # ClassLabel-aware: also persist the class name + tag.
-                names = classlabel_names.get(col)
-                try:
-                    int_val = int(value)
-                except (TypeError, ValueError):
-                    int_val = None
-                if names is not None and int_val is not None and 0 <= int_val < len(names):
-                    class_name = str(names[int_val])
-                    db.session.add(CustomField(
-                        name=target_field, sample_id=sample.id,
-                        field_type='scalar', value_float=float(int_val),
-                        source_column=col,
-                    ))
-                    redundant = (class_name == str(int_val))
-                    if not redundant:
-                        db.session.add(CustomField(
-                            name=f"{target_field}_class",
-                            sample_id=sample.id, field_type='text',
-                            value_text=class_name,
-                        ))
-                    sample_tag_strings.setdefault(sample_name, []).append(class_name)
-                else:
-                    try:
-                        fv = float(value)
-                    except (TypeError, ValueError):
-                        fv = None
-                    if fv is not None:
-                        db.session.add(CustomField(
-                            name=target_field, sample_id=sample.id,
-                            field_type='scalar', value_float=fv,
-                            source_column=col,
-                        ))
-                wrote_anything = True
-            elif kind == 'text' and value is not None:
-                db.session.add(CustomField(
-                    name=target_field, sample_id=sample.id,
-                    field_type='text', value_text=str(value),
-                    source_column=col,
-                ))
-                wrote_anything = True
-            # Unknown kinds silently skipped — same as the bytes-mode
-            # importer.
-
-        if wrote_anything:
-            n_written += 1
-            # Materialize the per-sample tag string from any class-name
-            # sidecars accumulated above.
-            tags_list = sample_tag_strings.get(sample_name) or []
-            if tags_list:
-                sample.tags = ','.join(tags_list)
-        else:
-            # Roll back the sample to keep the row count honest.
-            db.session.delete(sample)
-
-    if n_written == 0:
-        db.session.rollback()
-        return False, "No samples could be ingested in pointer mode.", None
-
-    # Optional: auto-tag the dataset (same as bytes mode).
-    try:
-        auto_tags = _auto_tags_for_hf(repo_id, hf_token=hf_token,
-                                      revision=revision)
-        if auto_tags:
-            new_dataset.tags = _resolve_tags(', '.join(auto_tags))
-    except Exception as e:
-        print(f"auto-tags (pointer) failed: {e}")
-
-    db.session.commit()
-    return (
-        True,
-        (f"Imported '{dataset_name}' (pointer mode, {n_written} samples). "
-         f"Bytes stay on HF; metric eval streams + caches per row."),
-        new_dataset.id,
-    )
 
 
 def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
@@ -7734,56 +7513,17 @@ def import_from_hf_auto():
     except Exception:
         features = {}
 
-    # Pointer mode by default — bytes stay on HF, BenchHub streams
-    # + caches per row at metric-eval time. The legacy bytes-on-disk
-    # importer stays available behind `?storage_mode=local` for the
-    # rare case where someone needs byte-for-byte custody.
-    storage_mode = request.form.get('storage_mode', 'hf-pointer')
+    # HF datasets no longer get a Dataset row. The "Confirm & import"
+    # button on the mapping-preview page lands here; we go STRAIGHT to
+    # the auto-LB preview, with the LB's primary attachment configured
+    # as an HF ref (repo_id + revision + split + mapping). The actual
+    # LB row is created when the user confirms on the auto-LB preview
+    # via /create_leaderboard/auto_finalize.
     try:
-        if storage_mode == 'hf-pointer':
-            success, message, ds_id = _import_hf_pointer(
-                repo_id, dataset_name, mapping,
-                sample_cap=sample_cap, revision=revision, hf_token=hf_token,
-                owner_user_id=g.current_user.id, features=features,
-            )
-        else:
-            success, message, ds_id = _import_hf_auto(
-                repo_id, dataset_name, mapping,
-                sample_cap=sample_cap, revision=revision, hf_token=hf_token,
-                owner_user_id=g.current_user.id, features=features,
-            )
-        flash(message, "success" if success else "danger")
-        if success and ds_id:
-            # If the user came in via the "Create leaderboard with this
-            # dataset" CTA on /hf/<repo_id>, fast-path them straight
-            # into the auto-LB preview (where they confirm the proposed
-            # metrics + viz). Otherwise land on the dataset page as
-            # before.
-            if request.form.get('auto_create_lb'):
-                ds = Dataset.query.get(ds_id)
-                metric_props, viz_props = _collect_auto_lb_proposals(ds)
-                if metric_props or viz_props:
-                    seen_pred = {}
-                    for p in metric_props + viz_props:
-                        for pf in (p.get('pred_fields') or []):
-                            seen_pred.setdefault(pf['name'], pf)
-                    return render_template(
-                        'auto_lb_preview.html',
-                        leaderboard_name=f"{dataset_name}_leaderboard",
-                        dataset=ds,
-                        metric_proposals=metric_props,
-                        viz_proposals=viz_props,
-                        pred_field_schema=list(seen_pred.values()),
-                    )
-                # No metric/viz could be proposed — flash a hint + fall
-                # through to the dataset page.
-                flash(
-                    "Dataset imported, but no metrics could be auto-proposed "
-                    "(needs scalar / image / depth GT columns). "
-                    "Open the dataset and add a leaderboard manually.",
-                    "warning",
-                )
-            return redirect(url_for('dataset_view', dataset_id=ds_id))
+        metric_props, viz_props = _collect_auto_lb_proposals_for_hf_ref(
+            repo_id, mapping, revision=revision, split='train',
+            hf_token=hf_token,
+        )
     except Exception as e:
         msg = str(e)
         low = msg.lower()
@@ -7794,8 +7534,36 @@ def import_from_hf_auto():
                 repo_id=repo_id, dataset_name=dataset_name,
                 revision=revision or '', sample_cap=sample_cap, flow='auto',
             ))
-        flash(f"HuggingFace auto-import failed: {e}", "danger")
-    return redirect(url_for('datasets_list'))
+        flash(f"HuggingFace stream failed: {e}", "danger")
+        return redirect(url_for('datasets_list'))
+
+    if not metric_props and not viz_props:
+        flash(
+            "Couldn't auto-propose any metrics for this HF dataset "
+            "(needs scalar / image / depth GT columns). Adjust the "
+            "mapping or pick a different repo.",
+            "warning",
+        )
+        return redirect(url_for('datasets_list'))
+
+    seen_pred = {}
+    for p in metric_props + viz_props:
+        for pf in (p.get('pred_fields') or []):
+            seen_pred.setdefault(pf['name'], pf)
+
+    return render_template(
+        'auto_lb_preview.html',
+        leaderboard_name=f"{dataset_name}_leaderboard",
+        # HF-ref flow (no DB Dataset row); template branches on this.
+        hf_ref={
+            'repo_id': repo_id, 'revision': revision or '',
+            'split': 'train', 'mapping_json': json.dumps(mapping),
+        },
+        dataset=None,
+        metric_proposals=metric_props,
+        viz_proposals=viz_props,
+        pred_field_schema=list(seen_pred.values()),
+    )
 
 
 # --- HuggingFace dataset listing (Round C) -------------------------------
@@ -7894,219 +7662,11 @@ def _record_hf_visit(user_id, repo_id):
         db.session.rollback()
 
 
-def _hf_preview_rows(repo_id, *, n=5, hf_token=None, revision=None):
-    """Stream the first `n` rows of the HF dataset for a live-preview
-    panel. Each cell that's image / depth gets cached via
-    bench_cache (origin='gt', same lane as pointer-mode GT) so the
-    /hf/<repo_id>/preview_cell/... endpoint can serve it back without
-    re-streaming.
+# `/hf/<repo_id>` live-preview surface was removed in the attachment
+# refactor (2026-05-08). HF datasets no longer have a BH representation;
+# users browse on huggingface.co directly and create LBs via the
+# /datasets HF picker → /import_from_hf/preview → auto-LB flow.
 
-    Returns (rows, schema):
-      rows: list of dicts with keys row_idx + per-column entries.
-            Per-column entry shape: {kind: str, value: str|None,
-            cell_url: str|None}.
-            * scalar / text: kind matches, value is a string.
-            * image / depth: kind matches, cell_url points at the
-              cached bytes via the preview-cell route.
-            * unknown: kind='unknown', value=stringified repr.
-      schema: dict {column_name: BenchHub-style type string}.
-    """
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        return [], {}
-    try:
-        ds = load_dataset(
-            repo_id, split='train', streaming=True, revision=revision,
-            token=hf_token, trust_remote_code=True,
-        )
-    except Exception as e:
-        msg = str(e); low = msg.lower()
-        if ('401' in msg or 'gated' in low or 'unauthorized' in low
-                or 'access denied' in low):
-            raise
-        print(f"_hf_preview_rows load_dataset failed: {e}")
-        return [], {}
-
-    schema = {}
-    try:
-        ds_features = getattr(ds, 'features', None) or {}
-        for col, feat in (ds_features.items()
-                          if hasattr(ds_features, 'items') else []):
-            schema[col] = _describe_feature(feat).get('type', 'unknown')
-    except Exception as e:
-        print(f"_hf_preview_rows schema introspection failed: {e}")
-
-    cache_root = app.config.get('CACHE_FOLDER')
-    rows = []
-    for i, example in enumerate(ds):
-        if i >= n:
-            break
-        row_repr = {'row_idx': i, 'columns': {}}
-        for col, value in (example.items() if isinstance(example, dict) else []):
-            kind = _classify_preview_value(value)
-            cell = {'kind': kind, 'value': None, 'cell_url': None}
-            if kind in ('image', 'depth'):
-                # Stash the bytes via bench_cache so the preview-cell
-                # endpoint can serve them. Same key shape as a real
-                # pointer-mode GT entry, so cache eviction reuses
-                # the existing LRU policy.
-                cache_key = (
-                    f"gt:{repo_id}@{revision or 'main'}:train:{i}:{col}"
-                )
-
-                def _writer(path, _value=value, _kind=kind):
-                    import io as _io
-                    if _kind == 'image':
-                        from PIL import Image as _PILImage
-                        buf = _io.BytesIO()
-                        if hasattr(_value, 'save'):
-                            _value.convert('RGB').save(buf, 'PNG')
-                        else:
-                            arr = np.asarray(_value)
-                            if arr.ndim == 2:
-                                arr = np.stack([arr] * 3, axis=-1)
-                            _PILImage.fromarray(arr.astype(np.uint8)).save(buf, 'PNG')
-                        with open(path, 'wb') as f:
-                            f.write(buf.getvalue())
-                    else:  # depth
-                        arr = np.asarray(_value)
-                        if arr.ndim == 3 and arr.shape[2] == 1:
-                            arr = arr.squeeze(-1)
-                        buf = _io.BytesIO()
-                        np.savez(buf, depth=arr.astype(np.float32))
-                        with open(path, 'wb') as f:
-                            f.write(buf.getvalue())
-
-                try:
-                    bench_cache.cache_put(
-                        db.session, CacheEntry,
-                        cache_root=cache_root, key=cache_key,
-                        origin='gt', writer=_writer,
-                    )
-                    cell['cell_url'] = url_for(
-                        'hf_preview_cell',
-                        repo_id=repo_id, row_idx=i, col=col,
-                    )
-                except Exception as e:
-                    print(f"_hf_preview_rows cache_put failed for {col}@{i}: {e}")
-            elif kind in ('scalar', 'text'):
-                cell['value'] = str(value)
-            else:
-                cell['value'] = repr(value)[:120]
-            row_repr['columns'][col] = cell
-        rows.append(row_repr)
-    return rows, schema
-
-
-def _classify_preview_value(value):
-    """Coarse classification used by the preview helper. Cheaper +
-    different than _describe_feature — operates on a runtime value
-    rather than a feature object."""
-    if value is None:
-        return 'unknown'
-    if hasattr(value, 'mode') and hasattr(value, 'save'):  # PIL
-        return 'image'
-    try:
-        import numpy as _np
-        if isinstance(value, _np.ndarray):
-            return 'depth' if value.ndim == 2 else 'image'
-    except Exception:
-        pass
-    if isinstance(value, bool):
-        return 'scalar'
-    if isinstance(value, (int, float)):
-        return 'scalar'
-    if isinstance(value, str):
-        return 'text'
-    return 'unknown'
-
-
-@app.route('/hf/<path:repo_id>')
-def hf_dataset_preview(repo_id):
-    """Live preview of a HuggingFace dataset — no DB write. The page
-    streams metadata + a few sample rows, surfaces tags + license
-    + schema, and offers two CTAs:
-      - 'Create leaderboard with this dataset' → goes through the
-        existing /import_from_hf/preview flow with auto-LB
-        opt-in pre-checked.
-      - 'Just import as a dataset' → same flow without the LB.
-
-    Visiting this page does NOT create a Dataset row. Visit history
-    is tracked separately (HfDatasetVisit) for the recent + trending
-    widgets on /datasets.
-    """
-    user = getattr(g, 'current_user', None)
-    hf_token = user.hf_token if (user is not None and user.hf_token) else None
-
-    # Repo-level metadata (cheap, cached).
-    try:
-        meta = _hf_fetch_repo_metadata(repo_id, hf_token=hf_token)
-    except RuntimeError as e:
-        # Gated repo → bounce to the unlock wizard.
-        return redirect(url_for(
-            'import_from_hf_gated_wizard',
-            repo_id=repo_id, dataset_name=repo_id.replace('/', '_'),
-            revision='', sample_cap=200, flow='auto',
-        ))
-
-    # Live row preview. Errors degrade to "no rows" instead of breaking
-    # the page — schema + tags + description are still useful.
-    try:
-        preview_rows, schema = _hf_preview_rows(
-            repo_id, n=5, hf_token=hf_token,
-        )
-    except RuntimeError:
-        return redirect(url_for(
-            'import_from_hf_gated_wizard',
-            repo_id=repo_id, dataset_name=repo_id.replace('/', '_'),
-            revision='', sample_cap=200, flow='auto',
-        ))
-    except Exception as e:
-        print(f"hf_dataset_preview row stream failed: {e}")
-        preview_rows, schema = [], {}
-
-    # Mark visited.
-    if user is not None:
-        _record_hf_visit(user.id, repo_id)
-
-    return render_template(
-        'hf_preview.html',
-        repo_id=repo_id,
-        meta=meta,
-        schema=schema,
-        preview_rows=preview_rows,
-        already_imported=Dataset.query.filter_by(
-            source_kind='hf-pointer',
-        ).filter(
-            Dataset.source_metadata.like(f'%"{repo_id}"%')
-        ).first(),
-    )
-
-
-@app.route('/hf/<path:repo_id>/preview_cell/<int:row_idx>/<col>')
-def hf_preview_cell(repo_id, row_idx, col):
-    """Serve the cached bytes for a single preview cell. The
-    /hf/<repo_id> page populated bench_cache via
-    `gt:<repo>@main:train:<idx>:<col>`; this route maps that key to
-    a file response. Falls back to a 404 if the cache entry was
-    evicted between page load and the browser fetching the cell —
-    the user can refresh to re-warm."""
-    cache_key = f"gt:{repo_id}@main:train:{row_idx}:{col}"
-    cache_root = app.config.get('CACHE_FOLDER')
-    path = bench_cache.cache_get(
-        db.session, CacheEntry, cache_root=cache_root, key=cache_key,
-    )
-    if not path or not os.path.exists(path):
-        return jsonify({'error': 'preview cell evicted; refresh page'}), 404
-    # We don't know the kind from the URL alone — peek the file's
-    # first bytes. PNG magic = b'\x89PNG'; otherwise treat as NPZ
-    # and serve as octet-stream.
-    with open(path, 'rb') as f:
-        head = f.read(8)
-    if head.startswith(b'\x89PNG'):
-        return send_file(path, mimetype='image/png')
-    return send_file(path, mimetype='application/octet-stream')
 
 
 def _user_recent_hf_visits(user_id, *, limit=10):
@@ -8244,56 +7804,202 @@ def create_leaderboard():
     return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))
 
 
+def _peek_hf_first_virtual_sample(repo_id, mapping, *, revision=None,
+                                  split='train', hf_token=None):
+    """Stream row 0 of an HF dataset and return a _VirtualSample
+    built from the supplied mapping. Used to drive metric/viz
+    proposers off an HF ref without materializing a Dataset row."""
+    fake_att = type('A', (), {
+        'hf_repo_id': repo_id, 'hf_revision': revision,
+        'hf_split': split or 'train',
+        'hf_mapping_json': json.dumps(mapping or []),
+    })()
+    for vs in _iter_hf_attachment_samples(fake_att, hf_token=hf_token, cap=1):
+        return vs
+    return None
+
+
+def _collect_auto_lb_proposals_for_hf_ref(repo_id, mapping, *, revision=None,
+                                          split='train', hf_token=None):
+    """Same shape as `_collect_auto_lb_proposals(dataset)` — returns
+    (metric_proposals, viz_proposals) — but driven by a peek of the
+    HF stream rather than a materialized Dataset. Wraps the virtual
+    sample in a single-sample shim so the existing proposers see
+    a Dataset-like object."""
+    vs = _peek_hf_first_virtual_sample(
+        repo_id, mapping, revision=revision, split=split, hf_token=hf_token,
+    )
+    if vs is None:
+        return [], []
+    fake_ds = type('FakeDS', (), {'samples': [vs], 'id': None,
+                                  'name': repo_id})()
+    metric_props = [
+        _enrich_metric_proposal_with_existing_code(dict(p))
+        for p in _propose_metrics_for_dataset(fake_ds)
+    ]
+    viz_props = [
+        _enrich_viz_proposal_with_existing_code(dict(p))
+        for p in _propose_visualizations_for_dataset(fake_ds)
+    ]
+    return metric_props, viz_props
+
+
+def _create_lb_with_hf_attachment(lb_name, *, owner_user_id, repo_id,
+                                  mapping, revision=None, split='train',
+                                  metric_proposals=None, viz_proposals=None,
+                                  hf_sample_cap=None):
+    """Create a Leaderboard whose primary attachment is an HF ref
+    (NOT a BH Dataset). Persists LB + Attachment + the supplied
+    metric/viz proposals in one transaction. Returns
+    (success, message, lb_id)."""
+    if not lb_name:
+        return False, "Leaderboard name is required.", None
+    if Leaderboard.query.filter_by(name=lb_name).first():
+        return False, f'A leaderboard named "{lb_name}" already exists.', None
+    metric_proposals = metric_proposals or []
+    viz_proposals = viz_proposals or []
+    if not metric_proposals and not viz_proposals:
+        return False, ("No GT scalar / image / depth fields detected on "
+                       "the HF dataset — nothing to auto-attach. Adjust "
+                       "the mapping or add metrics manually."), None
+
+    lb = Leaderboard(
+        name=lb_name,
+        summary_metrics=','.join(p['target_name'] for p in metric_proposals),
+        owner_user_id=owner_user_id,
+    )
+    db.session.add(lb)
+    db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id,
+        hf_repo_id=repo_id, hf_revision=revision,
+        hf_split=split or 'train',
+        hf_mapping_json=json.dumps(mapping or []),
+        role='primary',
+        hf_sample_cap=hf_sample_cap,
+    ))
+    db.session.flush()
+
+    for p in metric_proposals:
+        gm = GlobalMetric.query.filter_by(name=p['global_name']).first()
+        if gm is None:
+            code = (p.get('python_code')
+                    or _llm_generate_metric_code(p['global_name'], p['llm_hint'])
+                    or p['fallback_code'])
+            gm = GlobalMetric(
+                name=p['global_name'], description=p['description'],
+                python_code=code, is_aggregated=False,
+                accepts_aggregated_inputs=False,
+                owner_user_id=owner_user_id, visibility='public',
+            )
+            db.session.add(gm); db.session.flush()
+        db.session.add(LeaderboardMetric(
+            leaderboard_id=lb.id, global_metric_id=gm.id,
+            arg_mappings=json.dumps(p['arg_mappings']),
+            target_name=p['target_name'],
+            pooling_type=p['pooling_type'],
+            sort_direction=p['sort_direction'],
+        ))
+
+    for p in viz_proposals:
+        gv = GlobalVisualization.query.filter_by(name=p['global_name']).first()
+        if gv is None:
+            code = (p.get('python_code')
+                    or _llm_generate_visualization_code(
+                        p['global_name'], p['llm_hint'],
+                        p['is_aggregated'], p['accepts_aggregated_inputs'],
+                    )
+                    or p['fallback_code'])
+            gv = GlobalVisualization(
+                name=p['global_name'], description=p['description'],
+                python_code=code,
+                is_aggregated=p['is_aggregated'],
+                accepts_aggregated_inputs=p['accepts_aggregated_inputs'],
+                owner_user_id=owner_user_id, visibility='public',
+            )
+            db.session.add(gv); db.session.flush()
+        db.session.add(LeaderboardVisualization(
+            leaderboard_id=lb.id, global_visualization_id=gv.id,
+            arg_mappings=json.dumps(p['arg_mappings']),
+            target_name=p['target_name'],
+        ))
+
+    db.session.commit()
+    n_m, n_v = len(metric_proposals), len(viz_proposals)
+    parts = []
+    if n_m: parts.append(f"{n_m} metric{'' if n_m == 1 else 's'}")
+    if n_v: parts.append(f"{n_v} visualization{'' if n_v == 1 else 's'}")
+    return True, (f'Created leaderboard "{lb_name}" '
+                  f'(HF ref → {repo_id}) with {" and ".join(parts)}.'), lb.id
+
+
 @app.route('/create_leaderboard/auto_finalize', methods=['POST'])
 @login_required
 def create_leaderboard_auto_finalize():
     """Consume the auto-LB preview form and persist whichever proposals
-    the user kept (with their edits). The preview page emits one row of
-    parallel arrays per proposal — `kept_metric[<global_name>]` (a
-    checkbox), `metric_target_name[<global_name>]`, `metric_code[<global_name>]`,
-    `metric_sort_direction[<global_name>]` — same shape for viz with
-    `kept_viz[<global_name>]` etc."""
+    the user kept (with edits). Two source kinds, distinguished by
+    which hidden field the form carries:
+      - dataset_id  → BH-dataset attachment (uploaded ZIP).
+      - hf_repo_id  → HF-ref attachment (no Dataset row).
+    """
     leaderboard_name = (request.form.get('leaderboard_name') or '').strip()
     if not leaderboard_name:
         flash("Leaderboard name is required.", "danger")
         return redirect(url_for('datasets_list'))
+
+    hf_repo_id = (request.form.get('hf_repo_id') or '').strip()
     dataset_id = request.form.get('dataset_id')
+
+    if hf_repo_id:
+        # ---- HF-ref flow ----
+        try:
+            mapping = json.loads(request.form.get('hf_mapping_json') or '[]')
+        except (TypeError, ValueError):
+            mapping = []
+        revision = (request.form.get('hf_revision') or '').strip() or None
+        split = (request.form.get('hf_split') or 'train').strip()
+        hf_token = getattr(g.current_user, 'hf_token', None)
+        metric_proposals_all, viz_proposals_all = (
+            _collect_auto_lb_proposals_for_hf_ref(
+                hf_repo_id, mapping, revision=revision, split=split,
+                hf_token=hf_token,
+            )
+        )
+        kept_metrics = [m for m in (_override_proposal(p, 'metric')
+                                    for p in metric_proposals_all) if m]
+        kept_viz = [v for v in (_override_proposal(p, 'viz')
+                                for p in viz_proposals_all) if v]
+        if not kept_metrics and not kept_viz:
+            flash("Nothing kept from the proposal — leaderboard not created.", "warning")
+            return redirect(url_for('datasets_list'))
+        ok, msg, lb_id = _create_lb_with_hf_attachment(
+            leaderboard_name, owner_user_id=g.current_user.id,
+            repo_id=hf_repo_id, mapping=mapping,
+            revision=revision, split=split,
+            metric_proposals=kept_metrics, viz_proposals=kept_viz,
+        )
+        flash(msg, "success" if ok else "warning")
+        if ok and lb_id:
+            return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
+        return redirect(url_for('datasets_list'))
+
+    # ---- BH-dataset flow (legacy uploaded-ZIP path) ----
     if not dataset_id:
-        flash("Dataset id is required.", "danger")
+        flash("Dataset id or hf_repo_id is required.", "danger")
         return redirect(url_for('datasets_list'))
     ds = Dataset.query.get(int(dataset_id))
     if ds is None:
         flash("Dataset not found.", "danger")
         return redirect(url_for('datasets_list'))
 
-    # Re-run the proposers so we have the canonical arg_mappings + hint
-    # for every name. We only TRUST data that came back through the
-    # form for fields the proposer also produced — defends against a
-    # crafted POST trying to inject metrics for a different dataset.
     metric_proposals_all, viz_proposals_all = _collect_auto_lb_proposals(ds)
-
-    def _override(p, prefix):
-        gn = p['global_name']
-        if not request.form.get(f'kept_{prefix}_{gn}'):
-            return None
-        target_name = (request.form.get(f'{prefix}_target_name_{gn}') or '').strip()
-        if target_name:
-            p['target_name'] = target_name
-        code = (request.form.get(f'{prefix}_code_{gn}') or '').strip()
-        if code and f"def {gn}(" in code:
-            p['python_code'] = code
-        if prefix == 'metric':
-            sort_dir = request.form.get(f'metric_sort_direction_{gn}')
-            if sort_dir in ('higher_is_better', 'lower_is_better'):
-                p['sort_direction'] = sort_dir
-        return p
-
-    kept_metrics = [m for m in (_override(p, 'metric') for p in metric_proposals_all) if m]
-    kept_viz = [v for v in (_override(p, 'viz') for p in viz_proposals_all) if v]
+    kept_metrics = [m for m in (_override_proposal(p, 'metric')
+                                for p in metric_proposals_all) if m]
+    kept_viz = [v for v in (_override_proposal(p, 'viz')
+                            for p in viz_proposals_all) if v]
     if not kept_metrics and not kept_viz:
         flash("Nothing kept from the proposal — leaderboard not created.", "warning")
         return redirect(url_for('dataset_view', dataset_id=ds.id))
-
     ok, msg, lb_id = _auto_create_lb_with_metrics(
         ds, leaderboard_name, owner_user_id=g.current_user.id,
         metric_proposals=kept_metrics, viz_proposals=kept_viz,
@@ -8302,6 +8008,25 @@ def create_leaderboard_auto_finalize():
     if ok and lb_id:
         return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
     return redirect(url_for('dataset_view', dataset_id=ds.id))
+
+
+def _override_proposal(p, prefix):
+    """Apply form-supplied edits to one proposal dict. Returns the
+    edited proposal, or None if the user unchecked it."""
+    gn = p['global_name']
+    if not request.form.get(f'kept_{prefix}_{gn}'):
+        return None
+    target_name = (request.form.get(f'{prefix}_target_name_{gn}') or '').strip()
+    if target_name:
+        p['target_name'] = target_name
+    code = (request.form.get(f'{prefix}_code_{gn}') or '').strip()
+    if code and f"def {gn}(" in code:
+        p['python_code'] = code
+    if prefix == 'metric':
+        sort_dir = request.form.get(f'metric_sort_direction_{gn}')
+        if sort_dir in ('higher_is_better', 'lower_is_better'):
+            p['sort_direction'] = sort_dir
+    return p
 
 
 def process_submission_zip(leaderboard_id, submission_name, zip_path,

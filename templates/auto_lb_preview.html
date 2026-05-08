@@ -8,17 +8,32 @@
         <i class="bi bi-stars text-warning me-1"></i>Review auto-proposed metrics &amp; visualizations
     </h1>
     <p class="text-body-secondary mb-3">
+        {% if dataset %}
         Walking the GT scalar fields on
         <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
             class="font-monospace">{{ dataset.name }}</a>,
         BenchHub proposes one comparison metric per field plus a
         confusion-matrix visualization for ClassLabel-shaped columns.
+        {% else %}
+        Walking the GT fields of
+        <a href="https://huggingface.co/datasets/{{ hf_ref.repo_id }}"
+            target="_blank" rel="noopener" class="font-monospace">{{ hf_ref.repo_id }}</a>,
+        BenchHub proposes one metric per field. The dataset stays on
+        HuggingFace; only the LB + its metrics get persisted here.
+        {% endif %}
         Toggle, rename, or edit before creating the leaderboard.
     </p>
 
     <form method="post" action="{{ url_for('create_leaderboard_auto_finalize') }}">
         <input type="hidden" name="leaderboard_name" value="{{ leaderboard_name }}">
+        {% if dataset %}
         <input type="hidden" name="dataset_id" value="{{ dataset.id }}">
+        {% else %}
+        <input type="hidden" name="hf_repo_id" value="{{ hf_ref.repo_id }}">
+        <input type="hidden" name="hf_revision" value="{{ hf_ref.revision }}">
+        <input type="hidden" name="hf_split" value="{{ hf_ref.split }}">
+        <input type="hidden" name="hf_mapping_json" value='{{ hf_ref.mapping_json }}'>
+        {% endif %}
 
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
@@ -31,7 +46,13 @@
                     </div>
                     <div class="col-md-3">
                         <p class="form-label small fw-semibold mb-1">Backed by</p>
+                        {% if dataset %}
                         <p class="font-monospace small mb-0">{{ dataset.name }}</p>
+                        {% else %}
+                        <p class="font-monospace small mb-0">
+                            <i class="bi bi-cloud me-1"></i>HF: {{ hf_ref.repo_id }}
+                        </p>
+                        {% endif %}
                     </div>
                 </div>
             </div>
