@@ -100,6 +100,13 @@
                 {% endif %}
             </p>
         </div>
+        {% if current_user %}
+        <a href="{{ url_for('create_lb_chooser') }}"
+           class="btn btn-primary"
+           title="Create a new leaderboard from a BenchHub or HuggingFace dataset">
+            <i class="bi bi-plus-lg me-1"></i>New leaderboard
+        </a>
+        {% endif %}
     </div>
 
     {# ---- Tag cloud ---- #}

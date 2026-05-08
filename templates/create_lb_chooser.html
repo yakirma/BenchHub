@@ -1,84 +1,158 @@
 {% extends "base.html" %}
 
-{% block title %}Create leaderboard from HuggingFace — BenchHub{% endblock %}
+{% block title %}New leaderboard — BenchHub{% endblock %}
 
 {% block content %}
-<div class="container py-4" style="max-width: 1000px;">
+<div class="container py-4" style="max-width: 1100px;">
     <h1 class="h3 fw-bold mb-1">
-        <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Create leaderboard from HuggingFace
+        <i class="bi bi-trophy text-warning me-1"></i>New leaderboard
     </h1>
-    <p class="text-body-secondary mb-3">
-        Paste a HuggingFace dataset repo. We'll inspect its schema, propose
-        per-field metrics, and create a leaderboard where the dataset stays
-        on HuggingFace — submissions evaluate by streaming on demand.
-        No local copy is materialized.
+    <p class="text-body-secondary mb-4">
+        Pick the dataset that backs your leaderboard. Submissions evaluate against
+        ground-truth labels from this dataset.
     </p>
 
-    {# Token banner — shows only when logged in but no token saved. #}
+    {# Token banner — surfaces only when the user is logged in but
+       hasn't saved an HF token. Quiet otherwise. Sits above the cards
+       so it applies regardless of which side the user picks. #}
     {% set hf_banner_context = "Gated datasets (ImageNet-1k, some medical imaging) need a personal access token; saving one once unlocks them for every future leaderboard." %}
     {% include "_hf_token_banner.html" %}
 
     <div class="row g-3">
-        <div class="col-lg-7">
-            <div class="card border-0 shadow-sm">
-                <div class="card-body p-4">
-                    <h2 class="h5 fw-semibold mb-3">Pick a repo</h2>
-                    <form method="post" action="{{ url_for('import_from_hf_preview') }}">
-                        <div class="mb-3">
-                            <input type="text" class="form-control form-control-lg font-monospace"
-                                name="hf_repo_id" id="hf-repo-id-input"
-                                placeholder="user/repo" required autocomplete="off">
+        {# ============== LEFT: BenchHub dataset ============== #}
+        <div class="col-lg-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-4 d-flex flex-column">
+                    <h2 class="h5 fw-semibold mb-1">
+                        <i class="bi bi-database text-info me-1"></i>From a BenchHub dataset
+                    </h2>
+                    <p class="text-body-secondary small mb-3">
+                        Use a ZIP you've already uploaded. Ground truth is read
+                        from the dataset's <code>CustomField</code> rows.
+                    </p>
+
+                    {% if bh_datasets %}
+                    <form method="post" action="{{ url_for('create_leaderboard') }}"
+                          class="vstack gap-2 flex-grow-1">
+                        <label class="form-label small fw-semibold mb-1" for="bh-dataset-select">
+                            Dataset
+                        </label>
+                        <select id="bh-dataset-select" name="dataset_ids" class="form-select" required>
+                            <option value="">Select…</option>
+                            {% for ds in bh_datasets %}
+                            <option value="{{ ds.id }}">{{ ds.name }}
+                                {% if ds.samples %}({{ ds.samples|length }} samples){% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+
+                        <label class="form-label small fw-semibold mb-1 mt-2" for="bh-lb-name">
+                            Leaderboard name
+                        </label>
+                        <input type="text" id="bh-lb-name" name="leaderboard_name"
+                               class="form-control" required
+                               placeholder="e.g. nyu_depth_v2 benchmark">
+
+                        <label class="form-label small fw-semibold mb-1 mt-2" for="bh-summary">
+                            Initial summary metrics <span class="text-body-secondary fw-normal">(optional)</span>
+                        </label>
+                        <input type="text" id="bh-summary" name="summary_metrics"
+                               class="form-control" placeholder="comma-separated">
+
+                        <div class="form-check small mt-2">
+                            <input class="form-check-input" type="checkbox"
+                                   id="bh-auto-assign" name="auto_assign_metrics" value="1" checked>
+                            <label class="form-check-label" for="bh-auto-assign">
+                                <i class="bi bi-stars text-warning me-1"></i>
+                                Auto-assign metrics &amp; visualizations
+                                <span class="text-body-secondary d-block">
+                                    Walks GT scalar fields and proposes per-field
+                                    comparisons + a confusion-matrix viz where applicable.
+                                </span>
+                            </label>
                         </div>
 
-                        <details class="mb-3 small">
+                        <div class="mt-auto pt-3">
+                            <button type="submit" class="btn btn-primary w-100 py-2">
+                                <i class="bi bi-check-lg me-1"></i>Create leaderboard
+                            </button>
+                        </div>
+                    </form>
+                    {% else %}
+                    <div class="text-center text-body-secondary py-4 flex-grow-1 d-flex flex-column justify-content-center">
+                        <i class="bi bi-database display-5 opacity-50 mb-2"></i>
+                        <p class="mb-2">No BenchHub datasets yet.</p>
+                        <a href="{{ url_for('datasets_list') }}" class="btn btn-sm btn-outline-primary mx-auto" style="max-width: 200px;">
+                            <i class="bi bi-cloud-arrow-up me-1"></i>Upload a ZIP
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        {# ============== RIGHT: HuggingFace dataset ============== #}
+        <div class="col-lg-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-4 d-flex flex-column">
+                    <h2 class="h5 fw-semibold mb-1">
+                        <i class="bi bi-cloud-arrow-down text-primary me-1"></i>From a HuggingFace dataset
+                    </h2>
+                    <p class="text-body-secondary small mb-3">
+                        The dataset stays on HuggingFace. Submissions stream from
+                        the HF repo at eval time — no local copy is created.
+                    </p>
+
+                    <form method="post" action="{{ url_for('import_from_hf_preview') }}"
+                          class="vstack gap-2">
+                        <label class="form-label small fw-semibold mb-1" for="hf-repo-id-input">
+                            Repo ID
+                        </label>
+                        <input type="text" class="form-control font-monospace"
+                               name="hf_repo_id" id="hf-repo-id-input"
+                               placeholder="user/repo" required autocomplete="off">
+
+                        <details class="small mt-1">
                             <summary class="text-body-secondary user-select-none" style="cursor:pointer;">
                                 Advanced
                             </summary>
                             <div class="mt-2 vstack gap-2">
                                 <input type="text" class="form-control form-control-sm font-monospace"
-                                    name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
+                                       name="hf_revision" placeholder="Revision (default: main)" autocomplete="off">
                                 <input type="password" class="form-control form-control-sm font-monospace"
-                                    name="hf_token"
-                                    placeholder="Access token (gated/private repos — auto-saved for next time)"
-                                    autocomplete="off">
+                                       name="hf_token"
+                                       placeholder="Access token (gated/private repos — auto-saved for next time)"
+                                       autocomplete="off">
                                 <input type="number" class="form-control form-control-sm" name="sample_cap"
-                                    placeholder="Sample cap for proposal preview (default 200)"
-                                    min="10" max="2000" value="200">
+                                       placeholder="Sample cap for proposal preview (default 200)"
+                                       min="10" max="2000" value="200">
                             </div>
                         </details>
 
-                        <button type="submit" class="btn btn-primary py-2 w-100">
+                        <button type="submit" class="btn btn-primary py-2 mt-2">
                             <i class="bi bi-magic me-1"></i>Inspect schema &amp; propose metrics
                         </button>
-                        <p class="form-text small mt-2 mb-0">
-                            We'll auto-detect field types and propose comparison
-                            metrics. You'll review + edit before the leaderboard is created.
-                        </p>
                     </form>
-                </div>
-            </div>
-        </div>
 
-        <div class="col-lg-5">
-            <div class="card border-0 shadow-sm h-100">
-                <div class="card-body p-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
-                        <h2 class="h6 fw-semibold mb-0">
-                            <i class="bi bi-search me-1 text-body-secondary"></i>Browse HuggingFace
-                        </h2>
-                        <select id="hf-picker-sort" class="form-select form-select-sm" style="width: auto;">
-                            <option value="likes">Most likes</option>
-                            <option value="downloads">Most downloads</option>
-                            <option value="trending">Trending</option>
-                        </select>
-                    </div>
-                    <input type="search" id="hf-picker-q" class="form-control form-control-sm mb-2"
-                        placeholder="Filter HF datasets…" autocomplete="off">
-                    <div id="hf-picker-list"
-                        style="max-height: 360px; overflow-y: auto;
-                               border: 1px solid var(--bs-border-color); border-radius: 6px;
-                               padding: 0.25rem;">
-                        <div class="text-center small text-body-secondary py-3">Loading…</div>
+                    <div class="mt-3 pt-3 border-top">
+                        <div class="d-flex justify-content-between align-items-center mb-2 gap-2">
+                            <small class="fw-semibold text-body-secondary">
+                                <i class="bi bi-search me-1"></i>Browse HuggingFace
+                            </small>
+                            <select id="hf-picker-sort" class="form-select form-select-sm" style="width: auto;">
+                                <option value="likes">Most likes</option>
+                                <option value="downloads">Most downloads</option>
+                                <option value="trending">Trending</option>
+                            </select>
+                        </div>
+                        <input type="search" id="hf-picker-q" class="form-control form-control-sm mb-2"
+                               placeholder="Filter HF datasets…" autocomplete="off">
+                        <div id="hf-picker-list"
+                             style="max-height: 240px; overflow-y: auto;
+                                    border: 1px solid var(--bs-border-color); border-radius: 6px;
+                                    padding: 0.25rem;">
+                            <div class="text-center small text-body-secondary py-3">Loading…</div>
+                        </div>
                     </div>
                 </div>
             </div>

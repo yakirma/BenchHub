@@ -23,32 +23,32 @@ from app import (
 # is ZIP-only now.
 
 
-def test_create_lb_from_hf_shows_token_banner_when_user_has_no_token(
+def test_create_lb_shows_token_banner_when_user_has_no_token(
     auth_client, logged_in_user, db_session,
 ):
     logged_in_user.hf_token = None
     db.session.commit()
-    resp = auth_client.get('/create_lb/from_hf')
+    resp = auth_client.get('/create_lb')
     body = resp.data.decode()
     assert 'No HuggingFace token saved' in body
     # Direct link to the settings page so the user can act in one click.
     assert '/settings/hf_token' in body
 
 
-def test_create_lb_from_hf_hides_token_banner_when_token_saved(
+def test_create_lb_hides_token_banner_when_token_saved(
     auth_client, logged_in_user, db_session,
 ):
     logged_in_user.hf_token = 'hf_test_token'
     db.session.commit()
-    resp = auth_client.get('/create_lb/from_hf')
+    resp = auth_client.get('/create_lb')
     body = resp.data.decode()
     assert 'No HuggingFace token saved' not in body
 
 
-def test_create_lb_from_hf_requires_login(client, db_session):
+def test_create_lb_requires_login(client, db_session):
     """Anonymous users get bounced to login — page is logged-in only
     since it kicks off LB creation."""
-    resp = client.get('/create_lb/from_hf', follow_redirects=False)
+    resp = client.get('/create_lb', follow_redirects=False)
     assert resp.status_code == 302
     assert '/login' in resp.headers['Location']
 
@@ -58,8 +58,8 @@ def test_create_lb_from_hf_requires_login(client, db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_create_lb_from_hf_inline_field_hints_auto_save(auth_client, db_session):
-    resp = auth_client.get('/create_lb/from_hf')
+def test_create_lb_inline_field_hints_auto_save(auth_client, db_session):
+    resp = auth_client.get('/create_lb')
     body = resp.data.decode()
     # Updated placeholder copy is the discoverable signal that the
     # form-level token will be persisted for next time.

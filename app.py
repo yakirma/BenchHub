@@ -7383,30 +7383,41 @@ def _import_hf_auto(repo_id, dataset_name, mapping, *, sample_cap=200,
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-@app.route('/create_lb/from_hf', methods=['GET'])
+@app.route('/create_lb', methods=['GET'])
 @login_required
-def create_lb_from_hf():
-    """Entry page for "Create a leaderboard from a HuggingFace dataset".
+def create_lb_chooser():
+    """Unified entry for "start a new leaderboard". The page presents
+    two side-by-side flows:
+      - From a BenchHub dataset: pick from your uploaded ZIPs →
+        configure name + auto-assign → POST to /create_leaderboard.
+      - From a HuggingFace dataset: paste/pick a repo →
+        POST to /import_from_hf/preview → schema mapping → auto-LB.
 
-    No Dataset row gets materialized at any step — the LB created on
-    the next page will hold the HF repo as a primary attachment, and
-    submissions evaluate by streaming from HF on demand.
-
-    Page surfaces:
-      - Direct repo input (`user/repo`) → /import_from_hf/preview.
-      - HF picker (sorts by likes/downloads/trending) — selecting a
-        row drops its id into the input above.
-      - User's recent HF picks + cross-user trending (same widgets that
-        used to live on /datasets).
+    No Dataset row is ever materialized for HF — the LB attaches to
+    the HF repo directly.
     """
     user = g.current_user
+    bh_datasets = (
+        Dataset.query
+        .filter(visible_in_list(Dataset, user))
+        .order_by(Dataset.upload_date.desc())
+        .all()
+    )
     recent_hf = _user_recent_hf_visits(user.id if user else None, limit=8)
     trending_hf = _trending_hf_visits(days=7, limit=8)
     return render_template(
-        'create_lb_from_hf.html',
+        'create_lb_chooser.html',
+        bh_datasets=bh_datasets,
         recent_hf=recent_hf,
         trending_hf=trending_hf,
     )
+
+
+@app.route('/create_lb/from_hf', methods=['GET'])
+@login_required
+def create_lb_from_hf():
+    # Back-compat: old direct link redirects into the unified chooser.
+    return redirect(url_for('create_lb_chooser'))
 
 
 @app.route('/import_from_hf/preview', methods=['POST'])
