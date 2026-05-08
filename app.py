@@ -7579,13 +7579,18 @@ def import_from_hf_auto():
         return redirect(url_for('datasets_list'))
 
     if not metric_props and not viz_props:
+        # Don't bounce the user back to /datasets — they came here to
+        # build a leaderboard, and the preview page now has explicit
+        # "Add a metric" + "Required pred fields" affordances that
+        # work without auto-proposals. Just flash a notice and let
+        # them continue.
         flash(
-            "Couldn't auto-propose any metrics for this HF dataset "
-            "(needs scalar / image / depth GT columns). Adjust the "
-            "mapping or pick a different repo.",
-            "warning",
+            "No metrics were auto-proposed for this HF dataset "
+            "(BenchHub looks for scalar / image / depth GT columns). "
+            "Use the Add a metric / Required prediction fields "
+            "sections below to attach what you want.",
+            "info",
         )
-        return redirect(url_for('datasets_list'))
 
     seen_pred = {}
     for p in metric_props + viz_props:
