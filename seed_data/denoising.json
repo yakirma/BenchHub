@@ -9,8 +9,7 @@
     {"hf_repo_id": "eugenesiow/Div2k",                           "dataset_name": "div2k",               "sample_cap": 100, "auto_create_lb": true, "lb_name": "DIV2K Super-Resolution"},
     {"hf_repo_id": "eugenesiow/PIRM",                            "dataset_name": "pirm",                "sample_cap": 100, "auto_create_lb": true, "lb_name": "PIRM Super-Resolution"},
     {"hf_repo_id": "deepinv/denoising",                          "dataset_name": "deepinv_denoising",   "sample_cap": 100, "auto_create_lb": true, "lb_name": "DeepInverse Denoising"},
-    {"hf_repo_id": "joytafty/denoising-dirty-documents-cleaned", "dataset_name": "dirty_docs_clean",    "sample_cap": 144, "auto_create_lb": true, "lb_name": "Dirty Documents (Clean GT)"},
-    {"hf_repo_id": "joytafty/denoising-dirty-documents-train",   "dataset_name": "dirty_docs_train",    "sample_cap": 144, "auto_create_lb": true, "lb_name": "Dirty Documents Denoising"},
+    {"hf_repo_id": "joytafty/denoising-dirty-documents-train",   "dataset_name": "dirty_docs",          "sample_cap": 144, "auto_create_lb": false, "lb_name": "Dirty Documents (noisy)", "_note": "Paired dataset: the clean GT lives at joytafty/denoising-dirty-documents-cleaned. BenchHub can't auto-build a denoising LB from two repos yet; auto_create_lb disabled until pair-aware datasets land."},
     {"hf_repo_id": "Iceclear/StableSR-TestSets",                 "dataset_name": "stablesr_testsets",   "sample_cap": 100, "auto_create_lb": true, "lb_name": "StableSR Real-World Test Sets"}
   ]
 }

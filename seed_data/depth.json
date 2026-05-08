@@ -3,8 +3,7 @@
   "_note": "Repo IDs verified live on HuggingFace 2026-05-08 via the public /api/datasets endpoint. Mix of indoor (NYU-shape) and outdoor (KITTI/aerial). The auto-LB metric proposer will pick MAE on the inferred depth scalar — replace by-hand with RMSE / a1 / a2 / a3 once seeded.",
   "datasets": [
     {"hf_repo_id": "sayakpaul/nyu_depth_v2",          "dataset_name": "nyu_depth_v2",     "sample_cap": 200, "auto_create_lb": true, "lb_name": "NYU Depth V2"},
-    {"hf_repo_id": "tanganke/nyuv2",                  "dataset_name": "nyuv2_tanganke",   "sample_cap": 200, "auto_create_lb": true, "lb_name": "NYUv2 (image+depth+seg)"},
-    {"hf_repo_id": "0jl/NYUv2",                       "dataset_name": "nyuv2_0jl",        "sample_cap": 200, "auto_create_lb": true, "lb_name": "NYUv2 (RGB-D pairs)"},
+    {"hf_repo_id": "tanganke/nyuv2",                  "dataset_name": "nyuv2_with_seg",   "sample_cap": 200, "auto_create_lb": true, "lb_name": "NYUv2 (depth + semantic seg)"},
     {"hf_repo_id": "hugsam/Room_Envelopes",           "dataset_name": "room_envelopes",   "sample_cap": 150, "auto_create_lb": true, "lb_name": "Room Envelopes (Hypersim)"},
     {"hf_repo_id": "UrbanSyn/UrbanSyn",               "dataset_name": "urbansyn",         "sample_cap": 150, "auto_create_lb": true, "lb_name": "UrbanSyn (urban driving)"},
     {"hf_repo_id": "hoffman-lab/SkyScenes",           "dataset_name": "skyscenes",        "sample_cap": 100, "auto_create_lb": true, "lb_name": "SkyScenes (aerial)"},
