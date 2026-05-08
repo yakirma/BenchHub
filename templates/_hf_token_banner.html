@@ -1,0 +1,31 @@
+{# Inline "save an HF token" banner. Renders only when there's a
+   logged-in user without a saved hf_token; quiet otherwise so we
+   don't nag users who already configured one.
+
+   Usage:
+       {% include "_hf_token_banner.html" %}
+
+   Optional context:
+       hf_banner_context: short string explaining WHY a token would
+                          help on this page (e.g. "to import gated
+                          datasets like ImageNet-1k"). Falls back to
+                          a generic message. #}
+{% if current_user and not current_user.hf_token %}
+<div class="alert alert-warning alert-dismissible fade show small d-flex align-items-center mb-3"
+     role="alert" id="hf-token-banner">
+    <i class="bi bi-key-fill me-2 fs-5"></i>
+    <div class="flex-grow-1">
+        <strong>No HuggingFace token saved.</strong>
+        {% if hf_banner_context %}
+        {{ hf_banner_context }}
+        {% else %}
+        Some HuggingFace features (gated repos, private uploads, faster
+        rate limits) need a personal access token.
+        {% endif %}
+        <a href="{{ url_for('hf_token_settings') }}"
+           class="alert-link ms-1">Save one</a> &mdash; takes 30 seconds.
+    </div>
+    <button type="button" class="btn-close btn-close-sm ms-2"
+            data-bs-dismiss="alert" aria-label="Dismiss"></button>
+</div>
+{% endif %}

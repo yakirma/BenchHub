@@ -10390,6 +10390,22 @@ def submission_from_url_api(leaderboard_id):
             remote_url, hf_token=getattr(g.current_user, 'hf_token', None),
         )
     except Exception as e:
+        msg = str(e)
+        low = msg.lower()
+        # Surface a clearer hint when the failure is auth-shaped, with a
+        # direct link to the token-settings page so the user knows what
+        # to do (rather than just "fetch failed: 401").
+        if (remote_url.startswith('hf://')
+                and ('401' in msg or 'gated' in low or 'unauthorized' in low
+                     or 'access denied' in low)):
+            return jsonify({
+                'error': (
+                    f"fetch failed: {e}. This `hf://` URL needs an HF "
+                    f"access token. Save one at {url_for('hf_token_settings', _external=True)} "
+                    f"and retry."
+                ),
+                'token_settings_url': url_for('hf_token_settings', _external=True),
+            }), 400
         return jsonify({'error': f'fetch failed: {e}'}), 400
 
     try:

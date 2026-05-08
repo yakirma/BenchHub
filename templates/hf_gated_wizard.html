@@ -94,7 +94,10 @@
                             class="form-control font-monospace"
                             placeholder="hf_..." autocomplete="off" required>
                         <div class="form-text small text-body-secondary mb-2">
-                            Stored in this request only — never persisted.
+                            Auto-saved to your account so future imports + metric
+                            evals against gated repos work without re-entering it.
+                            <a href="{{ url_for('hf_token_settings') }}"
+                               class="text-decoration-none">Manage saved token →</a>
                         </div>
                         <div class="d-flex justify-content-between gap-2">
                             <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary">

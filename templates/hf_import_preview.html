@@ -29,6 +29,13 @@
         {% endif %}
     </p>
 
+    {# Token banner: surfaces only when no token saved. The user just
+       got past the schema fetch (so this repo isn't gated for them
+       right now), but the same import flow downloads sample bytes
+       which can also 401 — the auto-save flow keeps that uneventful. #}
+    {% set hf_banner_context = "Saving an HF token now means future imports skip the password field entirely and gated repos work transparently." %}
+    {% include "_hf_token_banner.html" %}
+
     <form method="post" action="{{ url_for('import_from_hf_auto') }}">
         {# Pass the upstream context through unchanged. #}
         <input type="hidden" name="hf_repo_id" value="{{ repo_id }}">
