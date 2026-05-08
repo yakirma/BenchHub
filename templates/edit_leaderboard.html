@@ -140,14 +140,27 @@
                                 <label class="form-label fw-bold">Associated Datasets</label>
                                 <div class="p-2 border rounded bg-body-tertiary">
                                     {% for dataset in leaderboard.datasets %}
-                                    <div class="d-flex align-items-center mb-1 last-child-mb-0">
+                                    {% set ds_role = (dataset_roles.get(dataset.id) if dataset_roles else 'primary') %}
+                                    <div class="d-flex align-items-center mb-2 last-child-mb-0">
                                         <i class="bi bi-database me-2 text-info"></i>
-                                        <span>{{ dataset.name }}</span>
+                                        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                                           class="me-3 text-decoration-none">{{ dataset.name }}</a>
+                                        <select name="dataset_role_{{ dataset.id }}"
+                                            class="form-select form-select-sm w-auto ms-auto"
+                                            title="Primary = owns the sample-name list submissions key off. GT-source = matches sample names against primary; its CustomFields fold into the metric context as additional gt_<col> entries.">
+                                            <option value="primary" {{ 'selected' if ds_role == 'primary' }}>primary</option>
+                                            <option value="gt_source" {{ 'selected' if ds_role == 'gt_source' }}>gt_source</option>
+                                        </select>
                                     </div>
                                     {% endfor %}
                                 </div>
-                                <div class="form-text small text-muted">Datasets cannot be changed once the leaderboard
-                                    is created to ensure data integrity.</div>
+                                <div class="form-text small">
+                                    Use <code>gt_source</code> to fold a paired GT
+                                    dataset (e.g. the clean-images half of a
+                                    denoising-pair benchmark) into the metric
+                                    context. The primary dataset owns the
+                                    submission's sample-name list.
+                                </div>
                             </div>
 
                             <div class="mb-3">

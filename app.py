@@ -347,7 +347,20 @@ leaderboard_shares = db.Table('leaderboard_shares',
 # Association Table for Leaderboards and Datasets
 leaderboard_datasets = db.Table('leaderboard_datasets',
     db.Column('leaderboard_id', db.Integer, db.ForeignKey('leaderboard.id'), primary_key=True),
-    db.Column('dataset_id', db.Integer, db.ForeignKey('dataset.id'), primary_key=True)
+    db.Column('dataset_id', db.Integer, db.ForeignKey('dataset.id'), primary_key=True),
+    # Per-attachment role. Lets a single LB pair an "input" dataset
+    # with one or more "GT-source" datasets — solves the dirty-docs
+    # /-train + /-cleaned shape and SIDD-style splits without
+    # merging upstream HF repos.
+    #
+    # Conventions:
+    #   'primary'   → owns the sample-name list submissions key off.
+    #                 First non-gt_source LB attachment is primary.
+    #   'gt_source' → matches sample names against the primary; its
+    #                 CustomFields fold into get_metric_context as
+    #                 additional gt_<col> entries.
+    db.Column('role', db.String(20), nullable=False,
+              default='primary', server_default='primary'),
 )
 
 # Models
@@ -2396,6 +2409,12 @@ def edit_leaderboard(leaderboard_id):
     if request.method == 'POST':
         if 'name' in request.form:
             leaderboard.name = request.form.get('name', leaderboard.name)
+        # Per-attached-dataset role updates: form sends one
+        # `dataset_role_<id>` field per dataset row.
+        for ds in leaderboard.datasets:
+            new_role = request.form.get(f'dataset_role_{ds.id}')
+            if new_role in ('primary', 'gt_source'):
+                _set_lb_dataset_role(leaderboard.id, ds.id, new_role)
         if 'scalar_width' in request.form:
             leaderboard.scalar_width = request.form.get('scalar_width') or None
         if 'image_width' in request.form:
@@ -2588,9 +2607,16 @@ def edit_leaderboard(leaderboard_id):
     for lm in leaderboard.leaderboard_metrics:
          metric_to_lm[f"lm_{lm.id}"] = lm
 
-    return render_template('edit_leaderboard.html', 
+    # Per-attached-dataset role lookup so the template can render the
+    # role dropdown next to each dataset row. Defaults to 'primary'.
+    dataset_roles = {
+        ds.id: (_lb_dataset_role(leaderboard.id, ds.id) or 'primary')
+        for ds in leaderboard.datasets
+    }
+    return render_template('edit_leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_fields=dataset_fields,
+                           dataset_roles=dataset_roles,
                            submission_fields=submission_fields,
                            aggregated_metrics=sorted(list(aggregated_metrics_list)),
                            per_sample_metrics=sorted(list(per_sample_metrics)),
@@ -6692,6 +6718,93 @@ def _infer_mapping(features):
     return out
 
 
+def _lb_dataset_role(lb_id, dataset_id):
+    """Read the `role` of a (leaderboard, dataset) attachment. Returns
+    'primary' for legacy rows that pre-date the column or attachments
+    without an explicit role."""
+    row = db.session.execute(
+        leaderboard_datasets.select().where(
+            (leaderboard_datasets.c.leaderboard_id == lb_id) &
+            (leaderboard_datasets.c.dataset_id == dataset_id)
+        )
+    ).first()
+    if row is None:
+        return None
+    return getattr(row, 'role', None) or 'primary'
+
+
+def _set_lb_dataset_role(lb_id, dataset_id, role):
+    """Update the `role` of a (leaderboard, dataset) attachment.
+    Idempotent. Only writes when the value actually changes."""
+    if role not in ('primary', 'gt_source'):
+        raise ValueError(f"unknown role {role!r}")
+    current = _lb_dataset_role(lb_id, dataset_id)
+    if current is None or current == role:
+        # Either not attached, or already the right role.
+        if current is None:
+            return False
+        return False
+    db.session.execute(
+        leaderboard_datasets.update()
+        .where(
+            (leaderboard_datasets.c.leaderboard_id == lb_id) &
+            (leaderboard_datasets.c.dataset_id == dataset_id)
+        )
+        .values(role=role)
+    )
+    db.session.commit()
+    return True
+
+
+def _gt_source_datasets_for_lb(lb):
+    """List of Dataset rows attached to `lb` with role='gt_source'.
+    Empty list when no paired GT is configured (the common case)."""
+    if lb is None:
+        return []
+    rows = db.session.execute(
+        leaderboard_datasets.select().where(
+            (leaderboard_datasets.c.leaderboard_id == lb.id) &
+            (leaderboard_datasets.c.role == 'gt_source')
+        )
+    ).all()
+    out = []
+    for r in rows:
+        ds = Dataset.query.get(r.dataset_id)
+        if ds is not None:
+            out.append(ds)
+    return out
+
+
+def _make_paired_gt_provider(lb):
+    """Closure factory: returns a `(primary_sample) -> iterable` that
+    yields (CustomField, sample) tuples from gt_source datasets
+    attached to `lb`. The yielded fields fold into get_metric_context
+    as additional gt_<col> entries.
+
+    Cheap to call — datasets-per-LB is tiny and the gt_source
+    attachment lookup is O(N) on a typical 1-3-dataset LB."""
+    if lb is None:
+        return None
+    gt_sources = _gt_source_datasets_for_lb(lb)
+    if not gt_sources:
+        return None
+
+    def _provider(primary_sample):
+        if primary_sample is None:
+            return
+        for ds in gt_sources:
+            partner = Sample.query.filter_by(
+                dataset_id=ds.id, name=primary_sample.name,
+            ).first()
+            if partner is None:
+                continue
+            for cf in (partner.custom_fields or []):
+                if cf.field_type in ('scalar', 'image', 'depth', 'text'):
+                    yield cf, partner
+
+    return _provider
+
+
 def _pointer_gt_resolver(sample, cf):
     """Bench-cache-backed resolver passed to `get_metric_context` so
     pointer-mode samples can serve image / depth GT to metrics
@@ -8215,7 +8328,7 @@ def comparison_view(leaderboard_id):
                     else:
                         # Fallback to dynamic calculation
                         if target_lm:
-                            context = get_metric_context(s, target_sub, submission_folder=submission_folder, pointer_resolver=_pointer_gt_resolver)
+                            context = get_metric_context(s, target_sub, submission_folder=submission_folder, pointer_resolver=_pointer_gt_resolver, paired_gt_provider=_make_paired_gt_provider(target_sub.leaderboard))
                             val, err = evaluate_dynamic_metric(target_lm.global_metric, context, target_lm.arg_mappings)
                         else:
                             val = None
@@ -8370,7 +8483,7 @@ def comparison_view(leaderboard_id):
             #          log_safe_metrics[k] = get_log_safe_value(v)
             
             # Add Dynamic Metrics
-            dynamic_ctx = get_metric_context(sample, sub, pointer_resolver=_pointer_gt_resolver)
+            dynamic_ctx = get_metric_context(sample, sub, pointer_resolver=_pointer_gt_resolver, paired_gt_provider=_make_paired_gt_provider(sub.leaderboard if sub else None))
             # Add calculated standard metrics to ctx for dynamic functions
             for km, vm in current_sample_metrics.items():
                  if vm is not None: dynamic_ctx[km] = vm
@@ -10766,6 +10879,10 @@ def check_and_migrate_db():
                     ("submission",           "storage_mode",                     "VARCHAR(20) NOT NULL DEFAULT 'local'"),
                     ("submission",           "remote_url",                       "VARCHAR(500)"),
                     ("submission",           "content_hash",                     "VARCHAR(64)"),
+                    # Paired datasets (NEW 2026-05-08). 'primary' (default)
+                    # vs 'gt_source' so an LB can fold a separate GT
+                    # repo's same-named samples into the metric context.
+                    ("leaderboard_datasets", "role",                             "VARCHAR(20) NOT NULL DEFAULT 'primary'"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

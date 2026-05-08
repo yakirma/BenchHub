@@ -113,13 +113,17 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             
             samples_context = []
             logger.info(f"Building context for {len(dataset_samples)} samples from folder: {submission_folder}")
-            # Pull the pointer resolver from app so pointer-mode samples
-            # can stream image / depth GT lazily through bench_cache.
-            from app import _pointer_gt_resolver
+            # Pull the pointer resolver + paired-GT provider from app
+            # so pointer-mode samples can stream lazily through
+            # bench_cache and gt_source-paired datasets fold their
+            # matching-named samples into the context.
+            from app import _pointer_gt_resolver, _make_paired_gt_provider
+            paired_provider = _make_paired_gt_provider(submission.leaderboard)
             for sample in dataset_samples:
                 ctx = get_metric_context(
                     sample, submission, submission_folder=submission_folder,
                     pointer_resolver=_pointer_gt_resolver,
+                    paired_gt_provider=paired_provider,
                 )
                 samples_context.append(ctx)
             

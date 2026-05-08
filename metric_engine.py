@@ -396,7 +396,8 @@ def _load_sub_pred_for_sample(submission_folder, folder_name, sample_name):
 
 
 def get_metric_context(sample, sub=None, submission_folder=None,
-                       upload_folder=None, pointer_resolver=None):
+                       upload_folder=None, pointer_resolver=None,
+                       paired_gt_provider=None):
     """
     Builds a context dictionary for metric evaluation.
     Includes GT fields and optionally Submission fields for a specific sample.
@@ -411,6 +412,15 @@ def get_metric_context(sample, sub=None, submission_folder=None,
     on-disk file. Caller (app.py) injects the bench_cache-backed
     resolver; the engine stays decoupled from the cache layer so this
     module is testable in isolation.
+
+    paired_gt_provider: optional `(primary_sample) ->
+    iterable[(CustomField, sample)]` callback that yields additional
+    GT fields from sibling 'gt_source' datasets attached to the same
+    leaderboard (paired-dataset shape — e.g. dirty-docs noisy/clean
+    split across two HF repos). The yielded fields land in the
+    context as `gt_<name>` like the primary sample's own fields,
+    overriding any same-named primary field (gt_source wins on
+    conflict).
     """
     import os
     context = {}
@@ -456,6 +466,35 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     arr = None
             context[f"gt_{cf.name}"] = arr
             context[cf.name] = arr
+
+    # Paired-dataset GT: fold in CustomFields from any 'gt_source'
+    # datasets attached to the LB whose sample name matches.
+    # gt_source wins on conflict (it's the explicit GT; primary's
+    # same-named field would usually be the input bytes).
+    if paired_gt_provider is not None:
+        try:
+            paired_iter = list(paired_gt_provider(sample))
+        except Exception as e:
+            print(f"DEBUG: paired_gt_provider raised: {e}")
+            paired_iter = []
+        for partner_cf, partner_sample in paired_iter:
+            if partner_cf.field_type == 'scalar':
+                context[f"gt_{partner_cf.name}"] = partner_cf.value_float
+                context[partner_cf.name] = partner_cf.value_float
+            elif partner_cf.field_type in ('image', 'depth'):
+                arr = _load_gt_array(partner_cf, upload_folder)
+                if (arr is None and pointer_resolver is not None
+                        and getattr(partner_cf, 'source_column', None)):
+                    try:
+                        arr = pointer_resolver(partner_sample, partner_cf)
+                    except Exception as e:
+                        print(f"DEBUG: paired pointer_resolver raised for {partner_cf.name}: {e}")
+                        arr = None
+                context[f"gt_{partner_cf.name}"] = arr
+                context[partner_cf.name] = arr
+            elif partner_cf.field_type == 'text' and partner_cf.value_text is not None:
+                context[f"gt_{partner_cf.name}"] = partner_cf.value_text
+                context[partner_cf.name] = partner_cf.value_text
 
     if sub:
         # Submission fields (using CustomField)
