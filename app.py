@@ -5643,6 +5643,203 @@ def _proposal_mae_scalar(col):
     }
 
 
+_TEXT_EVAL_SUITE_CACHE = {}  # keyed by (id(ds), col) → suite dict or None
+
+
+def _get_or_build_text_eval_suite(ds, col, hints):
+    """Memoized wrapper around `_llm_propose_text_evaluation_suite`.
+    Both the metric proposer and the viz proposer iterate `_gt_columns`
+    independently; without caching they'd each fire an LLM call per
+    text column. Cache lives on a module-level dict keyed by id(ds)+col
+    so it's per-process per-request — no persistent staleness."""
+    key = (id(ds), col)
+    if key in _TEXT_EVAL_SUITE_CACHE:
+        return _TEXT_EVAL_SUITE_CACHE[key]
+    sample_value = None
+    try:
+        first = ds.samples[0] if ds.samples else None
+        if first is not None:
+            for cf in (first.custom_fields or []):
+                if cf.name == col:
+                    sample_value = getattr(cf, 'value_text', None)
+                    break
+    except Exception:
+        pass
+    dataset_repo = getattr(ds, 'name', None)
+    suite = _llm_propose_text_evaluation_suite(
+        col, sample_value, dataset_repo=dataset_repo,
+    )
+    _TEXT_EVAL_SUITE_CACHE[key] = suite
+    return suite
+
+
+def _llm_propose_text_evaluation_suite(col, sample_value, dataset_repo=None):
+    """Ask Claude to classify the text task this column represents and
+    author a metric+viz suite tailored to it.
+
+    Why: a text GT column might be 'pos'/'neg' (classification → top-1
+    accuracy + F1 makes sense), or a sentence completion (BLEU / ROUGE
+    / edit distance), or a span answer (SQuAD-style EM + token-F1), or
+    free-form generation. Different tasks need different metrics.
+    Heuristics on length/vocab can't tell these apart reliably; an LLM
+    can.
+
+    Returns: dict {task_type, metrics: [proposal_dict], visualizations:
+    [proposal_dict]} or None on any failure (caller falls back to the
+    static top-1+F1 pair). Each proposal_dict matches the same schema
+    the static proposers produce (target_name, global_name, description,
+    fallback_code, arg_mappings, sort_direction, pooling_type, llm_hint,
+    pred_fields, plus is_aggregated/accepts_aggregated_inputs for viz).
+    """
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+
+    system_prompt = (
+        "You design evaluation suites for benchmarking text-output "
+        "tasks. Given a single GT column from a dataset (column name + "
+        "one example value), classify the task and propose 1-3 "
+        "appropriate metrics plus an optional aggregated visualization.\n\n"
+        "Hard requirements:\n"
+        "- Output ONLY valid JSON, no fences, no commentary.\n"
+        "- Schema:\n"
+        "  {\n"
+        "    \"task_type\": \"classification\" | \"generation\" | "
+        "\"completion\" | \"qa\" | \"summarization\" | \"translation\" | \"other\",\n"
+        "    \"metrics\": [{\n"
+        "      \"global_name\": <snake_case Python identifier>,\n"
+        "      \"target_name\": <human-readable label>,\n"
+        "      \"description\": <one-sentence what-it-measures>,\n"
+        "      \"sort_direction\": \"higher_is_better\" | \"lower_is_better\",\n"
+        "      \"is_aggregated\": <bool>,\n"
+        "      \"python_code\": <full Python source>\n"
+        "    }],\n"
+        "    \"visualization\": <same shape as metric, or null>\n"
+        "  }\n\n"
+        "Code constraints:\n"
+        "- Each `python_code` must define exactly one top-level function whose name equals `global_name`.\n"
+        "- Per-sample (is_aggregated=false): signature `def f(gt, pred)`, returns float.\n"
+        "- Aggregated (is_aggregated=true): signature `def f(gt, pred)` where gt + pred are PARALLEL lists of strings spanning every sample of one submission. Returns a float (metric) or PIL.Image (viz).\n"
+        "- Use stdlib + numpy (np already imported). Don't import packages that may be missing (no nltk, no rouge, no transformers).\n"
+        "- For BLEU/ROUGE/edit-distance/etc., implement the formula from scratch.\n"
+        "- gt and pred are strings; coerce defensively (str(gt).strip()).\n"
+        "- Aggregated viz must return a PIL.Image (≤512x512). Use `from PIL import Image as _PILImage`.\n\n"
+        "Task-type guidance:\n"
+        "- classification (short class labels like 'pos'/'neg', 'cat'/'dog'): top-1 accuracy + macro F1; viz = confusion matrix.\n"
+        "- generation / summarization: corpus BLEU-4 + ROUGE-L (both aggregated).\n"
+        "- completion: ROUGE-L + character-level edit-distance ratio.\n"
+        "- qa: SQuAD-style exact match + token-level F1.\n"
+        "- translation: corpus BLEU-4.\n"
+        "- other: top-1 accuracy + a sensible second metric you justify in description.\n"
+    )
+    user_msg = json.dumps({
+        'column_name': col,
+        'sample_value': str(sample_value)[:500] if sample_value is not None else '',
+        'dataset_repo': dataset_repo or '',
+    })
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 4000,
+                "system": [
+                    {"type": "text", "text": system_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=45,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        parsed = json.loads(text)
+    except Exception as e:
+        print(f"_llm_propose_text_evaluation_suite failed: {e}")
+        return None
+
+    metrics_in = parsed.get('metrics') or []
+    viz_in = parsed.get('visualization')
+    metric_proposals = []
+    for m in metrics_in:
+        gn = (m.get('global_name') or '').strip()
+        if not re.match(r'^[a-z_][a-z0-9_]*$', gn):
+            continue
+        code = (m.get('python_code') or '').strip()
+        if f"def {gn}(" not in code:
+            continue
+        is_agg = bool(m.get('is_aggregated'))
+        sd = m.get('sort_direction')
+        if sd not in ('higher_is_better', 'lower_is_better'):
+            sd = 'higher_is_better'
+        metric_proposals.append({
+            'target_name': (m.get('target_name') or gn) + f" ({col})",
+            'global_name': gn,
+            'description': (m.get('description') or '').strip(),
+            'fallback_code': code,
+            'python_code': code,
+            'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+            'sort_direction': sd,
+            'pooling_type': 'mean',
+            'is_aggregated': is_agg,
+            'accepts_aggregated_inputs': is_agg,
+            'llm_hint': m.get('description') or gn,
+            'pred_fields': [{
+                'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+                'description': (
+                    f"Predicted text for `{col}` "
+                    f"(per-sample string, ship as `<sample>.txt`)."
+                ),
+            }],
+        })
+
+    viz_proposals = []
+    if isinstance(viz_in, dict):
+        gn = (viz_in.get('global_name') or '').strip()
+        code = (viz_in.get('python_code') or '').strip()
+        if (re.match(r'^[a-z_][a-z0-9_]*$', gn)
+                and f"def {gn}(" in code):
+            viz_proposals.append({
+                'target_name': (viz_in.get('target_name') or gn) + f" ({col})",
+                'global_name': gn,
+                'description': (viz_in.get('description') or '').strip(),
+                'fallback_code': code,
+                'python_code': code,
+                'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+                'is_aggregated': True,
+                'accepts_aggregated_inputs': True,
+                'llm_hint': viz_in.get('description') or gn,
+                'pred_fields': [{
+                    'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+                    'description': f"Per-sample predicted text for `{col}`.",
+                }],
+            })
+
+    if not metric_proposals:
+        # All metrics rejected by validation — fall back rather than
+        # return an empty suite that would suppress static defaults.
+        return None
+    return {
+        'task_type': parsed.get('task_type') or 'other',
+        'metrics': metric_proposals,
+        'visualizations': viz_proposals,
+    }
+
+
 def _proposal_top1_text_classlabel(col):
     """Top-1 classification accuracy for text-typed GT columns (e.g.
     sentiment 'neg'/'pos', species 'cat'/'dog', plain string class
@@ -6056,11 +6253,19 @@ def _propose_metrics_for_dataset(ds):
             else:
                 proposals.append(_proposal_mae_scalar(col))
         elif kind == 'text':
-            # Treat text labels as classification: top-1 accuracy
-            # (always proposed) + macro F1 (robust to class imbalance,
-            # so it pairs nicely with accuracy).
-            proposals.append(_proposal_top1_text_classlabel(col))
-            proposals.append(_proposal_macro_f1_text_classlabel(col))
+            # Try the LLM suite first — it can tell apart classification
+            # from generation / completion / QA / etc. and propose
+            # task-appropriate metrics. Cache the result on the dataset
+            # object so the parallel viz proposer reuses it without a
+            # second round-trip.
+            suite = _get_or_build_text_eval_suite(ds, col, hints)
+            if suite and suite.get('metrics'):
+                proposals.extend(suite['metrics'])
+            else:
+                # Fall back to the static classification-style proposal
+                # when the LLM is unavailable or its response is unusable.
+                proposals.append(_proposal_top1_text_classlabel(col))
+                proposals.append(_proposal_macro_f1_text_classlabel(col))
         elif kind == 'depth':
             proposals.append(_proposal_rmse_depth(col))
             proposals.append(_proposal_abs_rel_depth(col))
@@ -6150,10 +6355,21 @@ def _propose_visualizations_for_dataset(ds):
             proposals.append(_viz_depth_error_heatmap(col))
             continue
         if kind == 'text':
-            # Text labels behave like ClassLabel — same confusion-matrix
-            # treatment, just with string keys. Auto-proposed alongside
-            # the accuracy + macro-F1 metrics.
-            proposals.append(_viz_text_confusion_matrix(col))
+            # Mirror the metric path: ask the LLM what viz makes sense
+            # for this text task. For classification it'll propose a
+            # confusion matrix; for generation/QA it might skip viz
+            # entirely. Fall back to the static text confusion matrix
+            # when the LLM is unavailable.
+            suite = _get_or_build_text_eval_suite(ds, col, hints)
+            if suite and suite.get('visualizations'):
+                proposals.extend(suite['visualizations'])
+            elif suite is None:
+                # LLM unavailable / failed — use the static confusion
+                # matrix (matches the static-fallback metric pair).
+                proposals.append(_viz_text_confusion_matrix(col))
+            # If suite returned no viz, that's a deliberate LLM choice
+            # (e.g. for free-form generation a confusion matrix is
+            # meaningless). Don't second-guess it.
             continue
         if kind != 'scalar' or not hints.get('is_classlabel'):
             continue
