@@ -425,6 +425,51 @@ def process_submissions_batch_sequential(self, submission_ids, sample_filters=No
         _process_submission_impl(sub_id, sample_filters, task_instance=None)
     logger.info("Sequential batch calculation complete.")
 
+@celery.task(bind=True, max_retries=0, ignore_result=True,
+             time_limit=1800, soft_time_limit=1500)
+def build_pwc_index(self):
+    """Build the Papers With Code static-archive index. Out-of-band so
+    the web request that triggered it doesn't time out (and doesn't OOM
+    a gunicorn worker on the index build's transient heap).
+
+    Marker file convention:
+      pwc_archive/index.building.tmp  → exists while running
+      pwc_archive/index.error.txt     → last failure message
+      pwc_archive/index.v1.sqlite     → the actual index when ready
+    """
+    from pwc_client import (
+        _cache_dir, _index_path, _ensure_snapshot, _build_index_into,
+    )
+    cache = _cache_dir()
+    marker = os.path.join(cache, 'index.building.tmp')
+    err_path = os.path.join(cache, 'index.error.txt')
+    if os.path.exists(_index_path()):
+        logger.info("PWC index already exists; skipping build.")
+        return
+    try:
+        with open(marker, 'w') as f:
+            f.write(str(os.getpid()))
+        if os.path.exists(err_path):
+            os.remove(err_path)
+        logger.info("PWC: ensuring snapshot…")
+        snap = _ensure_snapshot()
+        logger.info(f"PWC: snapshot at {snap}; building index…")
+        _build_index_into(_index_path(), snap)
+        logger.info("PWC: index built.")
+    except Exception as e:
+        logger.exception(f"PWC index build failed: {e}")
+        try:
+            with open(err_path, 'w') as f:
+                f.write(str(e)[:2000])
+        except OSError:
+            pass
+    finally:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+
+
 @celery.task(bind=True, max_retries=3, ignore_result=True)
 def reaggregate_submission_metrics(self, submission_id):
     """

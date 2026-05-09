@@ -102,13 +102,28 @@ def _walk_task_into(cur, t, dataset_ids):
         rows = sota.get('rows') or []
         if not (metrics or rows):
             continue
+        # Cap result rows + only keep the columns we actually render.
+        # Some PWC benchmarks (LLM leaderboards) carry hundreds of
+        # rows × MB-scale per-result blobs we don't need.
+        slim_rows = []
+        for r in rows[:200]:
+            if not isinstance(r, dict):
+                continue
+            slim_rows.append({
+                'model_name': (r.get('model_name') or '')[:200],
+                'paper_title': (r.get('paper_title') or '')[:300],
+                'paper_url': (r.get('paper_url') or r.get('paper') or '')[:500],
+                'paper_date': str(r.get('paper_date') or '')[:30],
+                'metrics': {str(k): str(v)[:60] for k, v in (r.get('metrics') or {}).items()
+                            if v is not None and v != ''},
+            })
         cur.execute(
             "INSERT INTO pwc_evaluation (dataset_id, task, description, metrics_json, results_json) "
             "VALUES (?, ?, ?, ?, ?)",
             (ds_id, task_name,
              (ds.get('description') or '').strip()[:2000],
              json.dumps(metrics),
-             json.dumps(rows)),
+             json.dumps(slim_rows)),
         )
     for sub in (t.get('subtasks') or []):
         _walk_task_into(cur, sub, dataset_ids)
@@ -158,15 +173,23 @@ def _build_index_into(idx_path, snap_dir):
         conn.commit()
 
         dataset_ids = {}
+        # batch_size=1 keeps peak memory bounded — each row in this
+        # parquet is a whole task with all its datasets + SOTA tables,
+        # which can be tens of MB on its own.
+        import gc as _gc
         for pf in parquet_files:
             pq_file = pq.ParquetFile(pf)
-            for batch in pq_file.iter_batches(batch_size=8):
+            for batch in pq_file.iter_batches(batch_size=1):
                 rows = batch.to_pylist()
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
                     _walk_task_into(cur, row, dataset_ids)
                 conn.commit()
+                # Drop the batch + collect early so the next iteration
+                # doesn't sit on top of the previous batch's reference graph.
+                del rows, batch
+                _gc.collect()
         cur.execute("ANALYZE")
         conn.commit()
     finally:
@@ -174,23 +197,44 @@ def _build_index_into(idx_path, snap_dir):
     os.replace(tmp_path, idx_path)
 
 
-def _ensure_index():
-    """Build (once, with a lock) the SQLite index if it isn't already
-    on disk. Returns the index path."""
-    idx_path = _index_path()
-    if os.path.exists(idx_path):
-        return idx_path
-    with _BUILD_LOCK:
-        if os.path.exists(idx_path):
-            return idx_path
-        snap_dir = _ensure_snapshot()
-        _build_index_into(idx_path, snap_dir)
-    return idx_path
+def index_status():
+    """Lightweight check usable from the web tier without ever touching
+    the parquet files. Returns one of:
+      'ready'    — SQLite index is on disk; queries are fast.
+      'building' — the Celery `build_pwc_index` task is in progress.
+      'error'    — a previous build failed; the message is readable
+                   from `index_error_message()`.
+      'absent'   — no index, no build in progress.
+    """
+    cache = _cache_dir()
+    if os.path.exists(_index_path()):
+        return 'ready'
+    if os.path.exists(os.path.join(cache, 'index.building.tmp')):
+        return 'building'
+    if os.path.exists(os.path.join(cache, 'index.error.txt')):
+        return 'error'
+    return 'absent'
+
+
+def index_error_message():
+    """Read the last failure message left by the Celery build task."""
+    try:
+        with open(os.path.join(_cache_dir(), 'index.error.txt')) as f:
+            return f.read().strip()
+    except OSError:
+        return ''
 
 
 def _conn():
-    """Read-only sqlite connection to the index. Caller closes."""
-    return sqlite3.connect(_ensure_index())
+    """Read-only sqlite connection to the index. Raises PwcError when
+    the index isn't ready — the web tier should call index_status()
+    first to render an appropriate UX, NOT trigger a build inline."""
+    idx_path = _index_path()
+    if not os.path.exists(idx_path):
+        raise PwcError(
+            "PWC index not built yet. Trigger the build task and try again."
+        )
+    return sqlite3.connect(idx_path)
 
 
 # ---------------------------------------------------------------------------

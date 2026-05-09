@@ -172,18 +172,33 @@ def test_pwc_search_requires_admin(client, db_session, login_as):
 def test_pwc_search_renders_for_admin(client, db_session, login_as):
     admin = _mk_admin()
     login_as(admin)
-    with patch('pwc_client.search_datasets', return_value=[]):
+    with patch('pwc_client.index_status', return_value='ready'), \
+         patch('pwc_client.search_datasets', return_value=[]):
         r = client.get('/admin/pwc/import?q=cifar')
     assert r.status_code == 200
     assert b'Import from Papers With Code' in r.data
 
 
-def test_pwc_search_lists_results(client, db_session, login_as):
+def test_pwc_search_renders_build_cta_when_index_absent(client, db_session, login_as):
     admin = _mk_admin()
     login_as(admin)
-    # Static-archive shape: hf_repo is sometimes inlined when the
-    # archive happened to capture it, but most rows don't carry one
-    # — admin enters it on the preview page.
+    with patch('pwc_client.index_status', return_value='absent'):
+        r = client.get('/admin/pwc/import')
+    assert b"PWC index isn't built yet" in r.data
+    assert b'Build PWC index' in r.data
+
+
+def test_pwc_search_renders_building_state(client, db_session, login_as):
+    admin = _mk_admin()
+    login_as(admin)
+    with patch('pwc_client.index_status', return_value='building'):
+        r = client.get('/admin/pwc/import')
+    assert b'Building the PWC index' in r.data
+
+
+def test_pwc_search_lists_results_when_ready(client, db_session, login_as):
+    admin = _mk_admin()
+    login_as(admin)
     fake_rows = [
         {'id': 1, 'name': 'cifar10', 'full_name': 'CIFAR-10',
          'description': 'Tiny image classification dataset.',
@@ -193,13 +208,28 @@ def test_pwc_search_lists_results(client, db_session, login_as):
          'description': '',
          'huggingface_url': None, 'hf_repo': None, 'url': None},
     ]
-    with patch('pwc_client.search_datasets', return_value=fake_rows):
+    with patch('pwc_client.index_status', return_value='ready'), \
+         patch('pwc_client.search_datasets', return_value=fake_rows):
         r = client.get('/admin/pwc/import?q=tiny')
     assert b'CIFAR-10' in r.data
-    # Both rows are listed (no HF mirror is no longer a hard filter).
     assert b'No HF Link' in r.data
-    # The HF-link badge appears only when the archive happens to carry one.
     assert b'HF link in archive' in r.data
+
+
+def test_pwc_index_build_route_enqueues_task(client, db_session, login_as):
+    admin = _mk_admin('build_admin@bench.local')
+    login_as(admin)
+    with patch('tasks.build_pwc_index') as mock_task:
+        r = client.post('/admin/pwc/index/build', follow_redirects=False)
+    assert r.status_code in (302, 303)
+    mock_task.delay.assert_called_once()
+
+
+def test_pwc_index_build_requires_admin(client, db_session, login_as):
+    user = _mk_regular_user('not_admin@bench.local')
+    login_as(user)
+    r = client.post('/admin/pwc/index/build')
+    assert r.status_code == 403
 
 
 # ---------------------------------------------------------------------------

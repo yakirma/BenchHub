@@ -2145,16 +2145,22 @@ def admin_promote_leaderboard(lb_id):
 @app.route('/admin/pwc/import', methods=['GET'])
 @login_required
 def admin_pwc_import():
-    """Search the PWC static archive (huggingface.co/datasets/pwc-archive/
-    evaluation-tables — the original API is dead). HF mirror is rarely
-    inlined in the archive, so the search shows every match; the admin
-    types the HF repo at preview time."""
+    """Search the PWC static archive. The actual archive download +
+    index build is heavy enough to OOM/timeout a gunicorn worker, so
+    it lives in a Celery task. The page renders one of three states:
+      ready    → real search.
+      building → "still indexing, refresh later".
+      error / absent → "Build the index" CTA that enqueues the task.
+    """
     if not is_admin(g.current_user):
         abort(403)
+    from pwc_client import index_status, index_error_message
+    status = index_status()
+    err_message = index_error_message() if status == 'error' else ''
     q = (request.args.get('q') or '').strip()
     rows = []
     error = None
-    if q:
+    if status == 'ready' and q:
         try:
             from pwc_client import search_datasets
             rows = search_datasets(q, limit=30)
@@ -2163,7 +2169,21 @@ def admin_pwc_import():
     return render_template(
         'admin_pwc_import.html',
         q=q, rows=rows, error=error,
+        index_status=status, index_error=err_message,
     )
+
+
+@app.route('/admin/pwc/index/build', methods=['POST'])
+@login_required
+def admin_pwc_index_build():
+    """Enqueue the Celery task that downloads + indexes the PWC archive.
+    Returns immediately to a "indexing in progress" page."""
+    if not is_admin(g.current_user):
+        abort(403)
+    import tasks as _tasks
+    _tasks.build_pwc_index.delay()
+    flash("PWC index build started. This usually takes 1-3 minutes.", "info")
+    return redirect(url_for('admin_pwc_import'))
 
 
 @app.route('/admin/pwc/import/dataset/<int:dataset_id>', methods=['GET'])

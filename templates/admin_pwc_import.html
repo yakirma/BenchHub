@@ -20,12 +20,64 @@
         canonical leaderboards with literature scores; not a live feed.
     </p>
 
+    {% if index_status != 'ready' %}
+    <div class="card border-0 shadow-sm mb-3
+        {{ 'border-warning-subtle' if index_status in ('absent', 'error') }}">
+        <div class="card-body p-3">
+            {% if index_status == 'building' %}
+            <h2 class="h6 fw-semibold mb-1">
+                <i class="bi bi-hourglass-split text-primary me-1"></i>
+                Building the PWC index…
+            </h2>
+            <p class="small text-body-secondary mb-2">
+                Downloading the archive shards from HuggingFace and walking
+                them into a local SQLite. Usually 1-3 minutes. Refresh this
+                page in a bit; search will light up automatically.
+            </p>
+            <a href="{{ url_for('admin_pwc_import') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+            </a>
+            {% elif index_status == 'error' %}
+            <h2 class="h6 fw-semibold mb-1">
+                <i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                Last index build failed
+            </h2>
+            {% if index_error %}
+            <p class="small font-monospace text-body-secondary mb-2">{{ index_error[:400] }}</p>
+            {% endif %}
+            <form method="post" action="{{ url_for('admin_pwc_index_build') }}" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-warning">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Retry build
+                </button>
+            </form>
+            {% else %}
+            <h2 class="h6 fw-semibold mb-1">
+                <i class="bi bi-database me-1"></i>PWC index isn't built yet
+            </h2>
+            <p class="small text-body-secondary mb-2">
+                One-time setup: download the archive and walk it into a local
+                SQLite so search queries are instant. Done by a Celery task —
+                takes 1-3 minutes; you don't have to keep this page open.
+            </p>
+            <form method="post" action="{{ url_for('admin_pwc_index_build') }}" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-primary">
+                    <i class="bi bi-cloud-arrow-down me-1"></i>Build PWC index
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <form method="get" action="{{ url_for('admin_pwc_import') }}" class="mb-4">
         <div class="d-flex gap-2">
-            <input type="search" name="q" class="form-control" autofocus
+            <input type="search" name="q" class="form-control"
+                   {{ 'autofocus' if index_status == 'ready' }}
                    placeholder="Search PWC datasets (e.g. imagenet, squad, cifar)…"
-                   value="{{ q }}">
-            <button type="submit" class="btn btn-primary">
+                   value="{{ q }}"
+                   {{ 'disabled' if index_status != 'ready' }}>
+            <button type="submit" class="btn btn-primary"
+                    {{ 'disabled' if index_status != 'ready' }}>
                 <i class="bi bi-search me-1"></i>Search
             </button>
         </div>
