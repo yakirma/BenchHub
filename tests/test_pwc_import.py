@@ -31,6 +31,115 @@ def test_hf_repo_extraction():
     assert f(None) is None
 
 
+# ---------------------------------------------------------------------------
+# Static-archive index (in-process only — actual download is too big
+# to exercise in tests)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_archive_index():
+    """Hand-built minimal archive shape so search/get_evaluation can
+    be exercised without downloading the real ~hundreds-of-MB shards."""
+    datasets = {
+        'cifar-10': {
+            'id': 1, 'name': 'CIFAR-10', 'name_lc': 'cifar-10',
+            'description': 'Tiny image classification dataset.',
+            'links': [
+                {'url': 'https://huggingface.co/datasets/cifar10', 'title': 'HF mirror'},
+            ],
+        },
+        'imagenet': {
+            'id': 2, 'name': 'ImageNet', 'name_lc': 'imagenet',
+            'description': 'Large image classification dataset.',
+            'links': [],
+        },
+    }
+    evals = {
+        100: {'id': 100, 'task': 'Image Classification', 'dataset_id': 1,
+              'dataset_name': 'CIFAR-10', 'description': 'Class 0..9 prediction.',
+              'metrics': ['Top 1 Accuracy', 'Top 5 Accuracy'],
+              'rows': [
+                  {'model_name': 'BigModel', 'paper_url': 'https://x/y',
+                   'paper_title': 'Big Paper',
+                   'metrics': {'Top 1 Accuracy': '99.3', 'Top 5 Accuracy': '99.9'}},
+              ]},
+        200: {'id': 200, 'task': 'Image Classification', 'dataset_id': 2,
+              'dataset_name': 'ImageNet', 'description': '',
+              'metrics': ['Top 1 Accuracy'],
+              'rows': [
+                  {'model_name': 'X', 'paper_url': '', 'paper_title': 'X',
+                   'metrics': {'Top 1 Accuracy': '78.0'}},
+              ]},
+    }
+    idx = {
+        'datasets': sorted(datasets.values(), key=lambda d: d['name'].lower()),
+        'by_lc_name': datasets,
+        'by_id': {d['id']: d for d in datasets.values()},
+        'evals_by_id': evals,
+        'evals_by_dataset_id': {1: [100], 2: [200]},
+    }
+    pwc_client._set_index_for_tests(idx)
+    yield idx
+    pwc_client._reset_index_for_tests()
+
+
+def test_search_datasets_substring(fake_archive_index):
+    rows = pwc_client.search_datasets('cifar')
+    names = [r['name'] for r in rows]
+    assert names == ['CIFAR-10']
+    assert rows[0]['hf_repo'] == 'cifar10'  # discoverable from archive links
+
+
+def test_search_datasets_empty_query(fake_archive_index):
+    assert pwc_client.search_datasets('') == []
+
+
+def test_search_datasets_no_hf_link_returns_none(fake_archive_index):
+    rows = pwc_client.search_datasets('imagenet')
+    assert rows[0]['name'] == 'ImageNet'
+    assert rows[0]['hf_repo'] is None
+
+
+def test_list_evaluations(fake_archive_index):
+    evs = pwc_client.list_evaluations_for_dataset(1)
+    assert len(evs) == 1
+    assert evs[0]['task'] == 'Image Classification'
+
+
+def test_get_evaluation_normalizes_metrics(fake_archive_index):
+    ev = pwc_client.get_evaluation(100)
+    metric_names = [m['name'] for m in ev['metrics']]
+    assert metric_names == ['Top 1 Accuracy', 'Top 5 Accuracy']
+    # Both are accuracy → higher_is_better.
+    assert all(m['sort_direction'] == 'higher_is_better' for m in ev['metrics'])
+
+
+def test_get_evaluation_loss_metric_sort_direction(fake_archive_index):
+    """Names containing loss/error/mae/rmse get auto-flipped to
+    lower_is_better since the static archive doesn't carry the
+    is_loss flag the original API had."""
+    pwc_client._set_index_for_tests({
+        **fake_archive_index,
+        'evals_by_id': {
+            **fake_archive_index['evals_by_id'],
+            300: {'id': 300, 'task': 'X', 'dataset_id': 1,
+                  'dataset_name': 'CIFAR-10', 'description': '',
+                  'metrics': ['Word Error Rate', 'BLEU-4'],
+                  'rows': []},
+        },
+    })
+    ev = pwc_client.get_evaluation(300)
+    by_name = {m['name']: m['sort_direction'] for m in ev['metrics']}
+    assert by_name['Word Error Rate'] == 'lower_is_better'
+    assert by_name['BLEU-4'] == 'higher_is_better'
+
+
+def test_get_evaluation_unknown_id_raises(fake_archive_index):
+    with pytest.raises(pwc_client.PwcError):
+        pwc_client.get_evaluation(999_999)
+
+
 def test_slugify_metric_name():
     f = pwc_client.slugify_metric_name
     assert f('Top 1 Accuracy') == 'top_1_accuracy'
@@ -86,23 +195,25 @@ def test_pwc_search_renders_for_admin(client, db_session, login_as):
 def test_pwc_search_lists_results(client, db_session, login_as):
     admin = _mk_admin()
     login_as(admin)
+    # Static-archive shape: hf_repo is sometimes inlined when the
+    # archive happened to capture it, but most rows don't carry one
+    # — admin enters it on the preview page.
     fake_rows = [
         {'id': 1, 'name': 'cifar10', 'full_name': 'CIFAR-10',
          'description': 'Tiny image classification dataset.',
-         'paper': None, 'huggingface_url': 'https://huggingface.co/datasets/cifar10',
-         'hf_repo': 'cifar10',
-         'url': 'https://paperswithcode.com/dataset/cifar-10'},
-        {'id': 2, 'name': 'no-hf-dataset', 'full_name': 'No HF Dataset',
-         'description': '', 'paper': None,
-         'huggingface_url': '', 'hf_repo': None, 'url': None},
+         'huggingface_url': None,
+         'hf_repo': 'cifar10', 'url': None},
+        {'id': 2, 'name': 'unknown-source', 'full_name': 'No HF Link',
+         'description': '',
+         'huggingface_url': None, 'hf_repo': None, 'url': None},
     ]
     with patch('pwc_client.search_datasets', return_value=fake_rows):
         r = client.get('/admin/pwc/import?q=tiny')
     assert b'CIFAR-10' in r.data
-    assert b'cifar10' in r.data
-    # Non-HF datasets are listed but disabled (no "Browse benchmarks" CTA).
-    assert b'No HF Dataset' in r.data
-    assert b'no HF mirror' in r.data
+    # Both rows are listed (no HF mirror is no longer a hard filter).
+    assert b'No HF Link' in r.data
+    # The HF-link badge appears only when the archive happens to carry one.
+    assert b'HF link in archive' in r.data
 
 
 # ---------------------------------------------------------------------------

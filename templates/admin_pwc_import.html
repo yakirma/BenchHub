@@ -8,9 +8,16 @@
         <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Import from Papers With Code
     </h1>
     <p class="text-body-secondary mb-3">
-        Admin-only mirror flow. Search PWC datasets, pick one with a HuggingFace mirror,
-        then choose a benchmark to import as a public canonical leaderboard. Mirrored
-        submissions are visible alongside verified ones but skip the eval pipeline.
+        Admin-only mirror flow. Search the PWC static archive
+        (<code>pwc-archive/evaluation-tables</code> on HuggingFace —
+        the original API is gone), pick a dataset, then choose a
+        benchmark. Mirrored submissions appear alongside verified ones
+        on the LB page but skip the eval pipeline.
+    </p>
+    <p class="text-body-secondary small mb-3">
+        <i class="bi bi-exclamation-triangle me-1"></i>The archive is frozen at
+        HuggingFace's PWC acquisition (~early 2024). Useful for bootstrapping
+        canonical leaderboards with literature scores; not a live feed.
     </p>
 
     <form method="get" action="{{ url_for('admin_pwc_import') }}" class="mb-4">
@@ -23,8 +30,8 @@
             </button>
         </div>
         <p class="form-text small mt-2 mb-0">
-            <i class="bi bi-info-circle me-1"></i>BenchHub only supports PWC datasets
-            with a HuggingFace mirror. Datasets without one are listed but disabled.
+            <i class="bi bi-info-circle me-1"></i>The archive doesn't carry HF dataset
+            mirrors directly &mdash; you'll enter the HF repo at preview time.
         </p>
     </form>
 
@@ -41,47 +48,25 @@
     {% if rows %}
     <div class="list-group shadow-sm mb-4">
         {% for r in rows %}
-        <div class="list-group-item d-flex justify-content-between align-items-start gap-3 {{ 'opacity-50' if not r.hf_repo }}">
+        <div class="list-group-item d-flex justify-content-between align-items-start gap-3">
             <div class="flex-grow-1 min-w-0">
                 <div class="d-flex align-items-baseline gap-2">
                     <strong class="fw-semibold">{{ r.full_name or r.name }}</strong>
                     {% if r.hf_repo %}
                     <span class="badge text-bg-success-subtle text-success border small">
-                        <i class="bi bi-cloud me-1"></i>HF: {{ r.hf_repo }}
-                    </span>
-                    {% else %}
-                    <span class="badge text-bg-secondary-subtle text-secondary border small">
-                        no HF mirror
+                        <i class="bi bi-cloud me-1"></i>HF link in archive: {{ r.hf_repo }}
                     </span>
                     {% endif %}
                 </div>
                 {% if r.description %}
                 <p class="small text-body-secondary mb-1 mt-1">{{ r.description[:280] }}{{ '…' if r.description|length > 280 }}</p>
                 {% endif %}
-                <div class="small text-body-secondary">
-                    {% if r.url %}
-                    <a href="{{ r.url }}" target="_blank" rel="noopener"
-                       class="text-decoration-none me-2">
-                        <i class="bi bi-box-arrow-up-right"></i> PWC page
-                    </a>
-                    {% endif %}
-                    {% if r.huggingface_url %}
-                    <a href="{{ r.huggingface_url }}" target="_blank" rel="noopener"
-                       class="text-decoration-none me-2">
-                        <i class="bi bi-box-arrow-up-right"></i> HF page
-                    </a>
-                    {% endif %}
-                </div>
             </div>
             <div class="d-flex flex-column align-items-end gap-1">
-                {% if r.hf_repo %}
-                <a href="{{ url_for('admin_pwc_import_dataset', dataset_id=r.id, hf_repo=r.hf_repo) }}"
+                <a href="{{ url_for('admin_pwc_import_dataset', dataset_id=r.id, hf_repo=r.hf_repo or '') }}"
                    class="btn btn-sm btn-outline-primary">
                     Browse benchmarks <i class="bi bi-chevron-right"></i>
                 </a>
-                {% else %}
-                <span class="small text-body-secondary">unsupported</span>
-                {% endif %}
             </div>
         </div>
         {% endfor %}

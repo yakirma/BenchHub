@@ -12,23 +12,38 @@
     </p>
 
     <form method="post" action="{{ url_for('admin_pwc_import_confirm', evaluation_id=evaluation.id) }}">
-        <input type="hidden" name="hf_repo" value="{{ hf_repo }}">
-
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
                 <h2 class="h5 fw-semibold mb-2">{{ evaluation.task or 'Benchmark' }}</h2>
                 {% if evaluation.description %}
                 <p class="small text-body-secondary mb-2">{{ evaluation.description }}</p>
                 {% endif %}
-                <p class="small text-body-secondary mb-1">
-                    <strong>HF mirror:</strong>
-                    <a href="https://huggingface.co/datasets/{{ hf_repo }}" target="_blank"
-                       class="font-monospace">{{ hf_repo }}</a>
+                <p class="small text-body-secondary mb-2">
+                    <strong>PWC dataset:</strong>
+                    <span class="font-monospace">{{ evaluation.dataset }}</span>
                 </p>
-                <div class="mt-3">
-                    <label class="form-label small fw-semibold mb-1" for="lb-name">Leaderboard name</label>
-                    <input type="text" name="leaderboard_name" id="lb-name"
-                           class="form-control" required value="{{ suggested_name }}">
+                <div class="row g-2 mt-2">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-semibold mb-1" for="hf-repo">
+                            HuggingFace repo
+                            <span class="text-body-secondary fw-normal">(<code>owner/repo</code>)</span>
+                        </label>
+                        <input type="text" name="hf_repo" id="hf-repo"
+                               class="form-control font-monospace" required
+                               value="{{ hf_repo }}"
+                               placeholder="e.g. cifar10 or imagenet-1k">
+                        <div class="form-text small">
+                            The PWC archive doesn't carry HF mirrors. Confirm or paste the
+                            HF repo for this dataset &mdash; the LB will attach to it directly.
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-semibold mb-1" for="lb-name">
+                            Leaderboard name
+                        </label>
+                        <input type="text" name="leaderboard_name" id="lb-name"
+                               class="form-control" required value="{{ suggested_name }}">
+                    </div>
                 </div>
             </div>
         </div>
@@ -115,8 +130,8 @@
         </div>
 
         <div class="d-flex justify-content-between gap-2">
-            <a href="{{ url_for('admin_pwc_import_dataset', dataset_id=0, hf_repo=hf_repo) }}"
-               class="btn btn-outline-secondary">Cancel</a>
+            <a href="{{ url_for('admin_pwc_import') }}"
+               class="btn btn-outline-secondary">Back</a>
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-lg me-1"></i>Import &mdash; create canonical leaderboard
             </button>

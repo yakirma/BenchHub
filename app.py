@@ -2145,10 +2145,10 @@ def admin_promote_leaderboard(lb_id):
 @app.route('/admin/pwc/import', methods=['GET'])
 @login_required
 def admin_pwc_import():
-    """Search PWC datasets. Only HF-linked rows are usable (we filter
-    client-side so the admin sees the full list with greyed-out non-HF
-    entries — easier to understand "this dataset isn't supported yet"
-    than a silent drop)."""
+    """Search the PWC static archive (huggingface.co/datasets/pwc-archive/
+    evaluation-tables — the original API is dead). HF mirror is rarely
+    inlined in the archive, so the search shows every match; the admin
+    types the HF repo at preview time."""
     if not is_admin(g.current_user):
         abort(403)
     q = (request.args.get('q') or '').strip()
@@ -2169,15 +2169,13 @@ def admin_pwc_import():
 @app.route('/admin/pwc/import/dataset/<int:dataset_id>', methods=['GET'])
 @login_required
 def admin_pwc_import_dataset(dataset_id):
-    """List PWC benchmarks (evaluations) tracked on a single dataset.
-    The admin picks one to import. Only reachable for datasets the
-    admin already filtered to HF-mirrored on the search page."""
+    """List benchmarks tracked on a single dataset. `hf_repo` is the
+    admin's pick from the search page (or whatever they typed) — we
+    pass it through so the preview/confirm steps know what HF repo
+    to attach the LB to."""
     if not is_admin(g.current_user):
         abort(403)
     hf_repo = (request.args.get('hf_repo') or '').strip()
-    if not hf_repo:
-        flash("HF repo missing — only HF-mirrored datasets are supported.", "warning")
-        return redirect(url_for('admin_pwc_import'))
     try:
         from pwc_client import list_evaluations_for_dataset
         evals = list_evaluations_for_dataset(dataset_id)
@@ -2193,23 +2191,21 @@ def admin_pwc_import_dataset(dataset_id):
 @app.route('/admin/pwc/import/preview/<int:evaluation_id>', methods=['GET'])
 @login_required
 def admin_pwc_import_preview(evaluation_id):
-    """Preview what would be created: LB name, HF attachment, metrics,
-    mirrored submissions. Admin confirms via POST to /confirm/."""
+    """Preview what would be created. `hf_repo` is admin-editable on
+    this page since the archive rarely carries it; the form on this
+    page POSTs both the LB name and the (possibly-edited) hf_repo to
+    /confirm/."""
     if not is_admin(g.current_user):
         abort(403)
     hf_repo = (request.args.get('hf_repo') or '').strip()
-    if not hf_repo:
-        flash("HF repo missing.", "warning")
-        return redirect(url_for('admin_pwc_import'))
     try:
         from pwc_client import get_evaluation
         evaluation = get_evaluation(evaluation_id)
     except Exception as e:
         flash(f"PWC error: {e}", "danger")
         return redirect(url_for('admin_pwc_import'))
-    # Suggest a default LB name from the task + dataset.
     task = evaluation.get('task') or 'benchmark'
-    dataset = evaluation.get('dataset') or hf_repo
+    dataset = evaluation.get('dataset') or hf_repo or 'unknown-dataset'
     suggested_name = f"{task} on {dataset}"
     return render_template(
         'admin_pwc_import_preview.html',
