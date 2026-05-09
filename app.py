@@ -718,6 +718,19 @@ class Submission(db.Model):
     # the bytes get hashed again and rejected on mismatch — strict
     # reproducibility (same posture as `revision` pinning for HF GT).
     content_hash = db.Column(db.String(64), nullable=True)
+    # 'verified' (default) — went through the full upload + eval pipeline.
+    # 'mirrored'           — score row imported from an external source
+    #                        (Papers With Code etc). No predictions on
+    #                        disk, no Celery task, MetricResult rows are
+    #                        inserted directly. Two-table render on the
+    #                        LB page keeps the trust gradient visible.
+    kind = db.Column(db.String(20), nullable=False,
+                     default='verified', server_default='verified',
+                     index=True)
+    source_attribution = db.Column(db.String(200), nullable=True)  # e.g. 'Papers With Code'
+    source_paper_url = db.Column(db.String(500), nullable=True)
+    source_paper_title = db.Column(db.String(300), nullable=True)
+    source_external_url = db.Column(db.String(500), nullable=True)  # e.g. PWC entry URL
     # Phase 1 multi-tenancy. Submissions don't get their own visibility — they
     # inherit the leaderboard's. Owner is whoever uploaded the submission.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
@@ -2119,6 +2132,247 @@ def admin_promote_leaderboard(lb_id):
     label = f"public canonical for {repo}" if repo else "public"
     flash(f"Promoted '{lb.name}' to {label}.", "success")
     return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
+# ===================== Papers With Code import =====================
+# Admin-only mirror flow: search PWC benchmarks → preview → confirm to
+# create a canonical leaderboard whose primary attachment is the
+# benchmark's HuggingFace mirror, plus one mirrored Submission per
+# PWC result row. Mirrored submissions skip Celery entirely; their
+# scores are inserted directly as MetricResult rows.
+
+
+@app.route('/admin/pwc/import', methods=['GET'])
+@login_required
+def admin_pwc_import():
+    """Search PWC datasets. Only HF-linked rows are usable (we filter
+    client-side so the admin sees the full list with greyed-out non-HF
+    entries — easier to understand "this dataset isn't supported yet"
+    than a silent drop)."""
+    if not is_admin(g.current_user):
+        abort(403)
+    q = (request.args.get('q') or '').strip()
+    rows = []
+    error = None
+    if q:
+        try:
+            from pwc_client import search_datasets
+            rows = search_datasets(q, limit=30)
+        except Exception as e:
+            error = str(e)
+    return render_template(
+        'admin_pwc_import.html',
+        q=q, rows=rows, error=error,
+    )
+
+
+@app.route('/admin/pwc/import/dataset/<int:dataset_id>', methods=['GET'])
+@login_required
+def admin_pwc_import_dataset(dataset_id):
+    """List PWC benchmarks (evaluations) tracked on a single dataset.
+    The admin picks one to import. Only reachable for datasets the
+    admin already filtered to HF-mirrored on the search page."""
+    if not is_admin(g.current_user):
+        abort(403)
+    hf_repo = (request.args.get('hf_repo') or '').strip()
+    if not hf_repo:
+        flash("HF repo missing — only HF-mirrored datasets are supported.", "warning")
+        return redirect(url_for('admin_pwc_import'))
+    try:
+        from pwc_client import list_evaluations_for_dataset
+        evals = list_evaluations_for_dataset(dataset_id)
+    except Exception as e:
+        flash(f"PWC error: {e}", "danger")
+        return redirect(url_for('admin_pwc_import'))
+    return render_template(
+        'admin_pwc_import_dataset.html',
+        dataset_id=dataset_id, hf_repo=hf_repo, evals=evals,
+    )
+
+
+@app.route('/admin/pwc/import/preview/<int:evaluation_id>', methods=['GET'])
+@login_required
+def admin_pwc_import_preview(evaluation_id):
+    """Preview what would be created: LB name, HF attachment, metrics,
+    mirrored submissions. Admin confirms via POST to /confirm/."""
+    if not is_admin(g.current_user):
+        abort(403)
+    hf_repo = (request.args.get('hf_repo') or '').strip()
+    if not hf_repo:
+        flash("HF repo missing.", "warning")
+        return redirect(url_for('admin_pwc_import'))
+    try:
+        from pwc_client import get_evaluation
+        evaluation = get_evaluation(evaluation_id)
+    except Exception as e:
+        flash(f"PWC error: {e}", "danger")
+        return redirect(url_for('admin_pwc_import'))
+    # Suggest a default LB name from the task + dataset.
+    task = evaluation.get('task') or 'benchmark'
+    dataset = evaluation.get('dataset') or hf_repo
+    suggested_name = f"{task} on {dataset}"
+    return render_template(
+        'admin_pwc_import_preview.html',
+        evaluation=evaluation, hf_repo=hf_repo,
+        suggested_name=suggested_name,
+    )
+
+
+@app.route('/admin/pwc/import/confirm/<int:evaluation_id>', methods=['POST'])
+@login_required
+def admin_pwc_import_confirm(evaluation_id):
+    """Create the canonical LB + mirrored submissions in one transaction."""
+    if not is_admin(g.current_user):
+        abort(403)
+    hf_repo = (request.form.get('hf_repo') or '').strip()
+    lb_name = (request.form.get('leaderboard_name') or '').strip()
+    if not hf_repo or not lb_name:
+        flash("Missing HF repo or LB name.", "danger")
+        return redirect(url_for('admin_pwc_import'))
+    try:
+        from pwc_client import get_evaluation
+        evaluation = get_evaluation(evaluation_id)
+    except Exception as e:
+        flash(f"PWC error: {e}", "danger")
+        return redirect(url_for('admin_pwc_import'))
+    try:
+        lb_id = _create_lb_from_pwc_benchmark(
+            evaluation, hf_repo=hf_repo, lb_name=lb_name,
+            owner_user_id=g.current_user.id,
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Import failed: {e}", "danger")
+        return redirect(url_for('admin_pwc_import'))
+    flash(
+        f"Imported PWC benchmark — created '{lb_name}' with "
+        f"{len(evaluation.get('results') or [])} mirrored submissions.",
+        "success",
+    )
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
+
+
+def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
+                                   owner_user_id):
+    """Persist a canonical-public LB whose primary attachment is the
+    HF dataset behind the PWC benchmark, plus one mirrored Submission
+    per PWC result row with MetricResult rows pre-populated. All in
+    one transaction.
+
+    The created GlobalMetric rows use slugified PWC metric names so
+    future verified submissions land in the same column the mirrored
+    rows populate — that's the "metric matching" promise from the
+    earlier design discussion.
+    """
+    from pwc_client import slugify_metric_name
+    pwc_metrics = evaluation.get('metrics') or []
+    pwc_results = evaluation.get('results') or []
+
+    # 1. Create LB. Admin imports → mark canonical for the HF repo so
+    # the LB shows up on /explore and "submit there instead" hints
+    # surface for users importing the same repo themselves.
+    lb = Leaderboard(
+        name=lb_name,
+        summary_metrics=','.join(slugify_metric_name(m['name']) for m in pwc_metrics),
+        owner_user_id=owner_user_id,
+        visibility='public',
+        canonicality='public',
+        canonical_for_repo=hf_repo,
+    )
+    db.session.add(lb); db.session.flush()
+
+    # 2. HF-ref attachment (no Dataset row needed — Phase 2 architecture).
+    db.session.add(Attachment(
+        leaderboard_id=lb.id,
+        hf_repo_id=hf_repo,
+        hf_split='train',
+        hf_mapping_json=json.dumps([]),
+        role='primary',
+    ))
+    db.session.flush()
+
+    # 3. Build GlobalMetric + LeaderboardMetric for each PWC metric.
+    # PWC doesn't ship runnable code (just names + descriptions), so
+    # mirrored-only metrics get a stub that errors at eval time —
+    # that's intentional: until someone authors the matching code via
+    # the LB's Settings page (Add a metric / AI authoring), verified
+    # submissions on this column would have nothing to score against.
+    metric_id_by_pwc_name = {}  # PWC name → LeaderboardMetric.id
+    metric_dir_by_pwc_name = {}  # for sort_direction lookup
+    for pm in pwc_metrics:
+        gn = slugify_metric_name(pm['name'])
+        sd = pm.get('sort_direction') or 'higher_is_better'
+        gm = GlobalMetric.query.filter_by(name=gn).first()
+        if gm is None:
+            gm = GlobalMetric(
+                name=gn,
+                description=(
+                    f"{pm['name']} — imported from Papers With Code. "
+                    f"{pm.get('description') or ''}"
+                ).strip(),
+                python_code=(
+                    f"def {gn}(gt, pred):\n"
+                    f"    \"\"\"PWC-imported metric. No reference\n"
+                    f"    implementation yet — author one via the LB\n"
+                    f"    Settings page before accepting verified\n"
+                    f"    submissions on this column.\"\"\"\n"
+                    f"    raise NotImplementedError(\n"
+                    f"        '{gn} needs a reference implementation. "
+                    f"Edit it on the LB Settings page.'\n"
+                    f"    )\n"
+                ),
+                is_aggregated=False, accepts_aggregated_inputs=False,
+                owner_user_id=owner_user_id, visibility='public',
+            )
+            db.session.add(gm); db.session.flush()
+        lm = LeaderboardMetric(
+            leaderboard_id=lb.id, global_metric_id=gm.id,
+            target_name=pm['name'],
+            arg_mappings=json.dumps({'gt': 'gt_unknown',
+                                     'pred': 'sub_unknown_pred'}),
+            sort_direction=sd,
+            pooling_type='mean',
+        )
+        db.session.add(lm); db.session.flush()
+        metric_id_by_pwc_name[pm['name']] = lm.id
+        metric_dir_by_pwc_name[pm['name']] = sd
+
+    # 4. Per PWC result row → one mirrored Submission + per-metric
+    # MetricResult rows. Use the paper title (or a generated stub) as
+    # the submission name so the LB page reads naturally.
+    n_subs = 0
+    for r in pwc_results:
+        title = (r.get('paper_title') or r.get('methodology')
+                 or f"PWC result {r.get('id')}").strip()
+        sub = Submission(
+            name=title[:100], leaderboard_id=lb.id,
+            kind='mirrored', processing_status='Mirrored',
+            source_attribution='Papers With Code',
+            source_paper_title=title[:300] or None,
+            source_paper_url=(r.get('paper_url') or r.get('paper')) or None,
+            source_external_url=r.get('external_source_url'),
+            owner_user_id=owner_user_id,
+        )
+        db.session.add(sub); db.session.flush()
+        # PWC result.metrics is a dict of {metric_name → value-string}.
+        for pwc_name, raw_val in (r.get('metrics') or {}).items():
+            lm_id = metric_id_by_pwc_name.get(pwc_name)
+            if lm_id is None:
+                continue
+            try:
+                val = float(re.sub(r'[^0-9.\-]', '', str(raw_val))) if raw_val else None
+            except (TypeError, ValueError):
+                val = None
+            if val is None:
+                continue
+            db.session.add(MetricResult(
+                submission_id=sub.id,
+                leaderboard_metric_id=lm_id,
+                value=val,
+            ))
+        n_subs += 1
+    db.session.commit()
+    return lb.id
 
 
 # ===================== Account deletion (GDPR) =====================
@@ -4363,11 +4617,20 @@ def leaderboard_view(leaderboard_id):
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in leaderboard.datasets}
 
     pred_field_schema = _lb_submission_pred_fields(leaderboard)
+    # Phase 15: split mirrored (PWC-style) submissions into a separate
+    # render bucket. They share the Submission table but show in a
+    # second "Reported scores" section so the trust gradient stays
+    # visible — verified beats mirrored is a real signal.
+    verified_submissions = [s for s in submissions
+                            if (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored']
+    mirrored_submissions = [s for s in submissions
+                            if (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored']
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
-                           submissions=submissions,
+                           submissions=verified_submissions,
+                           mirrored_submissions=mirrored_submissions,
                            all_metrics=all_metrics,
                            selected_metrics=all_metrics,
                            metrics_ranges=metrics_ranges,
@@ -12298,6 +12561,14 @@ def check_and_migrate_db():
                     # (organizer wants to receive predictions even when no
                     # scoring metric consumes them).
                     ("leaderboard",          "required_pred_fields_json",        "TEXT"),
+                    # Phase 15: PWC mirrored submissions. kind='mirrored'
+                    # rows skip the eval pipeline; they're score rows
+                    # imported from external benchmarks for context.
+                    ("submission",           "kind",                             "VARCHAR(20) NOT NULL DEFAULT 'verified'"),
+                    ("submission",           "source_attribution",               "VARCHAR(200)"),
+                    ("submission",           "source_paper_url",                 "VARCHAR(500)"),
+                    ("submission",           "source_paper_title",               "VARCHAR(300)"),
+                    ("submission",           "source_external_url",              "VARCHAR(500)"),
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Pick a benchmark — PWC import{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1000px;">
+    <h1 class="h4 fw-bold mb-1">
+        <i class="bi bi-cloud-arrow-down text-primary me-1"></i>Benchmarks for this dataset
+    </h1>
+    <p class="text-body-secondary mb-3">
+        HF mirror: <span class="font-monospace">{{ hf_repo }}</span> &middot;
+        <a href="{{ url_for('admin_pwc_import') }}">← back to search</a>
+    </p>
+
+    {% if not evals %}
+    <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle me-1"></i>PWC has no benchmarks tracked for this dataset.
+    </div>
+    {% endif %}
+
+    <div class="list-group shadow-sm">
+        {% for e in evals %}
+        <a href="{{ url_for('admin_pwc_import_preview', evaluation_id=e.id, hf_repo=hf_repo) }}"
+           class="list-group-item list-group-item-action d-flex justify-content-between align-items-start gap-3">
+            <div class="flex-grow-1 min-w-0">
+                <strong class="fw-semibold">{{ e.task or 'Benchmark' }}</strong>
+                {% if e.description %}
+                <p class="small text-body-secondary mb-0 mt-1">{{ e.description[:280] }}{{ '…' if e.description|length > 280 }}</p>
+                {% endif %}
+            </div>
+            <i class="bi bi-chevron-right text-body-secondary"></i>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

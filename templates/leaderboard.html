@@ -1087,6 +1087,74 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
+{# ---- Phase 15: mirrored (PWC) submissions live in their own table
+        below the verified one. Trust gradient stays visible: the
+        verified board is what BenchHub actually does, the mirrored
+        board is curated context from external benchmarks. ---- #}
+{% if mirrored_submissions %}
+<div class="card mb-3" id="mirrored-table-card">
+    <div class="card-header py-2 d-flex justify-content-between align-items-center">
+        <div>
+            <strong><i class="bi bi-cloud me-1"></i>Reported scores</strong>
+            <span class="text-body-secondary small ms-2">
+                from {{ mirrored_submissions[0].source_attribution or 'external benchmark' }}
+                · {{ mirrored_submissions|length }} entries
+            </span>
+        </div>
+        <span class="small text-body-secondary">no predictions to inspect — scores as published</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm small mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-3">Paper / model</th>
+                        {% for m in selected_metrics %}
+                        <th>{{ metric_labels.get(m, m) }}</th>
+                        {% endfor %}
+                        <th>Source</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sub in mirrored_submissions %}
+                    <tr>
+                        <td class="ps-3">
+                            {% if sub.source_paper_url %}
+                            <a href="{{ sub.source_paper_url }}" target="_blank" rel="noopener"
+                               class="text-decoration-none">{{ sub.name }}</a>
+                            {% else %}
+                            {{ sub.name }}
+                            {% endif %}
+                        </td>
+                        {% set sub_results = {} %}
+                        {% for r in sub.metric_results %}
+                        {% set _ = sub_results.update({metric_to_lm.get(metric_labels.get(r.leaderboard_metric.target_name, r.leaderboard_metric.target_name)) or r.leaderboard_metric.id: r.value}) %}
+                        {% endfor %}
+                        {% for m in selected_metrics %}
+                        {% set lm_id = metric_to_lm.get(m) %}
+                        {% set v = none %}
+                        {% for r in sub.metric_results %}{% if r.leaderboard_metric_id == lm_id %}{% set v = r.value %}{% endif %}{% endfor %}
+                        <td class="font-monospace">{{ '%.4g'|format(v) if v is not none else '—' }}</td>
+                        {% endfor %}
+                        <td>
+                            {% if sub.source_external_url %}
+                            <a href="{{ sub.source_external_url }}" target="_blank" rel="noopener"
+                               class="small text-decoration-none">
+                                <i class="bi bi-box-arrow-up-right me-1"></i>{{ sub.source_attribution or 'source' }}
+                            </a>
+                            {% elif sub.source_attribution %}
+                            <span class="small text-body-secondary">{{ sub.source_attribution }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Add/Edit Tags Modal -->
 <div class="modal fade" id="add-tags-modal" tabindex="-1" aria-labelledby="addTagsModalLabel" aria-hidden="true">
     <div class="modal-dialog">

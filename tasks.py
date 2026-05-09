@@ -49,6 +49,14 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                     logger.error(f"Submission {submission_id} not found after retries.")
             return
 
+        # Phase 15: mirrored submissions opt out of the eval pipeline
+        # entirely. Their MetricResult rows were inserted at import
+        # time directly from the source benchmark (Papers With Code,
+        # etc) — no ZIP, no extraction, no metric exec. Just leave
+        # them in 'Mirrored' status.
+        if getattr(submission, 'kind', 'verified') == 'mirrored':
+            return
+
         # Strict hash-pin: for remote submissions, refuse to recalc
         # against drifted bytes. Cheap when the cache is warm; on a
         # cache miss this re-fetches from upstream and catches any
