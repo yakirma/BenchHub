@@ -38,57 +38,56 @@ def test_hf_repo_extraction():
 
 
 @pytest.fixture
-def fake_archive_index():
-    """Hand-built minimal archive shape so search/get_evaluation can
-    be exercised without downloading the real ~hundreds-of-MB shards."""
-    datasets = {
-        'cifar-10': {
-            'id': 1, 'name': 'CIFAR-10', 'name_lc': 'cifar-10',
-            'description': 'Tiny image classification dataset.',
-            'links': [
-                {'url': 'https://huggingface.co/datasets/cifar10', 'title': 'HF mirror'},
-            ],
-        },
-        'imagenet': {
-            'id': 2, 'name': 'ImageNet', 'name_lc': 'imagenet',
-            'description': 'Large image classification dataset.',
-            'links': [],
-        },
-    }
-    evals = {
-        100: {'id': 100, 'task': 'Image Classification', 'dataset_id': 1,
-              'dataset_name': 'CIFAR-10', 'description': 'Class 0..9 prediction.',
-              'metrics': ['Top 1 Accuracy', 'Top 5 Accuracy'],
-              'rows': [
-                  {'model_name': 'BigModel', 'paper_url': 'https://x/y',
-                   'paper_title': 'Big Paper',
-                   'metrics': {'Top 1 Accuracy': '99.3', 'Top 5 Accuracy': '99.9'}},
-              ]},
-        200: {'id': 200, 'task': 'Image Classification', 'dataset_id': 2,
-              'dataset_name': 'ImageNet', 'description': '',
-              'metrics': ['Top 1 Accuracy'],
-              'rows': [
-                  {'model_name': 'X', 'paper_url': '', 'paper_title': 'X',
-                   'metrics': {'Top 1 Accuracy': '78.0'}},
-              ]},
-    }
-    idx = {
-        'datasets': sorted(datasets.values(), key=lambda d: d['name'].lower()),
-        'by_lc_name': datasets,
-        'by_id': {d['id']: d for d in datasets.values()},
-        'evals_by_id': evals,
-        'evals_by_dataset_id': {1: [100], 2: [200]},
-    }
-    pwc_client._set_index_for_tests(idx)
-    yield idx
-    pwc_client._reset_index_for_tests()
+def fake_archive_index(tmp_path):
+    """Hand-build a tiny SQLite index matching pwc_client's schema, then
+    point the module at it. Avoids downloading the real archive (~hundreds
+    of MB)."""
+    import json as _json
+    import sqlite3
+    idx_path = str(tmp_path / 'pwc_index.sqlite')
+    conn = sqlite3.connect(idx_path)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE pwc_dataset (id INTEGER PRIMARY KEY, name TEXT, name_lc TEXT, description TEXT, links_json TEXT)")
+    cur.execute("CREATE INDEX ix_pwc_dataset_name_lc ON pwc_dataset(name_lc)")
+    cur.execute("CREATE TABLE pwc_evaluation (id INTEGER PRIMARY KEY, dataset_id INTEGER, task TEXT, description TEXT, metrics_json TEXT, results_json TEXT)")
+    cur.execute("CREATE INDEX ix_pwc_evaluation_ds ON pwc_evaluation(dataset_id)")
+    cur.executemany(
+        "INSERT INTO pwc_dataset (id, name, name_lc, description, links_json) VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, 'CIFAR-10', 'cifar-10', 'Tiny image classification dataset.',
+             _json.dumps([{'url': 'https://huggingface.co/datasets/cifar10', 'title': 'HF'}])),
+            (2, 'ImageNet', 'imagenet', 'Large image classification dataset.',
+             _json.dumps([])),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO pwc_evaluation (id, dataset_id, task, description, metrics_json, results_json) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (100, 1, 'Image Classification', 'Class 0..9 prediction.',
+             _json.dumps(['Top 1 Accuracy', 'Top 5 Accuracy']),
+             _json.dumps([{'model_name': 'BigModel', 'paper_url': 'https://x/y',
+                           'paper_title': 'Big Paper',
+                           'metrics': {'Top 1 Accuracy': '99.3', 'Top 5 Accuracy': '99.9'}}])),
+            (200, 2, 'Image Classification', '',
+             _json.dumps(['Top 1 Accuracy']),
+             _json.dumps([{'model_name': 'X', 'paper_url': '', 'paper_title': 'X',
+                           'metrics': {'Top 1 Accuracy': '78.0'}}])),
+            (300, 1, 'ASR', '',
+             _json.dumps(['Word Error Rate', 'BLEU-4']),
+             _json.dumps([])),
+        ],
+    )
+    conn.commit(); conn.close()
+    pwc_client._set_index_path_for_tests(idx_path)
+    yield idx_path
+    pwc_client._reset_index_path_for_tests()
 
 
 def test_search_datasets_substring(fake_archive_index):
     rows = pwc_client.search_datasets('cifar')
     names = [r['name'] for r in rows]
     assert names == ['CIFAR-10']
-    assert rows[0]['hf_repo'] == 'cifar10'  # discoverable from archive links
+    assert rows[0]['hf_repo'] == 'cifar10'
 
 
 def test_search_datasets_empty_query(fake_archive_index):
@@ -103,32 +102,19 @@ def test_search_datasets_no_hf_link_returns_none(fake_archive_index):
 
 def test_list_evaluations(fake_archive_index):
     evs = pwc_client.list_evaluations_for_dataset(1)
-    assert len(evs) == 1
-    assert evs[0]['task'] == 'Image Classification'
+    tasks = sorted(e['task'] for e in evs)
+    assert tasks == ['ASR', 'Image Classification']
 
 
 def test_get_evaluation_normalizes_metrics(fake_archive_index):
     ev = pwc_client.get_evaluation(100)
     metric_names = [m['name'] for m in ev['metrics']]
     assert metric_names == ['Top 1 Accuracy', 'Top 5 Accuracy']
-    # Both are accuracy → higher_is_better.
     assert all(m['sort_direction'] == 'higher_is_better' for m in ev['metrics'])
 
 
 def test_get_evaluation_loss_metric_sort_direction(fake_archive_index):
-    """Names containing loss/error/mae/rmse get auto-flipped to
-    lower_is_better since the static archive doesn't carry the
-    is_loss flag the original API had."""
-    pwc_client._set_index_for_tests({
-        **fake_archive_index,
-        'evals_by_id': {
-            **fake_archive_index['evals_by_id'],
-            300: {'id': 300, 'task': 'X', 'dataset_id': 1,
-                  'dataset_name': 'CIFAR-10', 'description': '',
-                  'metrics': ['Word Error Rate', 'BLEU-4'],
-                  'rows': []},
-        },
-    })
+    """Loss/error names auto-flip to lower_is_better."""
     ev = pwc_client.get_evaluation(300)
     by_name = {m['name']: m['sort_direction'] for m in ev['metrics']}
     assert by_name['Word Error Rate'] == 'lower_is_better'
