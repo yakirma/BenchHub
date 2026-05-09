@@ -118,6 +118,70 @@ def test_top1_text_classlabel_proposal_shape():
 
 
 # ---------------------------------------------------------------------------
+# Lenient match (case-insensitive + punctuation-stripped + prefix-aware)
+# ---------------------------------------------------------------------------
+
+
+def _build_top1():
+    code = _proposal_top1_text_classlabel('mood')['fallback_code']
+    ns = {}
+    exec(code, ns)
+    return ns['top1_text']
+
+
+def test_top1_text_case_insensitive():
+    fn = _build_top1()
+    assert fn('pos', 'Pos') == 1.0
+    assert fn('pos', 'POS') == 1.0
+
+
+def test_top1_text_strips_punctuation_and_whitespace():
+    fn = _build_top1()
+    assert fn('pos', '  pos!  ') == 1.0
+    assert fn('pos', 'pos.') == 1.0
+
+
+def test_top1_text_prefix_aware_pos_vs_positive():
+    fn = _build_top1()
+    # Common case: GT says 'pos', model emits 'positive' or vice versa.
+    assert fn('pos', 'positive') == 1.0
+    assert fn('positive', 'pos') == 1.0
+
+
+def test_top1_text_token_match_for_phrasing():
+    fn = _build_top1()
+    # Prediction wraps the class label in a sentence — token match.
+    assert fn('cat', 'this is a cat') == 1.0
+
+
+def test_top1_text_distinct_classes_dont_collide():
+    fn = _build_top1()
+    # 'neg' vs 'pos' don't share a prefix or token, so we don't accidentally
+    # call them equal.
+    assert fn('pos', 'neg') == 0.0
+    assert fn('positive', 'negative') == 0.0
+
+
+def test_top1_text_empty_or_none():
+    fn = _build_top1()
+    assert fn('', 'pos') == 0.0
+    assert fn('pos', '') == 0.0
+
+
+def test_macro_f1_text_collapses_lenient_predictions():
+    """Macro F1 canonicalizes pred 'positive' / 'POS!' / '  positive  '
+    onto class 'pos' so a model that just uses different surface forms
+    isn't penalized."""
+    code = _proposal_macro_f1_text_classlabel('mood')['fallback_code']
+    ns = {}; exec(code, ns)
+    fn = ns['macro_f1_text']
+    gt   = ['pos', 'pos', 'neg', 'neg']
+    pred = ['positive', 'POS!', 'negative', 'NEGATIVE']
+    f1 = fn(gt, pred)
+    assert abs(f1 - 1.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
 # _virtual_sample_from_hf_row: scalar-mapped string falls back to text
 # ---------------------------------------------------------------------------
 
