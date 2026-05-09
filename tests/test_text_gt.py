@@ -7,7 +7,11 @@ import json
 from app import (
     Dataset, Sample, CustomField, db,
     _gt_columns, _propose_metrics_for_dataset,
-    _virtual_sample_from_hf_row, _proposal_exact_match_text,
+    _propose_visualizations_for_dataset,
+    _virtual_sample_from_hf_row,
+    _proposal_top1_text_classlabel,
+    _proposal_macro_f1_text_classlabel,
+    _viz_text_confusion_matrix,
 )
 
 
@@ -50,23 +54,64 @@ def test_gt_columns_skips_long_text_captions(client, db_session):
 # ---------------------------------------------------------------------------
 
 
-def test_proposes_exact_match_for_text_gt(client, db_session):
+def test_proposes_top1_and_macro_f1_for_text_gt(client, db_session):
+    """Text classes get full classification treatment: top-1 accuracy
+    (per-sample) + macro F1 (aggregated)."""
     ds = _seed_ds_with_field('text', value_text='pos', name='sentiment')
     proposals = _propose_metrics_for_dataset(ds)
     by_name = {p['global_name']: p for p in proposals}
-    assert 'exact_match' in by_name
-    p = by_name['exact_match']
-    assert p['arg_mappings'] == {'gt': 'gt_sentiment',
-                                  'pred': 'sub_sentiment_pred'}
-    assert p['sort_direction'] == 'higher_is_better'
-    assert 'def exact_match(gt, pred)' in p['fallback_code']
+    assert 'top1_text' in by_name
+    assert 'macro_f1_text' in by_name
+
+    top1 = by_name['top1_text']
+    assert top1['arg_mappings'] == {'gt': 'gt_sentiment',
+                                     'pred': 'sub_sentiment_pred'}
+    assert top1['sort_direction'] == 'higher_is_better'
+    assert 'def top1_text(gt, pred)' in top1['fallback_code']
+    assert 'top-1 accuracy' in top1['target_name']
+
+    macro = by_name['macro_f1_text']
+    assert macro['is_aggregated'] is True
+    assert macro['accepts_aggregated_inputs'] is True
+    assert 'def macro_f1_text(gt, pred)' in macro['fallback_code']
 
 
-def test_exact_match_proposal_shape():
-    """Sanity-check the proposal dict shape so it slots into the same
-    pipeline the other proposals use."""
-    p = _proposal_exact_match_text('mood')
-    assert p['global_name'] == 'exact_match'
+def test_proposes_text_confusion_matrix_viz(client, db_session):
+    """Text classes also get a confusion-matrix viz, mirroring the
+    int-ClassLabel auto-proposal."""
+    ds = _seed_ds_with_field('text', value_text='cat', name='species')
+    vizes = _propose_visualizations_for_dataset(ds)
+    names = [v['global_name'] for v in vizes]
+    assert 'confusion_matrix_text' in names
+    cm = next(v for v in vizes if v['global_name'] == 'confusion_matrix_text')
+    assert cm['is_aggregated'] is True
+    assert cm['arg_mappings'] == {'gt': 'gt_species',
+                                   'pred': 'sub_species_pred'}
+
+
+def test_macro_f1_handles_imbalanced_two_class():
+    """Quick sanity check on the generated F1 code: 80% of class A
+    predicted correctly + 0/2 class B predicted should give F1 well
+    below the accuracy."""
+    code = _proposal_macro_f1_text_classlabel('mood')['fallback_code']
+    ns = {}
+    exec(code, ns)
+    fn = ns['macro_f1_text']
+    gt   = ['pos', 'pos', 'pos', 'pos', 'neg', 'neg']
+    pred = ['pos', 'pos', 'pos', 'pos', 'pos', 'pos']
+    f1 = fn(gt, pred)
+    # pos: tp=4 fp=2 fn=0 → prec=4/6, rec=1, F1 = 2*0.667/1.667 = 0.8
+    # neg: tp=0 → F1=0 (short-circuit)
+    # Macro = (0.8 + 0) / 2 = 0.4
+    assert abs(f1 - 0.4) < 1e-6
+    # Sanity: accuracy is 4/6 ≈ 0.667 — strictly higher than F1 here,
+    # which is the whole point of also surfacing macro F1.
+    assert f1 < 4 / 6
+
+
+def test_top1_text_classlabel_proposal_shape():
+    p = _proposal_top1_text_classlabel('mood')
+    assert p['global_name'] == 'top1_text'
     assert p['pred_fields'][0]['kind'] == 'scalar'
     assert p['pred_fields'][0]['name'] == 'mood_pred'
     assert p['pooling_type'] == 'mean'

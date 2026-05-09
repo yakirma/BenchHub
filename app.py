@@ -5643,38 +5643,156 @@ def _proposal_mae_scalar(col):
     }
 
 
-def _proposal_exact_match_text(col):
-    """Exact-string-match accuracy for text-typed GT columns (e.g.
+def _proposal_top1_text_classlabel(col):
+    """Top-1 classification accuracy for text-typed GT columns (e.g.
     sentiment 'neg'/'pos', species 'cat'/'dog', plain string class
-    names that aren't ClassLabel-encoded)."""
-    global_name = "exact_match"
+    names that aren't ClassLabel-encoded). Mirrors `_proposal_top1_classlabel`
+    for ints — same accuracy semantics, just compared as strings."""
+    global_name = "top1_text"
     return {
-        'target_name': f"exact match ({col})",
+        'target_name': f"top-1 accuracy ({col})",
         'global_name': global_name,
         'description': (
-            f"Per-sample exact-string match on `{col}`: 1.0 when the "
-            f"submission's `{col}_pred` equals GT `{col}` (case-sensitive, "
-            f"after strip), 0.0 otherwise. Mean-pooled across samples."
+            f"Per-sample top-1 classification accuracy on the `{col}` "
+            f"text label: 1.0 when the submission's `{col}_pred` matches "
+            f"GT `{col}` exactly (case-sensitive, after strip), 0.0 "
+            f"otherwise. Mean-pooled across samples."
         ),
         'fallback_code': (
             f"def {global_name}(gt, pred):\n"
-            f"    \"\"\"1.0 if predicted string matches GT, else 0.0.\"\"\"\n"
+            f"    \"\"\"1.0 if predicted string class matches GT, else 0.0.\"\"\"\n"
             f"    return 1.0 if str(gt).strip() == str(pred).strip() else 0.0\n"
         ),
         'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
         'sort_direction': 'higher_is_better',
         'pooling_type': 'mean',
         'llm_hint': (
-            f"Per-sample exact string match for `{col}`. Return 1.0 if "
-            f"str(gt).strip() == str(pred).strip(), else 0.0. "
-            f"Function name MUST be `{global_name}(gt, pred)`."
+            f"Per-sample top-1 classification accuracy for text labels "
+            f"on `{col}`. Return 1.0 if str(gt).strip() == "
+            f"str(pred).strip(), else 0.0. Function name MUST be "
+            f"`{global_name}(gt, pred)`."
         ),
         'pred_fields': [{
             'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
             'description': (
-                f"Predicted text label for `{col}` "
+                f"Predicted class name for `{col}` "
                 f"(per-sample string, ship as `<sample>.txt`)."
             ),
+        }],
+    }
+
+
+def _proposal_macro_f1_text_classlabel(col):
+    """Macro-averaged F1 across the (auto-discovered) classes seen in
+    the submission. is_aggregated so the metric receives parallel
+    lists of (gt, pred) strings and computes per-class precision/
+    recall before averaging — useful when one class dominates and
+    top-1 alone hides minority-class performance."""
+    global_name = "macro_f1_text"
+    return {
+        'target_name': f"macro F1 ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Macro-averaged F1 on `{col}`. Computes per-class precision "
+            f"and recall over the union of GT + predicted classes, then "
+            f"averages F1 unweighted across classes. Robust to class "
+            f"imbalance — lower than accuracy when minority classes are "
+            f"misclassified."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"Macro F1 over text classes. gt and pred are\n"
+            f"    parallel lists.\"\"\"\n"
+            f"    pairs = [(str(g).strip(), str(p).strip())\n"
+            f"             for g, p in zip(gt, pred)\n"
+            f"             if g is not None and p is not None]\n"
+            f"    if not pairs:\n"
+            f"        return 0.0\n"
+            f"    classes = sorted(set(g for g, _ in pairs)\n"
+            f"                     | set(p for _, p in pairs))\n"
+            f"    f1s = []\n"
+            f"    for c in classes:\n"
+            f"        tp = sum(1 for g, p in pairs if g == c and p == c)\n"
+            f"        fp = sum(1 for g, p in pairs if g != c and p == c)\n"
+            f"        fn = sum(1 for g, p in pairs if g == c and p != c)\n"
+            f"        if tp == 0:\n"
+            f"            f1s.append(0.0); continue\n"
+            f"        prec = tp / (tp + fp) if (tp + fp) else 0.0\n"
+            f"        rec  = tp / (tp + fn) if (tp + fn) else 0.0\n"
+            f"        f1s.append(2 * prec * rec / (prec + rec) if (prec + rec) else 0.0)\n"
+            f"    return float(sum(f1s) / len(f1s))\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'sort_direction': 'higher_is_better',
+        'pooling_type': 'mean',  # ignored — is_aggregated below
+        'is_aggregated': True,
+        'accepts_aggregated_inputs': True,
+        'llm_hint': (
+            f"Macro-averaged F1 on text class labels for `{col}`. "
+            f"`gt` and `pred` are PARALLEL lists of strings spanning "
+            f"every sample of one submission. Compute per-class precision "
+            f"+ recall over the union of seen classes, average F1 unweighted. "
+            f"Function name MUST be `{global_name}(gt, pred)`. Return a float."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'scalar', 'gt_field': col,
+            'description': (
+                f"Predicted class name for `{col}` "
+                f"(per-sample string, ship as `<sample>.txt`)."
+            ),
+        }],
+    }
+
+
+def _viz_text_confusion_matrix(col):
+    """Aggregated confusion matrix for text-class GT. String-based
+    counterpart to the int-classlabel confusion matrix — auto-discovers
+    classes from the (gt, pred) pairs seen in the submission."""
+    global_name = "confusion_matrix_text"
+    return {
+        'target_name': f"confusion matrix ({col})",
+        'global_name': global_name,
+        'description': (
+            f"Aggregated confusion matrix between GT `{col}` (text class) "
+            f"and submission's `{col}_pred`. Classes auto-discovered from "
+            f"the union of values seen across all samples."
+        ),
+        'fallback_code': (
+            f"def {global_name}(gt, pred):\n"
+            f"    \"\"\"Aggregated string-class confusion matrix as a\n"
+            f"    256x256 grayscale heatmap. gt + pred are parallel\n"
+            f"    lists.\"\"\"\n"
+            f"    import numpy as _np\n"
+            f"    from PIL import Image as _PILImage\n"
+            f"    pairs = [(str(g).strip(), str(p).strip())\n"
+            f"             for g, p in zip(gt, pred)\n"
+            f"             if g is not None and p is not None]\n"
+            f"    if not pairs:\n"
+            f"        return _PILImage.new('L', (256, 256), 0)\n"
+            f"    classes = sorted({{g for g, _ in pairs}} | {{p for _, p in pairs}})\n"
+            f"    idx = {{c: i for i, c in enumerate(classes)}}\n"
+            f"    n = len(classes)\n"
+            f"    cm = _np.zeros((n, n), dtype=_np.int32)\n"
+            f"    for g, p in pairs:\n"
+            f"        cm[idx[g], idx[p]] += 1\n"
+            f"    norm = (cm / max(int(cm.max()), 1) * 255).astype(_np.uint8)\n"
+            f"    img = _PILImage.fromarray(norm)\n"
+            f"    return img.resize((256, 256), _PILImage.NEAREST)\n"
+        ),
+        'arg_mappings': {'gt': f'gt_{col}', 'pred': f'sub_{col}_pred'},
+        'is_aggregated': True,
+        'accepts_aggregated_inputs': True,
+        'llm_hint': (
+            f"Aggregated confusion-matrix visualization between GT "
+            f"text class `{col}` and submission's predicted text class "
+            f"`{col}_pred`. `gt` and `pred` arrive as PARALLEL lists. "
+            f"Function name MUST be `{global_name}(gt, pred)` and return "
+            f"a PIL.Image (grayscale or RGB, ≤ 512x512)."
+        ),
+        'pred_fields': [{
+            'name': f'{col}_pred', 'kind': 'scalar',
+            'description': f"Per-sample predicted class name for `{col}`.",
+            'gt_field': col,
         }],
     }
 
@@ -5938,7 +6056,11 @@ def _propose_metrics_for_dataset(ds):
             else:
                 proposals.append(_proposal_mae_scalar(col))
         elif kind == 'text':
-            proposals.append(_proposal_exact_match_text(col))
+            # Treat text labels as classification: top-1 accuracy
+            # (always proposed) + macro F1 (robust to class imbalance,
+            # so it pairs nicely with accuracy).
+            proposals.append(_proposal_top1_text_classlabel(col))
+            proposals.append(_proposal_macro_f1_text_classlabel(col))
         elif kind == 'depth':
             proposals.append(_proposal_rmse_depth(col))
             proposals.append(_proposal_abs_rel_depth(col))
@@ -6026,6 +6148,12 @@ def _propose_visualizations_for_dataset(ds):
     for col, kind, hints in _gt_columns(ds):
         if kind == 'depth':
             proposals.append(_viz_depth_error_heatmap(col))
+            continue
+        if kind == 'text':
+            # Text labels behave like ClassLabel — same confusion-matrix
+            # treatment, just with string keys. Auto-proposed alongside
+            # the accuracy + macro-F1 metrics.
+            proposals.append(_viz_text_confusion_matrix(col))
             continue
         if kind != 'scalar' or not hints.get('is_classlabel'):
             continue
