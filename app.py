@@ -2156,7 +2156,7 @@ def _read_sota_cache(lb_id, model_id):
     bump invalidates every cached entry, which is the migration path
     for prompt changes (Claude generated stale code under the old
     rules)."""
-    PROMPT_VERSION = 4  # bump when _llm_colab_notebook prompt changes
+    PROMPT_VERSION = 5  # bump when _llm_colab_notebook prompt changes
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path) as f:
@@ -2171,7 +2171,7 @@ def _read_sota_cache(lb_id, model_id):
 
 
 def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=None):
-    PROMPT_VERSION = 4
+    PROMPT_VERSION = 5
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path, 'w') as f:
@@ -6035,6 +6035,17 @@ def _llm_colab_notebook(lb, model_id_hint=None):
     ds = lb.datasets[0] if lb.datasets else None
     ds_id = ds.id if ds else None
     ds_name = ds.name if ds else None
+    # PWC-imported (and any HF-attached) LBs have no BH Dataset row;
+    # they pull samples directly from a HuggingFace dataset. Read the
+    # primary HF attachment so the notebook prompt can tell Claude to
+    # use `datasets.load_dataset(repo, split=...)` instead of the
+    # /dataset/<id>/download URL (which 404s for these LBs).
+    hf_attachment = None
+    for att in (lb.attachments or []):
+        if (getattr(att, 'kind', None) == 'hf'
+                and att.role == 'primary' and att.hf_repo_id):
+            hf_attachment = att
+            break
     metric_names = [
         lm.target_name or (lm.global_metric.name if lm.global_metric else '?')
         for lm in (lb.leaderboard_metrics or [])
@@ -6096,18 +6107,54 @@ def _llm_colab_notebook(lb, model_id_hint=None):
         "Return ONLY a JSON object — a valid .ipynb nbformat 4 notebook. "
         "Do not wrap it in markdown fences. Do not include explanatory prose."
     )
-    user_msg = (
-        f"BenchHub base URL: {base_url}\n"
-        f"Leaderboard id: {lb.id}\n"
-        f"Leaderboard name: {lb.name}\n"
-        f"Dataset: {ds_name} (id={ds_id})\n"
-        f"Dataset download URL: {base_url}/dataset/{ds_id}/download\n"
-        f"Submission upload URL: {base_url}/api/leaderboard/{lb.id}/submission/upload\n"
-        f"Required prediction fields (PRED_FIELDS — bare-name folders, "
-        f"NOT under metric_*): {json.dumps(pred_fields)}\n"
-        f"Metric output names expected: {json.dumps(metric_names)}\n"
-        f"Sample-field schema (first sample): {json.dumps(sample_fields)}\n"
-    )
+    if hf_attachment:
+        # HF-attached LB (PWC import etc): the notebook streams samples
+        # from the HF dataset directly. There IS no
+        # /dataset/<id>/download URL for these LBs.
+        try:
+            hf_mapping = json.loads(hf_attachment.hf_mapping_json or '[]')
+        except (TypeError, ValueError):
+            hf_mapping = []
+        user_msg = (
+            f"BenchHub base URL: {base_url}\n"
+            f"Leaderboard id: {lb.id}\n"
+            f"Leaderboard name: {lb.name}\n"
+            f"Dataset source: HuggingFace dataset {hf_attachment.hf_repo_id} "
+            f"(split: {hf_attachment.hf_split or 'train'})\n"
+            f"DATASET FETCH (use this instead of any BenchHub /dataset URL):\n"
+            f"  from datasets import load_dataset\n"
+            f"  ds = load_dataset({hf_attachment.hf_repo_id!r}, "
+            f"split={(hf_attachment.hf_split or 'train')!r}, "
+            f"streaming=True, trust_remote_code=True)\n"
+            f"  Iterate up to ~200 rows for inference (cap to keep Colab "
+            f"runtime reasonable). Sample names are 's_000000', 's_000001', "
+            f"... matching BenchHub's _VirtualSample naming convention; the "
+            f"submission folder must use those names.\n"
+            f"Field mapping (column → BenchHub field): "
+            f"{json.dumps(hf_mapping)}\n"
+            f"Submission upload URL: {base_url}/api/leaderboard/{lb.id}/submission/upload\n"
+            f"Required prediction fields (PRED_FIELDS — bare-name folders, "
+            f"NOT under metric_*): {json.dumps(pred_fields)}\n"
+            f"Metric output names expected: {json.dumps(metric_names)}\n"
+            f"DO NOT use urllib.request to GET '{base_url}/dataset/None/download' "
+            f"or any /dataset/<id>/download URL — that path doesn't exist "
+            f"for HF-attached LBs and 404s. Always go through "
+            f"datasets.load_dataset.\n"
+        )
+    else:
+        # Legacy BH-dataset LB (uploaded ZIP): keep the download-ZIP path.
+        user_msg = (
+            f"BenchHub base URL: {base_url}\n"
+            f"Leaderboard id: {lb.id}\n"
+            f"Leaderboard name: {lb.name}\n"
+            f"Dataset: {ds_name} (id={ds_id})\n"
+            f"Dataset download URL: {base_url}/dataset/{ds_id}/download\n"
+            f"Submission upload URL: {base_url}/api/leaderboard/{lb.id}/submission/upload\n"
+            f"Required prediction fields (PRED_FIELDS — bare-name folders, "
+            f"NOT under metric_*): {json.dumps(pred_fields)}\n"
+            f"Metric output names expected: {json.dumps(metric_names)}\n"
+            f"Sample-field schema (first sample): {json.dumps(sample_fields)}\n"
+        )
     if model_id_hint:
         user_msg += (
             f"\n# SOTA model directive\n"
