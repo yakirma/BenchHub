@@ -71,7 +71,8 @@ def _ensure_snapshot():
     )
 
 
-_MAX_RECURSION_DEPTH = 1  # 0 = top-level only; 1 = +1 subtask layer.
+_MAX_RECURSION_DEPTH = 0  # 0 = top-level only. Subtasks add 10x decode + insert cost
+                          # for niche benchmarks that aren't bootstrap-relevant.
 
 
 def _walk_task_into(cur, t, dataset_ids, counters=None, depth=0):
@@ -216,7 +217,12 @@ def _build_index_into(idx_path, snap_dir, progress_cb=None):
         # projection. ~1/20th decode passes vs batch_size=1, and only
         # 50 rows worth of nested Python at any time (~50 MB peak).
         import gc as _gc
-        WANTED_COLUMNS = ['task', 'description', 'subtasks', 'datasets']
+        # Column projection: at depth=0 we don't recurse into subtasks,
+        # so dropping it from the projection skips ~half the decode +
+        # to_pylist work (the subtask tree is the bulky nested column).
+        WANTED_COLUMNS = ['task', 'description', 'datasets']
+        if _MAX_RECURSION_DEPTH > 0:
+            WANTED_COLUMNS.append('subtasks')
         BATCH_SIZE = 50
         n_shards = len(parquet_files)
         counters = {'evals': 0, 'shard_idx': 0, 'n_shards': n_shards,
