@@ -9,6 +9,11 @@ from metric_engine import (
     sort_metrics_by_dependency,
     _sandbox_enabled,
 )
+# Top-level so the celery main process loads it once at startup; the
+# prefork child inherits the cached module via fork. Lazy import inside
+# the task body fails in the child with ModuleNotFoundError because
+# the prefork worker's sys.path/cwd don't always match the parent's.
+import pwc_client
 import numpy as np
 
 # Configure logging
@@ -436,31 +441,30 @@ def build_pwc_index(self):
     pwc_client.begin_build_marker() — that's the de-duplication point
     for "user clicked Build twice in a row." This task just executes;
     it doesn't decide whether one was already running."""
-    from pwc_client import (
-        _index_path, _ensure_snapshot, _build_index_into,
-        update_progress, clear_build_marker, _build_error_path,
-    )
-    if os.path.exists(_index_path()):
+    if os.path.exists(pwc_client._index_path()):
         logger.info("PWC index already exists; skipping build.")
-        clear_build_marker()
+        pwc_client.clear_build_marker()
         return
     try:
-        update_progress("Downloading PWC archive shards from HuggingFace…")
-        snap = _ensure_snapshot()
+        pwc_client.update_progress("Downloading PWC archive shards from HuggingFace…")
+        snap = pwc_client._ensure_snapshot()
         logger.info(f"PWC: snapshot at {snap}; building index…")
-        update_progress("Snapshot ready — opening parquet shards…")
-        _build_index_into(_index_path(), snap, progress_cb=update_progress)
+        pwc_client.update_progress("Snapshot ready — opening parquet shards…")
+        pwc_client._build_index_into(
+            pwc_client._index_path(), snap,
+            progress_cb=pwc_client.update_progress,
+        )
         logger.info("PWC: index built.")
-        update_progress("Done.")
+        pwc_client.update_progress("Done.")
     except Exception as e:
         logger.exception(f"PWC index build failed: {e}")
         try:
-            with open(_build_error_path(), 'w') as f:
+            with open(pwc_client._build_error_path(), 'w') as f:
                 f.write(str(e)[:2000])
         except OSError:
             pass
     finally:
-        clear_build_marker()
+        pwc_client.clear_build_marker()
 
 
 @celery.task(bind=True, max_retries=3, ignore_result=True)
