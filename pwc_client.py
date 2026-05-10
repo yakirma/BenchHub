@@ -111,7 +111,7 @@ def _walk_task_into(cur, t, dataset_ids, counters=None):
         # Some PWC benchmarks (LLM leaderboards) carry hundreds of
         # rows × MB-scale per-result blobs we don't need.
         slim_rows = []
-        for r in rows[:200]:
+        for r in rows[:50]:
             if not isinstance(r, dict):
                 continue
             slim_rows.append({
@@ -196,35 +196,43 @@ def _build_index_into(idx_path, snap_dir, progress_cb=None):
         conn.commit()
 
         dataset_ids = {}
-        # batch_size=1 keeps peak memory bounded — each row in this
-        # parquet is a whole task with all its datasets + SOTA tables,
-        # which can be tens of MB on its own. Progress counters live
-        # in a single dict so the recursive walker can tick per-insert
-        # rather than per-parquet-row (one row may recursively process
-        # 100+ subtask benchmarks; per-row progress feels frozen).
+        # Earlier iter_batches(batch_size=1) approach was 100x slower
+        # than expected because pyarrow re-decodes the row group on each
+        # call — the shard's row group is one chunk, so per-row reads
+        # repeat the same decode work. Bulk-read each shard once with
+        # only the columns we walk (skip the wide union of flattened
+        # metric columns the archive carries) and iterate to_pylist
+        # locally. ~200 MB peak per shard, fine on a 2 GB worker.
         import gc as _gc
+        WANTED_COLUMNS = ['task', 'description', 'subtasks', 'datasets']
         n_shards = len(parquet_files)
         counters = {'evals': 0, 'shard_idx': 0, 'n_shards': n_shards,
                     'progress_cb': progress_cb}
         for shard_idx, pf in enumerate(parquet_files, 1):
             counters['shard_idx'] = shard_idx
             progress_cb(
-                f"Walking shard {shard_idx}/{n_shards}: "
-                f"{counters['evals']} benchmarks indexed, "
-                f"{len(dataset_ids)} unique datasets"
+                f"Reading shard {shard_idx}/{n_shards}: "
+                f"{counters['evals']} benchmarks indexed so far…"
             )
             pq_file = pq.ParquetFile(pf)
-            for batch in pq_file.iter_batches(batch_size=1):
-                rows = batch.to_pylist()
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    _walk_task_into(cur, row, dataset_ids, counters=counters)
+            available = set(pq_file.schema_arrow.names)
+            cols = [c for c in WANTED_COLUMNS if c in available]
+            table = pq_file.read(columns=cols)
+            progress_cb(
+                f"Walking shard {shard_idx}/{n_shards}: "
+                f"{table.num_rows} top-level tasks, "
+                f"{counters['evals']} benchmarks indexed cumulative"
+            )
+            rows = table.to_pylist()
+            del table
+            _gc.collect()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                _walk_task_into(cur, row, dataset_ids, counters=counters)
                 conn.commit()
-                # Drop the batch + collect early so the next iteration
-                # doesn't sit on top of the previous batch's reference graph.
-                del rows, batch
-                _gc.collect()
+            del rows
+            _gc.collect()
             progress_cb(
                 f"Shard {shard_idx}/{n_shards} done — "
                 f"{counters['evals']} benchmarks, {len(dataset_ids)} datasets"

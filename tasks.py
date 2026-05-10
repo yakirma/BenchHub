@@ -431,7 +431,7 @@ def process_submissions_batch_sequential(self, submission_ids, sample_filters=No
     logger.info("Sequential batch calculation complete.")
 
 @celery.task(bind=True, max_retries=0, ignore_result=True,
-             time_limit=1800, soft_time_limit=1500)
+             time_limit=4200, soft_time_limit=3600)
 def build_pwc_index(self):
     """Build the Papers With Code static-archive index. Out-of-band so
     the web request doesn't time out / OOM. Reports progress to a file
