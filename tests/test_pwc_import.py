@@ -500,6 +500,64 @@ def test_creates_lb_with_hf_attachment_and_mirrored_subs(client, db_session, log
     assert by_target['Top 5 Accuracy'] == 99.9
 
 
+def test_creates_lb_calls_llm_to_author_metric_code(
+    client, db_session, login_as,
+):
+    """When ANTHROPIC_API_KEY is set, _create_lb_from_pwc_benchmark
+    should run each PWC metric name through _llm_generate_metric_code
+    and persist the generated code instead of the NotImplementedError
+    stub. Falls back to the stub when the helper returns None."""
+    admin = _mk_admin('llm_metric_admin@bench.local')
+    evaluation = {
+        'id': 999, 'task': 'X', 'dataset': 'Y', 'description': '',
+        'metrics': [{'name': 'mIoU', 'description': '',
+                     'sort_direction': 'higher_is_better'}],
+        'results': [],
+    }
+    fake_code = (
+        "def miou(gt, pred):\n"
+        "    \"\"\"Mean intersection-over-union.\"\"\"\n"
+        "    import numpy as _np\n"
+        "    return float(_np.mean(_np.asarray(gt) == _np.asarray(pred)))\n"
+    )
+    with patch('app._llm_generate_metric_code', return_value=fake_code) as mock_llm:
+        lb_id = _create_lb_from_pwc_benchmark(
+            evaluation, hf_repo='owner/repo', lb_name='miou_lb',
+            owner_user_id=admin.id,
+        )
+        mock_llm.assert_called_once()
+        # Helper called with (slugified_name, llm_hint).
+        called_name, called_hint = mock_llm.call_args.args
+        assert called_name == 'miou'
+        assert "PWC metric 'mIoU'" in called_hint
+
+    gm = GlobalMetric.query.filter_by(name='miou').first()
+    assert gm is not None
+    assert gm.python_code == fake_code  # LLM-authored, not the stub
+    assert 'NotImplementedError' not in gm.python_code
+
+
+def test_creates_lb_falls_back_to_stub_when_llm_unavailable(
+    client, db_session, login_as,
+):
+    admin = _mk_admin('llm_fail_admin@bench.local')
+    evaluation = {
+        'id': 998, 'task': 'X', 'dataset': 'Y', 'description': '',
+        'metrics': [{'name': 'BLEU-4', 'description': '',
+                     'sort_direction': 'higher_is_better'}],
+        'results': [],
+    }
+    with patch('app._llm_generate_metric_code', return_value=None):
+        _create_lb_from_pwc_benchmark(
+            evaluation, hf_repo='owner/repo', lb_name='bleu_fallback_lb',
+            owner_user_id=admin.id,
+        )
+    gm = GlobalMetric.query.filter_by(name='bleu_4').first()
+    assert gm is not None
+    assert 'NotImplementedError' in gm.python_code
+    assert 'LB Settings page' in gm.python_code
+
+
 def test_skips_unparseable_metric_values(client, db_session, login_as):
     admin = _mk_admin('skip_admin@bench.local')
     evaluation = {

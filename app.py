@@ -2365,23 +2365,45 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
         sd = pm.get('sort_direction') or 'higher_is_better'
         gm = GlobalMetric.query.filter_by(name=gn).first()
         if gm is None:
+            # Author runnable code for the metric via Claude. PWC's
+            # metric names are well-known (top-1 accuracy, BLEU-4,
+            # RMSE, mIoU, etc.) so the LLM produces solid code most
+            # of the time. Fall back to a NotImplementedError stub
+            # only when the API key is missing or the call fails —
+            # admin can fix it later via the LB Settings → Add a
+            # metric flow (Phase 8).
+            llm_hint = (
+                f"PWC metric '{pm['name']}'. {pm.get('description') or ''} "
+                f"Per-sample function `def {gn}(gt, pred)` returning a "
+                f"float. Use stdlib + numpy (already imported as np). "
+                f"Be defensive about types — gt/pred may arrive as int, "
+                f"float, str, list, or numpy array depending on the "
+                f"underlying dataset. Direction: "
+                f"{'lower' if sd == 'lower_is_better' else 'higher'} is better."
+            )
+            authored_code = None
+            try:
+                authored_code = _llm_generate_metric_code(gn, llm_hint)
+            except Exception as e:
+                print(f"PWC metric authoring failed for {gn}: {e}")
+            python_code = authored_code or (
+                f"def {gn}(gt, pred):\n"
+                f"    \"\"\"PWC-imported metric. AI authoring was\n"
+                f"    unavailable at import time. Edit this on the\n"
+                f"    LB Settings page before accepting verified\n"
+                f"    submissions on this column.\"\"\"\n"
+                f"    raise NotImplementedError(\n"
+                f"        '{gn} needs a reference implementation. "
+                f"Edit it on the LB Settings page.'\n"
+                f"    )\n"
+            )
             gm = GlobalMetric(
                 name=gn,
                 description=(
                     f"{pm['name']} — imported from Papers With Code. "
                     f"{pm.get('description') or ''}"
                 ).strip(),
-                python_code=(
-                    f"def {gn}(gt, pred):\n"
-                    f"    \"\"\"PWC-imported metric. No reference\n"
-                    f"    implementation yet — author one via the LB\n"
-                    f"    Settings page before accepting verified\n"
-                    f"    submissions on this column.\"\"\"\n"
-                    f"    raise NotImplementedError(\n"
-                    f"        '{gn} needs a reference implementation. "
-                    f"Edit it on the LB Settings page.'\n"
-                    f"    )\n"
-                ),
+                python_code=python_code,
                 is_aggregated=False, accepts_aggregated_inputs=False,
                 owner_user_id=owner_user_id, visibility='public',
             )
