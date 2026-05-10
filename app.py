@@ -297,12 +297,28 @@ SAMPLE_METRIC_OPTIONS = {
 
 
 def make_celery(app):
+    # Keep the broker (Redis) but disable the result backend — every
+    # task in this app uses ignore_result=True, so the result backend
+    # was just burning Upstash request quota for state nobody reads.
+    # Polling tunables below cut the idle-worker poll rate that hit
+    # the 500K/month free-tier cap on Upstash.
     celery = Celery(
         app.import_name,
-        backend=app.config['CELERY_RESULT_BACKEND'],
-        broker=app.config['CELERY_BROKER_URL']
+        backend=None,
+        broker=app.config['CELERY_BROKER_URL'],
     )
     celery.conf.update(app.config)
+    celery.conf.update(
+        result_backend=None,
+        # Default visibility_timeout is 1h with frequent polls; 6h
+        # is safer for our long-running viz/index tasks anyway.
+        broker_transport_options={'visibility_timeout': 21600},
+        # Skip mingle/gossip/heartbeat — single-worker single-machine
+        # setup gains nothing from them, and each is a Redis poll.
+        worker_disable_rate_limits=True,
+        # Don't DB-poll for tasks every 50ms (default).
+        broker_pool_limit=1,
+    )
 
     class ContextTask(celery.Task):
         def __call__(self, *args, **kwargs):

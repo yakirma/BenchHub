@@ -8,12 +8,18 @@
 # Single machine, single volume, both processes is the right shape for the
 # Cloudflare-Access-gated single-user deploy.
 #
+# Resilience: gunicorn is the user-facing process. If celery dies (e.g.
+# Upstash Redis hitting its monthly quota cap and refusing connections),
+# we keep gunicorn alive so the web UI stays up — submissions can't
+# evaluate, but the user can still browse, manage settings, fix the
+# Redis cap, etc. Re-arm celery in a loop with an exponential backoff
+# so it reattaches automatically once Redis comes back.
+#
 # NOTE: must be bash, not sh — we use `wait -n` which is a bashism. The
 # python:3.13-slim image ships /bin/bash, so this is fine.
 
-set -eu
+set -u
 
-# Trap SIGTERM/SIGINT and forward to both children for clean Fly shutdown.
 shutdown() {
   echo "[start.sh] shutting down…"
   if [ -n "${WORKER_PID:-}" ]; then kill -TERM "$WORKER_PID" 2>/dev/null || true; fi
@@ -23,15 +29,31 @@ shutdown() {
 }
 trap shutdown TERM INT
 
-celery -A app.celery worker --loglevel=info --concurrency=1 &
+# Celery in a self-restarting subshell: if Redis blocks, it crashes
+# fast, the subshell sleeps and tries again. Backoff is bounded so
+# we don't hammer the Redis cap every second when it's exhausted.
+(
+  backoff=10
+  while true; do
+    echo "[start.sh] starting celery worker (backoff=${backoff}s)"
+    # --without-mingle / --without-gossip / --without-heartbeat: skip
+    # the multi-worker coordination chatter (we have one worker on one
+    # machine; mingling is N redis polls per second for nothing).
+    celery -A app.celery worker --loglevel=info --concurrency=1 \
+        --without-mingle --without-gossip --without-heartbeat || \
+      echo "[start.sh] celery exited; will retry after ${backoff}s"
+    sleep "$backoff"
+    if [ "$backoff" -lt 600 ]; then backoff=$((backoff * 2)); fi
+  done
+) &
 WORKER_PID=$!
 
+# Gunicorn — the canonical user-facing process. Its exit ends the VM.
 gunicorn -b 0.0.0.0:8080 --workers 2 --timeout 120 app:app &
 WEB_PID=$!
 
-# Exit when either child exits — Fly will restart the whole VM, which is
-# fine because both processes are intended to live together.
-wait -n "$WORKER_PID" "$WEB_PID"
+# Block on gunicorn ONLY. If celery's retry loop dies, ignore — web stays up.
+wait "$WEB_PID"
 EXIT=$?
-echo "[start.sh] one process exited with $EXIT — terminating the other"
+echo "[start.sh] gunicorn exited with $EXIT"
 shutdown
