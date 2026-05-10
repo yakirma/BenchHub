@@ -5274,7 +5274,32 @@ def _normalize_features(feats):
         elif kind == 'ClassLabel':
             out[name] = {'type': 'ClassLabel', 'names': desc.get('names', [])}
         elif kind == 'Value':
-            out[name] = {'type': f"Value:{desc.get('dtype', 'unknown')}"}
+            dtype = desc.get('dtype', 'unknown')
+            # Some popular repos (ILSVRC/imagenet-1k included) ship
+            # features with `_type` missing/'Value' but a non-canonical
+            # dtype payload — `'image'` for image columns, a nested
+            # `{'class_label': {'names': {...}}}` dict for class
+            # labels. Reshape those into the proper kinds before they
+            # confuse _infer_mapping.
+            if dtype == 'image':
+                out[name] = {'type': 'Image'}
+            elif dtype == 'audio':
+                out[name] = {'type': 'Audio'}
+            elif isinstance(dtype, dict) and 'class_label' in dtype:
+                cls = dtype.get('class_label') or {}
+                names = cls.get('names')
+                # `names` may be a list or a {'<idx>': '<name>'} dict.
+                if isinstance(names, dict):
+                    try:
+                        names = [names[k] for k in sorted(names, key=int)]
+                    except (KeyError, ValueError):
+                        names = list(names.values())
+                out[name] = {
+                    'type': 'ClassLabel',
+                    'names': list(names or []),
+                }
+            else:
+                out[name] = {'type': f"Value:{dtype}"}
         elif kind == 'Sequence':
             inner = desc.get('feature') or {}
             inner_t = inner.get('_type') or 'Value'
