@@ -558,6 +558,36 @@ def test_creates_lb_falls_back_to_stub_when_llm_unavailable(
     assert 'LB Settings page' in gm.python_code
 
 
+def test_creates_lb_summary_metrics_uses_target_names(
+    client, db_session, login_as,
+):
+    """summary_metrics must match LeaderboardMetric.target_name (PWC name)
+    so the LB view's resolver finds them. Earlier bug stored slugified
+    GlobalMetric names which the resolver auto-pruned, leaving zero
+    metric columns rendered."""
+    admin = _mk_admin('summary_admin@bench.local')
+    evaluation = {
+        'id': 800, 'task': 'X', 'dataset': 'Y', 'description': '',
+        'metrics': [
+            {'name': 'Top 1 Accuracy', 'description': '',
+             'sort_direction': 'higher_is_better'},
+            {'name': 'BLEU-4', 'description': '',
+             'sort_direction': 'higher_is_better'},
+        ],
+        'results': [],
+    }
+    lb_id = _create_lb_from_pwc_benchmark(
+        evaluation, hf_repo='owner/repo', lb_name='summary_test_lb',
+        owner_user_id=admin.id,
+    )
+    lb = Leaderboard.query.get(lb_id)
+    parts = [p.strip() for p in (lb.summary_metrics or '').split(',') if p.strip()]
+    # Verbatim PWC names, NOT slugified.
+    assert 'Top 1 Accuracy' in parts
+    assert 'BLEU-4' in parts
+    assert 'top_1_accuracy' not in parts
+
+
 def test_skips_unparseable_metric_values(client, db_session, login_as):
     admin = _mk_admin('skip_admin@bench.local')
     evaluation = {

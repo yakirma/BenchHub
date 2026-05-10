@@ -2332,9 +2332,13 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
     # 1. Create LB. Admin imports → mark canonical for the HF repo so
     # the LB shows up on /explore and "submit there instead" hints
     # surface for users importing the same repo themselves.
+    # summary_metrics is matched against LeaderboardMetric.target_name (or
+    # lm_<id>) by the LB view's metric resolver — slugified GlobalMetric
+    # names won't resolve and get auto-pruned, leaving the view with no
+    # metric columns. Use the PWC names verbatim so name_to_lmids resolves.
     lb = Leaderboard(
         name=lb_name,
-        summary_metrics=','.join(slugify_metric_name(m['name']) for m in pwc_metrics),
+        summary_metrics=','.join(m['name'] for m in pwc_metrics),
         owner_user_id=owner_user_id,
         visibility='public',
         canonicality='public',
@@ -4495,6 +4499,14 @@ def leaderboard_view(leaderboard_id):
         db.session.commit()
     
     selected_metrics = updated_selected
+
+    # Defensive fallback: an LB with leaderboard_metrics but an empty
+    # selected list (e.g. after a bad summary_metrics value got auto-
+    # pruned, or for fresh PWC imports before any picks were saved)
+    # would render no metric columns at all. Default to showing every
+    # LB metric in that case so mirrored / verified rows aren't blank.
+    if not selected_metrics and leaderboard_metrics_map:
+        selected_metrics = sorted(leaderboard_metrics_map.keys())
 
     # discovered_metrics contains lm_ids (strings) and custom_metrics (names)
     discovered_metrics = set(custom_metrics) | set(leaderboard_metrics_map.keys())
