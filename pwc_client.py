@@ -71,16 +71,19 @@ def _ensure_snapshot():
     )
 
 
-def _walk_task_into(cur, t, dataset_ids, counters=None):
-    """Insert benchmarks for one task entry + its subtasks. `cur` is
-    a sqlite cursor; `dataset_ids` is a name→id map mutated in-place
-    so the same dataset (showing up under multiple tasks) gets one
-    row only.
+_MAX_RECURSION_DEPTH = 1  # 0 = top-level only; 1 = +1 subtask layer.
 
-    `counters` is an optional dict the caller passes in to track
-    progress at insert granularity (one parquet row can recursively
-    walk 100+ subtasks; the user-visible progress is more useful when
-    it ticks per evaluation insert than per top-level row)."""
+
+def _walk_task_into(cur, t, dataset_ids, counters=None, depth=0):
+    """Insert benchmarks for one task entry + its (limited) subtasks.
+
+    The PWC archive's subtask tree is deep — some top-level tasks
+    have 100+ nested subtasks each with their own datasets, and the
+    full recursion was so slow it looked like a hang. We cap at
+    _MAX_RECURSION_DEPTH so the build finishes in minutes for the
+    bootstrap use case. The deeper niche benchmarks can be added
+    later by raising the cap or by indexing them on demand.
+    """
     if not isinstance(t, dict):
         return
     task_name = (t.get('task') or '').strip()
@@ -140,8 +143,10 @@ def _walk_task_into(cur, t, dataset_ids, counters=None):
                     f"{counters['evals']} benchmarks indexed, "
                     f"{len(dataset_ids)} unique datasets"
                 )
-    for sub in (t.get('subtasks') or []):
-        _walk_task_into(cur, sub, dataset_ids, counters=counters)
+    if depth < _MAX_RECURSION_DEPTH:
+        for sub in (t.get('subtasks') or []):
+            _walk_task_into(cur, sub, dataset_ids,
+                            counters=counters, depth=depth + 1)
 
 
 def _build_index_into(idx_path, snap_dir, progress_cb=None):
@@ -172,6 +177,15 @@ def _build_index_into(idx_path, snap_dir, progress_cb=None):
     conn = sqlite3.connect(tmp_path)
     try:
         cur = conn.cursor()
+        # Aggressive write tuning for the one-shot build. journal_mode=MEMORY
+        # since we don't care about crash-recovery for a build artifact —
+        # if it dies mid-build we re-run from scratch anyway. Larger cache
+        # so the schema/indexes stay in memory; synchronous=OFF so each
+        # insert doesn't fsync the volume.
+        cur.execute("PRAGMA journal_mode=MEMORY")
+        cur.execute("PRAGMA synchronous=OFF")
+        cur.execute("PRAGMA cache_size=-65536")  # 64 MB
+        cur.execute("PRAGMA temp_store=MEMORY")
         cur.execute(
             "CREATE TABLE pwc_dataset ("
             "  id INTEGER PRIMARY KEY,"
