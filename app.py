@@ -2156,7 +2156,7 @@ def _read_sota_cache(lb_id, model_id):
     bump invalidates every cached entry, which is the migration path
     for prompt changes (Claude generated stale code under the old
     rules)."""
-    PROMPT_VERSION = 2  # bump when _llm_colab_notebook prompt changes
+    PROMPT_VERSION = 3  # bump when _llm_colab_notebook prompt changes
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path) as f:
@@ -2171,7 +2171,7 @@ def _read_sota_cache(lb_id, model_id):
 
 
 def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=None):
-    PROMPT_VERSION = 2
+    PROMPT_VERSION = 3
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path, 'w') as f:
@@ -6086,11 +6086,29 @@ def _llm_colab_notebook(lb, model_id_hint=None):
             f"don't have, and you'll see KeyError: 'architecture'.\n"
             f"  * For LLMs / text generation: `AutoModelForCausalLM` or "
             f"`AutoModelForSeq2SeqLM` + `AutoTokenizer`.\n"
+            f"- IMPORTANT processor fallback for vision models: many HF Hub "
+            f"vision repos (including MambaVision, some custom classifiers) "
+            f"DO NOT ship a `preprocessor_config.json`, so AutoImageProcessor "
+            f"raises OSError. Wrap the processor load in try/except; on "
+            f"failure, fall back to a stock ImageNet torchvision pipeline:\n"
+            f"    from torchvision import transforms\n"
+            f"    _IMAGENET_TFM = transforms.Compose([\n"
+            f"        transforms.Resize(256),\n"
+            f"        transforms.CenterCrop(224),\n"
+            f"        transforms.ToTensor(),\n"
+            f"        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),\n"
+            f"    ])\n"
+            f"  Then in my_model: if processor is None, use "
+            f"`pixel_values = _IMAGENET_TFM(img).unsqueeze(0)` instead of "
+            f"the processor call. This is the common fallback that works "
+            f"for the vast majority of ImageNet-trained classifiers.\n"
             f"- Wrap the model load in a try/except. On failure, print the "
             f"error and a one-line hint: 'If timm raised KeyError architecture, "
             f"swap to transformers.AutoModel.from_pretrained(..., trust_remote_code=True). "
-            f"If transformers raised about a custom processor, set "
-            f"trust_remote_code=True.'\n"
+            f"If AutoImageProcessor raised OSError about preprocessor_config, "
+            f"the fallback torchvision pipeline kicks in automatically — "
+            f"verify by checking that a few outputs look right. If "
+            f"transformers raised about custom code, ensure trust_remote_code=True.'\n"
             f"- The my_model(sample_name, inputs) function runs inference end-to-end "
             f"and returns a dict whose keys match PRED_FIELDS exactly. The default "
             f"body is RUNNABLE — the user shouldn't need to edit it for the metric "
