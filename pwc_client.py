@@ -71,11 +71,16 @@ def _ensure_snapshot():
     )
 
 
-def _walk_task_into(cur, t, dataset_ids):
+def _walk_task_into(cur, t, dataset_ids, counters=None):
     """Insert benchmarks for one task entry + its subtasks. `cur` is
     a sqlite cursor; `dataset_ids` is a name→id map mutated in-place
     so the same dataset (showing up under multiple tasks) gets one
-    row only."""
+    row only.
+
+    `counters` is an optional dict the caller passes in to track
+    progress at insert granularity (one parquet row can recursively
+    walk 100+ subtasks; the user-visible progress is more useful when
+    it ticks per evaluation insert than per top-level row)."""
     if not isinstance(t, dict):
         return
     task_name = (t.get('task') or '').strip()
@@ -125,8 +130,18 @@ def _walk_task_into(cur, t, dataset_ids):
              json.dumps(metrics),
              json.dumps(slim_rows)),
         )
+        if counters is not None:
+            counters['evals'] = counters.get('evals', 0) + 1
+            cb = counters.get('progress_cb')
+            if cb is not None and counters['evals'] % 100 == 0:
+                cb(
+                    f"Walking shard {counters.get('shard_idx', '?')}/"
+                    f"{counters.get('n_shards', '?')}: "
+                    f"{counters['evals']} benchmarks indexed, "
+                    f"{len(dataset_ids)} unique datasets"
+                )
     for sub in (t.get('subtasks') or []):
-        _walk_task_into(cur, sub, dataset_ids)
+        _walk_task_into(cur, sub, dataset_ids, counters=counters)
 
 
 def _build_index_into(idx_path, snap_dir, progress_cb=None):
@@ -183,40 +198,44 @@ def _build_index_into(idx_path, snap_dir, progress_cb=None):
         dataset_ids = {}
         # batch_size=1 keeps peak memory bounded — each row in this
         # parquet is a whole task with all its datasets + SOTA tables,
-        # which can be tens of MB on its own.
+        # which can be tens of MB on its own. Progress counters live
+        # in a single dict so the recursive walker can tick per-insert
+        # rather than per-parquet-row (one row may recursively process
+        # 100+ subtask benchmarks; per-row progress feels frozen).
         import gc as _gc
         n_shards = len(parquet_files)
+        counters = {'evals': 0, 'shard_idx': 0, 'n_shards': n_shards,
+                    'progress_cb': progress_cb}
         for shard_idx, pf in enumerate(parquet_files, 1):
-            progress_cb(f"Walking shard {shard_idx}/{n_shards}: 0 tasks indexed")
+            counters['shard_idx'] = shard_idx
+            progress_cb(
+                f"Walking shard {shard_idx}/{n_shards}: "
+                f"{counters['evals']} benchmarks indexed, "
+                f"{len(dataset_ids)} unique datasets"
+            )
             pq_file = pq.ParquetFile(pf)
-            n_rows = pq_file.metadata.num_rows or 1
-            tasks_in_shard = 0
             for batch in pq_file.iter_batches(batch_size=1):
                 rows = batch.to_pylist()
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
-                    _walk_task_into(cur, row, dataset_ids)
-                    tasks_in_shard += 1
+                    _walk_task_into(cur, row, dataset_ids, counters=counters)
                 conn.commit()
                 # Drop the batch + collect early so the next iteration
                 # doesn't sit on top of the previous batch's reference graph.
                 del rows, batch
                 _gc.collect()
-                if tasks_in_shard % 25 == 0:
-                    progress_cb(
-                        f"Walking shard {shard_idx}/{n_shards}: "
-                        f"{tasks_in_shard}/{n_rows} tasks "
-                        f"({len(dataset_ids)} datasets so far)"
-                    )
             progress_cb(
                 f"Shard {shard_idx}/{n_shards} done — "
-                f"{tasks_in_shard} tasks, {len(dataset_ids)} datasets cumulative"
+                f"{counters['evals']} benchmarks, {len(dataset_ids)} datasets"
             )
         progress_cb("Finalizing index (ANALYZE)…")
         cur.execute("ANALYZE")
         conn.commit()
-        progress_cb(f"Done — {len(dataset_ids)} datasets indexed")
+        progress_cb(
+            f"Done — {len(dataset_ids)} datasets, "
+            f"{counters['evals']} benchmarks indexed"
+        )
     finally:
         conn.close()
     os.replace(tmp_path, idx_path)
