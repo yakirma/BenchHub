@@ -1105,12 +1105,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
-            <table class="table table-sm small mb-0 align-middle">
+            <table class="table table-sm small mb-0 align-middle" id="mirrored-table">
                 <thead class="table-light">
                     <tr>
-                        <th class="ps-3">Paper / model</th>
+                        <th class="ps-3 mirrored-sort-h" data-sort-kind="text"
+                            data-col="0" style="cursor: pointer;">
+                            Paper / model
+                            <i class="bi bi-arrow-down-up small text-body-secondary"></i>
+                        </th>
                         {% for m in selected_metrics %}
-                        <th>{{ metric_labels.get(m, m) }}</th>
+                        {% set lm_obj = metric_to_lm.get(m) %}
+                        <th class="mirrored-sort-h" data-sort-kind="num"
+                            data-col="{{ loop.index }}"
+                            data-default-dir="{{ 'asc' if lm_obj and lm_obj.sort_direction == 'lower_is_better' else 'desc' }}"
+                            style="cursor: pointer;">
+                            {{ metric_labels.get(m, m) }}
+                            <i class="bi bi-arrow-down-up small text-body-secondary"></i>
+                        </th>
                         {% endfor %}
                         <th>Source</th>
                     </tr>
@@ -1156,6 +1167,80 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
     </div>
 </div>
+<script>
+// Click a metric column header to sort mirrored rows by that metric.
+// Click again to flip direction. '—' cells always sink to the bottom.
+// Default direction comes from the LB metric's sort_direction (lower-is-
+// better metrics default to ascending), so the first click on any
+// numeric column shows the canonical "best first" ordering.
+(function () {
+    const table = document.getElementById('mirrored-table');
+    if (!table) return;
+    const tbody = table.querySelector('tbody');
+    const headers = table.querySelectorAll('.mirrored-sort-h');
+
+    let current = {col: null, dir: null};
+
+    function parseCell(cell, kind) {
+        const text = (cell.textContent || '').trim();
+        if (kind === 'num') {
+            // '—' / empty / '-' all become +Infinity so they sink in
+            // both ascending and descending sorts (we flip the
+            // sentinel below depending on direction).
+            if (!text || text === '—' || text === '-') return null;
+            const v = parseFloat(text);
+            return Number.isNaN(v) ? null : v;
+        }
+        return text.toLowerCase();
+    }
+
+    function sortBy(col, kind, dir) {
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const sentinel = dir === 'asc' ? Infinity : -Infinity;
+        rows.sort((a, b) => {
+            const av = parseCell(a.children[col], kind);
+            const bv = parseCell(b.children[col], kind);
+            const aN = av === null ? sentinel : av;
+            const bN = bv === null ? sentinel : bv;
+            if (aN < bN) return dir === 'asc' ? -1 : 1;
+            if (aN > bN) return dir === 'asc' ? 1 : -1;
+            return 0;
+        });
+        rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function updateIcons(activeCol, dir) {
+        headers.forEach(h => {
+            const icon = h.querySelector('i');
+            if (!icon) return;
+            const col = parseInt(h.dataset.col, 10);
+            if (col === activeCol) {
+                icon.className = 'bi small text-body ' +
+                    (dir === 'asc' ? 'bi-sort-down-alt' : 'bi-sort-up-alt');
+            } else {
+                icon.className = 'bi bi-arrow-down-up small text-body-secondary';
+            }
+        });
+    }
+
+    headers.forEach(h => {
+        h.addEventListener('click', () => {
+            const col = parseInt(h.dataset.col, 10);
+            const kind = h.dataset.sortKind || 'text';
+            let dir;
+            if (current.col === col) {
+                dir = current.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                // First click: use the metric's natural direction (best first).
+                dir = h.dataset.defaultDir || (kind === 'num' ? 'desc' : 'asc');
+            }
+            sortBy(col, kind, dir);
+            updateIcons(col, dir);
+            current = {col, dir};
+        });
+    });
+})();
+</script>
 {% endif %}
 
 <!-- Add/Edit Tags Modal -->
