@@ -49,7 +49,12 @@ trap shutdown TERM INT
 WORKER_PID=$!
 
 # Gunicorn — the canonical user-facing process. Its exit ends the VM.
-gunicorn -b 0.0.0.0:8080 --workers 2 --timeout 120 app:app &
+# --timeout 360: a few admin endpoints (SOTA notebook generation
+# in particular) call Claude with max_tokens=16k, which can run 60-180 s.
+# Default 30 s would SIGKILL the worker mid-call and the user gets a
+# generic 502. The two workers mean other requests aren't blocked
+# while one's tied up on the slow path.
+gunicorn -b 0.0.0.0:8080 --workers 2 --timeout 360 app:app &
 WEB_PID=$!
 
 # Block on gunicorn ONLY. If celery's retry loop dies, ignore — web stays up.

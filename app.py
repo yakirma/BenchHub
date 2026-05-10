@@ -5957,7 +5957,11 @@ def _llm_colab_notebook(lb, model_id_hint=None):
                 ],
                 "messages": [{"role": "user", "content": user_msg}],
             },
-            timeout=60,
+            # SOTA-mode notebooks generate ~12-15k tokens of model
+            # boilerplate; the regular notebook is ~3k. Scale the
+            # timeout proportionally so neither hits a read-timeout
+            # in the steady-state case.
+            timeout=300 if model_id_hint else 60,
         )
         resp.raise_for_status()
         body = resp.json()
