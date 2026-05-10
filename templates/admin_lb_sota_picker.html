@@ -100,19 +100,24 @@
                         </thead>
                         <tbody>
                             {% for m in models %}
-                            <tr class="sota-row" style="cursor: pointer;" data-model="{{ m.id }}">
-                                <td class="ps-3 font-monospace">
-                                    <a href="https://huggingface.co/{{ m.id }}" target="_blank" rel="noopener"
-                                       class="text-decoration-none"
-                                       onclick="event.stopPropagation();">{{ m.id }}
-                                       <i class="bi bi-box-arrow-up-right small"></i>
-                                    </a>
-                                </td>
+                            <tr class="sota-row" style="cursor: pointer;" data-model="{{ m.id }}"
+                                title="Click to fill the input above. Use the ↗ icon to open the HF page in a new tab.">
+                                <td class="ps-3 font-monospace">{{ m.id }}</td>
                                 <td><span class="badge text-bg-light border">{{ m.library_name or '—' }}</span></td>
                                 <td class="text-end font-monospace">{{ '{:,}'.format(m.downloads) }}</td>
                                 <td class="text-end font-monospace">{{ m.likes }}</td>
                                 <td class="text-body-secondary">{{ m.last_modified or '—' }}</td>
-                                <td><i class="bi bi-arrow-up-circle text-primary"></i></td>
+                                <td class="text-center">
+                                    <a href="https://huggingface.co/{{ m.id }}"
+                                       target="_blank" rel="noopener"
+                                       class="text-body-secondary text-decoration-none small me-2 sota-open-link"
+                                       title="Open {{ m.id }} on HuggingFace (new tab)"
+                                       onclick="event.stopPropagation();">
+                                        <i class="bi bi-box-arrow-up-right"></i>
+                                    </a>
+                                    <i class="bi bi-arrow-up-circle text-primary"
+                                       title="Pick this model"></i>
+                                </td>
                             </tr>
                             {% endfor %}
                         </tbody>
