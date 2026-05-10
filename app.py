@@ -5727,85 +5727,25 @@ _HF_SOTA_CACHE = {}
 
 
 def _llm_sota_colab_notebook(lb, model_id):
-    """Same as _llm_colab_notebook, but tells Claude to load + run a
-    specific HuggingFace model end-to-end. Falls back to None on any
-    failure (caller flashes + redirects)."""
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        return None
-    # Reuse the regular notebook prompt + body, then ask Claude to
-    # additionally specialize the my_model() body to load the chosen
-    # HF model. The simplest path: take the existing notebook and ask
-    # the LLM to rewrite the model cell. We reach into Claude with a
-    # focused prompt instead so the result is one self-contained NB.
-    base_nb = _llm_colab_notebook(lb)
-    if not base_nb:
-        return None
-    addendum_prompt = (
-        "You're given a BenchHub Colab notebook JSON and a HuggingFace "
-        "model id. Rewrite the notebook so the `my_model` cell loads "
-        "and runs that specific model end-to-end. Keep all other cells "
-        "(boilerplate, dataset download, ZIP/upload) UNCHANGED.\n\n"
-        "Hard requirements:\n"
-        "- Output ONLY the rewritten notebook JSON, no fences, no prose.\n"
-        "- The model cell pip-installs the right packages (transformers, "
-        "torch, pillow, etc.) at the top with `!pip install -q ...`.\n"
-        "- Loads the model + processor/tokenizer from the given id.\n"
-        "- The `my_model(sample_name, inputs)` function calls the model "
-        "and returns a dict matching `PRED_FIELDS` exactly.\n"
-        "- Add a one-line markdown cell ABOVE the model cell stating "
-        "the chosen HF model id with a link to its HF page.\n"
-        "- Default to CPU. If the model truly needs GPU, mention it in "
-        "the markdown (don't pre-set runtime metadata)."
-    )
-    user_msg = json.dumps({
-        'model_id': model_id,
-        'leaderboard_name': lb.name,
-        'notebook': base_nb,
-    }, default=str)[:60000]
-    try:
-        import requests as _r
-        resp = _r.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 16000,
-                "system": [
-                    {"type": "text", "text": addendum_prompt,
-                     "cache_control": {"type": "ephemeral"}},
-                ],
-                "messages": [{"role": "user", "content": user_msg}],
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        text = ''.join(
-            block.get('text', '')
-            for block in body.get('content', [])
-            if block.get('type') == 'text'
-        ).strip()
-        if text.startswith('```'):
-            text = re.sub(r'^```(?:json)?\s*', '', text)
-            text = re.sub(r'\s*```$', '', text)
-        # Validate it's still notebook-shaped before persisting.
-        parsed = json.loads(text)
-        if not isinstance(parsed, dict) or 'cells' not in parsed:
-            return None
-        return text
-    except Exception as e:
-        print(f"_llm_sota_colab_notebook({model_id!r}) failed: {e}")
-        return None
+    """Generate a BenchHub Colab notebook tailored to a specific
+    HuggingFace model. Single Claude call with the same prompt the
+    generic notebook uses + an extra "load this exact model" hint —
+    NOT a base-then-rewrite, which doubles the token bill and tends to
+    blow past max_tokens for non-trivial notebooks. Falls back to None
+    on any failure; the caller flashes + redirects with a useful
+    message."""
+    return _llm_colab_notebook(lb, model_id_hint=model_id)
 
 
-def _llm_colab_notebook(lb):
+def _llm_colab_notebook(lb, model_id_hint=None):
     """Ask Claude to write the notebook. Returns the .ipynb JSON
-    string on success, None on any failure."""
+    string on success, None on any failure.
+
+    `model_id_hint`: optional HF model id. When set, the user_msg
+    includes "use exactly this HF model" instructions and we bump
+    max_tokens because the model cell has more lines (pip install,
+    processor/tokenizer load, inference loop). Single LLM call —
+    avoids the base-then-rewrite shape that blew the token cap."""
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         return None
@@ -5886,6 +5826,25 @@ def _llm_colab_notebook(lb):
         f"Metric output names expected: {json.dumps(metric_names)}\n"
         f"Sample-field schema (first sample): {json.dumps(sample_fields)}\n"
     )
+    if model_id_hint:
+        user_msg += (
+            f"\n# SOTA model directive\n"
+            f"Pre-load THIS HuggingFace model in the my_model cell — "
+            f"the user shouldn't have to fill in the model body, just run:\n"
+            f"  HF_MODEL_ID = {model_id_hint!r}\n"
+            f"Hard requirements when this directive is set:\n"
+            f"- Markdown cell at the top mentions {model_id_hint!r} with a "
+            f"link to https://huggingface.co/{model_id_hint}.\n"
+            f"- The my_model cell starts with `!pip install -q transformers torch pillow timm` "
+            f"  (drop timm if not a timm model; add datasets/sentencepiece/accelerate as needed).\n"
+            f"- Loads the model + the right processor/tokenizer/feature extractor "
+            f"  via `from transformers import ...` or `timm.create_model(...)`.\n"
+            f"- The my_model(sample_name, inputs) function runs inference end-to-end "
+            f"  and returns a dict whose keys match PRED_FIELDS exactly. The default "
+            f"  body is RUNNABLE — the user shouldn't need to edit it for the metric "
+            f"  to score.\n"
+            f"- Default to CPU; mention in the markdown if GPU would speed it up.\n"
+        )
     try:
         import requests as _r
         resp = _r.post(
@@ -5897,7 +5856,11 @@ def _llm_colab_notebook(lb):
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 4000,
+                # SOTA-mode notebooks have an extra pip-install + model-load
+                # cell with import boilerplate, so 4k tokens regularly truncates
+                # mid-output. Bump only when the directive is set; the regular
+                # generic notebook fits comfortably in 4k.
+                "max_tokens": 16000 if model_id_hint else 4000,
                 "system": [
                     {"type": "text", "text": system_prompt,
                      "cache_control": {"type": "ephemeral"}},
@@ -5917,12 +5880,28 @@ def _llm_colab_notebook(lb):
             text = re.sub(r'^```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```$', '', text)
         # Validate it parses as JSON and is shaped like a notebook.
-        nb = json.loads(text)
+        try:
+            nb = json.loads(text)
+        except json.JSONDecodeError as je:
+            print(
+                f"_llm_colab_notebook(model_id_hint={model_id_hint!r}) "
+                f"got unparseable JSON ({je}); "
+                f"first 300 chars: {text[:300]!r}"
+            )
+            return None
         if not isinstance(nb, dict) or 'cells' not in nb or 'nbformat' not in nb:
+            print(
+                f"_llm_colab_notebook(model_id_hint={model_id_hint!r}) "
+                f"returned JSON without notebook shape; "
+                f"keys: {list(nb.keys()) if isinstance(nb, dict) else type(nb).__name__}"
+            )
             return None
         return text
     except Exception as e:
-        print(f"_llm_colab_notebook failed: {e}")
+        print(
+            f"_llm_colab_notebook(model_id_hint={model_id_hint!r}) "
+            f"raised {type(e).__name__}: {e}"
+        )
         return None
 
 
