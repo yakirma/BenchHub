@@ -193,6 +193,8 @@
             border-color: var(--bs-primary) !important;
         }
     </style>
+    {# Per-page <head> additions (extra meta tags, refresh hints, etc). #}
+    {% block head_extra %}{% endblock %}
 </head>
 
 <body class="d-flex flex-column min-vh-100">

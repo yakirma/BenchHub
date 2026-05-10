@@ -219,10 +219,35 @@ def test_pwc_search_lists_results_when_ready(client, db_session, login_as):
 def test_pwc_index_build_route_enqueues_task(client, db_session, login_as):
     admin = _mk_admin('build_admin@bench.local')
     login_as(admin)
-    with patch('tasks.build_pwc_index') as mock_task:
+    with patch('pwc_client.index_status', return_value='absent'), \
+         patch('pwc_client.begin_build_marker', return_value=True), \
+         patch('tasks.build_pwc_index') as mock_task:
         r = client.post('/admin/pwc/index/build', follow_redirects=False)
     assert r.status_code in (302, 303)
     mock_task.delay.assert_called_once()
+
+
+def test_pwc_index_build_is_idempotent_when_already_building(
+    client, db_session, login_as,
+):
+    """Clicking Build twice within a minute shouldn't enqueue a second task."""
+    admin = _mk_admin('idem_admin@bench.local')
+    login_as(admin)
+    with patch('pwc_client.index_status', return_value='building'), \
+         patch('tasks.build_pwc_index') as mock_task:
+        r = client.post('/admin/pwc/index/build', follow_redirects=True)
+    mock_task.delay.assert_not_called()
+    assert b'already in progress' in r.data
+
+
+def test_pwc_index_build_is_idempotent_when_ready(client, db_session, login_as):
+    admin = _mk_admin('ready_admin@bench.local')
+    login_as(admin)
+    with patch('pwc_client.index_status', return_value='ready'), \
+         patch('tasks.build_pwc_index') as mock_task:
+        r = client.post('/admin/pwc/index/build', follow_redirects=True)
+    mock_task.delay.assert_not_called()
+    assert b'already built' in r.data
 
 
 def test_pwc_index_build_requires_admin(client, db_session, login_as):
@@ -230,6 +255,95 @@ def test_pwc_index_build_requires_admin(client, db_session, login_as):
     login_as(user)
     r = client.post('/admin/pwc/index/build')
     assert r.status_code == 403
+
+
+def test_pwc_search_renders_progress_line(client, db_session, login_as):
+    admin = _mk_admin('progress_admin@bench.local')
+    login_as(admin)
+    with patch('pwc_client.index_status', return_value='building'), \
+         patch('pwc_client.index_progress_message',
+               return_value='Walking shard 2/4: 73 tasks indexed'):
+        r = client.get('/admin/pwc/import')
+    assert b'Walking shard 2/4: 73 tasks indexed' in r.data
+
+
+def test_begin_build_marker_skips_when_index_exists(tmp_path, monkeypatch):
+    """begin_build_marker must not stomp on a finished build."""
+    import pwc_client as pc
+    # Point at a tmp cache dir + drop a fake "finished" sqlite file.
+    monkeypatch.setattr(pc, '_cache_dir', lambda: str(tmp_path))
+    pc._set_index_path_for_tests(str(tmp_path / 'idx.sqlite'))
+    try:
+        (tmp_path / 'idx.sqlite').write_bytes(b'stub')
+        assert pc.begin_build_marker() is False
+        assert not (tmp_path / 'index.building.tmp').exists()
+    finally:
+        pc._reset_index_path_for_tests()
+
+
+def test_begin_build_marker_creates_when_absent(tmp_path, monkeypatch):
+    import pwc_client as pc
+    monkeypatch.setattr(pc, '_cache_dir', lambda: str(tmp_path))
+    pc._set_index_path_for_tests(str(tmp_path / 'idx.sqlite'))
+    try:
+        assert pc.begin_build_marker() is True
+        assert (tmp_path / 'index.building.tmp').exists()
+        # Second call no-ops while marker is fresh.
+        assert pc.begin_build_marker() is False
+    finally:
+        pc._reset_index_path_for_tests()
+
+
+def test_begin_build_marker_overwrites_stale(tmp_path, monkeypatch):
+    """A marker older than the staleness window should be treated as
+    a crashed worker and overwritten on the next Build click."""
+    import os, time
+    import pwc_client as pc
+    monkeypatch.setattr(pc, '_cache_dir', lambda: str(tmp_path))
+    pc._set_index_path_for_tests(str(tmp_path / 'idx.sqlite'))
+    try:
+        marker = tmp_path / 'index.building.tmp'
+        marker.write_text('queued')
+        # Make it 2 hours old.
+        old = time.time() - 7200
+        os.utime(str(marker), (old, old))
+        assert pc.begin_build_marker() is True
+        # Marker recreated with fresh mtime.
+        assert (time.time() - os.path.getmtime(str(marker))) < 5
+    finally:
+        pc._reset_index_path_for_tests()
+
+
+def test_build_index_into_emits_progress(tmp_path, monkeypatch):
+    """The streaming build calls progress_cb at every shard boundary
+    and at finalize-time, so the web tier always has a fresh line
+    to render."""
+    pa = pytest.importorskip('pyarrow')
+    pq = pytest.importorskip('pyarrow.parquet')
+    snap = tmp_path / 'snap'; snap.mkdir()
+    # One parquet shard with one row that has one (task, dataset).
+    table = pa.table({
+        'task': pa.array(['Image Classification']),
+        'categories': pa.array([[]]),
+        'description': pa.array(['']),
+        'subtasks': pa.array([[]]),
+        'synonyms': pa.array([[]]),
+        'source_link': pa.array([None], type=pa.string()),
+        'datasets': pa.array([[
+            {'dataset': 'CIFAR-10', 'description': '', 'dataset_links': [],
+             'subdatasets': [], 'dataset_citations': [],
+             'sota': {'metrics': ['Accuracy'],
+                      'rows': [{'model_name': 'M', 'paper_title': '', 'paper_url': '',
+                                'paper_date': '', 'metrics': {'Accuracy': '99.0'}}]}}
+        ]]),
+    })
+    pq.write_table(table, str(snap / 'shard.parquet'))
+    msgs = []
+    import pwc_client as pc
+    pc._build_index_into(str(tmp_path / 'idx.sqlite'), str(snap),
+                         progress_cb=msgs.append)
+    assert any('Walking shard 1/1' in m for m in msgs)
+    assert any('Done' in m for m in msgs)
 
 
 # ---------------------------------------------------------------------------

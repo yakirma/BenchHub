@@ -129,11 +129,19 @@ def _walk_task_into(cur, t, dataset_ids):
         _walk_task_into(cur, sub, dataset_ids)
 
 
-def _build_index_into(idx_path, snap_dir):
+def _build_index_into(idx_path, snap_dir, progress_cb=None):
     """Walk every parquet shard row-by-row in batches, write to a
     fresh SQLite at idx_path. Bounded peak memory: one row group +
-    SQLite's commit buffer."""
+    SQLite's commit buffer.
+
+    progress_cb: optional `(msg) -> None` that the build invokes at
+    every significant step so the web tier can show progress. The
+    Celery wrapper passes pwc_client.update_progress; tests pass a
+    list-append so they can assert on the sequence of stages.
+    """
     import pyarrow.parquet as pq
+    if progress_cb is None:
+        progress_cb = lambda _msg: None
     parquet_files = []
     for root, _, files in os.walk(snap_dir):
         for f in files:
@@ -177,41 +185,85 @@ def _build_index_into(idx_path, snap_dir):
         # parquet is a whole task with all its datasets + SOTA tables,
         # which can be tens of MB on its own.
         import gc as _gc
-        for pf in parquet_files:
+        n_shards = len(parquet_files)
+        for shard_idx, pf in enumerate(parquet_files, 1):
+            progress_cb(f"Walking shard {shard_idx}/{n_shards}: 0 tasks indexed")
             pq_file = pq.ParquetFile(pf)
+            n_rows = pq_file.metadata.num_rows or 1
+            tasks_in_shard = 0
             for batch in pq_file.iter_batches(batch_size=1):
                 rows = batch.to_pylist()
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
                     _walk_task_into(cur, row, dataset_ids)
+                    tasks_in_shard += 1
                 conn.commit()
                 # Drop the batch + collect early so the next iteration
                 # doesn't sit on top of the previous batch's reference graph.
                 del rows, batch
                 _gc.collect()
+                if tasks_in_shard % 25 == 0:
+                    progress_cb(
+                        f"Walking shard {shard_idx}/{n_shards}: "
+                        f"{tasks_in_shard}/{n_rows} tasks "
+                        f"({len(dataset_ids)} datasets so far)"
+                    )
+            progress_cb(
+                f"Shard {shard_idx}/{n_shards} done — "
+                f"{tasks_in_shard} tasks, {len(dataset_ids)} datasets cumulative"
+            )
+        progress_cb("Finalizing index (ANALYZE)…")
         cur.execute("ANALYZE")
         conn.commit()
+        progress_cb(f"Done — {len(dataset_ids)} datasets indexed")
     finally:
         conn.close()
     os.replace(tmp_path, idx_path)
 
 
+_BUILD_MARKER = 'index.building.tmp'
+_BUILD_PROGRESS = 'index.progress.txt'
+_BUILD_ERROR = 'index.error.txt'
+_BUILD_STALE_AFTER_SECONDS = 30 * 60  # 30 min — longer than any realistic build
+
+
+def _build_marker_path():
+    return os.path.join(_cache_dir(), _BUILD_MARKER)
+
+
+def _build_progress_path():
+    return os.path.join(_cache_dir(), _BUILD_PROGRESS)
+
+
+def _build_error_path():
+    return os.path.join(_cache_dir(), _BUILD_ERROR)
+
+
+def _build_marker_is_fresh():
+    """Marker file's mtime is within the freshness window. A crashed
+    Celery worker can leave a stale marker; treat anything older than
+    the build's normal upper bound as no longer building."""
+    p = _build_marker_path()
+    try:
+        import time
+        return (time.time() - os.path.getmtime(p)) < _BUILD_STALE_AFTER_SECONDS
+    except OSError:
+        return False
+
+
 def index_status():
-    """Lightweight check usable from the web tier without ever touching
-    the parquet files. Returns one of:
-      'ready'    — SQLite index is on disk; queries are fast.
-      'building' — the Celery `build_pwc_index` task is in progress.
-      'error'    — a previous build failed; the message is readable
-                   from `index_error_message()`.
-      'absent'   — no index, no build in progress.
+    """Lightweight stat-only status — never touches parquet/sqlite.
+    Returns one of {ready, building, error, absent}. Stale markers
+    (older than _BUILD_STALE_AFTER_SECONDS) are treated as no longer
+    building, so a crashed worker doesn't leave the UI stuck.
     """
     cache = _cache_dir()
     if os.path.exists(_index_path()):
         return 'ready'
-    if os.path.exists(os.path.join(cache, 'index.building.tmp')):
+    if os.path.exists(_build_marker_path()) and _build_marker_is_fresh():
         return 'building'
-    if os.path.exists(os.path.join(cache, 'index.error.txt')):
+    if os.path.exists(os.path.join(cache, _BUILD_ERROR)):
         return 'error'
     return 'absent'
 
@@ -219,10 +271,77 @@ def index_status():
 def index_error_message():
     """Read the last failure message left by the Celery build task."""
     try:
-        with open(os.path.join(_cache_dir(), 'index.error.txt')) as f:
+        with open(_build_error_path()) as f:
             return f.read().strip()
     except OSError:
         return ''
+
+
+def index_progress_message():
+    """Latest progress line written by the build task (if any).
+    Empty string when nothing has been reported yet — used by the
+    /admin/pwc/import status banner so admins can see what stage
+    the build is on."""
+    try:
+        with open(_build_progress_path()) as f:
+            return f.read().strip()[:300]
+    except OSError:
+        return ''
+
+
+def begin_build_marker():
+    """Mark a build as in-progress from the web tier, BEFORE enqueueing
+    Celery. Race-window with celery picking up the task otherwise lets
+    the redirect render 'absent' while a build is actually queued.
+
+    Returns True when a fresh marker was created (caller should enqueue
+    the task), False when one was already there (caller should treat
+    this as 'already building' and skip enqueueing)."""
+    marker = _build_marker_path()
+    cache = _cache_dir()
+    if os.path.exists(_index_path()):
+        return False
+    if os.path.exists(marker) and _build_marker_is_fresh():
+        return False
+    # Stale or absent: (re)create.
+    try:
+        os.remove(_build_error_path())
+    except OSError:
+        pass
+    try:
+        os.remove(_build_progress_path())
+    except OSError:
+        pass
+    os.makedirs(cache, exist_ok=True)
+    with open(marker, 'w') as f:
+        f.write('queued')
+    return True
+
+
+def update_progress(msg):
+    """Build task writes its current stage here. Best-effort — failures
+    are silent (progress reporting must never block the build)."""
+    try:
+        with open(_build_progress_path(), 'w') as f:
+            f.write(msg)
+    except OSError:
+        pass
+    # Touch the marker so the staleness check stays happy on long builds.
+    try:
+        os.utime(_build_marker_path(), None)
+    except OSError:
+        pass
+
+
+def clear_build_marker():
+    """Called by the build task on success or failure to free the marker
+    + progress files. The error.txt is left in place when the build
+    failed so index_status() can return 'error'."""
+    for p in (_build_marker_path(), _build_progress_path()):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def _conn():

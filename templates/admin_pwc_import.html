@@ -2,6 +2,12 @@
 
 {% block title %}Import from Papers With Code — admin{% endblock %}
 
+{% block head_extra %}
+{% if index_status == 'building' %}
+<meta http-equiv="refresh" content="20">
+{% endif %}
+{% endblock %}
+
 {% block content %}
 <div class="container py-4" style="max-width: 1000px;">
     <h1 class="h3 fw-bold mb-1">
@@ -31,11 +37,21 @@
             </h2>
             <p class="small text-body-secondary mb-2">
                 Downloading the archive shards from HuggingFace and walking
-                them into a local SQLite. Usually 1-3 minutes. Refresh this
-                page in a bit; search will light up automatically.
+                them into a local SQLite. Usually 1-3 minutes; this page
+                auto-refreshes every 20 seconds.
             </p>
+            {% if index_progress %}
+            <div class="font-monospace small bg-body-tertiary border rounded px-2 py-1 mb-2">
+                <i class="bi bi-circle-fill text-primary me-1" style="font-size:0.5rem;vertical-align:middle;"></i>
+                {{ index_progress }}
+            </div>
+            {% else %}
+            <p class="small text-body-secondary fst-italic mb-2">
+                Waiting for the build worker to pick up the task…
+            </p>
+            {% endif %}
             <a href="{{ url_for('admin_pwc_import') }}" class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                <i class="bi bi-arrow-clockwise me-1"></i>Refresh now
             </a>
             {% elif index_status == 'error' %}
             <h2 class="h6 fw-semibold mb-1">

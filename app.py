@@ -2154,9 +2154,12 @@ def admin_pwc_import():
     """
     if not is_admin(g.current_user):
         abort(403)
-    from pwc_client import index_status, index_error_message
+    from pwc_client import (
+        index_status, index_error_message, index_progress_message,
+    )
     status = index_status()
     err_message = index_error_message() if status == 'error' else ''
+    progress = index_progress_message() if status == 'building' else ''
     q = (request.args.get('q') or '').strip()
     rows = []
     error = None
@@ -2170,6 +2173,7 @@ def admin_pwc_import():
         'admin_pwc_import.html',
         q=q, rows=rows, error=error,
         index_status=status, index_error=err_message,
+        index_progress=progress,
     )
 
 
@@ -2177,12 +2181,36 @@ def admin_pwc_import():
 @login_required
 def admin_pwc_index_build():
     """Enqueue the Celery task that downloads + indexes the PWC archive.
-    Returns immediately to a "indexing in progress" page."""
+    Idempotent: if a build is already in progress (or the index already
+    exists), no second task is queued and the flash reflects that. The
+    marker file gets written from the web tier BEFORE enqueueing so
+    the redirect-and-render shows 'building' immediately rather than
+    a brief 'absent' window while celery picks up the task."""
     if not is_admin(g.current_user):
         abort(403)
+    from pwc_client import index_status, begin_build_marker
+    pre = index_status()
+    if pre == 'ready':
+        flash("PWC index is already built. Search away.", "info")
+        return redirect(url_for('admin_pwc_import'))
+    if pre == 'building':
+        flash(
+            "An index build is already in progress. Refresh in a minute "
+            "to see updated progress.", "info",
+        )
+        return redirect(url_for('admin_pwc_import'))
+    if not begin_build_marker():
+        flash(
+            "Couldn't claim the build marker — another build may have "
+            "started just now. Refresh to see status.", "warning",
+        )
+        return redirect(url_for('admin_pwc_import'))
     import tasks as _tasks
     _tasks.build_pwc_index.delay()
-    flash("PWC index build started. This usually takes 1-3 minutes.", "info")
+    flash(
+        "PWC index build queued. Page will show progress; refresh "
+        "every ~30 seconds while it's running.", "info",
+    )
     return redirect(url_for('admin_pwc_import'))
 
 

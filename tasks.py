@@ -429,45 +429,38 @@ def process_submissions_batch_sequential(self, submission_ids, sample_filters=No
              time_limit=1800, soft_time_limit=1500)
 def build_pwc_index(self):
     """Build the Papers With Code static-archive index. Out-of-band so
-    the web request that triggered it doesn't time out (and doesn't OOM
-    a gunicorn worker on the index build's transient heap).
+    the web request doesn't time out / OOM. Reports progress to a file
+    the web tier reads via pwc_client.index_progress_message().
 
-    Marker file convention:
-      pwc_archive/index.building.tmp  → exists while running
-      pwc_archive/index.error.txt     → last failure message
-      pwc_archive/index.v1.sqlite     → the actual index when ready
-    """
+    Caller (the route handler) is expected to have already called
+    pwc_client.begin_build_marker() — that's the de-duplication point
+    for "user clicked Build twice in a row." This task just executes;
+    it doesn't decide whether one was already running."""
     from pwc_client import (
-        _cache_dir, _index_path, _ensure_snapshot, _build_index_into,
+        _index_path, _ensure_snapshot, _build_index_into,
+        update_progress, clear_build_marker, _build_error_path,
     )
-    cache = _cache_dir()
-    marker = os.path.join(cache, 'index.building.tmp')
-    err_path = os.path.join(cache, 'index.error.txt')
     if os.path.exists(_index_path()):
         logger.info("PWC index already exists; skipping build.")
+        clear_build_marker()
         return
     try:
-        with open(marker, 'w') as f:
-            f.write(str(os.getpid()))
-        if os.path.exists(err_path):
-            os.remove(err_path)
-        logger.info("PWC: ensuring snapshot…")
+        update_progress("Downloading PWC archive shards from HuggingFace…")
         snap = _ensure_snapshot()
         logger.info(f"PWC: snapshot at {snap}; building index…")
-        _build_index_into(_index_path(), snap)
+        update_progress("Snapshot ready — opening parquet shards…")
+        _build_index_into(_index_path(), snap, progress_cb=update_progress)
         logger.info("PWC: index built.")
+        update_progress("Done.")
     except Exception as e:
         logger.exception(f"PWC index build failed: {e}")
         try:
-            with open(err_path, 'w') as f:
+            with open(_build_error_path(), 'w') as f:
                 f.write(str(e)[:2000])
         except OSError:
             pass
     finally:
-        try:
-            os.remove(marker)
-        except OSError:
-            pass
+        clear_build_marker()
 
 
 @celery.task(bind=True, max_retries=3, ignore_result=True)
