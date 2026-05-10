@@ -5759,12 +5759,15 @@ def _hf_trending_sota_models(task_slug, *, limit=15, dataset_repo=None):
         return cached[1]
 
     def _one_call(filters):
-        """Single API call with `filters` (list of tag strings).
-        Always sorted by download count desc."""
+        """Single API call with `filters` (list of tag strings or a
+        single string). `sort='downloads'` gives descending order by
+        default in this huggingface_hub version (no `direction=` kwarg
+        — it raises TypeError; previously the silent empty result was
+        masking that)."""
         try:
             from huggingface_hub import HfApi
             api = HfApi()
-            kwargs = {'sort': 'downloads', 'direction': -1, 'limit': limit}
+            kwargs = {'sort': 'downloads', 'limit': limit}
             if filters:
                 kwargs['filter'] = filters
             return list(api.list_models(**kwargs))
