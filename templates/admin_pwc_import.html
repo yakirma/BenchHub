@@ -116,11 +116,16 @@
         {% for r in rows %}
         <div class="list-group-item d-flex justify-content-between align-items-start gap-3">
             <div class="flex-grow-1 min-w-0">
-                <div class="d-flex align-items-baseline gap-2">
+                <div class="d-flex align-items-baseline gap-2 flex-wrap">
                     <strong class="fw-semibold">{{ r.full_name or r.name }}</strong>
+                    {% set thin = r.n_results is defined and r.n_results <= 2 %}
+                    <span class="badge text-bg-{{ 'warning-subtle text-warning-emphasis' if thin else 'light' }} border small"
+                          title="{{ r.n_benchmarks }} benchmark{{ '' if r.n_benchmarks == 1 else 's' }} in PWC, {{ r.n_results }} total result row{{ '' if r.n_results == 1 else 's' }}">
+                        <i class="bi bi-bar-chart me-1"></i>{{ r.n_benchmarks }} bench · {{ r.n_results }} rows
+                    </span>
                     {% if r.hf_repo %}
                     <span class="badge text-bg-success-subtle text-success border small">
-                        <i class="bi bi-cloud me-1"></i>HF link in archive: {{ r.hf_repo }}
+                        <i class="bi bi-cloud me-1"></i>HF: {{ r.hf_repo }}
                     </span>
                     {% endif %}
                 </div>

@@ -457,7 +457,12 @@ def _hf_repo_from_links(links_json):
 
 
 def search_datasets(q, *, limit=30):
-    """Search PWC archive by dataset name (case-insensitive substring)."""
+    """Search PWC archive by dataset name (case-insensitive substring).
+    Returns each row with `n_benchmarks` + `n_results` counts so the
+    admin search UI can rank/badge by coverage — the archive's tail
+    has many datasets with 0-1 result rows each, easy to mistake for
+    rich content if all you see is the name.
+    """
     q_lc = (q or '').strip().lower()
     if not q_lc:
         return []
@@ -468,18 +473,27 @@ def search_datasets(q, *, limit=30):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, name, description, links_json FROM pwc_dataset "
-            "WHERE name_lc LIKE ? ORDER BY name LIMIT ?",
+            "SELECT d.id, d.name, d.description, d.links_json, "
+            "       COUNT(e.id) AS n_benchmarks, "
+            "       COALESCE(SUM(json_array_length(e.results_json)), 0) AS n_results "
+            "FROM pwc_dataset d "
+            "LEFT JOIN pwc_evaluation e ON e.dataset_id = d.id "
+            "WHERE d.name_lc LIKE ? "
+            "GROUP BY d.id "
+            "ORDER BY n_results DESC, d.name "
+            "LIMIT ?",
             (f"%{q_lc}%", limit),
         )
         out = []
-        for ds_id, name, desc, links_json in cur.fetchall():
+        for ds_id, name, desc, links_json, n_benchmarks, n_results in cur.fetchall():
             out.append({
                 'id': ds_id,
                 'name': name,
                 'full_name': name,
                 'description': (desc or '')[:400],
                 'hf_repo': _hf_repo_from_links(links_json),
+                'n_benchmarks': int(n_benchmarks or 0),
+                'n_results': int(n_results or 0),
                 'url': None,
                 'huggingface_url': None,
             })
@@ -489,17 +503,28 @@ def search_datasets(q, *, limit=30):
 
 
 def list_evaluations_for_dataset(dataset_id):
+    """Benchmarks tracked on a single dataset, sorted by result-row
+    count descending so the admin sees rich benchmarks first. PWC's
+    tail of niche benchmarks has 0-1 rows each — useful to flag, but
+    not what you want to import for bootstrapping.
+    """
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, task, description FROM pwc_evaluation "
-            "WHERE dataset_id = ? ORDER BY id",
+            "SELECT id, task, description, "
+            "       json_array_length(results_json) AS n_results, "
+            "       json_array_length(metrics_json) AS n_metrics "
+            "FROM pwc_evaluation "
+            "WHERE dataset_id = ? "
+            "ORDER BY n_results DESC, id",
             (dataset_id,),
         )
         return [
-            {'id': eid, 'task': task, 'description': (desc or '')[:400]}
-            for eid, task, desc in cur.fetchall()
+            {'id': eid, 'task': task, 'description': (desc or '')[:400],
+             'n_results': int(n_results or 0),
+             'n_metrics': int(n_metrics or 0)}
+            for eid, task, desc, n_results, n_metrics in cur.fetchall()
         ]
     finally:
         conn.close()

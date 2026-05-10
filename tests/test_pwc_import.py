@@ -126,6 +126,26 @@ def test_get_evaluation_unknown_id_raises(fake_archive_index):
         pwc_client.get_evaluation(999_999)
 
 
+def test_search_datasets_includes_n_benchmarks_and_n_results(fake_archive_index):
+    """Coverage badges in the admin UI need both counts. The fixture has
+    CIFAR-10 with 1 benchmark / 1 result row and ImageNet with 1/1 too,
+    but the SUM/COUNT shape is what we're validating."""
+    rows = pwc_client.search_datasets('cifar')
+    assert rows[0]['n_benchmarks'] >= 1
+    assert rows[0]['n_results'] >= 1
+
+
+def test_list_evaluations_sorted_by_n_results_desc(fake_archive_index):
+    """Rich benchmarks should bubble to the top of the per-dataset
+    benchmark list so admins don't accidentally pick the empty ones."""
+    evs = pwc_client.list_evaluations_for_dataset(1)
+    assert all('n_results' in e and 'n_metrics' in e for e in evs)
+    # Sorted descending by n_results — fixture puts the ASR benchmark
+    # (0 rows) after the Image Classification one (1 row).
+    counts = [e['n_results'] for e in evs]
+    assert counts == sorted(counts, reverse=True)
+
+
 def test_slugify_metric_name():
     f = pwc_client.slugify_metric_name
     assert f('Top 1 Accuracy') == 'top_1_accuracy'
@@ -203,17 +223,19 @@ def test_pwc_search_lists_results_when_ready(client, db_session, login_as):
         {'id': 1, 'name': 'cifar10', 'full_name': 'CIFAR-10',
          'description': 'Tiny image classification dataset.',
          'huggingface_url': None,
-         'hf_repo': 'cifar10', 'url': None},
+         'hf_repo': 'cifar10', 'url': None,
+         'n_benchmarks': 5, 'n_results': 80},
         {'id': 2, 'name': 'unknown-source', 'full_name': 'No HF Link',
          'description': '',
-         'huggingface_url': None, 'hf_repo': None, 'url': None},
+         'huggingface_url': None, 'hf_repo': None, 'url': None,
+         'n_benchmarks': 1, 'n_results': 1},
     ]
     with patch('pwc_client.index_status', return_value='ready'), \
          patch('pwc_client.search_datasets', return_value=fake_rows):
         r = client.get('/admin/pwc/import?q=tiny')
     assert b'CIFAR-10' in r.data
     assert b'No HF Link' in r.data
-    assert b'HF link in archive' in r.data
+    assert b'HF: cifar10' in r.data
 
 
 def test_pwc_index_build_route_returns_disabled_message(

@@ -18,12 +18,27 @@
     </div>
     {% endif %}
 
+    <p class="small text-body-secondary mb-2">
+        Sorted by result-row count. The PWC archive's tail has many
+        benchmarks with 0-1 rows; those land at the bottom and are
+        flagged below.
+    </p>
+
     <div class="list-group shadow-sm">
         {% for e in evals %}
+        {% set thin = e.n_results is defined and e.n_results <= 1 %}
         <a href="{{ url_for('admin_pwc_import_preview', evaluation_id=e.id, hf_repo=hf_repo) }}"
-           class="list-group-item list-group-item-action d-flex justify-content-between align-items-start gap-3">
+           class="list-group-item list-group-item-action d-flex justify-content-between align-items-start gap-3 {{ 'opacity-75' if thin }}">
             <div class="flex-grow-1 min-w-0">
-                <strong class="fw-semibold">{{ e.task or 'Benchmark' }}</strong>
+                <div class="d-flex align-items-baseline gap-2 flex-wrap">
+                    <strong class="fw-semibold">{{ e.task or 'Benchmark' }}</strong>
+                    <span class="badge text-bg-{{ 'warning-subtle text-warning-emphasis' if thin else 'light' }} border small"
+                          title="{{ e.n_results }} mirrored submission row{{ '' if e.n_results == 1 else 's' }} would be created · {{ e.n_metrics }} metric column{{ '' if e.n_metrics == 1 else 's' }}">
+                        <i class="bi bi-people me-1"></i>{{ e.n_results }} row{{ '' if e.n_results == 1 else 's' }}
+                        ·
+                        <i class="bi bi-bar-chart ms-1 me-1"></i>{{ e.n_metrics }} metric{{ '' if e.n_metrics == 1 else 's' }}
+                    </span>
+                </div>
                 {% if e.description %}
                 <p class="small text-body-secondary mb-0 mt-1">{{ e.description[:280] }}{{ '…' if e.description|length > 280 }}</p>
                 {% endif %}
