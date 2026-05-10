@@ -90,8 +90,14 @@ def test_search_datasets_substring(fake_archive_index):
     assert rows[0]['hf_repo'] == 'cifar10'
 
 
-def test_search_datasets_empty_query(fake_archive_index):
-    assert pwc_client.search_datasets('') == []
+def test_search_datasets_empty_query_returns_popular_datasets(fake_archive_index):
+    """Empty query → top-N by total result rows, so admin can browse
+    without needing to know what to search for."""
+    rows = pwc_client.search_datasets('')
+    # Both fixture datasets show up; CIFAR-10 has more results so it
+    # comes first (ImageNet has only 1 result row in the fixture).
+    assert len(rows) == 2
+    assert rows[0]['name'] == 'CIFAR-10'
 
 
 def test_search_datasets_no_hf_link_returns_none(fake_archive_index):
@@ -124,6 +130,73 @@ def test_get_evaluation_loss_metric_sort_direction(fake_archive_index):
 def test_get_evaluation_unknown_id_raises(fake_archive_index):
     with pytest.raises(pwc_client.PwcError):
         pwc_client.get_evaluation(999_999)
+
+
+@pytest.fixture
+def fake_hf_hub(monkeypatch):
+    """Inject a stub `huggingface_hub` module so suggest_hf_repo can
+    be exercised without the real package installed locally. The
+    fixture returns a dict the test mutates to control HfApi behavior."""
+    import sys, types
+    state = {'datasets_by_term': {}, 'call_count': 0}
+
+    class _R:
+        def __init__(self, id_, downloads):
+            self.id = id_
+            self.downloads = downloads
+
+    class _Api:
+        def list_datasets(self, search=None, limit=20):
+            state['call_count'] += 1
+            return state['datasets_by_term'].get(search, [])
+
+    fake_module = types.ModuleType('huggingface_hub')
+    fake_module.HfApi = _Api
+    fake_module._R = _R  # so tests can build response objects
+    monkeypatch.setitem(sys.modules, 'huggingface_hub', fake_module)
+    import pwc_client as pc
+    pc._HF_SUGGEST_CACHE.clear()
+    yield state
+    pc._HF_SUGGEST_CACHE.clear()
+
+
+def test_suggest_hf_repo_picks_most_downloaded_match(fake_hf_hub):
+    """list_datasets returns matching repos; we filter to those whose
+    id contains the search term, then rank by download count."""
+    import sys
+    R = sys.modules['huggingface_hub']._R
+    fake_hf_hub['datasets_by_term'] = {
+        'ImageNet': [
+            R('imagenet-1k', 50000),
+            R('zh-plus/tiny-imagenet', 1200),
+            R('not-related-repo', 99999),  # filtered out by id-contains check
+        ],
+        'imagenet': [
+            R('imagenet-1k', 50000),  # dedupe across calls
+            R('axiong/imagenet-r', 800),
+        ],
+    }
+    import pwc_client as pc
+    best, alts = pc.suggest_hf_repo('ImageNet')
+    assert best == 'imagenet-1k'
+    assert 'zh-plus/tiny-imagenet' in alts
+    assert 'not-related-repo' not in alts
+
+
+def test_suggest_hf_repo_returns_none_when_no_matches(fake_hf_hub):
+    import pwc_client as pc
+    best, alts = pc.suggest_hf_repo('NonexistentDataset')
+    assert best is None
+    assert alts == []
+
+
+def test_suggest_hf_repo_caches_result(fake_hf_hub):
+    """Same name (case-folded) shouldn't re-hit the API on second call."""
+    import pwc_client as pc
+    pc.suggest_hf_repo('CIFAR-10')
+    n_after_first = fake_hf_hub['call_count']
+    pc.suggest_hf_repo('cifar-10')
+    assert fake_hf_hub['call_count'] == n_after_first  # cache hit; no new calls
 
 
 def test_search_datasets_includes_n_benchmarks_and_n_results(fake_archive_index):

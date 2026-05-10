@@ -30,11 +30,27 @@
                         </label>
                         <input type="text" name="hf_repo" id="hf-repo"
                                class="form-control font-monospace" required
-                               value="{{ hf_repo }}"
+                               value="{{ hf_repo or hf_suggestion or '' }}"
                                placeholder="e.g. cifar10 or imagenet-1k">
                         <div class="form-text small">
-                            The PWC archive doesn't carry HF mirrors. Confirm or paste the
-                            HF repo for this dataset &mdash; the LB will attach to it directly.
+                            {% if hf_suggestion and not hf_repo %}
+                            <i class="bi bi-magic me-1"></i>Auto-suggested from HF Hub
+                            <a href="https://huggingface.co/datasets/{{ hf_suggestion }}"
+                               target="_blank" rel="noopener" class="text-decoration-none">
+                                <code>{{ hf_suggestion }}</code>
+                                <i class="bi bi-box-arrow-up-right small"></i>
+                            </a>.
+                            {% if hf_alternatives %}
+                            Other plausible:
+                            {% for alt in hf_alternatives %}
+                            <button type="button" class="btn btn-link p-0 small font-monospace hf-alt-btn"
+                                    data-repo="{{ alt }}">{{ alt }}</button>{% if not loop.last %},{% endif %}
+                            {% endfor %}.
+                            {% endif %}
+                            {% else %}
+                            The PWC archive doesn't carry HF mirrors directly. Confirm or paste
+                            the HF repo for this dataset &mdash; the LB will attach to it.
+                            {% endif %}
                         </div>
                     </div>
                     <div class="col-md-6">
@@ -144,4 +160,13 @@
         </p>
     </form>
 </div>
+<script>
+// Click an alternative to swap it into the input.
+document.querySelectorAll('.hf-alt-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const inp = document.getElementById('hf-repo');
+        if (inp) { inp.value = btn.dataset.repo; inp.focus(); }
+    });
+});
+</script>
 {% endblock %}

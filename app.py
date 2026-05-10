@@ -2179,7 +2179,9 @@ def admin_pwc_import():
     q = (request.args.get('q') or '').strip()
     rows = []
     error = None
-    if status == 'ready' and q:
+    if status == 'ready':
+        # Empty query → top-N most-populated datasets so the admin
+        # can browse without having to know what they're looking for.
         try:
             from pwc_client import search_datasets
             rows = search_datasets(q, limit=30)
@@ -2250,17 +2252,29 @@ def admin_pwc_import_preview(evaluation_id):
         abort(403)
     hf_repo = (request.args.get('hf_repo') or '').strip()
     try:
-        from pwc_client import get_evaluation
+        from pwc_client import get_evaluation, suggest_hf_repo
         evaluation = get_evaluation(evaluation_id)
     except Exception as e:
         flash(f"PWC error: {e}", "danger")
         return redirect(url_for('admin_pwc_import'))
     task = evaluation.get('task') or 'benchmark'
     dataset = evaluation.get('dataset') or hf_repo or 'unknown-dataset'
+    # If admin didn't carry an HF repo through from the search page,
+    # ask HF Hub for the best match. The preview page will pre-fill
+    # the field with this guess and offer alternatives.
+    hf_suggestion = None
+    hf_alternatives = []
+    if not hf_repo and dataset:
+        try:
+            hf_suggestion, hf_alternatives = suggest_hf_repo(dataset)
+        except Exception as e:
+            print(f"HF suggest failed for {dataset!r}: {e}")
     suggested_name = f"{task} on {dataset}"
     return render_template(
         'admin_pwc_import_preview.html',
         evaluation=evaluation, hf_repo=hf_repo,
+        hf_suggestion=hf_suggestion,
+        hf_alternatives=hf_alternatives,
         suggested_name=suggested_name,
     )
 

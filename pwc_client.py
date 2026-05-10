@@ -462,28 +462,44 @@ def search_datasets(q, *, limit=30):
     admin search UI can rank/badge by coverage — the archive's tail
     has many datasets with 0-1 result rows each, easy to mistake for
     rich content if all you see is the name.
+
+    Empty query returns the top-N most-populated datasets so the admin
+    can browse without having to know what they're looking for.
     """
     q_lc = (q or '').strip().lower()
-    if not q_lc:
-        return []
     try:
         conn = _conn()
     except Exception as e:
         raise PwcError(f"Failed to load PWC archive: {e}") from e
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT d.id, d.name, d.description, d.links_json, "
-            "       COUNT(e.id) AS n_benchmarks, "
-            "       COALESCE(SUM(json_array_length(e.results_json)), 0) AS n_results "
-            "FROM pwc_dataset d "
-            "LEFT JOIN pwc_evaluation e ON e.dataset_id = d.id "
-            "WHERE d.name_lc LIKE ? "
-            "GROUP BY d.id "
-            "ORDER BY n_results DESC, d.name "
-            "LIMIT ?",
-            (f"%{q_lc}%", limit),
-        )
+        # Empty query: skip the LIKE so the planner uses the GROUP BY
+        # path against the full table. Same shape, just no name filter.
+        if q_lc:
+            cur.execute(
+                "SELECT d.id, d.name, d.description, d.links_json, "
+                "       COUNT(e.id) AS n_benchmarks, "
+                "       COALESCE(SUM(json_array_length(e.results_json)), 0) AS n_results "
+                "FROM pwc_dataset d "
+                "LEFT JOIN pwc_evaluation e ON e.dataset_id = d.id "
+                "WHERE d.name_lc LIKE ? "
+                "GROUP BY d.id "
+                "ORDER BY n_results DESC, d.name "
+                "LIMIT ?",
+                (f"%{q_lc}%", limit),
+            )
+        else:
+            cur.execute(
+                "SELECT d.id, d.name, d.description, d.links_json, "
+                "       COUNT(e.id) AS n_benchmarks, "
+                "       COALESCE(SUM(json_array_length(e.results_json)), 0) AS n_results "
+                "FROM pwc_dataset d "
+                "LEFT JOIN pwc_evaluation e ON e.dataset_id = d.id "
+                "GROUP BY d.id "
+                "ORDER BY n_results DESC, d.name "
+                "LIMIT ?",
+                (limit,),
+            )
         out = []
         for ds_id, name, desc, links_json, n_benchmarks, n_results in cur.fetchall():
             out.append({
@@ -579,6 +595,71 @@ def get_evaluation(evaluation_id):
         'dataset': ds_name, 'description': desc,
         'metrics': metrics, 'results': results,
     }
+
+
+_HF_SUGGEST_CACHE = {}  # pwc_name → (best_repo_id, [alt_repo_ids])
+
+
+def suggest_hf_repo(pwc_name):
+    """Best-effort HF Hub lookup for a PWC dataset name. Returns
+    (best_repo, alternatives) where best_repo is the most-downloaded
+    matching dataset (or None) and alternatives is up to 4 other
+    plausible candidates the admin might want to pick instead.
+
+    Heuristic: search HF Hub for the PWC name, then for a normalized
+    version (lowercase, hyphens for spaces). Filter results to ones
+    whose name contains the search term as a token. Rank by HF
+    downloads — the canonical mirror is almost always the most
+    downloaded match.
+
+    Cached per-process so a search-page refresh doesn't re-hit HF
+    for every row. Keys are case-folded names.
+    """
+    key = (pwc_name or '').strip().lower()
+    if not key:
+        return None, []
+    if key in _HF_SUGGEST_CACHE:
+        return _HF_SUGGEST_CACHE[key]
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        # Try exact name first, then normalized.
+        seen = {}  # repo_id → downloads (for dedupe + ranking)
+        for term in (pwc_name, pwc_name.lower().replace(' ', '-')):
+            try:
+                hits = list(api.list_datasets(search=term, limit=20))
+            except Exception:
+                hits = []
+            for h in hits:
+                rid = getattr(h, 'id', None)
+                if not rid:
+                    continue
+                # Filter: the search term must appear in the repo id
+                # as a delimited token. HF's `search` is permissive
+                # and otherwise returns weakly-related results.
+                rid_lc = rid.lower()
+                norm = key.replace(' ', '-')
+                if (key not in rid_lc and norm not in rid_lc
+                        and key.replace(' ', '_') not in rid_lc):
+                    continue
+                downloads = getattr(h, 'downloads', 0) or 0
+                # Keep the highest download count if the same repo
+                # appeared in multiple searches.
+                seen[rid] = max(seen.get(rid, 0), downloads)
+        if not seen:
+            _HF_SUGGEST_CACHE[key] = (None, [])
+            return None, []
+        ranked = sorted(seen.items(), key=lambda kv: -kv[1])
+        best = ranked[0][0]
+        alts = [rid for rid, _ in ranked[1:5]]
+        _HF_SUGGEST_CACHE[key] = (best, alts)
+        return best, alts
+    except Exception as e:
+        # Importing huggingface_hub or hitting the network can fail —
+        # fall back gracefully to "no suggestion."
+        print(f"suggest_hf_repo({pwc_name!r}) failed: {e}")
+        _HF_SUGGEST_CACHE[key] = (None, [])
+        return None, []
 
 
 def slugify_metric_name(name):
