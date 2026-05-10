@@ -184,8 +184,8 @@ def test_pwc_search_renders_build_cta_when_index_absent(client, db_session, logi
     login_as(admin)
     with patch('pwc_client.index_status', return_value='absent'):
         r = client.get('/admin/pwc/import')
-    assert b"PWC index isn't built yet" in r.data
-    assert b'Build PWC index' in r.data
+    assert b"PWC index isn't loaded" in r.data
+    assert b'upload_pwc_index.py' in r.data
 
 
 def test_pwc_search_renders_building_state(client, db_session, login_as):
