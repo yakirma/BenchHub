@@ -185,6 +185,30 @@
                         </form>
                     </div>
                 </div>
+
+                {# Danger zone: delete the whole leaderboard. Cascades through
+                   submissions / metrics / viz / attachments / metric results.
+                   Owner-or-admin only via @owner_required on the route. #}
+                <div class="card mb-4 border-danger">
+                    <div class="card-header bg-danger-subtle text-danger-emphasis">
+                        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Danger zone</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="small text-body-secondary mb-2">
+                            Deleting this leaderboard removes all submissions, metric
+                            results, attachments, and visualization links. Source HF
+                            datasets and bench cache stay untouched, but mirrored
+                            (PWC-imported) submissions and their scores are gone.
+                        </p>
+                        <form method="post"
+                              action="{{ url_for('delete_leaderboard', leaderboard_id=leaderboard.id) }}"
+                              onsubmit="return confirm('Permanently delete leaderboard {{ leaderboard.name|tojson }} and all its submissions? This cannot be undone.');">
+                            <button type="submit" class="btn btn-outline-danger w-100">
+                                <i class="bi bi-trash me-1"></i>Delete this leaderboard
+                            </button>
+                        </form>
+                    </div>
+                </div>
             </div>
             <div class="col-md-6">
                 <!-- Import Settings Card -->
