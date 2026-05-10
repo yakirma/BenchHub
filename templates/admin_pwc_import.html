@@ -68,18 +68,16 @@
             </form>
             {% else %}
             <h2 class="h6 fw-semibold mb-1">
-                <i class="bi bi-database me-1"></i>PWC index isn't built yet
+                <i class="bi bi-database me-1"></i>PWC index isn't loaded
             </h2>
             <p class="small text-body-secondary mb-2">
-                One-time setup: download the archive and walk it into a local
-                SQLite so search queries are instant. Done by a Celery task —
-                takes 1-3 minutes; you don't have to keep this page open.
+                The PWC index ships as a pre-built SQLite. The maintainer
+                uploads it via <code>scripts/upload_pwc_index.py</code>;
+                it lands at <code>/data/_cache/pwc_archive/index.v1.sqlite</code>
+                and search lights up. (We tried building it in-prod via
+                Celery but pyarrow's decode of the archive's nested parquet
+                kept stuck on a 4 GB worker.)
             </p>
-            <form method="post" action="{{ url_for('admin_pwc_index_build') }}" class="d-inline">
-                <button type="submit" class="btn btn-sm btn-primary">
-                    <i class="bi bi-cloud-arrow-down me-1"></i>Build PWC index
-                </button>
-            </form>
             {% endif %}
         </div>
     </div>

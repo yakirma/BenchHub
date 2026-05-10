@@ -2180,36 +2180,23 @@ def admin_pwc_import():
 @app.route('/admin/pwc/index/build', methods=['POST'])
 @login_required
 def admin_pwc_index_build():
-    """Enqueue the Celery task that downloads + indexes the PWC archive.
-    Idempotent: if a build is already in progress (or the index already
-    exists), no second task is queued and the flash reflects that. The
-    marker file gets written from the web tier BEFORE enqueueing so
-    the redirect-and-render shows 'building' immediately rather than
-    a brief 'absent' window while celery picks up the task."""
+    """Disabled in v110. The pyarrow decode of the pwc-archive parquet's
+    nested struct schema turned out to be unreliable on a 2 GB / 4 GB
+    fly worker — successive optimization rounds (recursion cap, column
+    projection, batch sizing, sqlite PRAGMA tuning) all stuck inside
+    the first batch's decode. Built the SQLite offline on a beefier
+    box instead and shipped it via `scripts/upload_pwc_index.py`.
+
+    The endpoint stays around as a 403/flash rather than a 404 so an
+    admin who bookmarked it gets a sensible message, not a generic
+    error page."""
     if not is_admin(g.current_user):
         abort(403)
-    from pwc_client import index_status, begin_build_marker
-    pre = index_status()
-    if pre == 'ready':
-        flash("PWC index is already built. Search away.", "info")
-        return redirect(url_for('admin_pwc_import'))
-    if pre == 'building':
-        flash(
-            "An index build is already in progress. Refresh in a minute "
-            "to see updated progress.", "info",
-        )
-        return redirect(url_for('admin_pwc_import'))
-    if not begin_build_marker():
-        flash(
-            "Couldn't claim the build marker — another build may have "
-            "started just now. Refresh to see status.", "warning",
-        )
-        return redirect(url_for('admin_pwc_import'))
-    import tasks as _tasks
-    _tasks.build_pwc_index.delay()
     flash(
-        "PWC index build queued. Page will show progress; refresh "
-        "every ~30 seconds while it's running.", "info",
+        "PWC index is shipped pre-built — no in-prod build available. "
+        "Ask the maintainer to refresh it via "
+        "scripts/upload_pwc_index.py if you need fresher data.",
+        "info",
     )
     return redirect(url_for('admin_pwc_import'))
 

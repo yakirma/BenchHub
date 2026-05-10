@@ -216,38 +216,20 @@ def test_pwc_search_lists_results_when_ready(client, db_session, login_as):
     assert b'HF link in archive' in r.data
 
 
-def test_pwc_index_build_route_enqueues_task(client, db_session, login_as):
-    admin = _mk_admin('build_admin@bench.local')
-    login_as(admin)
-    with patch('pwc_client.index_status', return_value='absent'), \
-         patch('pwc_client.begin_build_marker', return_value=True), \
-         patch('tasks.build_pwc_index') as mock_task:
-        r = client.post('/admin/pwc/index/build', follow_redirects=False)
-    assert r.status_code in (302, 303)
-    mock_task.delay.assert_called_once()
-
-
-def test_pwc_index_build_is_idempotent_when_already_building(
+def test_pwc_index_build_route_returns_disabled_message(
     client, db_session, login_as,
 ):
-    """Clicking Build twice within a minute shouldn't enqueue a second task."""
-    admin = _mk_admin('idem_admin@bench.local')
+    """In-prod build was disabled — pyarrow decode of the archive's
+    parquet was unreliable on a 4 GB worker. Index ships pre-built
+    via scripts/upload_pwc_index.py. Endpoint stays as a polite
+    redirect-with-flash so an admin who bookmarked it gets a useful
+    message rather than a 404."""
+    admin = _mk_admin('build_admin@bench.local')
     login_as(admin)
-    with patch('pwc_client.index_status', return_value='building'), \
-         patch('tasks.build_pwc_index') as mock_task:
+    with patch('tasks.build_pwc_index') as mock_task:
         r = client.post('/admin/pwc/index/build', follow_redirects=True)
     mock_task.delay.assert_not_called()
-    assert b'already in progress' in r.data
-
-
-def test_pwc_index_build_is_idempotent_when_ready(client, db_session, login_as):
-    admin = _mk_admin('ready_admin@bench.local')
-    login_as(admin)
-    with patch('pwc_client.index_status', return_value='ready'), \
-         patch('tasks.build_pwc_index') as mock_task:
-        r = client.post('/admin/pwc/index/build', follow_redirects=True)
-    mock_task.delay.assert_not_called()
-    assert b'already built' in r.data
+    assert b'shipped pre-built' in r.data
 
 
 def test_pwc_index_build_requires_admin(client, db_session, login_as):
