@@ -30,7 +30,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.min.css">
     <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23ffc107' class='bi bi-grid-3x3-gap-fill' viewBox='0 0 16 16'><path d='M1 2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2zM1 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V7zM1 12a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-2zm5 0a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-2z'/></svg>">
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23ffc107' viewBox='0 0 16 16'><path d='M2 3h12v1.5H2zM3 3v3.5h1V3zM12 3v3.5h1V3zM1 7h14v2.2H1zM3 9.2h1.5v5.5H3zM11.5 9.2H13v5.5h-1.5z'/></svg>">
 
     <style>
         body {
@@ -204,7 +204,15 @@
             <div class="container-fluid">
                 <!-- Brand -->
                 <a class="navbar-brand d-flex align-items-center" href="{{ url_for('datasets_list') }}">
-                    <i class="bi bi-grid-3x3-gap-fill me-2 text-warning"></i>
+                    {# Inline bench SVG (Bootstrap Icons doesn't have a bench).
+                       Park-bench shape: backrest top bar + two backrest verticals
+                       + seat bar + two legs. Same warning-yellow as the previous
+                       grid icon so the navbar palette doesn't shift. #}
+                    <svg class="me-2" width="22" height="22"
+                         viewBox="0 0 16 16" fill="currentColor"
+                         style="color: var(--bs-warning); flex-shrink: 0;">
+                      <path d="M2 3h12v1.5H2zM3 3v3.5h1V3zM12 3v3.5h1V3zM1 7h14v2.2H1zM3 9.2h1.5v5.5H3zM11.5 9.2H13v5.5h-1.5z"/>
+                    </svg>
                     Bench-Hub
                 </a>
 

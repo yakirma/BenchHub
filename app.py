@@ -2100,6 +2100,62 @@ def admins_revoke(user_id):
     return redirect(url_for('admins_settings'))
 
 
+@app.route('/admin/leaderboard/<int:lb_id>/sota_picker', methods=['GET'])
+@login_required
+def admin_lb_sota_picker(lb_id):
+    """Admin-only: pick a SOTA model from HF Hub trending (filtered to
+    the LB's task slug) and seed a Colab submission notebook for it.
+    Free-form input is also offered for cases where the heuristic
+    misclassifies the task or the admin wants something the trending
+    list doesn't surface."""
+    if not is_admin(g.current_user):
+        abort(403)
+    lb = Leaderboard.query.get_or_404(lb_id)
+    task_slug = _hf_task_for_lb(lb)
+    models = _hf_trending_sota_models(task_slug, limit=20) if task_slug else []
+    return render_template(
+        'admin_lb_sota_picker.html',
+        leaderboard=lb,
+        task_slug=task_slug,
+        models=models,
+    )
+
+
+@app.route('/admin/leaderboard/<int:lb_id>/sota_notebook', methods=['POST'])
+@login_required
+def admin_lb_sota_notebook(lb_id):
+    """Generate (or fetch from cache) a SOTA-model-specific Colab
+    notebook for this LB. Returns the .ipynb as a download so the
+    admin can review it before publishing as the canonical NB."""
+    if not is_admin(g.current_user):
+        abort(403)
+    lb = Leaderboard.query.get_or_404(lb_id)
+    model_id = (request.form.get('model_id') or '').strip()
+    if not model_id:
+        flash("HF model id is required.", "warning")
+        return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
+    nb = _llm_sota_colab_notebook(lb, model_id)
+    if not nb:
+        flash(
+            f"Couldn't generate a SOTA notebook for {model_id} "
+            "(LLM unavailable, model id rejected by Claude, or "
+            "response wasn't valid notebook JSON). Try a different "
+            "model or check ANTHROPIC_API_KEY.",
+            "danger",
+        )
+        return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
+    safe_model = re.sub(r'[^A-Za-z0-9_-]+', '_', model_id) or 'model'
+    safe_lb = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    return app.response_class(
+        nb,
+        mimetype='application/x-ipynb+json',
+        headers={
+            'Content-Disposition':
+                f'attachment; filename="{safe_lb}__{safe_model}_sota.ipynb"',
+        },
+    )
+
+
 @app.route('/admin/leaderboard/<int:lb_id>/promote', methods=['POST'])
 @login_required
 def admin_promote_leaderboard(lb_id):
@@ -5587,6 +5643,164 @@ def _static_colab_notebook(lb):
         "nbformat": 4, "nbformat_minor": 5,
     }
     return json.dumps(nb)
+
+
+def _hf_task_for_lb(lb):
+    """Best-effort guess at the HF Hub task slug for an LB so the
+    SOTA picker can filter to relevant models. Reads the LB's first
+    metric/task name and maps to the canonical HF task taxonomy.
+    Returns None when nothing maps cleanly — the admin then sees an
+    unfiltered top-downloads list."""
+    if not lb:
+        return None
+    # PWC-style LBs carry the original task name on the LeaderboardMetric
+    # via target_name like "top-1 accuracy". Easier signal: the LB name
+    # itself ("Image Classification on ImageNet") if it came from PWC.
+    blob_parts = [lb.name or '']
+    for lm in (lb.leaderboard_metrics or [])[:6]:
+        blob_parts.append(lm.target_name or '')
+        if lm.global_metric:
+            blob_parts.append(lm.global_metric.name or '')
+    blob = ' '.join(blob_parts).lower()
+    # Order matters: 'segmentation' before 'classification' so the LB
+    # isn't mislabeled when both words appear.
+    rules = [
+        ('object detection', 'object-detection'),
+        ('semantic segmentation', 'image-segmentation'),
+        ('instance segmentation', 'image-segmentation'),
+        ('image segmentation', 'image-segmentation'),
+        ('depth estimation', 'depth-estimation'),
+        ('image generation', 'text-to-image'),
+        ('image classification', 'image-classification'),
+        ('classification', 'image-classification'),
+        ('question answering', 'question-answering'),
+        ('summarization', 'summarization'),
+        ('translation', 'translation'),
+        ('sentiment', 'text-classification'),
+        ('text classification', 'text-classification'),
+        ('language modeling', 'text-generation'),
+        ('language modelling', 'text-generation'),
+        ('generation', 'text-generation'),
+    ]
+    for needle, task in rules:
+        if needle in blob:
+            return task
+    return None
+
+
+def _hf_trending_sota_models(task_slug, *, limit=15):
+    """List HF Hub models for one task slug, sorted by download count.
+    The "best so far" proxy: most-downloaded ≈ most-used by the
+    community. Cached per-process for 10 min so the admin search page
+    doesn't hammer huggingface.co. Returns
+    [{id, downloads, likes, library_name, last_modified}, ...]."""
+    cache_key = ('sota_models', task_slug or '')
+    import time
+    now = time.time()
+    cached = _HF_SOTA_CACHE.get(cache_key)
+    if cached and now - cached[0] < 600:
+        return cached[1]
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        kwargs = {'sort': 'downloads', 'direction': -1, 'limit': limit}
+        if task_slug:
+            kwargs['filter'] = task_slug
+        models = list(api.list_models(**kwargs))
+    except Exception as e:
+        print(f"_hf_trending_sota_models({task_slug!r}) failed: {e}")
+        return []
+    out = []
+    for m in models:
+        out.append({
+            'id': getattr(m, 'id', None) or getattr(m, 'modelId', ''),
+            'downloads': getattr(m, 'downloads', 0) or 0,
+            'likes': getattr(m, 'likes', 0) or 0,
+            'library_name': getattr(m, 'library_name', '') or '',
+            'last_modified': str(getattr(m, 'last_modified', '') or '')[:10],
+        })
+    _HF_SOTA_CACHE[cache_key] = (now, out)
+    return out
+
+
+_HF_SOTA_CACHE = {}
+
+
+def _llm_sota_colab_notebook(lb, model_id):
+    """Same as _llm_colab_notebook, but tells Claude to load + run a
+    specific HuggingFace model end-to-end. Falls back to None on any
+    failure (caller flashes + redirects)."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        return None
+    # Reuse the regular notebook prompt + body, then ask Claude to
+    # additionally specialize the my_model() body to load the chosen
+    # HF model. The simplest path: take the existing notebook and ask
+    # the LLM to rewrite the model cell. We reach into Claude with a
+    # focused prompt instead so the result is one self-contained NB.
+    base_nb = _llm_colab_notebook(lb)
+    if not base_nb:
+        return None
+    addendum_prompt = (
+        "You're given a BenchHub Colab notebook JSON and a HuggingFace "
+        "model id. Rewrite the notebook so the `my_model` cell loads "
+        "and runs that specific model end-to-end. Keep all other cells "
+        "(boilerplate, dataset download, ZIP/upload) UNCHANGED.\n\n"
+        "Hard requirements:\n"
+        "- Output ONLY the rewritten notebook JSON, no fences, no prose.\n"
+        "- The model cell pip-installs the right packages (transformers, "
+        "torch, pillow, etc.) at the top with `!pip install -q ...`.\n"
+        "- Loads the model + processor/tokenizer from the given id.\n"
+        "- The `my_model(sample_name, inputs)` function calls the model "
+        "and returns a dict matching `PRED_FIELDS` exactly.\n"
+        "- Add a one-line markdown cell ABOVE the model cell stating "
+        "the chosen HF model id with a link to its HF page.\n"
+        "- Default to CPU. If the model truly needs GPU, mention it in "
+        "the markdown (don't pre-set runtime metadata)."
+    )
+    user_msg = json.dumps({
+        'model_id': model_id,
+        'leaderboard_name': lb.name,
+        'notebook': base_nb,
+    }, default=str)[:60000]
+    try:
+        import requests as _r
+        resp = _r.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 16000,
+                "system": [
+                    {"type": "text", "text": addendum_prompt,
+                     "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{"role": "user", "content": user_msg}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        text = ''.join(
+            block.get('text', '')
+            for block in body.get('content', [])
+            if block.get('type') == 'text'
+        ).strip()
+        if text.startswith('```'):
+            text = re.sub(r'^```(?:json)?\s*', '', text)
+            text = re.sub(r'\s*```$', '', text)
+        # Validate it's still notebook-shaped before persisting.
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict) or 'cells' not in parsed:
+            return None
+        return text
+    except Exception as e:
+        print(f"_llm_sota_colab_notebook({model_id!r}) failed: {e}")
+        return None
 
 
 def _llm_colab_notebook(lb):
