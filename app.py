@@ -2558,15 +2558,43 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
     )
     db.session.add(lb); db.session.flush()
 
-    # 2. HF-ref attachment (no Dataset row needed — Phase 2 architecture).
+    # 2. HF-ref attachment. Probe the dataset's parquet schema and run
+    # _infer_mapping so the LeaderboardMetric arg_mappings can target a
+    # real GT field (e.g. `gt_label` for cifar10) instead of placeholder
+    # 'gt_unknown'. Generated SOTA notebooks get real PRED_FIELDS to
+    # write into, so submissions actually score. Falls through to an
+    # empty mapping if the schema fetch fails — admin can still wire
+    # it manually via the LB Settings page later.
+    try:
+        features = _hf_fetch_features(hf_repo)
+    except Exception as e:
+        print(f"PWC import: schema probe for {hf_repo} failed: {e}")
+        features = {}
+    inferred_mapping = _infer_mapping(features) if features else []
     db.session.add(Attachment(
         leaderboard_id=lb.id,
         hf_repo_id=hf_repo,
         hf_split='train',
-        hf_mapping_json=json.dumps([]),
+        hf_mapping_json=json.dumps(inferred_mapping),
         role='primary',
     ))
     db.session.flush()
+
+    # Pick the canonical GT field for arg_mappings. Priority:
+    # scalar (ClassLabel-y) before depth before image — the most common
+    # PWC-imported task is image classification where the scalar label
+    # is what we want to score against.
+    gt_field = None
+    for kind in ('scalar', 'depth', 'image', 'mask', 'text'):
+        for m in inferred_mapping:
+            if m.get('target_kind') == kind:
+                gt_field = m.get('target_field') or m.get('column')
+                if gt_field:
+                    break
+        if gt_field:
+            break
+    pred_arg_field = f"sub_{gt_field}_pred" if gt_field else 'sub_unknown_pred'
+    gt_arg_field = f"gt_{gt_field}" if gt_field else 'gt_unknown'
 
     # 3. Build GlobalMetric + LeaderboardMetric for each PWC metric.
     # PWC doesn't ship runnable code (just names + descriptions), so
@@ -2627,8 +2655,8 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
         lm = LeaderboardMetric(
             leaderboard_id=lb.id, global_metric_id=gm.id,
             target_name=pm['name'],
-            arg_mappings=json.dumps({'gt': 'gt_unknown',
-                                     'pred': 'sub_unknown_pred'}),
+            arg_mappings=json.dumps({'gt': gt_arg_field,
+                                     'pred': pred_arg_field}),
             sort_direction=sd,
             pooling_type='mean',
         )

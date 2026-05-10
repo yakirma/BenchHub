@@ -3,6 +3,7 @@ canonical leaderboard backed by an HF dataset, with one mirrored
 Submission per PWC result row. Mirrored submissions skip the eval
 pipeline; their MetricResult rows are inserted at import time.
 """
+import json
 from unittest.mock import patch
 
 import pytest
@@ -428,7 +429,22 @@ def test_build_index_into_emits_progress(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_creates_lb_with_hf_attachment_and_mirrored_subs(client, db_session, login_as):
+@pytest.fixture
+def stub_hf_features(monkeypatch):
+    """Stub `_hf_fetch_features` for the import tests. Default returns
+    the cifar10 schema; tests can mutate `state['features']` per-call."""
+    state = {'features': {
+        'img': {'type': 'Image'},
+        'label': {'type': 'Value:int64'},
+    }}
+    monkeypatch.setattr('app._hf_fetch_features',
+                        lambda *a, **kw: state['features'])
+    return state
+
+
+def test_creates_lb_with_hf_attachment_and_mirrored_subs(
+    client, db_session, login_as, stub_hf_features,
+):
     admin = _mk_admin('lb_create_admin@bench.local')
     evaluation = {
         'id': 42,
@@ -500,8 +516,72 @@ def test_creates_lb_with_hf_attachment_and_mirrored_subs(client, db_session, log
     assert by_target['Top 5 Accuracy'] == 99.9
 
 
+def test_creates_lb_arg_mappings_target_real_gt_field(
+    client, db_session, login_as, stub_hf_features,
+):
+    """The PWC LB's LeaderboardMetric.arg_mappings must reference an
+    actual GT field on the HF dataset (e.g. 'gt_label' for cifar10),
+    not the placeholder 'gt_unknown'. Without this, generated SOTA
+    notebooks have PRED_FIELDS=['unknown_pred'] and submissions can't
+    score against the right column."""
+    admin = _mk_admin('arg_mapping_admin@bench.local')
+    evaluation = {
+        'id': 60, 'task': 'Image Classification', 'dataset': 'CIFAR-10',
+        'description': '',
+        'metrics': [{'name': 'Top 1 Accuracy', 'description': '',
+                     'sort_direction': 'higher_is_better'}],
+        'results': [],
+    }
+    lb_id = _create_lb_from_pwc_benchmark(
+        evaluation, hf_repo='cifar10', lb_name='arg_mapping_lb',
+        owner_user_id=admin.id,
+    )
+    lm = LeaderboardMetric.query.filter_by(leaderboard_id=lb_id).first()
+    arg_map = json.loads(lm.arg_mappings)
+    # The cifar10 stub schema has Image('img') + Value:int64('label').
+    # _infer_mapping picks 'label' as the scalar GT; arg_mappings must
+    # reference it (NOT 'gt_unknown').
+    assert arg_map['gt'] == 'gt_label'
+    assert arg_map['pred'] == 'sub_label_pred'
+
+    # The Attachment also gets the inferred mapping persisted so the
+    # eval engine + the LB Settings UI can see it.
+    att = Attachment.query.filter_by(leaderboard_id=lb_id).first()
+    mapping = json.loads(att.hf_mapping_json)
+    by_col = {m['column']: m['target_kind'] for m in mapping}
+    assert by_col == {'img': 'image', 'label': 'scalar'}
+
+
+def test_creates_lb_falls_back_to_unknown_when_schema_probe_fails(
+    client, db_session, login_as, monkeypatch,
+):
+    """Schema fetch can fail (gated dataset / network blip / HF
+    outage). LB creation must still succeed with the placeholder
+    arg_mappings — admin can wire it manually later."""
+    admin = _mk_admin('schema_fail_admin@bench.local')
+
+    def _boom(*a, **kw):
+        raise RuntimeError("HF Hub timeout (test stub)")
+    monkeypatch.setattr('app._hf_fetch_features', _boom)
+
+    evaluation = {
+        'id': 61, 'task': 'X', 'dataset': 'Y', 'description': '',
+        'metrics': [{'name': 'Score', 'description': '',
+                     'sort_direction': 'higher_is_better'}],
+        'results': [],
+    }
+    lb_id = _create_lb_from_pwc_benchmark(
+        evaluation, hf_repo='owner/private', lb_name='schema_fail_lb',
+        owner_user_id=admin.id,
+    )
+    lm = LeaderboardMetric.query.filter_by(leaderboard_id=lb_id).first()
+    arg_map = json.loads(lm.arg_mappings)
+    assert arg_map['gt'] == 'gt_unknown'
+    assert arg_map['pred'] == 'sub_unknown_pred'
+
+
 def test_creates_lb_calls_llm_to_author_metric_code(
-    client, db_session, login_as,
+    client, db_session, login_as, stub_hf_features,
 ):
     """When ANTHROPIC_API_KEY is set, _create_lb_from_pwc_benchmark
     should run each PWC metric name through _llm_generate_metric_code
@@ -538,7 +618,7 @@ def test_creates_lb_calls_llm_to_author_metric_code(
 
 
 def test_creates_lb_falls_back_to_stub_when_llm_unavailable(
-    client, db_session, login_as,
+    client, db_session, login_as, stub_hf_features,
 ):
     admin = _mk_admin('llm_fail_admin@bench.local')
     evaluation = {
@@ -559,7 +639,7 @@ def test_creates_lb_falls_back_to_stub_when_llm_unavailable(
 
 
 def test_creates_lb_summary_metrics_uses_target_names(
-    client, db_session, login_as,
+    client, db_session, login_as, stub_hf_features,
 ):
     """summary_metrics must match LeaderboardMetric.target_name (PWC name)
     so the LB view's resolver finds them. Earlier bug stored slugified
@@ -588,7 +668,7 @@ def test_creates_lb_summary_metrics_uses_target_names(
     assert 'top_1_accuracy' not in parts
 
 
-def test_skips_unparseable_metric_values(client, db_session, login_as):
+def test_skips_unparseable_metric_values(client, db_session, login_as, stub_hf_features):
     admin = _mk_admin('skip_admin@bench.local')
     evaluation = {
         'id': 50, 'task': 'X', 'dataset': 'Y', 'description': '',
