@@ -196,43 +196,49 @@ def _build_index_into(idx_path, snap_dir, progress_cb=None):
         conn.commit()
 
         dataset_ids = {}
-        # Earlier iter_batches(batch_size=1) approach was 100x slower
-        # than expected because pyarrow re-decodes the row group on each
-        # call — the shard's row group is one chunk, so per-row reads
-        # repeat the same decode work. Bulk-read each shard once with
-        # only the columns we walk (skip the wide union of flattened
-        # metric columns the archive carries) and iterate to_pylist
-        # locally. ~200 MB peak per shard, fine on a 2 GB worker.
+        # batch_size=1 was too slow (per-batch decode tax). Bulk-read
+        # was too hungry (full shard in Python = OOM on a 2 GB box).
+        # Middle ground: iter_batches(batch_size=50) with column
+        # projection. ~1/20th decode passes vs batch_size=1, and only
+        # 50 rows worth of nested Python at any time (~50 MB peak).
         import gc as _gc
         WANTED_COLUMNS = ['task', 'description', 'subtasks', 'datasets']
+        BATCH_SIZE = 50
         n_shards = len(parquet_files)
         counters = {'evals': 0, 'shard_idx': 0, 'n_shards': n_shards,
                     'progress_cb': progress_cb}
         for shard_idx, pf in enumerate(parquet_files, 1):
             counters['shard_idx'] = shard_idx
-            progress_cb(
-                f"Reading shard {shard_idx}/{n_shards}: "
-                f"{counters['evals']} benchmarks indexed so far…"
-            )
             pq_file = pq.ParquetFile(pf)
             available = set(pq_file.schema_arrow.names)
             cols = [c for c in WANTED_COLUMNS if c in available]
-            table = pq_file.read(columns=cols)
+            n_rows_total = pq_file.metadata.num_rows or 0
             progress_cb(
                 f"Walking shard {shard_idx}/{n_shards}: "
-                f"{table.num_rows} top-level tasks, "
+                f"{n_rows_total} top-level tasks, "
                 f"{counters['evals']} benchmarks indexed cumulative"
             )
-            rows = table.to_pylist()
-            del table
-            _gc.collect()
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                _walk_task_into(cur, row, dataset_ids, counters=counters)
+            tasks_in_shard = 0
+            for batch in pq_file.iter_batches(batch_size=BATCH_SIZE,
+                                               columns=cols):
+                rows = batch.to_pylist()
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    _walk_task_into(cur, row, dataset_ids, counters=counters)
+                    tasks_in_shard += 1
                 conn.commit()
-            del rows
-            _gc.collect()
+                # Heartbeat per batch so the user sees progress even
+                # when the recursive walker doesn't hit its own
+                # 100-evals threshold (some tasks have few subtasks).
+                progress_cb(
+                    f"Walking shard {shard_idx}/{n_shards}: "
+                    f"{tasks_in_shard}/{n_rows_total} tasks, "
+                    f"{counters['evals']} benchmarks, "
+                    f"{len(dataset_ids)} datasets"
+                )
+                del rows, batch
+                _gc.collect()
             progress_cb(
                 f"Shard {shard_idx}/{n_shards} done — "
                 f"{counters['evals']} benchmarks, {len(dataset_ids)} datasets"
