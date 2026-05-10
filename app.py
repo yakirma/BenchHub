@@ -2112,12 +2112,29 @@ def admin_lb_sota_picker(lb_id):
         abort(403)
     lb = Leaderboard.query.get_or_404(lb_id)
     task_slug = _hf_task_for_lb(lb)
-    models = _hf_trending_sota_models(task_slug, limit=20) if task_slug else []
+    # The HF dataset the LB attaches to (PWC-imported LBs always have
+    # this; legacy BH-only LBs may not). Used to filter the model list
+    # to ones actually trained on the right dataset.
+    hf_dataset = None
+    for att in (lb.attachments or []):
+        if getattr(att, 'kind', None) == 'hf' and att.role == 'primary' and att.hf_repo_id:
+            hf_dataset = att.hf_repo_id
+            break
+    if not hf_dataset and lb.canonical_for_repo:
+        hf_dataset = lb.canonical_for_repo
+    result = _hf_trending_sota_models(
+        task_slug, limit=20, dataset_repo=hf_dataset,
+    ) if (task_slug or hf_dataset) else {
+        'models': [], 'filter_level': 'unfiltered', 'tried': [],
+    }
     return render_template(
         'admin_lb_sota_picker.html',
         leaderboard=lb,
         task_slug=task_slug,
-        models=models,
+        hf_dataset=hf_dataset,
+        models=result['models'],
+        filter_level=result['filter_level'],
+        filters_tried=result['tried'],
     )
 
 
@@ -5688,39 +5705,109 @@ def _hf_task_for_lb(lb):
     return None
 
 
-def _hf_trending_sota_models(task_slug, *, limit=15):
+def _hf_dataset_filter_variants(repo_id):
+    """Build a fall-back ladder of `dataset:` tag values to try when
+    filtering HF models. The HF tag system is inconsistent: a model
+    trained on `ILSVRC/imagenet-1k` might be tagged with any of
+    `dataset:ILSVRC/imagenet-1k`, `dataset:imagenet-1k`, `dataset:imagenet`.
+    We walk progressively looser variants and stop at the first that
+    returns hits."""
+    if not repo_id:
+        return []
+    variants = []
+    # Most specific first.
+    variants.append(repo_id)
+    if '/' in repo_id:
+        bare = repo_id.split('/', 1)[1]
+        variants.append(bare)
+    # Strip a trailing version-y suffix (-1k, -v2, etc.) for the
+    # broadest catch.
+    short = variants[-1]
+    short = re.sub(r'[-_](?:\d+k?|v\d+|train|test|val|small|tiny)$', '', short, flags=re.IGNORECASE)
+    if short and short != variants[-1]:
+        variants.append(short)
+    # Dedupe while preserving order.
+    seen = set()
+    out = []
+    for v in variants:
+        if v and v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(v)
+    return out
+
+
+def _hf_trending_sota_models(task_slug, *, limit=15, dataset_repo=None):
     """List HF Hub models for one task slug, sorted by download count.
-    The "best so far" proxy: most-downloaded ≈ most-used by the
-    community. Cached per-process for 10 min so the admin search page
-    doesn't hammer huggingface.co. Returns
-    [{id, downloads, likes, library_name, last_modified}, ...]."""
-    cache_key = ('sota_models', task_slug or '')
+    When `dataset_repo` is given, narrow first to models tagged with
+    `dataset:<repo>`; if that returns empty, walk progressively looser
+    dataset name variants (e.g. ILSVRC/imagenet-1k → imagenet-1k →
+    imagenet) before falling back to task-only. The fallback level
+    is recorded in the cache value so the picker UI can label what
+    filter actually matched.
+
+    Returns a dict {`models`: [...], `filter_level`: str, `tried`: [...]}.
+    `filter_level` is one of:
+      'task+dataset:<variant>' — filtered narrowly, hits found.
+      'task'                   — dataset filter empty at every level, fell through.
+      'unfiltered'             — task slug missing entirely.
+    """
+    cache_key = ('sota_models', task_slug or '', dataset_repo or '')
     import time
     now = time.time()
     cached = _HF_SOTA_CACHE.get(cache_key)
     if cached and now - cached[0] < 600:
         return cached[1]
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        kwargs = {'sort': 'downloads', 'direction': -1, 'limit': limit}
-        if task_slug:
-            kwargs['filter'] = task_slug
-        models = list(api.list_models(**kwargs))
-    except Exception as e:
-        print(f"_hf_trending_sota_models({task_slug!r}) failed: {e}")
-        return []
-    out = []
+
+    def _one_call(filters):
+        """Single API call with `filters` (list of tag strings).
+        Always sorted by download count desc."""
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            kwargs = {'sort': 'downloads', 'direction': -1, 'limit': limit}
+            if filters:
+                kwargs['filter'] = filters
+            return list(api.list_models(**kwargs))
+        except Exception as e:
+            print(f"_hf_trending_sota_models call {filters!r} failed: {e}")
+            return []
+
+    tried = []
+    models = []
+    filter_level = 'unfiltered'
+    if not task_slug and not dataset_repo:
+        models = _one_call(None)
+    else:
+        if task_slug and dataset_repo:
+            for variant in _hf_dataset_filter_variants(dataset_repo):
+                tag = f"dataset:{variant}"
+                tried.append(tag)
+                models = _one_call([task_slug, tag])
+                if models:
+                    filter_level = f'task+{tag}'
+                    break
+        if not models and task_slug:
+            tried.append(task_slug)
+            models = _one_call([task_slug])
+            if models:
+                filter_level = 'task'
+
+    out_rows = []
     for m in models:
-        out.append({
+        out_rows.append({
             'id': getattr(m, 'id', None) or getattr(m, 'modelId', ''),
             'downloads': getattr(m, 'downloads', 0) or 0,
             'likes': getattr(m, 'likes', 0) or 0,
             'library_name': getattr(m, 'library_name', '') or '',
             'last_modified': str(getattr(m, 'last_modified', '') or '')[:10],
         })
-    _HF_SOTA_CACHE[cache_key] = (now, out)
-    return out
+    result = {
+        'models': out_rows,
+        'filter_level': filter_level,
+        'tried': tried,
+    }
+    _HF_SOTA_CACHE[cache_key] = (now, result)
+    return result
 
 
 _HF_SOTA_CACHE = {}

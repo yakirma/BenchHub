@@ -123,6 +123,7 @@ def fake_hf_models(monkeypatch):
 
     class _Api:
         def list_models(self, *, sort=None, direction=None, limit=20, filter=None):
+            state['last_filter'] = filter
             return state['models']
 
     fake = types.ModuleType('huggingface_hub')
@@ -181,6 +182,94 @@ def test_sota_notebook_falls_back_on_llm_failure(client, db_session, login_as, f
     # HTML escapes the apostrophe — match either form.
     assert (b"Couldn&#39;t generate" in r.data
             or b"Couldn't generate" in r.data)
+
+
+def test_dataset_filter_variants():
+    from app import _hf_dataset_filter_variants
+    # Owner/repo: keep both forms.
+    assert _hf_dataset_filter_variants('ILSVRC/imagenet-1k') == [
+        'ILSVRC/imagenet-1k', 'imagenet-1k', 'imagenet',
+    ]
+    # Bare repo: same shape minus the owner-form.
+    assert _hf_dataset_filter_variants('cifar10') == ['cifar10']
+    # Empty / None: empty list.
+    assert _hf_dataset_filter_variants('') == []
+    assert _hf_dataset_filter_variants(None) == []
+
+
+def test_sota_picker_filters_by_dataset(client, db_session, login_as, fake_hf_models):
+    """When the LB carries an HF dataset attachment, the picker must
+    filter to models actually trained on that dataset."""
+    admin = _mk_admin('ds_filter_admin@bench.local')
+    login_as(admin)
+    lb = _seed_lb('Image Classification on ImageNet', 'top-1 accuracy')
+    # Wire up an HF attachment so the picker has a dataset to filter on.
+    from app import Attachment
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='ILSVRC/imagenet-1k',
+        hf_split='train', hf_mapping_json='[]', role='primary',
+    ))
+    db.session.commit()
+    Model = sys.modules['huggingface_hub']._Model
+    fake_hf_models['models'] = [
+        Model('google/vit-base-patch16-224', downloads=1_000_000, likes=200),
+    ]
+    r = client.get(f'/admin/leaderboard/{lb.id}/sota_picker')
+    assert r.status_code == 200
+    # Filter banner mentions the dataset variant that matched.
+    assert (b'dataset:ILSVRC/imagenet-1k' in r.data
+            or b'Filtered to models tagged' in r.data)
+
+
+def test_sota_picker_falls_back_to_task_only_when_no_dataset_match(
+    client, db_session, login_as, monkeypatch
+):
+    """When NO model in HF Hub is tagged as trained on this dataset
+    (any variant), the picker walks the variant ladder, finds nothing,
+    and falls back to task-only with a warning banner."""
+    admin = _mk_admin('fallback_admin@bench.local')
+    login_as(admin)
+    lb = _seed_lb('Image Classification on Obscure-Set', 'top-1 accuracy')
+    from app import Attachment
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='owner/obscure-set',
+        hf_split='train', hf_mapping_json='[]', role='primary',
+    ))
+    db.session.commit()
+
+    # Stub: dataset filters return empty, task-only returns one model.
+    import sys as _sys
+    import types as _types
+
+    class _Model:
+        def __init__(self, id_, downloads=0):
+            self.id = id_
+            self.downloads = downloads
+            self.likes = 0
+            self.library_name = 'transformers'
+            self.last_modified = '2025-01-01'
+
+    state = {'calls': []}
+
+    class _Api:
+        def list_models(self, *, sort=None, direction=None, limit=20, filter=None):
+            state['calls'].append(filter)
+            if filter and any(f.startswith('dataset:') for f in (filter if isinstance(filter, list) else [filter])):
+                return []  # no dataset-filtered hits
+            return [_Model('some/popular-classifier', downloads=999)]
+
+    fake = _types.ModuleType('huggingface_hub')
+    fake.HfApi = _Api
+    monkeypatch.setitem(_sys.modules, 'huggingface_hub', fake)
+    import app as _app
+    _app._HF_SOTA_CACHE.clear()
+
+    r = client.get(f'/admin/leaderboard/{lb.id}/sota_picker')
+    assert r.status_code == 200
+    # Walk-the-ladder: at least one dataset filter attempt + one task-only fallback.
+    assert any('dataset:' in (str(c) if c else '') for c in state['calls'])
+    assert any(c == ['image-classification'] for c in state['calls'])
+    assert b'No models on HF Hub are tagged as trained on' in r.data
 
 
 def test_sota_notebook_requires_model_id(client, db_session, login_as, fake_hf_models):
