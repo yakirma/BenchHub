@@ -2138,6 +2138,54 @@ def admin_lb_sota_picker(lb_id):
     )
 
 
+def _sota_cache_path(lb_id, model_id):
+    """On-disk cache for SOTA notebooks keyed by (lb, model). The
+    Claude generation is a 1-3 min call we don't want to repeat for
+    every admin click on the same row. Cache lives on the volume so
+    it survives gunicorn worker recycles."""
+    base = os.environ.get('BENCHHUB_DATA_DIR') or os.path.expanduser('~/.dtofbenchmarking')
+    cache_dir = os.path.join(base, '_cache', 'sota')
+    os.makedirs(cache_dir, exist_ok=True)
+    safe_model = re.sub(r'[^A-Za-z0-9_-]+', '_', model_id) or 'model'
+    return os.path.join(cache_dir, f'{lb_id}__{safe_model}.json')
+
+
+def _read_sota_cache(lb_id, model_id):
+    """Return {notebook, gist_id, gist_owner} or None if missing /
+    unparseable / older than the prompt-version cap. The PROMPT_VERSION
+    bump invalidates every cached entry, which is the migration path
+    for prompt changes (Claude generated stale code under the old
+    rules)."""
+    PROMPT_VERSION = 2  # bump when _llm_colab_notebook prompt changes
+    path = _sota_cache_path(lb_id, model_id)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if data.get('prompt_version') != PROMPT_VERSION:
+        return None
+    if not data.get('notebook'):
+        return None
+    return data
+
+
+def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=None):
+    PROMPT_VERSION = 2
+    path = _sota_cache_path(lb_id, model_id)
+    try:
+        with open(path, 'w') as f:
+            json.dump({
+                'prompt_version': PROMPT_VERSION,
+                'model_id': model_id,
+                'notebook': notebook,
+                'gist_id': gist_id,
+                'gist_owner': gist_owner,
+            }, f)
+    except OSError as e:
+        print(f"_write_sota_cache failed for lb={lb_id} model={model_id!r}: {e}")
+
+
 def _push_one_off_gist(notebook_json, *, filename, description):
     """Create a fresh secret GitHub gist for this notebook and return
     (gist_url, gist_id, gist_owner). Returns (None, None, None) when
@@ -2194,16 +2242,15 @@ def admin_lb_sota_notebook(lb_id):
     if not model_id:
         flash("HF model id is required.", "warning")
         return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
-    nb = _llm_sota_colab_notebook(lb, model_id)
-    if not nb:
-        flash(
-            f"Couldn't generate a SOTA notebook for {model_id} "
-            "(LLM unavailable, model id rejected by Claude, or "
-            "response wasn't valid notebook JSON). Try a different "
-            "model or check ANTHROPIC_API_KEY.",
-            "danger",
-        )
-        return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
+    force = request.form.get('force') == '1'
+
+    # Cache hit: serve the previous notebook (and its gist if we have
+    # one) — saves the 1-3 min Claude call. Force regen via the
+    # picker form's "Regenerate even if cached" checkbox; also
+    # auto-invalidates when the PROMPT_VERSION bump in
+    # _read_sota_cache fires (deploys with prompt changes).
+    cached = None if force else _read_sota_cache(lb.id, model_id)
+
     safe_model = re.sub(r'[^A-Za-z0-9_-]+', '_', model_id) or 'model'
     safe_lb = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
     filename = f'{safe_lb}__{safe_model}_sota.ipynb'
@@ -2211,9 +2258,39 @@ def admin_lb_sota_notebook(lb_id):
         f"BenchHub SOTA submission scaffold for '{lb.name}' "
         f"(model={model_id})"
     )
-    _gist_url, gist_id, gist_owner = _push_one_off_gist(
-        nb, filename=filename, description=description,
-    )
+
+    if cached:
+        nb = cached['notebook']
+        gist_id = cached.get('gist_id')
+        gist_owner = cached.get('gist_owner')
+        # If we cached a gist URL last time AND it still exists on
+        # GitHub, redirect immediately. Otherwise re-push as a one-off.
+        if not gist_id:
+            _gist_url, gist_id, gist_owner = _push_one_off_gist(
+                nb, filename=filename, description=description,
+            )
+            if gist_id:
+                _write_sota_cache(lb.id, model_id, notebook=nb,
+                                  gist_id=gist_id, gist_owner=gist_owner)
+    else:
+        nb = _llm_sota_colab_notebook(lb, model_id)
+        if not nb:
+            flash(
+                f"Couldn't generate a SOTA notebook for {model_id} "
+                "(LLM unavailable, model id rejected by Claude, or "
+                "response wasn't valid notebook JSON). Try a different "
+                "model or check ANTHROPIC_API_KEY.",
+                "danger",
+            )
+            return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
+        _gist_url, gist_id, gist_owner = _push_one_off_gist(
+            nb, filename=filename, description=description,
+        )
+        # Cache regardless of gist outcome so the next click skips
+        # the LLM call. Gist push is cheap to retry on read-back.
+        _write_sota_cache(lb.id, model_id, notebook=nb,
+                          gist_id=gist_id, gist_owner=gist_owner)
+
     if gist_id:
         path = f'{gist_owner}/{gist_id}' if gist_owner else gist_id
         return redirect(f'https://colab.research.google.com/gist/{path}')

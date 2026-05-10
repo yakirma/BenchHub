@@ -38,6 +38,15 @@ def login_as(client):
     return _go
 
 
+@pytest.fixture(autouse=True)
+def isolated_sota_cache(tmp_path, monkeypatch):
+    """Point the on-disk SOTA cache at a per-test tmp dir so one
+    test's cached notebook doesn't bleed into the next.
+    BENCHHUB_DATA_DIR is read inside _sota_cache_path()."""
+    monkeypatch.setenv('BENCHHUB_DATA_DIR', str(tmp_path))
+    yield
+
+
 def _seed_lb(name='Image Classification on CIFAR-10', metric_target='Top 1 Accuracy'):
     ds = Dataset(name=f'{name}_ds', visibility='public')
     db.session.add(ds); db.session.flush()
@@ -297,6 +306,63 @@ def test_sota_picker_falls_back_to_task_only_when_no_dataset_match(
     assert any('dataset:' in (str(c) if c else '') for c in state['calls'])
     assert any(c == ['image-classification'] for c in state['calls'])
     assert b'No models on HF Hub are tagged as trained on' in r.data
+
+
+def test_sota_notebook_serves_cache_on_second_call(
+    client, db_session, login_as, fake_hf_models,
+):
+    """Second call with the same (LB, model) should reuse the cached
+    notebook + skip the LLM. Saves 1-3 min per repeated click."""
+    admin = _mk_admin('cache_admin@bench.local')
+    login_as(admin)
+    lb = _seed_lb()
+    fake_nb = '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+    with patch('app._llm_sota_colab_notebook', return_value=fake_nb) as llm, \
+         patch('app._push_one_off_gist',
+               return_value=('https://gist/x', 'gid', 'owner')):
+        # First call: LLM hit, gist created.
+        client.post(
+            f'/admin/leaderboard/{lb.id}/sota_notebook',
+            data={'model_id': 'microsoft/resnet-50'},
+            follow_redirects=False,
+        )
+        assert llm.call_count == 1
+        # Second call with same model: cached, no LLM, redirect uses
+        # the cached gist id directly.
+        r2 = client.post(
+            f'/admin/leaderboard/{lb.id}/sota_notebook',
+            data={'model_id': 'microsoft/resnet-50'},
+            follow_redirects=False,
+        )
+        assert llm.call_count == 1  # still one — cache hit
+        assert r2.status_code in (302, 303)
+        assert r2.headers['Location'] == 'https://colab.research.google.com/gist/owner/gid'
+
+
+def test_sota_notebook_force_regen_skips_cache(
+    client, db_session, login_as, fake_hf_models,
+):
+    """The 'Regenerate even if cached' toggle invalidates the cache
+    for that one call (e.g. after a prompt change)."""
+    admin = _mk_admin('force_admin@bench.local')
+    login_as(admin)
+    lb = _seed_lb()
+    fake_nb = '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+    with patch('app._llm_sota_colab_notebook', return_value=fake_nb) as llm, \
+         patch('app._push_one_off_gist',
+               return_value=('https://gist/x', 'gid', 'owner')):
+        # First call to populate the cache.
+        client.post(
+            f'/admin/leaderboard/{lb.id}/sota_notebook',
+            data={'model_id': 'microsoft/resnet-50'},
+        )
+        assert llm.call_count == 1
+        # Second call with force=1 must hit the LLM again.
+        client.post(
+            f'/admin/leaderboard/{lb.id}/sota_notebook',
+            data={'model_id': 'microsoft/resnet-50', 'force': '1'},
+        )
+        assert llm.call_count == 2
 
 
 def test_sota_notebook_requires_model_id(client, db_session, login_as, fake_hf_models):
