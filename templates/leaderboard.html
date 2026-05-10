@@ -1117,6 +1117,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </thead>
                 <tbody>
                     {% for sub in mirrored_submissions %}
+                    {# Build a {lm_id: value} dict per submission so the per-cell
+                       lookup is O(1). metric_to_lm[m] returns the LeaderboardMetric
+                       object (NOT an int) — we read .id off it to match the
+                       MetricResult.leaderboard_metric_id integer. #}
+                    {% set values_by_lm = {} %}
+                    {% for r in sub.metric_results %}
+                    {% set _ = values_by_lm.update({r.leaderboard_metric_id: r.value}) %}
+                    {% endfor %}
                     <tr>
                         <td class="ps-3">
                             {% if sub.source_paper_url %}
@@ -1126,14 +1134,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {{ sub.name }}
                             {% endif %}
                         </td>
-                        {% set sub_results = {} %}
-                        {% for r in sub.metric_results %}
-                        {% set _ = sub_results.update({metric_to_lm.get(metric_labels.get(r.leaderboard_metric.target_name, r.leaderboard_metric.target_name)) or r.leaderboard_metric.id: r.value}) %}
-                        {% endfor %}
                         {% for m in selected_metrics %}
-                        {% set lm_id = metric_to_lm.get(m) %}
-                        {% set v = none %}
-                        {% for r in sub.metric_results %}{% if r.leaderboard_metric_id == lm_id %}{% set v = r.value %}{% endif %}{% endfor %}
+                        {% set lm_obj = metric_to_lm.get(m) %}
+                        {% set v = values_by_lm.get(lm_obj.id) if lm_obj else none %}
                         <td class="font-monospace">{{ '%.4g'|format(v) if v is not none else '—' }}</td>
                         {% endfor %}
                         <td>
