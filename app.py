@@ -2156,7 +2156,7 @@ def _read_sota_cache(lb_id, model_id):
     bump invalidates every cached entry, which is the migration path
     for prompt changes (Claude generated stale code under the old
     rules)."""
-    PROMPT_VERSION = 3  # bump when _llm_colab_notebook prompt changes
+    PROMPT_VERSION = 4  # bump when _llm_colab_notebook prompt changes
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path) as f:
@@ -2171,7 +2171,7 @@ def _read_sota_cache(lb_id, model_id):
 
 
 def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=None):
-    PROMPT_VERSION = 3
+    PROMPT_VERSION = 4
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path, 'w') as f:
@@ -6102,13 +6102,27 @@ def _llm_colab_notebook(lb, model_id_hint=None):
             f"`pixel_values = _IMAGENET_TFM(img).unsqueeze(0)` instead of "
             f"the processor call. This is the common fallback that works "
             f"for the vast majority of ImageNet-trained classifiers.\n"
-            f"- Wrap the model load in a try/except. On failure, print the "
-            f"error and a one-line hint: 'If timm raised KeyError architecture, "
-            f"swap to transformers.AutoModel.from_pretrained(..., trust_remote_code=True). "
-            f"If AutoImageProcessor raised OSError about preprocessor_config, "
-            f"the fallback torchvision pipeline kicks in automatically — "
-            f"verify by checking that a few outputs look right. If "
-            f"transformers raised about custom code, ensure trust_remote_code=True.'\n"
+            f"- Define an `_install_and_retry(load_fn, max_retries=4)` helper "
+            f"that catches the load_fn() exception, extracts the missing "
+            f"package name from either `No module named 'X'` (ImportError) "
+            f"or `pip install X` / `Run \\`pip install X\\`` (RuntimeError "
+            f"raised by transformers when modeling_*.py imports something "
+            f"that isn't installed), then runs "
+            f"`subprocess.check_call([sys.executable, '-m', 'pip', "
+            f"'install', '-q', pkg])` and retries. After max_retries it "
+            f"re-raises. This pattern handles the long tail of HF custom-"
+            f"code models that depend on mamba_ssm / causal-conv1d / "
+            f"flash-attn / etc. The processor + model loads BOTH go through "
+            f"this helper.\n"
+            f"- Wrap the overall load in a try/except. On final failure, "
+            f"print the error and a one-line hint: 'If timm raised KeyError "
+            f"architecture, swap to transformers.AutoModel.from_pretrained("
+            f"..., trust_remote_code=True). If AutoImageProcessor raised "
+            f"OSError about preprocessor_config, the fallback torchvision "
+            f"pipeline kicks in automatically. If a deep dep refused to "
+            f"install (compile error / GPU-only wheel), the model needs "
+            f"GPU runtime — switch via Runtime → Change runtime type → "
+            f"GPU and rerun.'\n"
             f"- The my_model(sample_name, inputs) function runs inference end-to-end "
             f"and returns a dict whose keys match PRED_FIELDS exactly. The default "
             f"body is RUNNABLE — the user shouldn't need to edit it for the metric "
