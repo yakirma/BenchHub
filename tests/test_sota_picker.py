@@ -151,20 +151,47 @@ def test_sota_picker_lists_trending_models(client, db_session, login_as, fake_hf
     assert b'image-classification' in r.data  # inferred task
 
 
-def test_sota_notebook_generates_via_llm(client, db_session, login_as, fake_hf_models):
-    admin = _mk_admin('sota_gen_admin@bench.local')
+def test_sota_notebook_redirects_to_colab_via_gist(
+    client, db_session, login_as, fake_hf_models,
+):
+    """Happy path: LLM produces a notebook → push to GitHub gist →
+    302 to colab.research.google.com/gist/<owner>/<id>. The browser
+    opens Colab directly instead of downloading the file."""
+    admin = _mk_admin('sota_gist_admin@bench.local')
     login_as(admin)
     lb = _seed_lb()
     fake_nb = '{"cells": [{"cell_type": "markdown", "source": "ResNet-50"}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
-    with patch('app._llm_sota_colab_notebook', return_value=fake_nb) as mock:
+    with patch('app._llm_sota_colab_notebook', return_value=fake_nb), \
+         patch('app._push_one_off_gist',
+               return_value=('https://gist.github.com/o/abc',
+                             'abc', 'benchhub-bot')):
+        r = client.post(
+            f'/admin/leaderboard/{lb.id}/sota_notebook',
+            data={'model_id': 'microsoft/resnet-50'},
+            follow_redirects=False,
+        )
+    assert r.status_code in (302, 303)
+    assert r.headers['Location'] == 'https://colab.research.google.com/gist/benchhub-bot/abc'
+
+
+def test_sota_notebook_falls_back_to_download_when_gist_unavailable(
+    client, db_session, login_as, fake_hf_models,
+):
+    """When the gist push fails (no token / GitHub down), serve the
+    notebook as a download with a flash explaining why."""
+    admin = _mk_admin('sota_dl_admin@bench.local')
+    login_as(admin)
+    lb = _seed_lb()
+    fake_nb = '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+    with patch('app._llm_sota_colab_notebook', return_value=fake_nb), \
+         patch('app._push_one_off_gist', return_value=(None, None, None)):
         r = client.post(
             f'/admin/leaderboard/{lb.id}/sota_notebook',
             data={'model_id': 'microsoft/resnet-50'},
         )
     assert r.status_code == 200
     assert r.headers['Content-Type'].startswith('application/x-ipynb+json')
-    assert b'ResNet-50' in r.data
-    mock.assert_called_once()
+    assert 'attachment' in r.headers['Content-Disposition']
 
 
 def test_sota_notebook_falls_back_on_llm_failure(client, db_session, login_as, fake_hf_models):

@@ -2138,12 +2138,55 @@ def admin_lb_sota_picker(lb_id):
     )
 
 
+def _push_one_off_gist(notebook_json, *, filename, description):
+    """Create a fresh secret GitHub gist for this notebook and return
+    (gist_url, gist_id, gist_owner). Returns (None, None, None) when
+    BENCHHUB_GITHUB_GIST_TOKEN is missing or GitHub rejects the call.
+
+    Unlike _ensure_colab_gist this never PATCHes an existing gist —
+    the SOTA flow generates one notebook per (LB, model), so each
+    deserves its own gist. We don't cache the id either; admin can
+    regenerate freely."""
+    token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN')
+    if not token:
+        return None, None, None
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+    payload = {
+        'description': description,
+        'public': False,
+        'files': {filename: {'content': notebook_json}},
+    }
+    try:
+        import requests as _r
+        resp = _r.post(
+            'https://api.github.com/gists',
+            headers=headers, json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return (
+            body.get('html_url'),
+            body.get('id'),
+            (body.get('owner') or {}).get('login'),
+        )
+    except Exception as e:
+        print(f"_push_one_off_gist failed: {e}")
+        return None, None, None
+
+
 @app.route('/admin/leaderboard/<int:lb_id>/sota_notebook', methods=['POST'])
 @login_required
 def admin_lb_sota_notebook(lb_id):
-    """Generate (or fetch from cache) a SOTA-model-specific Colab
-    notebook for this LB. Returns the .ipynb as a download so the
-    admin can review it before publishing as the canonical NB."""
+    """Generate a SOTA-model-specific Colab notebook for this LB and
+    push it to a GitHub gist so we can redirect straight to
+    colab.research.google.com/gist/<owner>/<id>. Falls back to a
+    direct .ipynb download when the gist token isn't configured or
+    the GitHub API call fails — admin can still upload the file
+    manually."""
     if not is_admin(g.current_user):
         abort(403)
     lb = Leaderboard.query.get_or_404(lb_id)
@@ -2163,12 +2206,31 @@ def admin_lb_sota_notebook(lb_id):
         return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
     safe_model = re.sub(r'[^A-Za-z0-9_-]+', '_', model_id) or 'model'
     safe_lb = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+    filename = f'{safe_lb}__{safe_model}_sota.ipynb'
+    description = (
+        f"BenchHub SOTA submission scaffold for '{lb.name}' "
+        f"(model={model_id})"
+    )
+    _gist_url, gist_id, gist_owner = _push_one_off_gist(
+        nb, filename=filename, description=description,
+    )
+    if gist_id:
+        path = f'{gist_owner}/{gist_id}' if gist_owner else gist_id
+        return redirect(f'https://colab.research.google.com/gist/{path}')
+    # Fallback: direct download. Inline the flash so admin understands
+    # why they got a file instead of a Colab tab.
+    flash(
+        "Couldn't publish the SOTA notebook as a GitHub gist "
+        "(BENCHHUB_GITHUB_GIST_TOKEN missing or GitHub rejected the "
+        "call). Downloaded the .ipynb instead — upload it manually "
+        "via Colab → File → Upload notebook.",
+        "warning",
+    )
     return app.response_class(
         nb,
         mimetype='application/x-ipynb+json',
         headers={
-            'Content-Disposition':
-                f'attachment; filename="{safe_lb}__{safe_model}_sota.ipynb"',
+            'Content-Disposition': f'attachment; filename="{filename}"',
         },
     )
 
