@@ -494,7 +494,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
-<div class="d-flex justify-content-end mb-3">
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    {# Range info: "Samples N–M of T" so the user knows where they are
+       in the pagination + total. Range derives from current page +
+       per-page; clamps the upper bound so the last page doesn't claim
+       more samples than exist. Hides when there are no samples. #}
+    {% if paginated_samples and paginated_samples.total %}
+    {% set _range_start = (paginated_samples.page - 1) * paginated_samples.per_page + 1 %}
+    {% set _range_end_uncapped = paginated_samples.page * paginated_samples.per_page %}
+    {% set _range_end = _range_end_uncapped if _range_end_uncapped < paginated_samples.total else paginated_samples.total %}
+    <span class="small text-body-secondary">
+        Samples <strong>{{ _range_start }}</strong>–<strong>{{ _range_end }}</strong>
+        of <strong>{{ '{:,}'.format(paginated_samples.total) }}</strong>
+        {% if sort_by %}
+        <span class="ms-2">(sorted by <code>{{ sort_by }}</code> {{ sort_order }})</span>
+        {% endif %}
+    </span>
+    {% else %}
+    <span></span>
+    {% endif %}
     <nav>
         <ul class="pagination justify-content-end mb-0">
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
@@ -1588,9 +1606,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (modalImgEl) modalImgEl.style.display = 'none';
                 if (modalPlotlyEl) modalPlotlyEl.style.display = 'none';
                 if (loadingSpinnerEl) loadingSpinnerEl.style.display = 'none';
-                // The gallery's setCurrentIndex already snapped the
-                // active layer's opacity to 1 and the others to 0 via
-                // resetLayerSliders.
+                // Wire ZoomHandler onto the layer wrap so pan + wheel
+                // zoom apply to all overlay layers in unison
+                // (transform on the wrap propagates to its absolute
+                // children). Reset state on every (re)open so the
+                // user starts at 1:1.
+                if (!visZoomHandler) {
+                    visZoomHandler = new ZoomHandler(layersWrap);
+                } else {
+                    visZoomHandler.reset();
+                }
                 return;
             }
 
@@ -2668,6 +2693,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         const wrap = document.getElementById('vis-modal-layers');
         if (!wrap) return;
         wrap.innerHTML = '';
+        // Make the wrap interactive so ZoomHandler (attached to the
+        // wrap) can listen for mouse + wheel events. Layer IMGs keep
+        // pointer-events: none so events fall through to the wrap
+        // and the transform propagates to every child layer in unison.
+        wrap.style.pointerEvents = 'auto';
         items.forEach((item, i) => {
             const img = document.createElement('img');
             img.src = _visLayerThumbSrc(item);
@@ -2677,7 +2707,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             img.style.left = '0';
             img.style.width = '100%';
             img.style.height = '100%';
-            img.style.objectFit = 'contain';
+            // `fill` stretches the source to the wrapper's full size
+            // (vs `contain` which letterboxes small thumbs). User
+            // asked small images stretched to the window — bench-cache
+            // thumbs are 128×96 so without this they look tiny. Side
+            // benefit: all layers share an identical pixel grid so
+            // RGB↔depth overlay alignment is exact regardless of
+            // source aspect.
+            img.style.objectFit = 'fill';
             img.style.pointerEvents = 'none';
             img.style.opacity = (i === currentIndex) ? '1' : '0';
             wrap.appendChild(img);
