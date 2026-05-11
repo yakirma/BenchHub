@@ -777,20 +777,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {% if display_metrics %}
+                                        {# Submission Metrics / Scalars: only render fields that AT
+                                           LEAST ONE submission has a value for. Mirrors the GT-side
+                                           filter above so a GT-only field (e.g. `label` on an HF LB)
+                                           doesn't produce an all-dashes row under "Sub1". #}
+                                        {% set sub_metrics_present = [] %}
+                                        {% for m in display_metrics|sort %}
+                                        {% set _row_values = [] %}
+                                        {% for pred in data.predictions %}
+                                        {% if pred and pred[m] is defined and pred[m] is number %}
+                                        {% set _ = _row_values.append(pred[m]) %}
+                                        {% endif %}
+                                        {% endfor %}
+                                        {% if _row_values %}
+                                        {% set _ = sub_metrics_present.append((m, _row_values)) %}
+                                        {% endif %}
+                                        {% endfor %}
+
+                                        {% if sub_metrics_present %}
                                         <tr>
                                             <td colspan="{{ submissions|length + 1 }}"
                                                 class="fw-bold bg-body-secondary">Metrics</td>
                                         </tr>
-                                        {% for m in display_metrics|sort %}
-                                        {% set row_values = [] %}
-                                        {% for pred in data.predictions %}
-                                        {% if pred and pred[m] is defined and pred[m] is number %}
-                                        {% set _ = row_values.append(pred[m]) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% set row_min = row_values|min if row_values else none %}
-                                        {% set row_max = row_values|max if row_values else none %}
+                                        {% for m, row_values in sub_metrics_present %}
+                                        {% set row_min = row_values|min %}
+                                        {% set row_max = row_values|max %}
                                         <tr>
                                             <td class="text-truncate" style="max-width: 100px;"
                                                 title="{{ metric_labels.get(m, m) }}">{{ metric_labels.get(m, m) }}
@@ -809,20 +820,27 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         {% endfor %}
                                         {% endif %}
 
-                                        {% if display_scalars %}
+                                        {% set sub_scalars_present = [] %}
+                                        {% for s in display_scalars|sort %}
+                                        {% set _row_values = [] %}
+                                        {% for pred in data.predictions %}
+                                        {% if pred and pred[s] is defined and pred[s] is number %}
+                                        {% set _ = _row_values.append(pred[s]) %}
+                                        {% endif %}
+                                        {% endfor %}
+                                        {% if _row_values %}
+                                        {% set _ = sub_scalars_present.append((s, _row_values)) %}
+                                        {% endif %}
+                                        {% endfor %}
+
+                                        {% if sub_scalars_present %}
                                         <tr>
                                             <td colspan="{{ submissions|length + 1 }}"
                                                 class="fw-bold bg-body-secondary">Scalars</td>
                                         </tr>
-                                        {% for s in display_scalars|sort %}
-                                        {% set row_values = [] %}
-                                        {% for pred in data.predictions %}
-                                        {% if pred and pred[s] is defined and pred[s] is number %}
-                                        {% set _ = row_values.append(pred[s]) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% set row_min = row_values|min if row_values else none %}
-                                        {% set row_max = row_values|max if row_values else none %}
+                                        {% for s, row_values in sub_scalars_present %}
+                                        {% set row_min = row_values|min %}
+                                        {% set row_max = row_values|max %}
                                         <tr>
                                             <td class="text-truncate" style="max-width: 100px;" title="{{ s }}">{{ s }}
                                             </td>
