@@ -76,6 +76,14 @@ def fake_archive_index(tmp_path):
             (300, 1, 'ASR', '',
              _json.dumps(['Word Error Rate', 'BLEU-4']),
              _json.dumps([])),
+            # Depth-estimation-style eval to exercise the broader lower-better
+            # heuristic (user-reported: RMS got tagged higher-is-better).
+            (400, 2, 'Depth Estimation', '',
+             _json.dumps([
+                 'RMS', 'RMSE', 'AbsRel', 'SqRel', 'Log10', 'SILog',
+                 'Delta < 1.25', 'mAP',
+             ]),
+             _json.dumps([])),
         ],
     )
     conn.commit(); conn.close()
@@ -126,6 +134,31 @@ def test_get_evaluation_loss_metric_sort_direction(fake_archive_index):
     by_name = {m['name']: m['sort_direction'] for m in ev['metrics']}
     assert by_name['Word Error Rate'] == 'lower_is_better'
     assert by_name['BLEU-4'] == 'higher_is_better'
+
+
+def test_get_evaluation_sort_direction_covers_depth_error_metrics(
+    fake_archive_index,
+):
+    """User-reported: NYU Depth V2 imports tagged `RMS` as higher-is-better
+    because the heuristic only had `rmse`. Lock the expanded table for
+    common depth / regression / LM error metric names so the default
+    sort direction matches what the literature actually means."""
+    ev = pwc_client.get_evaluation(400)
+    by_name = {m['name']: m['sort_direction'] for m in ev['metrics']}
+
+    # Errors → lower is better.
+    for name in ('RMS', 'RMSE', 'AbsRel', 'SqRel', 'Log10', 'SILog'):
+        assert by_name[name] == 'lower_is_better', (
+            f"{name!r} should default to lower_is_better but got "
+            f"{by_name[name]!r}"
+        )
+
+    # Non-errors → higher is better (Delta accuracy / mAP).
+    for name in ('Delta < 1.25', 'mAP'):
+        assert by_name[name] == 'higher_is_better', (
+            f"{name!r} should default to higher_is_better but got "
+            f"{by_name[name]!r}"
+        )
 
 
 def test_get_evaluation_unknown_id_raises(fake_archive_index):

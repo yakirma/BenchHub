@@ -572,7 +572,27 @@ def get_evaluation(evaluation_id):
         rows = []
     metrics = []
     for m in metric_names:
-        is_loss = bool(re.search(r'\b(loss|error|mae|rmse|mse|wer|cer)\b', str(m), re.IGNORECASE))
+        # Heuristic: tag a metric as "lower-is-better" when its name
+        # contains an error/loss-like token. Word boundaries keep e.g.
+        # `\brms\b` from matching inside `rmse` (which is matched on
+        # its own line). User-reported: NYU Depth V2 imports tagged
+        # `RMS` as higher-is-better because the original list only had
+        # `rmse`. Depth-estimation also commonly reports absrel /
+        # sqrel / log10 / silog as errors; LM tasks use perplexity;
+        # trajectory pred uses ade/fde; generative work uses fid/lpips
+        # — all unambiguously lower-better.
+        is_loss = bool(re.search(
+            r'\b('
+            r'loss|error|'
+            r'mae|rmse|mse|rms|nmse|mape|'
+            r'absrel|sqrel|log10|silog|'
+            r'wer|cer|'
+            r'fid|lpips|chamfer|emd|'
+            r'ade|fde|'
+            r'perplexity|ppl'
+            r')\b',
+            str(m), re.IGNORECASE,
+        ))
         metrics.append({
             'id': None, 'name': m, 'description': '',
             'sort_direction': 'lower_is_better' if is_loss else 'higher_is_better',
