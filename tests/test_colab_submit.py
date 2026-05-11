@@ -61,6 +61,26 @@ def test_static_notebook_is_valid_ipynb(lb_with_one_dataset):
     assert 'colab_ds' in raw
     assert '/api/leaderboard/' in raw
     assert 'my_model' in raw
+    # Upload must use the form-field name the API expects
+    # (`submission_zip`). The wrong name (`file`) silently 400s with
+    # "No submission_zip provided" — user-reported regression with the
+    # LLM-generated notebook on beans_leaderboard.
+    assert "'submission_zip'" in raw
+    assert "'file':" not in raw or "'file': '" not in raw  # never as the upload key
+
+
+def test_llm_colab_prompt_pins_submission_zip_form_field_name():
+    """The LLM prompt must explicitly require `submission_zip` as the
+    multipart field name, otherwise Claude picks `file` and the
+    upload 400s. Locks the system prompt against silent regressions."""
+    from app import _llm_colab_notebook
+    import inspect
+    src = inspect.getsource(_llm_colab_notebook)
+    assert 'submission_zip' in src
+    # The constraint copy must be inside the system prompt text — guards
+    # against someone moving it into a comment.
+    assert "REQUIRES the multipart form field" in src
+    assert "No submission_zip provided" in src
 
 
 def test_static_notebook_lets_user_pick_runtime_and_offers_local_bootstrap(

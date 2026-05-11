@@ -2156,7 +2156,7 @@ def _read_sota_cache(lb_id, model_id):
     bump invalidates every cached entry, which is the migration path
     for prompt changes (Claude generated stale code under the old
     rules)."""
-    PROMPT_VERSION = 5  # bump when _llm_colab_notebook prompt changes
+    PROMPT_VERSION = 6  # bump when _llm_colab_notebook prompt changes
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path) as f:
@@ -2171,7 +2171,7 @@ def _read_sota_cache(lb_id, model_id):
 
 
 def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=None):
-    PROMPT_VERSION = 5
+    PROMPT_VERSION = 6
     path = _sota_cache_path(lb_id, model_id)
     try:
         with open(path, 'w') as f:
@@ -5665,7 +5665,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v7-static-hf-attached'
+_COLAB_TEMPLATE_VERSION = 'v8-upload-submission-zip-fieldname'
 
 
 def _lb_structure_signature(lb):
@@ -6264,7 +6264,15 @@ def _llm_colab_notebook(lb, model_id_hint=None):
         "  directory — bare-name folders, NO `metric_` prefix.\n"
         "- ZIP the submission folder and offer both a `files.download` "
         "  flow and an optional API-token upload to the BenchHub URL "
-        "  /api/leaderboard/<id>/submission/upload.\n\n"
+        "  /api/leaderboard/<id>/submission/upload.\n"
+        "- The upload endpoint REQUIRES the multipart form field to be"
+        " named exactly `submission_zip` —"
+        " `files={'submission_zip': ('submission.zip', fh, 'application/zip')}`."
+        " Any other name (e.g. `file`, `zip`) returns 400"
+        " `{'error': 'No submission_zip provided'}` and the submission is dropped.\n"
+        "- The submission name goes in `data={'submission_name': '...'}`,"
+        " NOT as a query string or path component."
+        " The Authorization header is `Bearer <API_TOKEN>`.\n\n"
         "DO NOT set `metadata.accelerator` or `metadata.colab.gpuClass` "
         "— the user picks their runtime themselves.\n\n"
         "Return ONLY a JSON object — a valid .ipynb nbformat 4 notebook. "
