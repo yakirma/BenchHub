@@ -2684,6 +2684,117 @@ def admin_pwc_import_confirm(evaluation_id):
     return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
 
 
+def _bulk_import_pwc_benchmarks(*, max_imports=25, min_results=10,
+                                 owner_user_id, logger=None):
+    """Sweep the PWC archive for evaluations with at least `min_results`
+    result rows, where an HF dataset repo can be inferred from the
+    PWC dataset's `links_json`, and import them as canonical
+    leaderboards.
+
+    Skips evaluations whose inferred HF repo already has a canonical
+    LB (we don't want duplicates), and skips per-benchmark failures
+    (HF schema probe error, LLM call error, etc.) so one bad import
+    doesn't abort the batch. Imports are committed individually.
+
+    Returns a dict::
+
+        {
+          'imported':  [(eval_id, lb_id, lb_name, hf_repo, n_results), ...],
+          'skipped':   [(eval_id, dataset, reason), ...],
+          'failed':    [(eval_id, dataset, reason), ...],
+        }
+    """
+    import sqlite3
+    from pwc_client import (
+        _index_path, _hf_repo_from_links, get_evaluation,
+    )
+
+    _log = (logger or print)
+    out = {'imported': [], 'skipped': [], 'failed': []}
+
+    # 1. Pull candidate (evaluation_id, dataset_name, links_json,
+    # n_results) tuples ordered by n_results desc so the most
+    # heavily-populated benchmarks come first.
+    try:
+        conn = sqlite3.connect(_index_path())
+    except Exception as e:
+        _log(f"PWC archive open failed: {e}")
+        return out
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT e.id, d.name, d.links_json, "
+            "       json_array_length(e.results_json) AS n_results "
+            "FROM pwc_evaluation e "
+            "JOIN pwc_dataset d ON d.id = e.dataset_id "
+            "WHERE json_array_length(e.results_json) >= ? "
+            "ORDER BY n_results DESC, e.id ASC",
+            (int(min_results),),
+        )
+        candidates = cur.fetchall()
+    finally:
+        conn.close()
+
+    # 2. Pre-compute the set of HF repos that already have a canonical
+    # LB so we can skip-without-DB-roundtrip.
+    existing = {
+        repo for (repo,) in db.session.query(Leaderboard.canonical_for_repo)
+        .filter(Leaderboard.canonical_for_repo.isnot(None))
+        .all()
+    }
+
+    # 3. Walk candidates, attempt import for each. Cap when we reach
+    # max_imports successful creations.
+    for eval_id, dataset, links_json, n_results in candidates:
+        if len(out['imported']) >= max_imports:
+            break
+        hf_repo = _hf_repo_from_links(links_json)
+        if not hf_repo:
+            out['skipped'].append((eval_id, dataset, 'no inferable HF repo'))
+            continue
+        if hf_repo in existing:
+            out['skipped'].append(
+                (eval_id, dataset, f'already imported ({hf_repo})')
+            )
+            continue
+        try:
+            evaluation = get_evaluation(eval_id)
+        except Exception as e:
+            out['failed'].append((eval_id, dataset, f'get_evaluation: {e}'))
+            continue
+        task = evaluation.get('task') or 'benchmark'
+        lb_name = f"{task} on {dataset}"
+        # Cap at 100 chars to fit the Leaderboard.name column.
+        if len(lb_name) > 100:
+            lb_name = lb_name[:97] + '...'
+        # Skip if an LB with this exact name already exists (rare —
+        # mostly a previous failed import that committed the LB row
+        # before bailing).
+        if Leaderboard.query.filter_by(name=lb_name).first():
+            out['skipped'].append(
+                (eval_id, dataset, f'name collision: {lb_name!r}')
+            )
+            continue
+        try:
+            lb_id = _create_lb_from_pwc_benchmark(
+                evaluation, hf_repo=hf_repo, lb_name=lb_name,
+                owner_user_id=owner_user_id,
+            )
+            out['imported'].append((eval_id, lb_id, lb_name, hf_repo, n_results))
+            existing.add(hf_repo)  # don't re-import the same repo this batch
+            _log(
+                f"[{len(out['imported'])}/{max_imports}] "
+                f"imported eval={eval_id} lb={lb_id} {lb_name!r} "
+                f"({n_results} mirrored)"
+            )
+        except Exception as e:
+            db.session.rollback()
+            out['failed'].append((eval_id, dataset, repr(e)[:200]))
+            _log(f"FAILED eval={eval_id} dataset={dataset!r}: {e}")
+
+    return out
+
+
 def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
                                    owner_user_id):
     """Persist a canonical-public LB whose primary attachment is the
