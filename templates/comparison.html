@@ -313,6 +313,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 </div>
 {% endif %}
 
+{# Hide the leaderboard-wide metric chart in samples_only_mode — it has
+   no submissions to compare against, so the panel renders empty. #}
+{% if not samples_only_mode %}
 <div class="card mb-4">
     <div class="card-body">
         <h5 class="card-title">Overall Metrics Comparison</h5>
@@ -325,6 +328,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <hr>
 
 <h2>Detailed Sample-by-Sample Comparison</h2>
+{% else %}
+<h2 class="mb-3">Cached samples</h2>
+{% endif %}
 
 <div class="card mb-4">
     <div class="card-body">
@@ -536,7 +542,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         {% endfor %}
         {% endif %}
 
-        {% if aggregated_viz_list %}
+        {% if aggregated_viz_list and not samples_only_mode %}
         <div class="card mb-3">
             <div class="card-header d-flex justify-content-between align-items-center" data-bs-toggle="collapse"
                 data-bs-target="#aggregatedVizCollapse" aria-expanded="false" role="button">
@@ -1681,9 +1687,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // const visGallery = ... 
 
 
-        const hasSubmissions = {{ (submissions | length > 0) | tojson | safe
-    }};
-    if (!hasSubmissions) return;
+        const hasSubmissions = {{ (submissions | length > 0) | tojson | safe }};
+    const samplesOnlyMode = {{ (samples_only_mode | default(false)) | tojson | safe }};
+    // In samples_only_mode we still need to initialize the
+    // GalleryModalManager + updateVisModalContent below (or the
+    // zoom-image modal silently fails — clicking a thumb opens
+    // an empty modal because window.visGallery is undefined and
+    // updateVisGallery throws before updateVisModalContent runs).
+    // Only the chart drawing code further down really needs subs;
+    // those blocks individually guard on submissions.length > 0.
+    if (!hasSubmissions && !samplesOnlyMode) return;
 
     const chartColors = [
         'rgba(255, 99, 132, 0.7)', 'rgba(54, 162, 235, 0.7)', 'rgba(255, 206, 86, 0.7)',
