@@ -155,6 +155,27 @@ def test_leaderboard_view_unknown_404(client, project):
     assert resp.status_code == 404
 
 
+def test_leaderboard_view_shows_hf_attachment_as_source(client, db_session):
+    """LBs built from an HF dataset have no BH Dataset row — the source
+    lives on huggingface.co. The header pill must still show the user
+    *where the data is*, with a link to the HF repo page (new tab),
+    or there's no way to find the underlying benchmark."""
+    from app import Attachment
+    lb = Leaderboard(name='hf_only_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='AI-Lab-Makerere/beans',
+        hf_split='train', role='primary',
+    ))
+    db.session.commit()
+    resp = client.get(f'/leaderboard/{lb.id}')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'huggingface.co/datasets/AI-Lab-Makerere/beans' in body
+    # Split label surfaces so a multi-split repo is unambiguous.
+    assert 'train' in body
+
+
 def test_edit_leaderboard_get_renders(auth_client, project, leaderboard):
     resp = auth_client.get(f"/leaderboard/{leaderboard.id}/edit")
     assert resp.status_code == 200

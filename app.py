@@ -7714,8 +7714,14 @@ def _lb_submission_pred_fields(lb):
 
     # Phase 9: required pred fields declared independently of any
     # metric/viz. Organizer might want raw predictions for human
-    # review even without scoring. Merge in (don't override metric-
-    # derived entries — those have richer used_by context).
+    # review even without scoring. Merge in.
+    #
+    # When an extras entry's name matches a metric-derived one, treat
+    # it as an *override*: update the kind/description on the derived
+    # entry without replacing its `used_by` context. This is how the
+    # auto-LB preview's "edit type" affordance reaches the submission
+    # contract — the rename lives in the metric's arg_mappings, and
+    # the kind override lives in required_pred_fields_json.
     try:
         extras = json.loads(lb.required_pred_fields_json or '[]')
     except (TypeError, ValueError):
@@ -7724,7 +7730,13 @@ def _lb_submission_pred_fields(lb):
         if not isinstance(entry, dict):
             continue
         name = (entry.get('name') or '').strip()
-        if not name or name in seen:
+        if not name:
+            continue
+        if name in seen:
+            if entry.get('kind'):
+                seen[name]['kind'] = entry['kind']
+            if entry.get('description'):
+                seen[name]['description'] = entry['description']
             continue
         seen[name] = {
             'name': name,
@@ -9597,6 +9609,26 @@ def create_leaderboard_auto_finalize():
     extra_pred_fields = _parse_extra_pred_fields(
         request.form.get('extra_pred_fields_json') or '[]'
     )
+    # Edits to the AUTO-derived pred fields (rename / change kind /
+    # omit). Renames + omissions rewrite the metric proposals before
+    # creation; kind overrides ride on required_pred_fields_json
+    # (where _lb_submission_pred_fields merges them onto the derived
+    # entry).
+    auto_pred_overrides = _parse_auto_pred_fields(
+        request.form.get('auto_pred_fields_json') or '[]'
+    )
+    pred_omits = {o['original_name'] for o in auto_pred_overrides if o['omit']}
+    pred_renames = {
+        o['original_name']: o['name']
+        for o in auto_pred_overrides
+        if not o['omit'] and o['name'] and o['name'] != o['original_name']
+    }
+    pred_kind_overrides = [
+        # Final-name-keyed: if a field is renamed, the override targets the new name.
+        {'name': o['name'], 'kind': o['kind']}
+        for o in auto_pred_overrides
+        if not o['omit']
+    ]
 
     if hf_repo_id:
         # ---- HF-ref flow ----
@@ -9618,6 +9650,8 @@ def create_leaderboard_auto_finalize():
         kept_metrics.extend(extra_metrics)
         kept_viz = [v for v in (_override_proposal(p, 'viz')
                                 for p in viz_proposals_all) if v]
+        kept_metrics = _apply_pred_field_edits(kept_metrics, pred_omits, pred_renames)
+        kept_viz = _apply_pred_field_edits(kept_viz, pred_omits, pred_renames)
         if not kept_metrics and not kept_viz:
             flash("Nothing kept from the proposal — leaderboard not created.", "warning")
             return redirect(url_for('datasets_list'))
@@ -9627,8 +9661,12 @@ def create_leaderboard_auto_finalize():
             revision=revision, split=split,
             metric_proposals=kept_metrics, viz_proposals=kept_viz,
         )
-        if ok and lb_id and extra_pred_fields:
-            _persist_required_pred_fields(lb_id, extra_pred_fields)
+        if ok and lb_id:
+            combined_extras = _merge_pred_field_extras(
+                extra_pred_fields, pred_kind_overrides,
+            )
+            if combined_extras:
+                _persist_required_pred_fields(lb_id, combined_extras)
         flash(msg, "success" if ok else "warning")
         if ok and lb_id:
             return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
@@ -9649,6 +9687,8 @@ def create_leaderboard_auto_finalize():
     kept_metrics.extend(extra_metrics)
     kept_viz = [v for v in (_override_proposal(p, 'viz')
                             for p in viz_proposals_all) if v]
+    kept_metrics = _apply_pred_field_edits(kept_metrics, pred_omits, pred_renames)
+    kept_viz = _apply_pred_field_edits(kept_viz, pred_omits, pred_renames)
     if not kept_metrics and not kept_viz:
         flash("Nothing kept from the proposal — leaderboard not created.", "warning")
         return redirect(url_for('dataset_view', dataset_id=ds.id))
@@ -9656,8 +9696,12 @@ def create_leaderboard_auto_finalize():
         ds, leaderboard_name, owner_user_id=g.current_user.id,
         metric_proposals=kept_metrics, viz_proposals=kept_viz,
     )
-    if ok and lb_id and extra_pred_fields:
-        _persist_required_pred_fields(lb_id, extra_pred_fields)
+    if ok and lb_id:
+        combined_extras = _merge_pred_field_extras(
+            extra_pred_fields, pred_kind_overrides,
+        )
+        if combined_extras:
+            _persist_required_pred_fields(lb_id, combined_extras)
     flash(msg, "success" if ok else "warning")
     if ok and lb_id:
         return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
@@ -9741,6 +9785,25 @@ def api_lb_preview_llm_metric():
 _EXTRA_PRED_KINDS = ('scalar', 'image', 'mask', 'depth')
 
 
+def _merge_pred_field_extras(extra_pred_fields, kind_overrides):
+    """Combine the user-added `extras` list with kind-override entries
+    derived from `auto_pred_fields_json`. Overrides for fields already
+    present in `extras` are folded in (kind wins); otherwise they
+    become extras entries with just `{name, kind}` so the merge inside
+    `_lb_submission_pred_fields` can find them. De-duped by name."""
+    by_name = {e['name']: dict(e) for e in (extra_pred_fields or []) if e.get('name')}
+    for ov in (kind_overrides or []):
+        name = (ov.get('name') or '').strip()
+        kind = ov.get('kind')
+        if not name or not kind:
+            continue
+        if name in by_name:
+            by_name[name]['kind'] = kind
+        else:
+            by_name[name] = {'name': name, 'kind': kind}
+    return list(by_name.values())
+
+
 def _persist_required_pred_fields(lb_id, fields):
     """Write the validated extra_pred_fields list onto the LB. Best
     effort: a JSON-encode failure is logged but doesn't fail the
@@ -9789,6 +9852,102 @@ def _parse_extra_pred_fields(raw_json):
             'kind': kind,
             'description': (item.get('description') or '').strip(),
         })
+    return out
+
+
+def _parse_auto_pred_fields(raw_json):
+    """Validate the `auto_pred_fields_json` payload from the auto-LB
+    preview's editable derived-pred-field list. Each entry overrides
+    one metric-derived pred field: rename, type change, or omit.
+
+    Schema (one entry per derived field):
+      {original_name: str,  # the name at preview time; identifies the field
+       name: str,           # possibly renamed
+       kind: str,           # 'scalar' | 'image' | 'mask' | 'depth'
+       omit: bool}          # if True, drop this field AND its metrics
+
+    `original_name` is required (it's the identifier). `name` defaults
+    to `original_name` when blank. Bad shapes are silently dropped so
+    a missing JS sync doesn't 400 the form."""
+    try:
+        items = json.loads(raw_json or '[]')
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        orig = (item.get('original_name') or '').strip()
+        if not orig:
+            continue
+        name = (item.get('name') or orig).strip() or orig
+        # New name must be a python-identifier-ish folder name AND end
+        # in `_pred` so _lb_submission_pred_fields recognizes the
+        # arg_mappings value as a submission-side field. If the user
+        # dropped the suffix, append it; if the name is otherwise
+        # invalid, fall back to the original.
+        if not name.endswith('_pred'):
+            name = f'{name}_pred'
+        if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', name):
+            name = orig
+        kind = item.get('kind') or 'scalar'
+        if kind not in _EXTRA_PRED_KINDS:
+            kind = 'scalar'
+        out.append({
+            'original_name': orig,
+            'name': name,
+            'kind': kind,
+            'omit': bool(item.get('omit')),
+        })
+    return out
+
+
+def _apply_pred_field_edits(proposals, omitted, renames):
+    """Filter + rewrite metric/viz proposal dicts based on the user's
+    pred-field edits.
+
+    - Drops any proposal whose arg_mappings reference a `sub_<x>_pred`
+      where `<x>_pred` is in `omitted`. Without its prediction folder
+      the metric/viz can't compute, so we can't keep it.
+    - Rewrites `sub_<old>_pred` → `sub_<new>_pred` for surviving
+      proposals using the rename map, and updates each proposal's
+      `pred_fields` list so downstream preview code sees the new name.
+
+    `omitted` is a set of pred-field names (e.g. {'labels_pred'}).
+    `renames` is a dict {old_name: new_name}."""
+    out = []
+    for p in proposals:
+        am = dict(p.get('arg_mappings') or {})
+        skip = False
+        for k, v in list(am.items()):
+            if (isinstance(v, str) and v.startswith('sub_')
+                    and v.endswith('_pred')):
+                # The pred-field name is the arg-mapping value without
+                # the `sub_` prefix — it already includes the `_pred`
+                # suffix (e.g. 'sub_labels_pred' → 'labels_pred').
+                field = v[len('sub_'):]
+                if field in omitted:
+                    skip = True
+                    break
+                if field in renames:
+                    am[k] = f'sub_{renames[field]}'
+        if skip:
+            continue
+        p = dict(p)
+        p['arg_mappings'] = am
+        new_pfs = []
+        for pf in (p.get('pred_fields') or []):
+            pfn = (pf.get('name') if isinstance(pf, dict) else '') or ''
+            if pfn in omitted:
+                continue
+            if pfn in renames:
+                pf = dict(pf)
+                pf['name'] = renames[pfn]
+            new_pfs.append(pf)
+        p['pred_fields'] = new_pfs
+        out.append(p)
     return out
 
 

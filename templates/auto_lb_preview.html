@@ -73,24 +73,63 @@
             </div>
         </div>
 
-        {# ---- Submission contract preview (mirrors the LB-page widget). #}
+        {# ---- Submission contract preview — editable.
+               Each row is one metric-derived prediction folder. Rename it
+               (folder name + the matching arg_mappings on the linked
+               metrics get rewritten at /auto_finalize time), change its
+               serialization kind (.txt / .png / .npz), or uncheck "Keep"
+               to drop the field AND any metrics that depend on it (a
+               metric can't score without its predictions). #}
         {% if pred_field_schema %}
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
                 <h2 class="h6 fw-semibold mb-2">
                     <i class="bi bi-upload text-primary me-1"></i>Submissions will need to ship
+                    <span class="text-body-secondary fw-normal small ms-1">— editable</span>
                 </h2>
-                <div class="d-flex flex-wrap gap-2">
+                <p class="form-text small mb-2">
+                    One folder per field. Rename or change a field's type;
+                    untick <em>Keep</em> to drop the field and any metrics
+                    that depend on it. Bare-name folders &mdash;
+                    <code>metric_*</code> is reserved for user-precomputed
+                    metric values, never raw predictions.
+                </p>
+                <div id="auto-pred-list">
                     {% for pf in pred_field_schema %}
-                    <span class="badge text-bg-secondary-subtle text-secondary border font-monospace">
-                        {{ pf.name }}/
-                    </span>
+                    <div class="auto-pred-row d-flex gap-2 align-items-center mb-2"
+                         data-original-name="{{ pf.name }}">
+                        <div class="form-check m-0" style="min-width: 70px;">
+                            <input class="form-check-input ap-keep" type="checkbox" checked
+                                   id="ap-keep-{{ loop.index0 }}"
+                                   title="Untick to omit this field and any metrics that depend on it.">
+                            <label class="form-check-label small text-body-secondary"
+                                   for="ap-keep-{{ loop.index0 }}">Keep</label>
+                        </div>
+                        <input type="text"
+                               class="form-control form-control-sm ap-name font-monospace"
+                               value="{{ pf.name }}"
+                               pattern="^[A-Za-z][A-Za-z0-9_]*$"
+                               title="Letters, digits, underscores. Must start with a letter."
+                               style="flex: 2;">
+                        <select class="form-select form-select-sm ap-kind"
+                                style="flex: 1; max-width: 140px;"
+                                title="How the submission notebook serializes this prediction.">
+                            <option value="scalar" {{ 'selected' if pf.kind == 'scalar' }}>scalar (.txt)</option>
+                            <option value="image"  {{ 'selected' if pf.kind == 'image'  }}>image (.png)</option>
+                            <option value="mask"   {{ 'selected' if pf.kind == 'mask'   }}>mask (.png)</option>
+                            <option value="depth"  {{ 'selected' if pf.kind == 'depth'  }}>depth (.npz)</option>
+                        </select>
+                        <div class="small text-body-secondary d-none d-md-block"
+                             style="flex: 2; min-width: 0;">
+                            {% for u in pf.used_by %}
+                            <span class="badge text-bg-light border me-1">{{ u }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
                     {% endfor %}
                 </div>
-                <p class="form-text small mb-0 mt-2">
-                    Bare-name folders &mdash; <code>metric_*</code> is reserved
-                    for user-precomputed metric values, never raw predictions.
-                </p>
+                <input type="hidden" name="auto_pred_fields_json"
+                       id="auto-pred-fields-json" value="[]">
             </div>
         </div>
         {% endif %}
@@ -534,6 +573,44 @@
         }
     });
 
+    // ---- Auto-derived pred fields: rename / kind / omit ----
+    // The user can edit each metric-derived pred field's folder name
+    // and serialization kind, or untick "Keep" to drop the field and
+    // any metrics that depend on it. The hidden auto_pred_fields_json
+    // is rebuilt on every change and on submit.
+    const apList = document.getElementById('auto-pred-list');
+    const apHidden = document.getElementById('auto-pred-fields-json');
+
+    function syncAp() {
+        if (!apList || !apHidden) return;
+        const items = [];
+        apList.querySelectorAll('.auto-pred-row').forEach(row => {
+            const orig = row.dataset.originalName;
+            if (!orig) return;
+            const keep = row.querySelector('.ap-keep').checked;
+            const name = (row.querySelector('.ap-name').value || '').trim() || orig;
+            const kind = row.querySelector('.ap-kind').value;
+            // Visual cue: dim a row when the user has omitted it so the
+            // "this row will be dropped" effect is obvious.
+            row.classList.toggle('opacity-50', !keep);
+            row.querySelector('.ap-name').disabled = !keep;
+            row.querySelector('.ap-kind').disabled = !keep;
+            items.push({
+                original_name: orig,
+                name,
+                kind,
+                omit: !keep,
+            });
+        });
+        apHidden.value = JSON.stringify(items);
+    }
+
+    if (apList) {
+        apList.addEventListener('input', syncAp);
+        apList.addEventListener('change', syncAp);
+        syncAp();
+    }
+
     // ---- Required pred fields without metrics (Phase 9) ----
     // Each row carries name + kind + description. The hidden JSON is
     // re-serialized on submit so the backend sees the latest values.
@@ -606,6 +683,7 @@
             });
             syncHidden();
             syncEp();
+            syncAp();
         });
     }
 })();

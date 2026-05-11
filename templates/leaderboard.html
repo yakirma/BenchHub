@@ -275,6 +275,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 <span class="fw-semibold">{{ ds.name }}</span>
             </a>
             {% endfor %}
+            {# HF-attached sources have no BH Dataset row — render them
+               here so the "where does this benchmark live?" answer is
+               visible on the LB page. Links straight to huggingface.co
+               since BenchHub doesn't host a /hf/<repo> page. #}
+            {% for att in (leaderboard.attachments or []) %}
+            {% if att.kind == 'hf' and att.hf_repo_id %}
+            <a href="https://huggingface.co/datasets/{{ att.hf_repo_id }}"
+               target="_blank" rel="noopener"
+               class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
+               title="Open {{ att.hf_repo_id }} on HuggingFace (new tab)">
+                <span style="display:inline-flex; align-items:center; justify-content:center;
+                             width:28px; height:28px; border-radius:4px;
+                             background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
+                    <i class="bi bi-link-45deg"></i>
+                </span>
+                <span class="fw-semibold font-monospace">{{ att.hf_repo_id }}</span>
+                {% if att.role == 'gt_source' %}
+                <span class="badge text-bg-info-subtle text-info-emphasis border small ms-1">gt</span>
+                {% endif %}
+                {% if att.hf_split %}
+                <span class="badge text-bg-light border small ms-1">{{ att.hf_split }}</span>
+                {% endif %}
+                <i class="bi bi-box-arrow-up-right small text-body-secondary ms-1"></i>
+            </a>
+            {% endif %}
+            {% endfor %}
         </div>
         <div>
             {% if leaderboard.tags %}
