@@ -534,6 +534,12 @@ class CustomField(db.Model):
     value_float = db.Column(db.Float, nullable=True)  # For scalar/metric values
     sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submission.id'), nullable=True)
+    # HF-attached LBs have no Sample rows. The eval task snapshots
+    # streamed GT scalars/text into CustomField rows tagged with
+    # leaderboard_id (sample_id NULL, submission_id NULL) so the
+    # comparison view can render the GT column without re-streaming
+    # from huggingface.co. Indexed for the LB-scoped lookup.
+    leaderboard_id = db.Column(db.Integer, db.ForeignKey('leaderboard.id'), nullable=True, index=True)
     sample_name = db.Column(db.String(100), nullable=True)  # Sample name for submission custom fields
     # Pointer-mode: name of the column in the upstream HF row that
     # produces this CustomField when fetched. Populated only when the
@@ -10605,13 +10611,25 @@ def comparison_view(leaderboard_id):
     samples_query = apply_tag_filters(samples_query, request.args)
 
     # Collect unique custom field names efficiently
-    # Dataset fields
-    dataset_custom_fields_query = db.session.query(CustomField.name, CustomField.field_type).join(Sample).filter(
-        Sample.dataset_id.in_(dataset_ids),
-        CustomField.submission_id == None
-    ).distinct().all()
-    
-    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in ['image', 'depth', 'scalar', 'metric']}
+    # Dataset fields — for HF-stub mode, pull from the LB-scoped
+    # snapshot rows written by the eval task (sample_id IS NULL,
+    # submission_id IS NULL, leaderboard_id = lb.id) so the GT
+    # column populates with the streamed HF values.
+    if hf_stub_mode:
+        dataset_custom_fields_query = db.session.query(
+            CustomField.name, CustomField.field_type,
+        ).filter(
+            CustomField.leaderboard_id == leaderboard.id,
+            CustomField.submission_id.is_(None),
+            CustomField.sample_id.is_(None),
+        ).distinct().all()
+    else:
+        dataset_custom_fields_query = db.session.query(CustomField.name, CustomField.field_type).join(Sample).filter(
+            Sample.dataset_id.in_(dataset_ids),
+            CustomField.submission_id == None
+        ).distinct().all()
+
+    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in ['image', 'depth', 'mask', 'scalar', 'metric', 'text']}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
     
     # Submission fields
@@ -10671,24 +10689,48 @@ def comparison_view(leaderboard_id):
                 self.dataset = None
 
         sub_ids_for_stubs = [s.id for s in submissions]
-        names_rows = (
+        # Collect sample names from both the submission rows AND the
+        # LB-scoped GT snapshot so a fresh sub with no submission CFs
+        # still surfaces GT-only rows.
+        sub_name_rows = (
             db.session.query(CustomField.sample_name)
             .filter(CustomField.submission_id.in_(sub_ids_for_stubs))
             .filter(CustomField.sample_name.isnot(None))
             .distinct().all()
         )
-        names = sorted({r[0] for r in names_rows if r[0]})
+        gt_name_rows = (
+            db.session.query(CustomField.sample_name)
+            .filter(CustomField.leaderboard_id == leaderboard.id)
+            .filter(CustomField.submission_id.is_(None))
+            .filter(CustomField.sample_name.isnot(None))
+            .distinct().all()
+        )
+        names = sorted({r[0] for r in (sub_name_rows + gt_name_rows) if r[0]})
         if search_query:
             needle = search_query.lower()
             names = [n for n in names if needle in n.lower()]
-        # `name` is the only meaningful sort key here; everything else
-        # falls back to natural order (HF rows have a sortable s_NNNNNN
-        # naming convention so this is fine).
         if sort_by == 'name' and sort_order == 'desc':
             names.reverse()
         all_stubs = [_SampleStub(n, i) for i, n in enumerate(names)]
         total = len(all_stubs)
         paginated_items = all_stubs[(page-1)*per_page : page*per_page]
+
+        # Pre-fetch GT snapshot rows for the visible page and attach
+        # them as .custom_fields on each stub so the existing per-row
+        # loop reads GT values without a code branch.
+        if paginated_items:
+            visible_names = [s.name for s in paginated_items]
+            gt_rows = CustomField.query.filter(
+                CustomField.leaderboard_id == leaderboard.id,
+                CustomField.submission_id.is_(None),
+                CustomField.sample_id.is_(None),
+                CustomField.sample_name.in_(visible_names),
+            ).all()
+            gt_by_name = {}
+            for cf in gt_rows:
+                gt_by_name.setdefault(cf.sample_name, []).append(cf)
+            for stub in paginated_items:
+                stub.custom_fields = gt_by_name.get(stub.name, [])
 
     # Sorting (BH path only — HF branch above already paginated)
     if not hf_stub_mode and sort_by:
@@ -12129,23 +12171,86 @@ def serve_submission_viz(submission_id, rel):
     return send_file(full, mimetype='image/png')
 
 
+@app.route('/api/gt_viz/<int:lb_id>/<col>/<sample_name>')
+@visibility_required(Leaderboard, 'lb_id')
+def serve_gt_viz(lb_id, col, sample_name):
+    """Serve a cached HF GT image/mask/depth thumbnail. Resolves the
+    LB's primary HF attachment, parses the row index out of
+    `sample_name` (the `_VirtualSample` `s_NNNNNN` convention), looks
+    up the bench_cache entry by (repo, revision, split, col, row_idx).
+
+    Inherits LB visibility (the @visibility_required decorator). 404
+    when the thumb isn't cached — first eval populates the cache and
+    re-eval refreshes it; users browsing before that get 404s, which
+    the template falls back to a placeholder icon for."""
+    lb = Leaderboard.query.get_or_404(lb_id)
+    # Parse row index from `s_NNNNNN`. Any other shape → 404.
+    m = re.match(r'^s_(\d+)$', sample_name or '')
+    if not m:
+        abort(404)
+    sample_idx = int(m.group(1))
+    # Primary HF attachment carries the repo + split.
+    att = next(
+        (a for a in (lb.attachments or [])
+         if getattr(a, 'kind', None) == 'hf' and a.role == 'primary'
+         and a.hf_repo_id),
+        None,
+    )
+    if att is None:
+        abort(404)
+    cache_root = app.config.get('CACHE_FOLDER')
+    if not cache_root:
+        abort(404)
+    key = _gt_viz_cache_key(
+        att.hf_repo_id, att.hf_revision, att.hf_split, col, sample_idx,
+    )
+    try:
+        from bench_cache import cache_get
+    except ImportError:
+        abort(404)
+    path = cache_get(db.session, CacheEntry, cache_root=cache_root, key=key)
+    if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
+        abort(404)
+    return send_file(
+        path, mimetype='image/jpeg',
+        max_age=86400,  # 1 day — cache keys are revision-stable.
+    )
+
+
 @app.route('/custom_field_image/<int:field_id>')
 def serve_custom_field_image(field_id):
     """Serve a custom field image or depth map"""
     custom_field = CustomField.query.get_or_404(field_id)
-    
+
+    # HF-attached LB snapshot rows: bytes live in bench_cache, not on
+    # the volume. The marker row has leaderboard_id + sample_name +
+    # source_column set; redirect to the dedicated GT-viz route which
+    # resolves the cache by (repo, revision, split, col, idx).
+    if (custom_field.leaderboard_id is not None
+            and custom_field.submission_id is None
+            and custom_field.sample_id is None):
+        col = custom_field.source_column or custom_field.name
+        if not col or not custom_field.sample_name:
+            abort(404)
+        return redirect(url_for(
+            'serve_gt_viz',
+            lb_id=custom_field.leaderboard_id,
+            col=col,
+            sample_name=custom_field.sample_name,
+        ))
+
     if custom_field.field_type == 'depth':
         return serve_depth_image(custom_field.value_text)
-    
+
     if custom_field.field_type != 'image':
         return "Not an image/depth field", 400
-    
+
     # value_text contains the relative path from uploads folder
     image_path = os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text)
-    
+
     if not os.path.exists(image_path):
         return "Image not found", 404
-    
+
     return send_file(image_path)
 
 @app.route('/api/custom_field_depth_data/<int:field_id>')
@@ -12763,6 +12868,300 @@ def _submission_viz_dir(submission):
         app.config['UPLOAD_FOLDER'], 'submissions',
         str(submission.id), 'viz',
     )
+
+
+# --- HF GT thumbnail cache --------------------------------------------------
+# At eval time, we generate small JPEG previews of HF image / mask / depth
+# GT columns and cache them through bench_cache (origin='gt' → submissions
+# evict first when the cache fills). Cache keys are shared across LBs and
+# submissions that point at the same HF repo + column + revision.
+
+GT_VIZ_TARGET_SIZE = 128
+GT_VIZ_JPEG_QUALITY = 70
+
+
+def _gt_viz_cache_key(repo_id, revision, split, col, sample_idx):
+    """Stable key for an HF GT thumbnail. Revision defaults to 'main'
+    so the cache survives an unpinned attachment getting later pinned
+    to the same content."""
+    rev = revision or 'main'
+    return f"gt_viz:{repo_id}@{rev}:{split or 'train'}:{col}:{sample_idx}"
+
+
+def _write_gt_image_thumb(value, dest_path, kind):
+    """Render an HF GT cell into a tiny JPEG at `dest_path`. `value` is
+    whatever the HF row's column produced (PIL.Image / numpy array /
+    bytes); `kind` ∈ {'image', 'mask', 'depth'}.
+
+    Best-effort: any decode error returns False and the caller skips
+    caching this thumb."""
+    from PIL import Image
+    try:
+        if hasattr(value, 'convert'):
+            img = value.convert('RGB')
+        elif isinstance(value, (bytes, bytearray)):
+            img = Image.open(io.BytesIO(bytes(value))).convert('RGB')
+        else:
+            arr = np.asarray(value)
+            if kind == 'depth' or (arr.ndim == 2 and kind != 'mask'):
+                # Normalize-then-colormap so the human can read the
+                # rough depth/structure.
+                lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+                rng = hi - lo if hi > lo else 1.0
+                norm = np.nan_to_num((arr - lo) / rng, nan=0.0)
+                # Cheap turbo-ish colormap via a 256-entry LUT.
+                lut = (np.linspace(0, 1, 256) ** 0.5 * 255).astype(np.uint8)
+                idx = np.clip((norm * 255).astype(np.int32), 0, 255)
+                gray = lut[idx]
+                arr = np.stack([gray, gray, gray], axis=-1)
+            elif kind == 'mask' and arr.ndim == 2:
+                # Class-id mask → deterministic-hue RGB so adjacent
+                # classes are visually distinct.
+                lut = ((np.arange(256, dtype=np.int32) * 31 + 17) % 256).astype(np.uint8)
+                idx = arr.astype(np.int32) & 0xFF
+                r = lut[idx]; g = lut[(idx + 85) & 0xFF]; b = lut[(idx + 170) & 0xFF]
+                arr = np.stack([r, g, b], axis=-1).astype(np.uint8)
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+            img = Image.fromarray(arr)
+        img.thumbnail((GT_VIZ_TARGET_SIZE, GT_VIZ_TARGET_SIZE))
+        img.save(dest_path, format='JPEG', quality=GT_VIZ_JPEG_QUALITY,
+                 optimize=True)
+        return True
+    except Exception as e:
+        print(f"DEBUG: gt viz thumb failed for {dest_path}: {e}")
+        return False
+
+
+def _cache_gt_image_thumb(repo_id, revision, split, col, sample_idx,
+                          value, kind):
+    """Materialize one HF GT cell as a JPEG in bench_cache. Returns the
+    on-disk path or None on failure. Reuses an existing cached entry
+    when present (no re-decode, no re-write)."""
+    cache_root = app.config.get('CACHE_FOLDER')
+    if not cache_root:
+        return None
+    key = _gt_viz_cache_key(repo_id, revision, split, col, sample_idx)
+    # Fast path: already cached.
+    try:
+        from bench_cache import cache_get, cache_put
+    except ImportError:
+        return None
+    existing = cache_get(db.session, CacheEntry, cache_root=cache_root, key=key)
+    if existing:
+        return existing
+
+    def _writer(tmp_path):
+        ok = _write_gt_image_thumb(value, tmp_path, kind)
+        if not ok:
+            # cache_put expects bytes to land at tmp_path; if the
+            # thumb failed, write a placeholder zero-byte file so
+            # cache_put doesn't crash. The route serves 404 when
+            # size==0.
+            with open(tmp_path, 'wb') as f:
+                f.write(b'')
+
+    try:
+        return cache_put(
+            db.session, CacheEntry,
+            cache_root=cache_root, key=key,
+            writer=_writer, origin='gt',
+        )
+    except Exception as e:
+        print(f"DEBUG: cache_put gt thumb for {key}: {e}")
+        return None
+
+
+def _persist_hf_eval_snapshots(lb, samples_iter):
+    """For an HF-attached LB, snapshot streamed GT scalars/text to
+    leaderboard-scoped CustomField rows AND cache image/mask/depth
+    thumbnails in bench_cache. Called once per eval task.
+
+    `samples_iter` is an iterable of `(virtual_sample, attachment)`
+    tuples — typically the same iteration the eval task does for
+    metrics. We re-iterate samples here rather than threading the
+    persistence through the existing per-metric loop because (1) the
+    rows are LB-scoped not metric-scoped, and (2) it keeps the eval
+    pipeline readable.
+
+    Idempotent: deletes any existing leaderboard-scoped CustomFields
+    for this LB before writing, so re-eval drops stale snapshots.
+    Image thumbs use the bench_cache key, so they're auto-deduplicated
+    across runs.
+    """
+    # Reset prior snapshot rows for this LB.
+    CustomField.query.filter(
+        CustomField.leaderboard_id == lb.id,
+        CustomField.submission_id.is_(None),
+        CustomField.sample_id.is_(None),
+    ).delete(synchronize_session=False)
+
+    for sample, att in samples_iter:
+        if att is None or getattr(att, 'kind', None) != 'hf':
+            # BH samples already have proper Sample rows + CustomFields.
+            continue
+        row_idx = None
+        if sample.name and sample.name.startswith('s_'):
+            try:
+                row_idx = int(sample.name[2:])
+            except ValueError:
+                row_idx = None
+        for cf in (sample.custom_fields or []):
+            ftype = getattr(cf, 'field_type', None)
+            name = getattr(cf, 'name', None)
+            if not name:
+                continue
+            # Keep the bare column name (e.g. 'label', 'image') —
+            # mirrors how BH datasets surface GT in the comparison
+            # view. The `submission_id IS NULL` flag is what
+            # distinguishes GT rows from prediction rows there.
+            if ftype == 'scalar':
+                db.session.add(CustomField(
+                    leaderboard_id=lb.id,
+                    sample_name=sample.name,
+                    name=name,
+                    field_type='scalar',
+                    value_float=cf.value_float,
+                ))
+            elif ftype == 'text':
+                db.session.add(CustomField(
+                    leaderboard_id=lb.id,
+                    sample_name=sample.name,
+                    name=name,
+                    field_type='text',
+                    value_text=cf.value_text,
+                ))
+            elif ftype in ('image', 'mask', 'depth'):
+                # Image/mask/depth: don't persist bytes — write a
+                # marker row that points at the served thumbnail URL.
+                # The actual JPEG lives in bench_cache (populated by
+                # _populate_hf_gt_thumb_cache).
+                db.session.add(CustomField(
+                    leaderboard_id=lb.id,
+                    sample_name=sample.name,
+                    name=name,
+                    field_type=ftype,
+                    source_column=getattr(cf, 'source_column', None),
+                ))
+    db.session.commit()
+
+
+def _populate_hf_gt_thumb_cache(lb, att, hf_token=None, max_thumbs=10_000,
+                                logger=None):
+    """Walk the HF attachment a second time to populate the GT image
+    thumbnail cache. We do this in a separate pass (not inside the
+    metric-eval loop) because re-iteration is cheap on streaming HF
+    and it keeps the metric-eval path simple. Returns the count of
+    thumbs newly cached.
+
+    Caps:
+      - `max_thumbs` per call (default SUBMISSION_VIZ_MAX_SAMPLES,
+        but the LB's iteration cap also bounds it).
+      - Skips columns whose target_kind is not image/mask/depth.
+      - Single attachment at a time (caller iterates attachments).
+    """
+    try:
+        mapping = json.loads(att.hf_mapping_json or '[]')
+    except (TypeError, ValueError):
+        mapping = []
+    image_cols = [
+        (m.get('column'), m.get('target_kind'))
+        for m in mapping
+        if m.get('target_kind') in ('image', 'mask', 'depth')
+    ]
+    if not image_cols:
+        return 0
+    written = 0
+    try:
+        from datasets import load_dataset
+        ds = load_dataset(
+            att.hf_repo_id, split=att.hf_split or 'train',
+            streaming=True, revision=att.hf_revision,
+            token=hf_token, trust_remote_code=True,
+        )
+    except Exception as e:
+        if logger:
+            logger.warning(f"GT thumb stream failed for {att.hf_repo_id}: {e}")
+        return 0
+    for i, row in enumerate(ds):
+        if i >= max_thumbs:
+            break
+        for col, kind in image_cols:
+            value = row.get(col)
+            if value is None:
+                continue
+            path = _cache_gt_image_thumb(
+                att.hf_repo_id, att.hf_revision, att.hf_split,
+                col, i, value, kind,
+            )
+            if path:
+                written += 1
+    return written
+
+
+def _persist_pred_scalars_from_disk(submission, leaderboard, submission_folder):
+    """For each `<field>/<sample>.txt` under `submission_folder`, parse
+    the value as float (or keep as text) and write a CustomField row
+    keyed on submission_id + sample_name + field name. Lets the
+    comparison view show the actual predicted value (e.g. `label_pred=4`)
+    in addition to the metric-output value (`lm_4=0.0` for a miss).
+
+    Idempotent: deletes prior `<field>_pred`-named CustomFields for
+    this submission before writing.
+    """
+    if not submission_folder or not os.path.isdir(submission_folder):
+        return
+    pred_field_names = [
+        p['name'] for p in _lb_submission_pred_fields(leaderboard)
+    ]
+    if not pred_field_names:
+        return
+    CustomField.query.filter(
+        CustomField.submission_id == submission.id,
+        CustomField.name.in_(pred_field_names),
+    ).delete(synchronize_session=False)
+
+    sample_pat = re.compile(r'^(s_\d+|.+?)\.txt$')
+    for field in pred_field_names:
+        d = os.path.join(submission_folder, field)
+        if not os.path.isdir(d):
+            continue
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            continue
+        for entry in entries:
+            m = sample_pat.match(entry)
+            if not m:
+                continue
+            sample_name = m.group(1)
+            try:
+                with open(os.path.join(d, entry)) as fh:
+                    raw = fh.read().strip()
+            except OSError:
+                continue
+            value_float = None
+            try:
+                value_float = float(raw)
+            except (TypeError, ValueError):
+                pass
+            if value_float is not None:
+                db.session.add(CustomField(
+                    submission_id=submission.id,
+                    sample_name=sample_name,
+                    name=field,
+                    field_type='scalar',
+                    value_float=value_float,
+                ))
+            elif raw:
+                db.session.add(CustomField(
+                    submission_id=submission.id,
+                    sample_name=sample_name,
+                    name=field,
+                    field_type='text',
+                    value_text=raw,
+                ))
+    db.session.commit()
 
 
 def _generate_submission_viz_assets(submission, leaderboard, pred_source_folder):
@@ -13696,6 +14095,11 @@ def check_and_migrate_db():
                     # Phase 7: cached storage usage on the dataset itself —
                     # cheaper than du'ing the volume on every upload.
                     ("dataset",              "storage_bytes",                  "BIGINT NOT NULL DEFAULT 0"),
+                    # HF-attached LB GT/pred scalar snapshots. LB-scoped
+                    # CustomField rows (sample_id NULL, submission_id NULL)
+                    # carry GT values streamed from HF at eval time so the
+                    # comparison view doesn't re-stream on every page load.
+                    ("custom_field",         "leaderboard_id",                 "INTEGER"),
                 ]
                 for tbl, col, coldef in _ownership_migrations:
                     cursor.execute(f"PRAGMA table_info({tbl})")

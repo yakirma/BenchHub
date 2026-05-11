@@ -155,6 +155,63 @@ def test_leaderboard_view_unknown_404(client, project):
     assert resp.status_code == 404
 
 
+def test_serve_gt_viz_returns_404_for_unknown_sample(client, db_session):
+    """GT thumb route returns 404 when the cache hasn't been populated
+    yet. Template falls back to a placeholder for those — first eval
+    fills the cache and subsequent loads serve."""
+    from app import Attachment
+    lb = Leaderboard(name='gtviz_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    db.session.commit()
+    # Valid s_NNN shape but nothing cached yet.
+    resp = client.get(f'/api/gt_viz/{lb.id}/image/s_000000')
+    assert resp.status_code == 404
+    # Bad sample-name shape → 404 (don't 500).
+    resp = client.get(f'/api/gt_viz/{lb.id}/image/garbage')
+    assert resp.status_code == 404
+
+
+def test_comparison_view_surfaces_gt_snapshots_for_hf_lb(client, db_session):
+    """After eval persists GT snapshots, the comparison view's column
+    union includes the GT field name and `data.ground_truth.custom_fields`
+    carries the per-sample scalar values."""
+    from app import Attachment, CustomField, Submission
+    lb = Leaderboard(name='gtsnap_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    sub = Submission(name='gtsnap_sub', leaderboard_id=lb.id,
+                     storage_mode='local', processing_status='Processed')
+    db.session.add(sub); db.session.flush()
+    # GT snapshot rows (the eval task would write these).
+    for i, gt in enumerate([7, 3]):
+        db.session.add(CustomField(
+            leaderboard_id=lb.id, sample_id=None, submission_id=None,
+            sample_name=f's_{i:06d}', name='label',
+            field_type='scalar', value_float=float(gt),
+        ))
+    # Pred snapshot rows.
+    for i, pr in enumerate([7, 4]):
+        db.session.add(CustomField(
+            submission_id=sub.id, sample_name=f's_{i:06d}',
+            name='label_pred', field_type='scalar', value_float=float(pr),
+        ))
+    db.session.commit()
+    resp = client.get(f'/comparison/{lb.id}?compare_ids={sub.id}')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # GT + pred sample names render.
+    assert 's_000000' in body and 's_000001' in body
+    # The GT field name surfaces in the comparison column union.
+    assert 'label' in body
+
+
 def test_comparison_view_renders_for_hf_attached_lb(client, db_session):
     """HF-attached LBs have no Sample rows — comparison_view used to
     return an empty page because Sample.dataset_id IN (NULL) yielded

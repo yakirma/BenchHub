@@ -411,9 +411,58 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                     logger.info(
                         f"Wrote {n_viz} viz PNG(s) for submission {submission_id}"
                     )
+                # Pred scalar/text snapshot: copies the on-disk
+                # `<field>/<sample>.txt` values into CustomField rows
+                # so the comparison view can show the raw predicted
+                # value (not just the metric hit/miss output). Cheap
+                # — one DB row per (sample, field) at ~100B each.
+                from app import _persist_pred_scalars_from_disk
+                _persist_pred_scalars_from_disk(
+                    submission, leaderboard, sub_folder,
+                )
         except Exception as e:
             logger.warning(
                 f"Submission {submission_id} viz-asset generation failed: {e}"
+            )
+
+        # HF-attached LBs only: persist GT scalars/text snapshot and
+        # populate the bench_cache GT-thumb cache so the comparison
+        # view can render labels and image previews without re-streaming
+        # huggingface.co. Skipped for BH LBs (those already have GT in
+        # CustomField via the Sample rows).
+        try:
+            from app import (
+                _persist_hf_eval_snapshots, _populate_hf_gt_thumb_cache,
+                _iter_lb_eval_samples,
+            )
+            has_hf_attachment = any(
+                getattr(a, 'kind', None) == 'hf'
+                for a in (leaderboard.attachments or [])
+            )
+            if has_hf_attachment:
+                _persist_hf_eval_snapshots(
+                    leaderboard,
+                    _iter_lb_eval_samples(
+                        leaderboard, hf_token=hf_token, hf_cap=hf_cap,
+                    ),
+                )
+                for att in (leaderboard.attachments or []):
+                    if getattr(att, 'kind', None) != 'hf':
+                        continue
+                    n_thumbs = _populate_hf_gt_thumb_cache(
+                        leaderboard, att,
+                        hf_token=hf_token,
+                        max_thumbs=hf_cap or 10_000,
+                        logger=logger,
+                    )
+                    if n_thumbs:
+                        logger.info(
+                            f"Cached {n_thumbs} GT thumb(s) for "
+                            f"{att.hf_repo_id} (split={att.hf_split})"
+                        )
+        except Exception as e:
+            logger.warning(
+                f"Submission {submission_id} HF GT snapshot failed: {e}"
             )
 
         submission.processing_status = 'Processed'

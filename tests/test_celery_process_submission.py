@@ -433,6 +433,157 @@ def test_recalculation_replaces_prior_metric_result(client):
     assert results[0].value == pytest.approx(9.0)
 
 
+def test_hf_eval_persists_gt_and_pred_scalars(client, tmp_path, monkeypatch):
+    """For an HF-attached LB, the eval task snapshots GT scalars/text
+    into LB-scoped CustomField rows (leaderboard_id set, sample_id
+    NULL, submission_id NULL) AND persists pred scalars read off
+    disk into per-submission CustomField rows. This is what makes
+    the comparison view show `label=7` (GT) and `label_pred=4` (pred)
+    instead of blank columns."""
+    from app import Attachment, CustomField as _CF
+    from app import app as flask_app
+
+    def _fake_iter(att, *, hf_token=None, cap=None):
+        from app import _VirtualSample, _VirtualCustomField
+        for i, gt in enumerate([7, 3, 1]):
+            yield _VirtualSample(
+                name=f"s_{i:06d}",
+                source_ref_json="{}",
+                custom_fields=[
+                    _VirtualCustomField(
+                        name="label", field_type="scalar",
+                        value_float=float(gt),
+                    )
+                ],
+                tags="",
+            )
+    monkeypatch.setattr("app._iter_hf_attachment_samples", _fake_iter)
+    monkeypatch.setattr("app._populate_hf_gt_thumb_cache",
+                        lambda *a, **kw: 0)
+
+    lb = Leaderboard(name="snap_lb", summary_metrics="")
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id="fake/fake",
+        hf_split="train", role="primary",
+        hf_mapping_json=json.dumps([
+            {"column": "label", "target_kind": "scalar",
+             "target_field": "label"}
+        ]),
+    ))
+    sub = Submission(name="snap_sub", leaderboard_id=lb.id,
+                     storage_mode="local")
+    db.session.add(sub); db.session.flush()
+    sub_folder = tmp_path / "submissions" / str(sub.id) / "label_pred"
+    sub_folder.mkdir(parents=True)
+    (sub_folder / "s_000000.txt").write_text("7")
+    (sub_folder / "s_000001.txt").write_text("4")
+    (sub_folder / "s_000002.txt").write_text("1")
+    db.session.commit()
+    monkeypatch.setitem(flask_app.config, "UPLOAD_FOLDER", str(tmp_path))
+
+    gm = _make_metric(
+        "top1",
+        "def top1(gt, pred):\n    return 1.0 if int(float(gt)) == int(float(pred)) else 0.0\n",
+        is_aggregated=False,
+    )
+    _attach_metric(
+        lb, gm,
+        arg_mappings={"gt": "gt_label", "pred": "sub_label_pred"},
+        pooling_type="mean",
+    )
+
+    process_submission.delay(sub.id)
+    db.session.expire_all()
+
+    # GT snapshot rows: LB-scoped, no sample_id, no submission_id.
+    gt_rows = _CF.query.filter(
+        _CF.leaderboard_id == lb.id,
+        _CF.submission_id.is_(None),
+        _CF.sample_id.is_(None),
+        _CF.name == "label",
+    ).all()
+    gt_by_name = {r.sample_name: r.value_float for r in gt_rows}
+    assert gt_by_name == {"s_000000": 7.0, "s_000001": 3.0, "s_000002": 1.0}
+
+    # Pred rows: per-submission, sample_name set.
+    pred_rows = _CF.query.filter(
+        _CF.submission_id == sub.id,
+        _CF.name == "label_pred",
+    ).all()
+    pred_by_name = {r.sample_name: r.value_float for r in pred_rows}
+    assert pred_by_name == {"s_000000": 7.0, "s_000001": 4.0, "s_000002": 1.0}
+
+
+def test_hf_gt_snapshot_re_eval_replaces_stale_rows(client, tmp_path, monkeypatch):
+    """Re-running eval after a metric / mapping change drops the prior
+    LB-scoped GT rows so the snapshot stays in lockstep. Without this
+    a stale row would shadow the new value."""
+    from app import Attachment, CustomField as _CF
+    from app import app as flask_app
+
+    state = {"gts": [10, 20, 30]}
+
+    def _fake_iter(att, *, hf_token=None, cap=None):
+        from app import _VirtualSample, _VirtualCustomField
+        for i, gt in enumerate(state["gts"]):
+            yield _VirtualSample(
+                name=f"s_{i:06d}",
+                source_ref_json="{}",
+                custom_fields=[_VirtualCustomField(
+                    name="label", field_type="scalar",
+                    value_float=float(gt),
+                )],
+                tags="",
+            )
+
+    monkeypatch.setattr("app._iter_hf_attachment_samples", _fake_iter)
+    monkeypatch.setattr("app._populate_hf_gt_thumb_cache", lambda *a, **kw: 0)
+
+    lb = Leaderboard(name="restamp_lb", summary_metrics="")
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id="fake/fake",
+        hf_split="train", role="primary",
+        hf_mapping_json=json.dumps([
+            {"column": "label", "target_kind": "scalar",
+             "target_field": "label"},
+        ]),
+    ))
+    sub = Submission(name="restamp_sub", leaderboard_id=lb.id,
+                     storage_mode="local")
+    db.session.add(sub); db.session.flush()
+    sub_folder = tmp_path / "submissions" / str(sub.id) / "label_pred"
+    sub_folder.mkdir(parents=True)
+    for i in range(3):
+        (sub_folder / f"s_{i:06d}.txt").write_text(str(i))
+    db.session.commit()
+    monkeypatch.setitem(flask_app.config, "UPLOAD_FOLDER", str(tmp_path))
+
+    gm = _make_metric("top1",
+        "def top1(gt, pred):\n    return 1.0 if int(float(gt)) == int(float(pred)) else 0.0\n",
+        is_aggregated=False)
+    _attach_metric(lb, gm,
+        arg_mappings={"gt": "gt_label", "pred": "sub_label_pred"})
+
+    # First eval persists GTs = [10, 20, 30].
+    process_submission.delay(sub.id)
+
+    # Upstream "changed" — re-eval should overwrite to [99, 88, 77].
+    state["gts"] = [99, 88, 77]
+    process_submission.delay(sub.id)
+
+    db.session.expire_all()
+    gt_rows = _CF.query.filter(
+        _CF.leaderboard_id == lb.id,
+        _CF.submission_id.is_(None),
+        _CF.sample_id.is_(None),
+        _CF.name == "label",
+    ).all()
+    gt_by_name = {r.sample_name: r.value_float for r in gt_rows}
+    assert gt_by_name == {"s_000000": 99.0, "s_000001": 88.0, "s_000002": 77.0}
+
+
 def test_per_sample_metric_works_on_hf_attached_lb(client, tmp_path, monkeypatch):
     """HF-attached LBs have no BH Sample rows — eval must iterate
     streamed _VirtualSamples via _iter_lb_eval_samples. Previously
