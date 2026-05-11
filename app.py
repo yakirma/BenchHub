@@ -8623,7 +8623,7 @@ def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
         yield _virtual_sample_from_hf_row(att, row, i, classlabel_names)
 
 
-def _iter_lb_eval_samples(lb, *, hf_token=None):
+def _iter_lb_eval_samples(lb, *, hf_token=None, hf_cap=None):
     """Yield (sample_handle, attachment) tuples for every sample the
     LB evaluates against. Two source shapes:
       - Attachment rows (new): BH-attached → real Samples; HF-attached →
@@ -8634,6 +8634,12 @@ def _iter_lb_eval_samples(lb, *, hf_token=None):
     Datasets already represented by an Attachment row are skipped in
     the legacy pass so we don't double-iterate when both wirings
     co-exist on the same LB.
+
+    `hf_cap` overrides each HF attachment's default sample cap. The
+    eval pipeline derives a tight cap from the actual submission
+    prediction index range (see `_discover_submission_pred_indices`)
+    so a submission with predictions for samples 0..187 doesn't
+    trigger 10K rows of HF streaming for nothing.
     """
     covered_dataset_ids = set()
     for att in lb.attachments:
@@ -8646,7 +8652,9 @@ def _iter_lb_eval_samples(lb, *, hf_token=None):
             for s in att.dataset.samples:
                 yield s, att
         else:
-            for vs in _iter_hf_attachment_samples(att, hf_token=hf_token):
+            for vs in _iter_hf_attachment_samples(
+                att, hf_token=hf_token, cap=hf_cap,
+            ):
                 yield vs, att
 
     # Legacy m2m path: walk `lb.datasets` for any dataset not already
@@ -8658,6 +8666,47 @@ def _iter_lb_eval_samples(lb, *, hf_token=None):
             continue
         for s in (ds.samples or []):
             yield s, None
+
+
+def _discover_submission_pred_indices(submission_id, pred_field_names):
+    """Walk `uploads/submissions/<id>/<field>/` for each `<field>` in
+    `pred_field_names` and return the set of sample indices the
+    submission has predictions for (sample names follow the
+    `_VirtualSample` `s_NNNNNN` convention; non-matching names are
+    ignored).
+
+    Used by the eval pipeline to bound HF-attached iteration to the
+    actual prediction range — a submission with 8 preds at indices
+    up to 187 streams 188 HF rows, not the 10K default cap.
+
+    Returns an empty set if no pred files are on disk (e.g. for legacy
+    BH LBs where samples are addressed by name, not index — the
+    iteration won't be capped, which matches prior behavior)."""
+    indices = set()
+    if not pred_field_names:
+        return indices
+    folder = os.path.join(
+        app.config['UPLOAD_FOLDER'], 'submissions', str(submission_id),
+    )
+    if not os.path.isdir(folder):
+        return indices
+    pat = re.compile(r'^s_(\d+)\.[^.]+$')
+    for field in pred_field_names:
+        d = os.path.join(folder, field)
+        if not os.path.isdir(d):
+            continue
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            continue
+        for entry in entries:
+            m = pat.match(entry)
+            if m:
+                try:
+                    indices.add(int(m.group(1)))
+                except ValueError:
+                    pass
+    return indices
 
 
 def _make_paired_gt_provider(lb):

@@ -93,15 +93,39 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             # Previously this filtered on Sample.dataset_id, which is
             # NULL for HF-attached LBs → zero samples → silent
             # status='Processed' with no MetricResult values.
-            from app import _iter_lb_eval_samples
+            from app import (
+                _iter_lb_eval_samples,
+                _lb_submission_pred_fields,
+                _discover_submission_pred_indices,
+            )
             hf_token = None
             try:
                 hf_token = getattr(submission.owner, 'hf_token', None)
             except Exception:
                 pass
+
+            # Cap HF iteration to the submission's actual prediction
+            # range — a submission with preds for samples 0..187
+            # streams 188 HF rows instead of the 10K default cap,
+            # turning a 10-minute "Preparing Context" stall into seconds.
+            # Falls through (no cap) when the submission has no on-disk
+            # pred folders, which matches prior behavior for BH LBs.
+            pred_field_names = [
+                p['name'] for p in _lb_submission_pred_fields(leaderboard)
+            ]
+            sub_pred_indices = _discover_submission_pred_indices(
+                submission.id, pred_field_names,
+            )
+            hf_cap = (max(sub_pred_indices) + 1) if sub_pred_indices else None
+            if hf_cap:
+                logger.info(
+                    f"Bounding HF iteration to {hf_cap} rows "
+                    f"(submission has preds up to index {max(sub_pred_indices)})"
+                )
+
             dataset_samples = [
                 s for s, _att in _iter_lb_eval_samples(
-                    leaderboard, hf_token=hf_token,
+                    leaderboard, hf_token=hf_token, hf_cap=hf_cap,
                 )
             ]
 
