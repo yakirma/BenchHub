@@ -4201,6 +4201,15 @@ def create_error_image(error_text):
     return send_file(img_io, mimetype='image/png')
 
 
+@app.route('/supported_types')
+def supported_types():
+    """Standalone top-level page documenting every BenchHub field type
+    and its storage convention. Sits in the primary nav next to
+    Datasets / Leaderboards / Metrics / Visualizations — same
+    discoverability as those, not buried inside /docs."""
+    return render_template('supported_types.html')
+
+
 @app.route('/metrics')
 def metrics_view():
     metrics = (
