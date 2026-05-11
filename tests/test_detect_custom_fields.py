@@ -102,40 +102,63 @@ def test_histogram_npz_detected(tmp_path, folder_name):
 
 
 def test_depth_npz_detected_with_dimensions_in_filename(tmp_path):
-    folder = tmp_path / "raw_depth"
+    """Backwards compat: legacy `<sample>_<W>x<H>.npz` files are still
+    picked up. The folder name no longer needs a `raw_` prefix."""
+    folder = tmp_path / "depth_pred"
     os.makedirs(folder, exist_ok=True)
     np.savez(folder / "s1_64x48.npz", depth=np.zeros((48, 64)))
     out = detect_custom_fields(str(tmp_path), ["s1"], set())
-    assert out["raw_depth"]["type"] == "depth"
-    assert out["raw_depth"]["data"]["s1"].endswith("s1_64x48.npz")
+    assert out["depth_pred"]["type"] == "depth"
+    assert out["depth_pred"]["data"]["s1"].endswith("s1_64x48.npz")
 
 
-def test_raw_folder_without_dimensions_not_classified_as_depth(tmp_path):
-    folder = tmp_path / "raw_other"
+def test_depth_npz_detected_with_bare_sample_name(tmp_path):
+    """New canonical shape: `<sample>.npz` with array key `depth`. The
+    W×H suffix is no longer required."""
+    folder = tmp_path / "any_folder_name"
     os.makedirs(folder, exist_ok=True)
-    np.savez(folder / "s1.npz", x=np.zeros(3))  # No WxH suffix
+    np.savez(folder / "s1.npz", depth=np.zeros((48, 64)))
     out = detect_custom_fields(str(tmp_path), ["s1"], set())
-    # Regex `\d+x\d+\.npz$` fails → no type assigned → folder dropped.
-    assert "raw_other" not in out
+    assert out["any_folder_name"]["type"] == "depth"
+    assert out["any_folder_name"]["data"]["s1"].endswith("s1.npz")
+
+
+def test_histogram_detected_from_bins_and_counts_keys(tmp_path):
+    """Histogram detection is now content-based: any `.npz` archive
+    whose keys contain both `bins` and `counts` is a histogram,
+    regardless of folder prefix."""
+    folder = tmp_path / "no_special_prefix"
+    os.makedirs(folder, exist_ok=True)
+    np.savez(folder / "s1.npz", bins=np.array([0, 1, 2]),
+             counts=np.array([10, 20, 30]))
+    out = detect_custom_fields(str(tmp_path), ["s1"], set())
+    assert out["no_special_prefix"]["type"] == "histogram"
 
 
 # ---------------------------------------------------------------------------
-# is_submission gating for `metric_` prefix
+# Folder prefix has no special meaning anymore (was metric_/hist_/raw_)
 # ---------------------------------------------------------------------------
 
 
-def test_metric_prefix_typed_as_metric_when_is_submission(tmp_path):
+def test_metric_prefix_typed_as_plain_scalar(tmp_path):
+    """The legacy `metric_*` prefix shortcut (precomputed metric value,
+    is_submission=True only) was dropped. A folder named `metric_acc`
+    holding a float .txt is now indistinguishable from any other
+    scalar prediction folder."""
     _write(tmp_path / "metric_acc", **{"s1.txt": "0.9"})
     out = detect_custom_fields(str(tmp_path), ["s1"], set(), is_submission=True)
-    assert out["metric_acc"]["type"] == "metric"
+    assert out["metric_acc"]["type"] == "scalar"
     assert out["metric_acc"]["data"] == {"s1": 0.9}
 
 
-def test_metric_prefix_treated_as_scalar_when_not_submission(tmp_path):
-    # Same folder name, but is_submission=False → no special metric handling.
+def test_is_submission_no_longer_affects_field_type(tmp_path):
+    """The is_submission kwarg used to flip metric_* folders to
+    type='metric'; that branch is gone, so both call shapes return
+    the same field_type now."""
     _write(tmp_path / "metric_acc", **{"s1.txt": "0.9"})
-    out = detect_custom_fields(str(tmp_path), ["s1"], set(), is_submission=False)
-    assert out["metric_acc"]["type"] == "scalar"
+    a = detect_custom_fields(str(tmp_path), ["s1"], set(), is_submission=True)
+    b = detect_custom_fields(str(tmp_path), ["s1"], set(), is_submission=False)
+    assert a["metric_acc"]["type"] == b["metric_acc"]["type"] == "scalar"
 
 
 # ---------------------------------------------------------------------------
@@ -156,13 +179,14 @@ def test_image_and_txt_in_same_folder_image_wins_type_but_txt_wins_value(tmp_pat
     assert out["mixed"]["data"]["s1"] == 0.5
 
 
-def test_metric_folder_with_image_sample_keeps_metric_type(tmp_path):
-    """Same precedence rule: metric folders start as 'metric' type; an image file
-    won't downgrade it. The image data gets overwritten by any later txt/json hit
-    if present, but here we only have a png."""
+def test_metric_named_folder_with_image_sample_is_image(tmp_path):
+    """The metric_* prefix used to pre-pin field_type='metric' and an
+    image extension couldn't override it. With the prefix logic gone,
+    type is decided purely from the file extension — so a folder
+    named `metric_foo` holding a .png is just an image field."""
     _write(tmp_path / "metric_foo", **{"s1.png": b"x"})
     out = detect_custom_fields(str(tmp_path), ["s1"], set(), is_submission=True)
-    assert out["metric_foo"]["type"] == "metric"
+    assert out["metric_foo"]["type"] == "image"
     assert out["metric_foo"]["data"]["s1"].endswith("s1.png")
 
 

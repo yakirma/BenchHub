@@ -77,9 +77,12 @@ def test_happy_path_creates_submission_with_custom_fields(
     # NOTE: process_submission_zip renames the submission to the inner-folder name.
     assert sub.name == "sub_pkg"
 
-    # Per-sample metric fields linked by sample_name (not by sample_id).
+    # Per-sample scalar fields linked by sample_name (not by sample_id).
+    # The legacy `metric_*` prefix used to coerce field_type to 'metric'
+    # only when is_submission=True; that branch is gone, so the type
+    # is now 'scalar' (driven by the .txt extension alone).
     metric_cfs = CustomField.query.filter_by(
-        submission_id=sub.id, name="metric_acc", field_type="metric"
+        submission_id=sub.id, name="metric_acc", field_type="scalar"
     ).all()
     by_sample = {cf.sample_name: cf.value_float for cf in metric_cfs}
     assert by_sample == {"s1": 0.91, "s2": 0.87}

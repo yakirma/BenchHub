@@ -219,13 +219,12 @@ def test_full_context_loads_image_gt_and_image_pred(
     assert ctx['gt_rgb'].mean() < ctx['sub_rgb_pred'].mean()
 
 
-def test_full_context_skips_metric_and_hist_pred_folders(
+def test_submission_folder_metric_named_folder_loaded_as_scalar(
     db_session, tmp_path,
 ):
-    """Submission folder may contain `metric_*` and `hist_*` folders
-    too; only bare-name `<col>_pred/` (or anything else) is loaded as
-    a structured prediction. The metric/hist branches were already
-    handled before Option B."""
+    """Folder prefixes (`metric_`, `hist_`, `raw_`) no longer carry
+    special meaning. A folder named `metric_score` is loaded as a
+    plain scalar prediction the same way `label_pred` is."""
     from app import Dataset, Sample as SampleModel, Submission, Leaderboard
     ds = Dataset(name='skip_ds', visibility='public')
     db.session.add(ds); db.session.flush()
@@ -247,9 +246,6 @@ def test_full_context_skips_metric_and_hist_pred_folders(
         sample, sub=sub, submission_folder=str(sub_folder),
         upload_folder=str(tmp_path),
     )
-    # metric_score is intentionally NOT auto-loaded into sub_metric_score
-    # by the bare-pred-folder scanner — Submission.custom_fields would
-    # normally provide it, but this test never registers them, so it's
-    # just absent. The bare label_pred IS loaded.
+    # Both bare-name folders now load uniformly.
     assert ctx.get('sub_label_pred') == 7.0
-    assert 'sub_metric_score' not in ctx
+    assert ctx.get('sub_metric_score') == 0.9

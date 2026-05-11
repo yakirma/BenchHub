@@ -537,12 +537,20 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     folder_path = os.path.join(submission_folder, folder_name)
                     if not os.path.isdir(folder_path):
                         continue
-                    # Histogram entropy convenience.
-                    if folder_name.startswith('hist_') or folder_name == 'raw_histogram':
-                        hist_file = os.path.join(folder_path, f'{sample.name}.npz')
-                        if os.path.exists(hist_file):
-                            try:
-                                with np.load(hist_file) as data:
+                    # Histogram entropy convenience: any folder whose
+                    # per-sample .npz carries `counts` (regardless of
+                    # folder name — the legacy hist_/raw_histogram
+                    # prefix requirement was dropped) gets its
+                    # Shannon entropy surfaced as
+                    # sub_entropy_<folder_name>. Bench-Hub still passes
+                    # the raw .npz through _load_sub_pred_for_sample
+                    # below, so dependency-chained metrics can grab
+                    # bins/counts themselves if they need to.
+                    hist_file = os.path.join(folder_path, f'{sample.name}.npz')
+                    if os.path.exists(hist_file):
+                        try:
+                            with np.load(hist_file) as data:
+                                if 'counts' in data:
                                     counts = data['counts']
                                     counts = counts[counts > 0]
                                     if counts.sum() > 0:
@@ -551,12 +559,8 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                                         context[f'sub_entropy_{folder_name}'] = val
                                     else:
                                         context[f'sub_entropy_{folder_name}'] = 0.0
-                            except Exception as e:
-                                print(f"DEBUG: Error reading histogram {folder_name} for {sample.name}: {e}")
-                        continue
-                    # `metric_*` folders are picked up via Submission.custom_fields above.
-                    if folder_name.startswith('metric_'):
-                        continue
+                        except Exception as e:
+                            print(f"DEBUG: Error reading npz {folder_name} for {sample.name}: {e}")
                     # Bare-name prediction folder (the auto-LB convention:
                     # `<col>_pred/`). Load the per-sample file as scalar /
                     # image / depth depending on the file extension and

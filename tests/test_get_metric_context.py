@@ -409,14 +409,18 @@ def test_submission_folder_zero_counts_returns_zero_entropy(tmp_path, sample, su
     assert ctx["sub_entropy_hist_zero"] == 0.0
 
 
-def test_submission_folder_non_hist_folders_ignored(tmp_path, sample, submission):
-    # Folder doesn't start with hist_ and isn't raw_histogram → not scanned.
-    folder = tmp_path / "metric_acc"
+def test_submission_folder_histogram_detected_by_content_not_prefix(tmp_path, sample, submission):
+    """The legacy hist_/raw_histogram prefix gate was dropped — entropy
+    convenience now fires for any folder whose per-sample .npz carries
+    a `counts` array, regardless of folder name."""
+    folder = tmp_path / "anything"
     folder.mkdir()
-    np.savez(folder / f"{sample.name}.npz", bins=np.array([0]), counts=np.array([1]))
+    np.savez(folder / f"{sample.name}.npz", bins=np.array([0, 1]),
+             counts=np.array([2, 8]))
 
     ctx = get_metric_context(sample, sub=submission, submission_folder=str(tmp_path))
-    assert all(not k.startswith("sub_entropy_") for k in ctx)
+    assert "sub_entropy_anything" in ctx
+    assert math.isfinite(ctx["sub_entropy_anything"])
 
 
 def test_submission_folder_missing_sample_npz_skipped(tmp_path, dataset, submission):

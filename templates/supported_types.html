@@ -12,22 +12,16 @@
 
     <p>
         BenchHub auto-detects the type of each field from a combination
-        of <strong>folder prefix</strong> and <strong>file extension</strong>.
-        The same rules apply on the ground-truth side (a Dataset uploaded
-        as a ZIP, or a HuggingFace dataset attachment) and on the
-        prediction side (a Submission uploaded via the API). Every
-        per-leaderboard <em>Submission contract</em> is just a filtered
-        view of these rules — which folders <em>that</em> LB needs.
+        of the <strong>file extension</strong> and (for <code>.npz</code>)
+        the archive's key names. No reserved folder prefixes — name your
+        folders whatever makes sense for your data, and the engine reads
+        the type from what's inside. The same rules apply on the
+        ground-truth side (a Dataset uploaded as a ZIP, or a HuggingFace
+        dataset attachment) and on the prediction side (a Submission
+        uploaded via the API). Every per-leaderboard
+        <em>Submission contract</em> is just a filtered view of these
+        rules — which folders <em>that</em> LB needs.
     </p>
-
-    <div class="alert alert-info small">
-        <i class="bi bi-info-circle me-2"></i>
-        Folder names that don't start with a reserved prefix
-        (<code>metric_</code>, <code>raw_</code>, <code>hist_</code>,
-        <code>raw_histogram</code>) are still indexed — their type is
-        decided by the file extension alone. The reserved prefixes
-        carry extra semantics; see below.
-    </div>
 
     <h2 class="h4 fw-semibold mt-4">Reference table</h2>
     <div class="table-responsive">
@@ -88,13 +82,12 @@
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">depth</span></td>
                     <td class="font-monospace small">.npz</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>_<W>x<H>.npz' }}</td>
+                    <td class="font-monospace small text-body-secondary">{{ '<sample>.npz' }}</td>
                     <td class="small">
                         numpy <code>.npz</code> archive with one array
                         under key <code>depth</code> (HxW float). The
-                        <code>&lt;W&gt;x&lt;H&gt;</code> in the filename
-                        lets the engine validate shape without loading.
-                        Folder names typically start with <code>raw_</code>.
+                        engine peeks at the keys to disambiguate from
+                        a histogram archive.
                     </td>
                 </tr>
                 <tr>
@@ -104,9 +97,10 @@
                     <td class="small">
                         numpy <code>.npz</code> archive with two arrays:
                         <code>bins</code> + <code>counts</code>. Detected
-                        when the folder starts with <code>hist_</code> or
-                        is named exactly <code>raw_histogram</code>.
-                        Surfaces in the Comparison view as an inline chart.
+                        by inspecting the archive's keys. Surfaces in the
+                        Comparison view as an inline chart and exposes a
+                        <code>sub_entropy_&lt;field&gt;</code> convenience
+                        value to metric code.
                     </td>
                 </tr>
                 <tr>
@@ -122,43 +116,6 @@
             </tbody>
         </table>
     </div>
-
-    <h2 class="h4 fw-semibold mt-5">Reserved folder prefixes</h2>
-    <p>
-        BenchHub recognizes three folder prefixes that carry semantics
-        beyond the file extension:
-    </p>
-    <dl class="row small">
-        <dt class="col-sm-3"><code>metric_</code></dt>
-        <dd class="col-sm-9">
-            Each <code>&lt;sample&gt;.txt</code> in the folder holds a
-            <strong>precomputed metric value</strong> (one float per
-            sample) — not a raw prediction. BenchHub reads the values
-            directly and skips re-running the metric. Use this when you
-            already evaluated locally and just want to ship the scores.
-            <span class="text-body-secondary">Never use
-            <code>metric_</code> for raw model outputs — pair the metric
-            with a bare-name prediction folder instead.</span>
-        </dd>
-
-        <dt class="col-sm-3"><code>raw_</code></dt>
-        <dd class="col-sm-9">
-            Marks the folder as carrying dense raw arrays — most
-            commonly depth maps (<code>raw_depth_map</code>) and
-            free-form numpy payloads. The
-            <code>&lt;W&gt;x&lt;H&gt;</code> suffix on each filename
-            gives the engine the spatial shape up front.
-        </dd>
-
-        <dt class="col-sm-3"><code>hist_</code></dt>
-        <dd class="col-sm-9">
-            Marks the folder as histogram data — each <code>.npz</code>
-            carries <code>bins</code> + <code>counts</code> arrays.
-            Folder name suffix is the histogram variant (e.g.
-            <code>hist_pred</code>, <code>hist_smooth</code>); the
-            comparison view surfaces each variant as a separate chart.
-        </dd>
-    </dl>
 
     <h2 class="h4 fw-semibold mt-5">Using data in metrics</h2>
     <p>

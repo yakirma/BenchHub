@@ -453,9 +453,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
         <p class="small text-body-secondary mb-2">
             Submissions to this leaderboard must include one folder per
-            row below. Bare-name folders <strong>only</strong> &mdash;
-            <code>metric_*</code> is reserved for user-precomputed
-            metric values, not raw predictions.
+            row below. File extension drives the type — no reserved
+            folder prefixes required.
             <a href="{{ url_for('supported_types') }}" class="ms-1">
                 See supported types <i class="bi bi-arrow-up-right-square small"></i>
             </a>

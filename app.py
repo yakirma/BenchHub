@@ -1209,24 +1209,35 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
     for folder_name in custom_folders:
         folder_path = os.path.join(base_path, folder_name)
 
-        # Determine field type
-        is_metric = is_submission and folder_name.startswith('metric_')
-        # The reserved `tags` folder is always text, even when the file
-        # body looks numeric (e.g. ClassLabel names list = ['0','1',...]).
-        # Without this pin, `float("5")` succeeds and the per-sample tag
-        # is misfiled as a scalar — Sample.tags never gets populated.
+        # Determine field type purely from file extension + content. The
+        # legacy reserved prefixes (metric_, hist_, raw_) were dropped:
+        # any folder can hold any type, and we infer from what's inside.
+        # The only remaining hard-coded folder is `tags` (always text,
+        # never re-parsed as numeric — otherwise ClassLabel name lists
+        # like ['0', '1'] get coerced to scalars and the sample loses
+        # its tags).
         is_tags_folder = (folder_name == 'tags')
-        field_type = (
-            'metric' if is_metric
-            else 'text' if is_tags_folder
-            else None
-        )
-        
+        field_type = 'text' if is_tags_folder else None
+
         # Check what's inside the folder
         field_data = {}
-        
+
         folder_files = os.listdir(folder_path)
-        
+
+        def _classify_npz(path):
+            """Peek at the npz's keys to decide histogram vs depth.
+            Bin+counts → histogram; explicit `depth` key → depth; else
+            we still tag as depth (a single-array .npz is overwhelmingly
+            a dense map). Returns the field-type string."""
+            try:
+                with np.load(path) as data:
+                    keys = set(data.keys())
+            except Exception:
+                return None
+            if {'bins', 'counts'}.issubset(keys):
+                return 'histogram'
+            return 'depth'
+
         for sample_name in sample_names:
             # Check for image files
             for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
@@ -1236,7 +1247,7 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                         field_type = 'image'
                     field_data[sample_name] = os.path.join(folder_path, img_file_name)
                     break
-            
+
             # Check for text files with scalar values or text tags
             txt_file_name = f'{sample_name}.txt'
             if txt_file_name in folder_files:
@@ -1244,23 +1255,20 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                     with open(os.path.join(folder_path, txt_file_name), 'r') as f:
                         content = f.read().strip()
                         if field_type == 'text':
-                            # Already pinned (e.g. tags folder) — keep the
-                            # raw string even if it parses as a number.
                             field_data[sample_name] = content
                         else:
                             try:
                                 val = float(content)
-                                if field_type is None or field_type == 'metric':
-                                     field_type = 'metric' if is_metric else 'scalar'
+                                if field_type is None:
+                                    field_type = 'scalar'
                                 field_data[sample_name] = val
                             except ValueError:
-                                # If not a float, treat as text (e.g., tags)
                                 if field_type is None:
                                     field_type = 'text'
                                 field_data[sample_name] = content
                 except Exception:
                     pass
-            
+
             # Check for JSON files
             json_file_name = f'{sample_name}.json'
             if json_file_name in folder_files:
@@ -1268,33 +1276,31 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                     field_type = 'json'
                 field_data[sample_name] = os.path.join(folder_path, json_file_name)
 
-            # Check for histogram files (.npz) if folder starts with 'hist_', is 'raw_histogram', or is 'hist'
-            if folder_name.startswith('hist_') or folder_name in ['raw_histogram', 'hist']:
-                 npz_file_name = f'{sample_name}.npz'
-                 if npz_file_name in folder_files:
-                     if field_type is None:
-                         field_type = 'histogram'
-                     field_data[sample_name] = os.path.join(folder_path, npz_file_name)
+            # Check for npz files. New convention: `<sample>.npz` with
+            # the kind decided by inspecting the archive's keys. Keep
+            # the legacy `<sample>_<W>x<H>.npz` shape for backward
+            # compat — older depth submissions are still on disk.
+            npz_candidate = None
+            simple_npz = f'{sample_name}.npz'
+            if simple_npz in folder_files:
+                npz_candidate = os.path.join(folder_path, simple_npz)
+            else:
+                prefix = f"{sample_name}_"
+                for fname in folder_files:
+                    if (fname.startswith(prefix) and fname.endswith('.npz')
+                            and re.match(r'\d+x\d+\.npz$', fname[len(prefix):])):
+                        npz_candidate = os.path.join(folder_path, fname)
+                        break
+            if npz_candidate:
+                kind = _classify_npz(npz_candidate)
+                if kind:
+                    if field_type is None:
+                        field_type = kind
+                    field_data[sample_name] = npz_candidate
 
-            # Check for depth files (.npz) if folder starts with 'raw_'
-            if folder_name.startswith('raw_'):
-                 # Pattern: <sample_name>_<width>x<height>.npz
-                 # Since we don't know width/height, we search the file list
-                 prefix = f"{sample_name}_"
-                 for fname in folder_files:
-                     if fname.startswith(prefix) and fname.endswith('.npz'):
-                         # Verify middle part is dimensions (optional but good for strictness)
-                         # parts: [sample_name, dims.npz]
-                         rest = fname[len(prefix):]
-                         if re.match(r'\d+x\d+\.npz$', rest):
-                             if field_type is None:
-                                 field_type = 'depth'
-                             field_data[sample_name] = os.path.join(folder_path, fname)
-                             break
-        
         if field_type:
             custom_fields[folder_name] = {'type': field_type, 'data': field_data}
-            
+
     return custom_fields
 
 def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, active_metrics):
@@ -1317,36 +1323,36 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
              return res
          return 0.0
 
-    # General approach: Find any folder starting with "hist_" that has an .npz for this sample
+    # Find any per-sample .npz that holds histogram data. The legacy
+    # hist_/raw_histogram prefix gate was dropped — we now inspect
+    # archive keys instead, so any folder whose npz carries
+    # `bins` + `counts` surfaces as a histogram.
     if os.path.exists(submission_folder):
         for folder_name in os.listdir(submission_folder):
             folder_path = os.path.join(submission_folder, folder_name)
-            # Strict check for 'hist_' prefix for dynamic ones, plus legacy 'raw_histogram'
-            if os.path.isdir(folder_path) and (folder_name.startswith('hist_') or folder_name == 'raw_histogram'):
-                hist_file = os.path.join(folder_path, f'{sample.name}.npz')
-                if os.path.exists(hist_file):
-                    try:
-                        with np.load(hist_file) as data:
-                            bins = data['bins'].tolist()
-                            counts = data['counts'].tolist()
+            if not os.path.isdir(folder_path):
+                continue
+            hist_file = os.path.join(folder_path, f'{sample.name}.npz')
+            if os.path.exists(hist_file):
+                try:
+                    with np.load(hist_file) as data:
+                        if not {'bins', 'counts'}.issubset(data.keys()):
+                            continue
+                        bins = data['bins'].tolist()
+                        counts = data['counts'].tolist()
+
+                        # Store properly namespaced data for all histograms
+                        pred_data[f'histogram_{folder_name}'] = {'bins': bins, 'counts': counts}
+
+                        # Restore top-level bins/counts when no other
+                        # histogram has filled them yet (legacy
+                        # zoom-modal fallback expects the keys present).
+                        if not pred_data['bins'] and not pred_data['counts']:
+                            pred_data['bins'] = bins
+                            pred_data['counts'] = counts
                             
-                            # Store properly namespaced data for all histograms
-                            pred_data[f'histogram_{folder_name}'] = {'bins': bins, 'counts': counts}
-                            
-                            # Restore top-level bins/counts for backward compatibility (e.g. zoom modal fallback)
-                            # especially for the primary 'raw_histogram'
-                            if folder_name == 'raw_histogram' or (not pred_data['bins'] and not pred_data['counts']):
-                                pred_data['bins'] = bins
-                                pred_data['counts'] = counts
-                            
-                            # Custom entropy metric removed as obsolete
-                            # entropy_val = calc_entropy(np.array(counts))
-                            # metric_name = f'hist_entropy_{folder_name}'
-                            # pred_data[metric_name] = entropy_val
-                            # metrics[metric_name] = entropy_val
-                    except Exception as e:
-                        print(f"Error loading histogram from {folder_name}: {e}")
-                        # metrics[f'hist_entropy_{folder_name}'] = -1.0
+                except Exception as e:
+                    print(f"Error loading histogram from {folder_name}: {e}")
 
     # Fallback: if 'hist_entropy' wasn't set but is requested
     # We leave it as None. Existing logic set it to 0 if missing, which caused confusion in charts.
@@ -5916,7 +5922,7 @@ def _static_colab_notebook(lb):
     else:
         pred_block = (
             "- _(this leaderboard has no auto-detected prediction fields; "
-            "fill `metric_<name>/<sample>.txt` per the LB's metric "
+            "fill `<name>/<sample>.txt` per the LB's metric "
             "definitions)_"
         )
 
@@ -6111,10 +6117,10 @@ def _static_colab_notebook(lb):
                 ) + [
                     "    # Each predicted field becomes its own folder. The kind decides\n",
                     "    # the file extension so the BenchHub engine loads it correctly:\n",
-                    "    #   scalar → <sample>.txt              (float)\n",
-                    "    #   image  → <sample>.png              (HxWx3 RGB)\n",
-                    "    #   mask   → <sample>.png              (HxW class IDs OR HxWx3 RGB)\n",
-                    "    #   depth  → <sample>_<W>x<H>.npz      (HxW float, key 'depth')\n",
+                    "    #   scalar → <sample>.txt   (float)\n",
+                    "    #   image  → <sample>.png   (HxWx3 RGB)\n",
+                    "    #   mask   → <sample>.png   (HxW class IDs OR HxWx3 RGB)\n",
+                    "    #   depth  → <sample>.npz   (HxW float, key 'depth')\n",
                     "    for field, value in preds.items():\n",
                     "        out_dir = OUT / field\n",
                     "        out_dir.mkdir(exist_ok=True)\n",
@@ -6127,8 +6133,7 @@ def _static_colab_notebook(lb):
                     "            Image.fromarray(arr_u8).save(out_dir / f'{name}.png')\n",
                     "        elif kind == 'depth':\n",
                     "            arr = np.asarray(value, dtype=np.float32)\n",
-                    "            h, w = arr.shape[:2]\n",
-                    "            np.savez(out_dir / f'{name}_{w}x{h}.npz', depth=arr)\n",
+                    "            np.savez(out_dir / f'{name}.npz', depth=arr)\n",
                     "        else:\n",
                     "            (out_dir / f'{name}.txt').write_text(str(value))\n",
                     "print('Submission folder built at', OUT)\n",
@@ -6387,15 +6392,17 @@ def _llm_colab_notebook(lb, model_id_hint=None):
         "a specific leaderboard.\n\n"
         "BenchHub folder convention (CRITICAL — the LB metrics will\n"
         "FAIL TO EVALUATE if predictions land in the wrong folder):\n"
-        "- Per-sample predictions land in BARE-NAME folders, NOT under\n"
-        "  `metric_*`. The user is given a `PRED_FIELDS` list of folder\n"
-        "  names; each prediction goes to `<field>/<sample>.txt`.\n"
-        "- `metric_<name>/<sample>.txt` is RESERVED for user-precomputed\n"
-        "  metric VALUES (the rare case where the user already ran the\n"
-        "  metric and is shipping the score directly). Never use this\n"
-        "  folder for raw model predictions.\n"
-        "- `image_<name>/<sample>.png` for image predictions.\n"
-        "- `raw_<name>/<sample>_<W>x<H>.npz` for depth predictions.\n\n"
+        "- Each prediction field gets its own folder using the field\n"
+        "  name from `PRED_FIELDS` verbatim. No required prefixes —\n"
+        "  the engine infers type from the file extension + npz keys.\n"
+        "- File naming per kind:\n"
+        "  * scalar / text → `<field>/<sample>.txt`\n"
+        "  * image / mask  → `<field>/<sample>.png` (HxWx3 RGB for\n"
+        "    image; HxW class IDs OR HxWx3 RGB for mask)\n"
+        "  * depth         → `<field>/<sample>.npz` with array key\n"
+        "    `depth` (HxW float). No width×height in the filename.\n"
+        "  * histogram     → `<field>/<sample>.npz` with array keys\n"
+        "    `bins` and `counts`.\n\n"
         "The notebook MUST:\n"
         "- Open with a markdown cell explaining the leaderboard, its "
         "  datasets, metrics, and a placeholder for the user's model. "
@@ -7376,7 +7383,7 @@ def _proposal_rmse_depth(col):
             'name': f'{col}_pred', 'kind': 'depth', 'gt_field': col,
             'description': (
                 f"Per-sample predicted depth map. Ship as "
-                f"`{col}_pred/<sample>_<W>x<H>.npz` with the array under "
+                f"`{col}_pred/<sample>.npz` with the array under "
                 f"key `depth`, matching GT shape."
             ),
         }],
@@ -7878,7 +7885,7 @@ def _lb_submission_pred_fields(lb):
             entry['kind'] = 'depth'
             entry['description'] = (
                 f"Predicted depth map for `{gt_name}` "
-                f"(ship as `<sample>_<W>x<H>.npz` with array key `depth`)."
+                f"(ship as `<sample>.npz` with array key `depth`)."
             )
         elif gt_type == 'image':
             name_lc = gt_name.lower()
