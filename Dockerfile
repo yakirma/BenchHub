@@ -14,11 +14,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # matplotlib needs libgomp1 + libfreetype/libpng (numpy/scipy ship manylinux
 # wheels, but matplotlib's font cache wants these at runtime).
+# redis-server is the Celery broker — we run it loopback-only on this same
+# VM. Upstash's free tier kept blowing through its 500K monthly request cap
+# and crash-looping the worker; an in-VM Redis sidesteps the external
+# dependency entirely.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         libgomp1 \
         libfreetype6 \
         libpng16-16 \
+        redis-server \
         curl \
  && rm -rf /var/lib/apt/lists/*
 
