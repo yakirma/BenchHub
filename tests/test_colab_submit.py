@@ -529,9 +529,9 @@ def test_colab_bootstrap_route_returns_runnable_python(
     client, db_session, lb_with_one_dataset,
 ):
     """The bootstrap endpoint serves a self-contained Python script
-    that downloads the notebook + dataset GT zip and pip-installs deps.
-    Must compile (so a typo doesn't ship), and must NOT carry the
-    `metric_*` namespace into the prediction-folder convention."""
+    equivalent to the Colab notebook — installs deps, fetches GT,
+    defines my_model, builds the submission folder, zips it. Must
+    compile cleanly so a syntax-broken cell doesn't ship."""
     resp = client.get(
         f'/leaderboard/{lb_with_one_dataset.id}/colab_bootstrap.py')
     assert resp.status_code == 200
@@ -541,11 +541,21 @@ def test_colab_bootstrap_route_returns_runnable_python(
     assert 'colab_lb' in resp.headers.get('Content-Disposition', '')
     # Must compile.
     compile(body, 'bootstrap.py', 'exec')
-    # Carries the LB id + dataset id so the script knows what to fetch.
+    # Carries the LB id (needed to fetch GT and upload predictions).
     assert f'LEADERBOARD_ID = {lb_with_one_dataset.id}' in body
-    # No leftover `metric_<col>` for predictions — the bare-folder
-    # convention is the canonical one now.
-    assert 'metric_' not in body
+    # The full submission flow is present, not just a notebook-downloader stub.
+    assert 'def my_model' in body
+    assert '/api/leaderboard/' in body
+    # No leftover `metric_<col>` *in code* for prediction folders — the
+    # bare-folder convention is canonical. (Markdown commentary may still
+    # mention it as historical context, hence the quoted-literal scope.)
+    assert "'metric_" not in body
+    assert '"metric_' not in body
+    # Jupyter `!pip install` got rewritten to a portable subprocess call.
+    assert '!pip' not in body
+    assert 'subprocess' in body and 'pip' in body
+    # `from google.colab` is gated out so the script runs in plain Python.
+    assert 'from google.colab' not in body or '# ' in body.split('from google.colab')[0].rsplit('\n', 1)[-1]
 
 
 def test_colab_bootstrap_route_404s_for_private_lb_to_anon(client, db_session):

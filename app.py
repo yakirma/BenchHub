@@ -4524,48 +4524,124 @@ def leaderboard_colab_notebook(leaderboard_id):
 @app.route('/leaderboard/<int:leaderboard_id>/colab_bootstrap.py')
 @visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_colab_bootstrap(leaderboard_id):
-    """Standalone .py version of the notebook's RUN-LOCALLY BOOTSTRAP
-    cell. Lets a user set up a local environment for this LB without
-    opening Colab — `python bootstrap.py` downloads the notebook +
-    dataset GT zip and pip-installs the deps. Always served fresh
-    (cheap to regenerate, no caching needed)."""
+    """Standalone .py equivalent of the Colab notebook. Runs the full
+    submission flow locally: pip-installs deps, fetches the dataset
+    GT zip, defines my_model, builds the prediction folder, zips it,
+    and optionally uploads via the user's API token. Derived by
+    flattening the cached .ipynb JSON so the two artifacts stay in
+    lockstep — same template version, same field schema, same
+    PRED_FIELDS — without a second LLM call."""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
-    base_url = os.environ.get(
-        'BENCHHUB_BASE_URL', request.host_url.rstrip('/'),
-    ).rstrip('/')
-    ds = lb.datasets[0] if lb.datasets else None
-    ds_id_repr = str(ds.id) if ds else 'None'
-
-    body = (
-        f"# bootstrap.py — set up a local run for BenchHub leaderboard\n"
-        f"# {lb.name!r} (id={lb.id})\n"
-        f"#\n"
-        f"# Run with: python bootstrap.py\n"
-        f"# Then open submit.ipynb in Jupyter / VS Code, edit my_model(),\n"
-        f"# and run the cells.\n"
-        f"import os, subprocess, sys, urllib.request\n"
-        f"\n"
-        f"BENCHHUB = {base_url!r}\n"
-        f"LEADERBOARD_ID = {lb.id}\n"
-        f"DATASET_ID = {ds_id_repr}\n"
-        f"\n"
-        f"nb_url = f'{{BENCHHUB}}/leaderboard/{{LEADERBOARD_ID}}/colab_notebook.ipynb'\n"
-        f"urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n"
-        f"if DATASET_ID is not None:\n"
-        f"    urllib.request.urlretrieve(\n"
-        f"        f'{{BENCHHUB}}/dataset/{{DATASET_ID}}/download', 'gt.zip')\n"
-        f"subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n"
-        f"                       '-q', 'requests', 'numpy', 'pillow'])\n"
-        f"print('Saved submit.ipynb' + (' + gt.zip' if DATASET_ID is not None else '')\n"
-        f"      + '. Open submit.ipynb in Jupyter or VS Code.')\n"
-    )
+    notebook_json, _src = _get_or_generate_colab_notebook(lb)
+    user = getattr(g, 'current_user', None)
+    if user and getattr(user, 'api_token', None):
+        notebook_json = _personalize_notebook_for_user(notebook_json, user)
+    body = _ipynb_to_python(notebook_json, lb)
     safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
     return app.response_class(
         body, mimetype='text/x-python',
         headers={
-            'Content-Disposition': f'attachment; filename="{safe_name}_bootstrap.py"',
+            'Content-Disposition': f'attachment; filename="{safe_name}_submit.py"',
         },
     )
+
+
+# Rewriter rules:
+#   "!pip install X Y"   → subprocess.check_call([sys.executable, '-m',
+#                          'pip', 'install', 'X', 'Y'])
+#   "!apt ..." / other ! → comment out (no portable equivalent off-Colab).
+#   "from google.colab"  → comment out + print the zip path so the user
+#                          still gets a clear next step.
+#   files.download(...)  → comment out, replaced by a print.
+# Markdown cells become `# ` line-prefixed comments. The RUN-LOCALLY
+# BOOTSTRAP cell from _static_colab_notebook is dropped — it's a no-op
+# when *this* script IS the local entry point.
+_NB_BOOTSTRAP_MARKER = '>>> RUN-LOCALLY BOOTSTRAP <<<'
+
+
+def _rewrite_jupyter_line(line):
+    stripped = line.lstrip()
+    indent = line[:len(line) - len(stripped)]
+    # !pip install <args>
+    m = re.match(r'!\s*pip\s+(.*)', stripped)
+    if m:
+        args = m.group(1).split()
+        args_repr = ', '.join(repr(a) for a in args)
+        return (
+            f"{indent}__import__('subprocess').check_call("
+            f"[__import__('sys').executable, '-m', 'pip', {args_repr}])"
+        )
+    # Any other shell magic — neutralize so the script still compiles.
+    if stripped.startswith('!'):
+        return f"{indent}# (jupyter magic disabled outside Colab) {stripped}"
+    # google.colab is Colab-only; comment out, but if the same line
+    # also calls files.download(<expr>), emit a substitute print of
+    # the expr so the user still knows where the artifact landed.
+    if re.search(r'\bgoogle\.colab\b', line) or re.search(r'\bfiles\.download\(', line):
+        replacement = f"{indent}# (Colab-only, disabled outside Colab) {stripped}"
+        m = re.search(r'\bfiles\.download\((.+?)\)', line)
+        if m:
+            replacement += (
+                f"\n{indent}print('Submission ZIP written to:',"
+                f" {m.group(1).strip()})"
+            )
+        return replacement
+    return line
+
+
+def _ipynb_to_python(notebook_json, lb=None):
+    """Flatten an .ipynb JSON to a single runnable .py. Markdown cells
+    become `# ` comments; code cells are rewritten line-by-line via
+    _rewrite_jupyter_line so IPython-flavored syntax (`!pip ...`,
+    `from google.colab ...`, `files.download(...)`) becomes pure
+    Python that runs in a plain interpreter."""
+    try:
+        nb = json.loads(notebook_json)
+    except Exception:
+        # Defensive: if the cached blob is corrupt, fall through with
+        # a 1-line stub that at least tells the user something useful.
+        return (
+            f"# Could not parse cached notebook for LB"
+            f"{f' id={lb.id}' if lb else ''}.\n"
+            f"# Re-open the LB page and try again.\n"
+        )
+
+    out_lines = []
+    if lb is not None:
+        safe_name = re.sub(r'[^A-Za-z0-9_-]+', '_', lb.name) or f'lb_{lb.id}'
+        out_lines.append(
+            f"# {lb.name} — BenchHub submission script (LB id={lb.id})"
+        )
+        out_lines.append(
+            f"# Self-contained equivalent of the Colab notebook. Edit my_model()"
+        )
+        out_lines.append(
+            f"# (and API_TOKEN if you want auto-upload), then: python {safe_name}_submit.py"
+        )
+        out_lines.append("")
+    for cell in nb.get('cells', []):
+        src = cell.get('source', '')
+        if isinstance(src, list):
+            src = ''.join(src)
+        if not src.strip():
+            continue
+        ctype = cell.get('cell_type', 'code')
+        if ctype == 'markdown':
+            for ln in src.splitlines() or ['']:
+                out_lines.append(f"# {ln}" if ln else "#")
+            out_lines.append("")
+            continue
+        if ctype != 'code':
+            continue
+        # Drop the bootstrap-the-notebook cell — redundant when this
+        # script IS the local entry point.
+        if _NB_BOOTSTRAP_MARKER in src:
+            continue
+        for ln in src.splitlines():
+            rewritten = _rewrite_jupyter_line(ln)
+            out_lines.append(rewritten)
+        out_lines.append("")
+    return '\n'.join(out_lines).rstrip() + '\n'
 
 
 @app.route('/leaderboard/<int:leaderboard_id>')
