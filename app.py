@@ -7813,6 +7813,16 @@ def _lb_submission_pred_fields(lb):
 
     # Now backfill descriptions by inspecting the GT side of the first
     # dataset for each pred field's `gt_field`.
+    #
+    # Two source shapes:
+    #   - BH-attached LBs: read field types off the first sample's
+    #     custom_fields.
+    #   - HF-attached LBs (no Sample rows): read kinds from the
+    #     primary HF Attachment's `hf_mapping_json`, which carries
+    #     `{column, target_kind, target_field}` per HF column. Without
+    #     this fallback, every HF LB's pred field defaulted to scalar,
+    #     so e.g. NYU `raw_depth_map_pred` showed type=scalar instead
+    #     of depth.
     gt_field_meta = {}
     for ds in (lb.datasets or []):
         if not ds.samples:
@@ -7822,6 +7832,20 @@ def _lb_submission_pred_fields(lb):
             gt_field_meta.setdefault(cf.name, cf.field_type)
         # Walk one dataset's worth of fields; that's enough to infer.
         break
+    if not gt_field_meta:
+        for att in (lb.attachments or []):
+            if getattr(att, 'kind', None) != 'hf' or att.role != 'primary':
+                continue
+            try:
+                mapping = json.loads(att.hf_mapping_json or '[]')
+            except (TypeError, ValueError):
+                mapping = []
+            for m in mapping:
+                target_field = (m.get('target_field') or m.get('column') or '').strip()
+                target_kind = (m.get('target_kind') or '').strip()
+                if target_field and target_kind:
+                    gt_field_meta.setdefault(target_field, target_kind)
+            break
     for entry in seen.values():
         gt_name = entry['gt_field']
         sibling_class = f"{gt_name}_class"

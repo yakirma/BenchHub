@@ -83,6 +83,47 @@ def test_required_pred_fields_appear_on_submission_contract(client, db_session):
     assert 'caption' in entry['description'].lower()
 
 
+def test_pred_field_kind_inferred_from_hf_mapping_for_hf_lb(client, db_session):
+    """HF-attached LBs have no BH Dataset rows. _lb_submission_pred_fields
+    must read the GT field kinds off the primary HF Attachment's
+    hf_mapping_json — otherwise every pred field defaulted to 'scalar'
+    (user-reported: NYU `raw_depth_map_pred` showed Type=scalar instead
+    of depth)."""
+    import json as _json
+    from app import (
+        Attachment, GlobalMetric, LeaderboardMetric,
+        _lb_submission_pred_fields,
+    )
+    lb = Leaderboard(name='nyu_kind_lb', summary_metrics='',
+                     visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='sayakpaul/nyu_depth_v2',
+        hf_split='train', role='primary',
+        hf_mapping_json=_json.dumps([
+            {'column': 'image', 'target_kind': 'image', 'target_field': 'image_image'},
+            {'column': 'depth_map', 'target_kind': 'depth', 'target_field': 'raw_depth_map'},
+        ]),
+    ))
+    gm = GlobalMetric(name='rms', python_code='def rms(gt, pred): return 0.0')
+    db.session.add(gm); db.session.flush()
+    db.session.add(LeaderboardMetric(
+        leaderboard_id=lb.id, global_metric_id=gm.id,
+        target_name='RMS',
+        arg_mappings=_json.dumps({'gt': 'gt_raw_depth_map', 'pred': 'sub_raw_depth_map_pred'}),
+        sort_direction='lower_is_better',
+    ))
+    db.session.commit()
+
+    fields = _lb_submission_pred_fields(lb)
+    by_name = {f['name']: f for f in fields}
+    assert 'raw_depth_map_pred' in by_name
+    # Depth GT in the HF mapping → pred field kind is depth, not scalar.
+    assert by_name['raw_depth_map_pred']['kind'] == 'depth'
+    # Description reflects the depth contract (.npz, depth map).
+    assert 'depth' in by_name['raw_depth_map_pred']['description'].lower()
+
+
 def test_required_pred_fields_dont_override_metric_derived(client, db_session):
     """If a metric already declares the same pred field, the metric's
     used_by + description win — required-only doesn't shadow it."""
