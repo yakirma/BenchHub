@@ -8625,21 +8625,39 @@ def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
 
 def _iter_lb_eval_samples(lb, *, hf_token=None):
     """Yield (sample_handle, attachment) tuples for every sample the
-    LB evaluates against. Walks every primary attachment in order:
-      - BH-dataset attachments → real Sample rows.
-      - HF-ref attachments → _VirtualSample stream.
+    LB evaluates against. Two source shapes:
+      - Attachment rows (new): BH-attached → real Samples; HF-attached →
+        streamed _VirtualSample objects.
+      - Legacy m2m `lb.datasets` (BH-only LBs created before the
+        Attachment model existed): real Sample rows.
+
+    Datasets already represented by an Attachment row are skipped in
+    the legacy pass so we don't double-iterate when both wirings
+    co-exist on the same LB.
     """
+    covered_dataset_ids = set()
     for att in lb.attachments:
         if att.role != 'primary':
             continue
         if att.kind == 'bh':
             if att.dataset is None:
                 continue
+            covered_dataset_ids.add(att.dataset.id)
             for s in att.dataset.samples:
                 yield s, att
         else:
             for vs in _iter_hf_attachment_samples(att, hf_token=hf_token):
                 yield vs, att
+
+    # Legacy m2m path: walk `lb.datasets` for any dataset not already
+    # surfaced via an Attachment. _auto_create_lb_with_metrics still
+    # uses lb.datasets.append(ds) without creating an Attachment row,
+    # so existing test fixtures + older LB rows depend on this branch.
+    for ds in (lb.datasets or []):
+        if ds.id in covered_dataset_ids:
+            continue
+        for s in (ds.samples or []):
+            yield s, None
 
 
 def _make_paired_gt_provider(lb):

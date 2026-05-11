@@ -431,3 +431,90 @@ def test_recalculation_replaces_prior_metric_result(client):
     results = MetricResult.query.filter_by(leaderboard_metric_id=lm.id).all()
     assert len(results) == 1
     assert results[0].value == pytest.approx(9.0)
+
+
+def test_per_sample_metric_works_on_hf_attached_lb(client, tmp_path, monkeypatch):
+    """HF-attached LBs have no BH Sample rows — eval must iterate
+    streamed _VirtualSamples via _iter_lb_eval_samples. Previously
+    tasks.py queried Sample.dataset_id directly and got zero rows,
+    so the LB silently went status='Processed' with value=None.
+    User-reported on the cifar10_leaderboard / beans_leaderboard
+    submission flow."""
+    from app import Attachment, _iter_hf_attachment_samples
+    from app import app as flask_app
+
+    # Stub the HF stream so the test doesn't hit huggingface.co.
+    # Two "rows" with sample names s_000000 + s_000001 carrying GT label.
+    def _fake_iter(att, *, hf_token=None, cap=None):
+        from app import _VirtualSample, _VirtualCustomField
+        for i, gt in enumerate([7.0, 3.0]):
+            yield _VirtualSample(
+                name=f"s_{i:06d}",
+                source_ref_json="{}",
+                custom_fields=[
+                    _VirtualCustomField(
+                        name="label", field_type="scalar", value_float=gt,
+                    )
+                ],
+                tags="",
+            )
+    monkeypatch.setattr("app._iter_hf_attachment_samples", _fake_iter)
+
+    # LB with no `datasets` m2m, just one HF Attachment (primary).
+    lb = Leaderboard(name="hf_eval_lb", summary_metrics="")
+    db.session.add(lb)
+    db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id="fake/fake",
+        hf_split="train", role="primary",
+        hf_mapping_json=json.dumps([
+            {"column": "label", "target_kind": "scalar",
+             "target_field": "label"}
+        ]),
+    ))
+    db.session.commit()
+
+    # Submission with on-disk predictions in `label_pred/` (bare-name
+    # folder, BenchHub's pred-field convention). The .py / .ipynb writes
+    # this layout for HF-attached LBs.
+    sub = Submission(name="hf_eval_sub", leaderboard_id=lb.id,
+                     storage_mode="local")
+    db.session.add(sub)
+    db.session.flush()
+    submission_folder = tmp_path / "submissions" / str(sub.id) / "label_pred"
+    submission_folder.mkdir(parents=True)
+    (submission_folder / "s_000000.txt").write_text("7")  # correct
+    (submission_folder / "s_000001.txt").write_text("4")  # wrong
+    db.session.commit()
+    monkeypatch.setitem(
+        flask_app.config, "UPLOAD_FOLDER", str(tmp_path),
+    )
+
+    gm = _make_metric(
+        "top1",
+        "def top1(gt, pred):\n    return 1.0 if int(float(gt)) == int(float(pred)) else 0.0\n",
+        is_aggregated=False,
+    )
+    lm = _attach_metric(
+        lb, gm,
+        arg_mappings={"gt": "gt_label", "pred": "sub_label_pred"},
+        pooling_type="mean",
+    )
+
+    process_submission.delay(sub.id)
+
+    db.session.expire_all()
+    sub = Submission.query.get(sub.id)
+    assert sub.processing_status == "Processed"
+    result = MetricResult.query.filter_by(
+        submission_id=sub.id, leaderboard_metric_id=lm.id,
+    ).first()
+    # 1/2 correct → mean = 0.5.
+    assert result is not None
+    assert result.value == pytest.approx(0.5)
+    # Per-sample CustomFields written, keyed by HF sample name.
+    rows = CustomField.query.filter_by(
+        submission_id=sub.id, name=f"lm_{lm.id}",
+    ).all()
+    by_sample = {cf.sample_name: cf.value_float for cf in rows}
+    assert by_sample == {"s_000000": 1.0, "s_000001": 0.0}

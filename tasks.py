@@ -86,48 +86,64 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             submission.processing_status = 'Processing: Preparing Context'
             session.commit()
 
-            # Fetch all samples for this dataset(s)
-            dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
-            dataset_samples_query = session.query(Sample).filter(Sample.dataset_id.in_(dataset_ids))
-            
-            # Apply filters if provided
-            if sample_filters:
-                # 1. Search Filter (by name)
-                if sample_filters.get('search'):
-                    dataset_samples_query = dataset_samples_query.filter(Sample.name.ilike(f"%{sample_filters['search']}%"))
-                
-                # 2. Tag Filters
-                def tag_match_filter(tag):
-                    from sqlalchemy import or_
-                    return or_(
-                        Sample.tags == tag,
-                        Sample.tags.ilike(f'{tag},%'),
-                        Sample.tags.ilike(f'%,{tag}'),
-                        Sample.tags.ilike(f'%,{tag},%')
-                    )
+            # Fetch all samples the LB evaluates against. Use
+            # _iter_lb_eval_samples so HF-attached LBs (no BH Dataset
+            # row, just an Attachment(kind='hf')) get streamed
+            # _VirtualSample objects instead of an empty SQL result.
+            # Previously this filtered on Sample.dataset_id, which is
+            # NULL for HF-attached LBs → zero samples → silent
+            # status='Processed' with no MetricResult values.
+            from app import _iter_lb_eval_samples
+            hf_token = None
+            try:
+                hf_token = getattr(submission.owner, 'hf_token', None)
+            except Exception:
+                pass
+            dataset_samples = [
+                s for s, _att in _iter_lb_eval_samples(
+                    leaderboard, hf_token=hf_token,
+                )
+            ]
+
+            # Filters: applied in Python now (was SQL) so it works for
+            # both BH Sample rows and HF _VirtualSamples uniformly.
+            if sample_filters and dataset_samples:
+                def _tags_of(s):
+                    raw = (s.tags or '') if isinstance(s.tags, str) else ''
+                    return [t.strip() for t in raw.split(',') if t.strip()]
+
+                search = sample_filters.get('search')
+                if search:
+                    needle = search.lower()
+                    dataset_samples = [
+                        s for s in dataset_samples
+                        if needle in (s.name or '').lower()
+                    ]
 
                 include = sample_filters.get('include', {})
                 if include.get('enabled') and include.get('tags'):
-                    for tag in include['tags']:
-                        dataset_samples_query = dataset_samples_query.filter(tag_match_filter(tag))
-                
+                    wanted = set(include['tags'])
+                    dataset_samples = [
+                        s for s in dataset_samples
+                        if wanted.issubset(set(_tags_of(s)))
+                    ]
+
                 exclude = sample_filters.get('exclude', {})
                 if exclude.get('enabled') and exclude.get('tags'):
-                    from sqlalchemy import or_, not_
-                    exclude_conditions = [tag_match_filter(tag) for tag in exclude['tags']]
-                    dataset_samples_query = dataset_samples_query.filter(not_(or_(*exclude_conditions)))
+                    banned = set(exclude['tags'])
+                    dataset_samples = [
+                        s for s in dataset_samples
+                        if not (banned & set(_tags_of(s)))
+                    ]
 
                 prefix = sample_filters.get('prefix', {})
                 if prefix.get('enabled') and prefix.get('tags'):
-                    from sqlalchemy import or_
-                    for p in prefix['tags']:
-                        dataset_samples_query = dataset_samples_query.filter(or_(
-                            Sample.tags.ilike(f'{p}%'),
-                            Sample.tags.ilike(f'%,{p}%'),
-                            Sample.tags.ilike(f'%, {p}%')
-                        ))
+                    prefixes = tuple(prefix['tags'])
+                    dataset_samples = [
+                        s for s in dataset_samples
+                        if any(t.startswith(prefixes) for t in _tags_of(s))
+                    ]
 
-            dataset_samples = dataset_samples_query.all()
             logger.info(f"Filtered to {len(dataset_samples)} samples for metrics calculation.")
 
             # Store the filters used for this calculation
