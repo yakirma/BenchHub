@@ -271,23 +271,45 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 </div>
 
 {# Samples-only mode banner: explain what's on the page and what's
-   missing. If the LB has no submissions, suggest uploading one;
-   otherwise (admin clicked Explore) just note we're hiding the
-   submission columns. #}
+   missing. If the LB has no cached samples and is HF-attached, the
+   owner can kick off a one-shot populate task that streams the HF
+   dataset and warms the GT scalar + thumbnail cache without needing
+   a submission. #}
+{% set lb_has_hf_attachment = leaderboard.attachments and (leaderboard.attachments | selectattr('kind', 'equalto', 'hf') | list | length > 0) %}
+{% set sample_cache_empty = not paginated_samples or paginated_samples.total == 0 %}
+{% set can_populate = lb_has_hf_attachment and current_user and (leaderboard.owner_user_id == current_user.id or current_user_is_admin) %}
 {% if samples_only_mode and not submissions %}
 <div class="alert alert-info small d-flex align-items-center gap-2 mb-3" role="alert">
     <i class="bi bi-info-circle"></i>
     <div class="flex-grow-1">
-        {% if paginated_samples and paginated_samples.total > 0 %}
+        {% if not sample_cache_empty %}
         Showing the leaderboard's cached samples (GT only). Upload a
         submission to compare predictions against these.
         {% else %}
-        No samples are cached for this leaderboard yet. For HF-attached
-        leaderboards, the sample cache populates the first time a
-        submission is evaluated. Upload at least one submission and the
-        GT preview will appear here on the next eval.
+        {% if lb_has_hf_attachment %}
+        No samples are cached for this leaderboard yet. For
+        HF-attached leaderboards, the cache populates the first time
+        a submission is evaluated &mdash; or you can kick off a
+        one-shot populate now using the button on the right.
+        {% else %}
+        No samples to show. This leaderboard has no underlying
+        dataset rows.
+        {% endif %}
         {% endif %}
     </div>
+    {% if sample_cache_empty and can_populate %}
+    <form method="post"
+          action="{{ url_for('populate_lb_samples_route', leaderboard_id=leaderboard.id) }}"
+          class="d-flex gap-2 align-items-center m-0">
+        <input type="number" name="max_samples" value="200" min="1" max="10000"
+               class="form-control form-control-sm"
+               style="width: 90px;"
+               title="How many rows of the HF dataset to cache (capped at 10k).">
+        <button type="submit" class="btn btn-sm btn-primary">
+            <i class="bi bi-cloud-download me-1"></i>Populate cache
+        </button>
+    </form>
+    {% endif %}
 </div>
 {% endif %}
 

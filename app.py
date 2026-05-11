@@ -13431,6 +13431,49 @@ def submission_upload_api(leaderboard_id):
         if os.path.exists(temp_zip_path):
             os.remove(temp_zip_path)
 
+@app.route('/leaderboard/<int:leaderboard_id>/populate_samples', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def populate_lb_samples_route(leaderboard_id):
+    """Kick off the sample-cache populate task for an HF-attached LB.
+    Lets the owner/admin browse GT samples on the Explore page without
+    first uploading a submission (the eval pipeline normally writes
+    the cache on first submission-eval, but PWC mirror imports skip
+    that pipeline entirely)."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    has_hf = any(
+        getattr(a, 'kind', None) == 'hf'
+        for a in (lb.attachments or [])
+    )
+    if not has_hf:
+        flash(
+            "Sample cache populate is only meaningful for HF-attached "
+            "leaderboards. BH datasets already have their Sample rows "
+            "in the database.",
+            "info",
+        )
+        return redirect(url_for(
+            'comparison_view',
+            leaderboard_id=lb.id, samples_only=1,
+        ))
+    try:
+        import tasks as _tasks
+        max_samples = int(request.form.get('max_samples') or 200)
+        max_samples = max(1, min(max_samples, 10_000))
+        _tasks.populate_lb_samples.delay(lb.id, max_samples=max_samples)
+        flash(
+            f"Sample cache populate started (up to {max_samples} samples). "
+            "Refresh in a moment to see them.",
+            "success",
+        )
+    except Exception as e:
+        flash(f"Couldn't kick off sample populate: {e}", "warning")
+    return redirect(url_for(
+        'comparison_view',
+        leaderboard_id=lb.id, samples_only=1,
+    ))
+
+
 @app.route('/api/leaderboard/<int:leaderboard_id>/recalculate_async', methods=['POST'])
 def recalculate_leaderboard_async(leaderboard_id):
     """Trigger async recalculation for submissions."""

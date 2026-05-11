@@ -686,3 +686,56 @@ def reaggregate_submission_metrics(self, submission_id):
         except: pass
     finally:
         session.remove()
+
+
+@celery.task(bind=True, max_retries=0, ignore_result=True)
+def populate_lb_samples(self, lb_id, max_samples=200):
+    """Populate the LB-scoped sample cache without needing a submission
+    upload. Triggered from the "Explore samples" empty-state on
+    HF-attached LBs that only have mirrored submissions (or none at
+    all). Streams the HF dataset, writes GT scalar/text CustomField
+    snapshots, and warms the bench_cache thumbnail entries.
+
+    Skipped for BH-attached LBs (their Sample rows already carry GT)."""
+    from app import (
+        Leaderboard, _iter_lb_eval_samples, _persist_hf_eval_snapshots,
+        _populate_hf_gt_thumb_cache,
+    )
+    db.session.remove()
+    session = db.session
+    try:
+        lb = session.query(Leaderboard).get(lb_id)
+        if lb is None:
+            logger.warning(f"populate_lb_samples: LB {lb_id} not found")
+            return
+        hf_attachments = [
+            a for a in (lb.attachments or [])
+            if getattr(a, 'kind', None) == 'hf'
+        ]
+        if not hf_attachments:
+            logger.info(f"populate_lb_samples: LB {lb_id} has no HF attachment — nothing to do")
+            return
+
+        # GT scalar/text snapshot: re-iterate the LB's HF rows and
+        # persist their fields as leaderboard-scoped CustomFields.
+        _persist_hf_eval_snapshots(
+            lb, _iter_lb_eval_samples(lb, hf_cap=max_samples),
+        )
+
+        # GT image/mask/depth thumbnails: warm bench_cache for each HF
+        # attachment up to the same cap.
+        for att in hf_attachments:
+            n_thumbs = _populate_hf_gt_thumb_cache(
+                lb, att, max_thumbs=max_samples, logger=logger,
+            )
+            if n_thumbs:
+                logger.info(
+                    f"populate_lb_samples: cached {n_thumbs} thumbs for "
+                    f"{att.hf_repo_id} (split={att.hf_split})"
+                )
+        logger.info(f"populate_lb_samples: LB {lb_id} sample cache populated")
+    except Exception as e:
+        session.rollback()
+        logger.exception(f"populate_lb_samples LB {lb_id} failed: {e}")
+    finally:
+        session.remove()

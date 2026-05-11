@@ -212,6 +212,91 @@ def test_comparison_view_surfaces_gt_snapshots_for_hf_lb(client, db_session):
     assert 'label' in body
 
 
+def test_populate_lb_samples_route_enqueues_for_hf_lb(
+    auth_client, logged_in_user, db_session, monkeypatch,
+):
+    """POST to /leaderboard/<id>/populate_samples enqueues the
+    populate-samples task for an HF-attached LB. The flash message
+    redirects back to Explore samples."""
+    from app import Attachment
+    lb = Leaderboard(name='pop_lb', summary_metrics='',
+                     owner_user_id=logged_in_user.id, visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    db.session.commit()
+
+    calls = []
+    import tasks as _tasks
+
+    class _FakeDelay:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def delay(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return object()
+
+    monkeypatch.setattr(_tasks, 'populate_lb_samples',
+                        _FakeDelay(_tasks.populate_lb_samples))
+
+    resp = auth_client.post(
+        f'/leaderboard/{lb.id}/populate_samples',
+        data={'max_samples': '50'},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    assert calls, "populate_lb_samples task was not enqueued"
+    args, kwargs = calls[0]
+    assert args[0] == lb.id
+    assert kwargs.get('max_samples') == 50
+    assert f'/comparison/{lb.id}?samples_only=1' in resp.headers['Location']
+
+
+def test_populate_lb_samples_route_skipped_for_bh_lb(
+    auth_client, logged_in_user, db_session,
+):
+    """BH datasets already carry GT in Sample rows — the populate
+    route flashes an info message and doesn't enqueue anything."""
+    ds = Dataset(name='bh_pop_ds', visibility='public',
+                 owner_user_id=logged_in_user.id)
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='bh_pop_lb', summary_metrics='',
+                     owner_user_id=logged_in_user.id, visibility='public')
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+    resp = auth_client.post(
+        f'/leaderboard/{lb.id}/populate_samples',
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    # Redirect lands on Explore samples regardless.
+    assert f'/comparison/{lb.id}?samples_only=1' in resp.headers['Location']
+
+
+def test_populate_lb_samples_route_blocks_non_owner(
+    client, db_session,
+):
+    """Owner-required gate. Anon user → login redirect (302 to /login).
+    Random logged-in user → 403."""
+    from app import Attachment
+    lb = Leaderboard(name='gated_pop_lb', summary_metrics='',
+                     owner_user_id=None, visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    db.session.commit()
+    resp = client.post(f'/leaderboard/{lb.id}/populate_samples',
+                       follow_redirects=False)
+    # Anonymous → redirect to /login (login_required decorator).
+    assert resp.status_code in (302, 303)
+    assert '/login' in resp.headers['Location']
+
+
 def test_lb_page_has_explore_samples_button(client, db_session):
     """The LB header carries an `Explore samples` link to /comparison
     with samples_only=1. Visible regardless of submission count."""
