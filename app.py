@@ -2065,6 +2065,153 @@ def admins_settings():
     )
 
 
+@app.route('/admin/cache_stats', methods=['GET'])
+@login_required
+def admin_cache_stats():
+    """Summarize disk usage for the bench_cache, the LB-scoped GT
+    snapshots, and uploaded submission folders. Useful for spotting
+    a runaway HF repo or a submission that hasn't been evicted yet.
+
+    All counts/sizes are DB-derived where possible (cache rows carry
+    their own size_bytes via bench_cache.cache_put). Submission-folder
+    disk usage is computed with os.walk so it doesn't depend on a
+    monotonically-maintained counter."""
+    if not is_admin(g.current_user):
+        abort(403)
+    from collections import defaultdict
+    from bench_cache import resolve_budget_bytes
+
+    # 1. bench_cache: split by origin, then group GT entries by
+    #    (repo, split, column) and submission entries by submission id
+    #    (the submission id is the first chunk after the `submission:`
+    #    prefix in our caching helpers).
+    cache_root = app.config.get('CACHE_FOLDER') or ''
+    budget_bytes = resolve_budget_bytes(cache_root) if cache_root else 0
+    rows = CacheEntry.query.with_entities(
+        CacheEntry.cache_key, CacheEntry.size_bytes,
+        CacheEntry.origin, CacheEntry.last_accessed_at,
+    ).all()
+    gt_groups = defaultdict(lambda: {'count': 0, 'bytes': 0, 'last': None})
+    sub_groups = defaultdict(lambda: {'count': 0, 'bytes': 0, 'last': None})
+    total_bytes_gt = 0
+    total_bytes_sub = 0
+    for key, size, origin, last in rows:
+        if origin == 'gt':
+            # gt_viz:repo@rev:split:col:idx  → group on (repo, split, col)
+            label = key
+            if key.startswith('gt_viz:'):
+                tail = key[len('gt_viz:'):]
+                bits = tail.split(':')
+                if len(bits) >= 4:
+                    repo_rev = bits[0]
+                    repo = repo_rev.split('@', 1)[0]
+                    split = bits[1]
+                    col = bits[2]
+                    label = f"{repo} · {split} · {col}"
+            entry = gt_groups[label]
+            entry['count'] += 1
+            entry['bytes'] += int(size or 0)
+            if last is not None and (entry['last'] is None or last > entry['last']):
+                entry['last'] = last
+            total_bytes_gt += int(size or 0)
+        elif origin == 'submission':
+            label = key.split(':', 2)[1] if ':' in key else key
+            entry = sub_groups[label]
+            entry['count'] += 1
+            entry['bytes'] += int(size or 0)
+            if last is not None and (entry['last'] is None or last > entry['last']):
+                entry['last'] = last
+            total_bytes_sub += int(size or 0)
+
+    def _sorted(groups):
+        return sorted(
+            [{'label': k, **v} for k, v in groups.items()],
+            key=lambda r: r['bytes'], reverse=True,
+        )
+
+    # 2. LB-scoped GT snapshot rows (CustomField with no sample_id / no
+    #    submission_id, scoped to a leaderboard).
+    snapshot_summary = []
+    snapshot_rows = (
+        db.session.query(
+            CustomField.leaderboard_id,
+            CustomField.field_type,
+            func.count(CustomField.id),
+        )
+        .filter(CustomField.leaderboard_id.isnot(None))
+        .filter(CustomField.submission_id.is_(None))
+        .filter(CustomField.sample_id.is_(None))
+        .group_by(CustomField.leaderboard_id, CustomField.field_type)
+        .all()
+    )
+    snap_by_lb = defaultdict(lambda: {'count': 0, 'by_kind': defaultdict(int)})
+    for lb_id, ftype, n in snapshot_rows:
+        snap_by_lb[lb_id]['count'] += n
+        snap_by_lb[lb_id]['by_kind'][ftype] += n
+    for lb_id, info in snap_by_lb.items():
+        lb = Leaderboard.query.get(lb_id)
+        snapshot_summary.append({
+            'lb_id': lb_id,
+            'lb_name': lb.name if lb else f"(deleted lb {lb_id})",
+            'total': info['count'],
+            'by_kind': dict(info['by_kind']),
+        })
+    snapshot_summary.sort(key=lambda r: r['total'], reverse=True)
+
+    # 3. Submission folder usage — du across uploads/submissions/<id>/.
+    #    Cheap on typical Fly volumes (a few hundred subdirs); cap the
+    #    listing at the top 20 to keep the render fast.
+    sub_dir = os.path.join(app.config.get('UPLOAD_FOLDER', ''), 'submissions')
+    sub_folders = []
+    if os.path.isdir(sub_dir):
+        for entry in os.listdir(sub_dir):
+            full = os.path.join(sub_dir, entry)
+            if not os.path.isdir(full):
+                continue
+            size = 0
+            for root, _dirs, files in os.walk(full):
+                for f in files:
+                    try:
+                        size += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        pass
+            sub_folders.append({'name': entry, 'bytes': size})
+    sub_folders.sort(key=lambda r: r['bytes'], reverse=True)
+    total_sub_folder_bytes = sum(r['bytes'] for r in sub_folders)
+    top_sub_folders = sub_folders[:20]
+
+    # 4. Datasets — already track a counter via Dataset.storage_bytes.
+    dataset_rows = (
+        Dataset.query.with_entities(
+            Dataset.id, Dataset.name, Dataset.storage_bytes,
+        )
+        .order_by(Dataset.storage_bytes.desc())
+        .all()
+    )
+    datasets_summary = [
+        {'id': did, 'name': dname, 'bytes': int(dsize or 0)}
+        for did, dname, dsize in dataset_rows
+    ]
+    total_dataset_bytes = sum(r['bytes'] for r in datasets_summary)
+
+    return render_template(
+        'admin_cache_stats.html',
+        cache_root=cache_root,
+        budget_bytes=budget_bytes,
+        cache_total_bytes=total_bytes_gt + total_bytes_sub,
+        gt_total_bytes=total_bytes_gt,
+        sub_total_bytes=total_bytes_sub,
+        gt_groups=_sorted(gt_groups),
+        sub_groups=_sorted(sub_groups),
+        snapshot_summary=snapshot_summary,
+        top_sub_folders=top_sub_folders,
+        total_sub_folder_bytes=total_sub_folder_bytes,
+        sub_folder_count=len(sub_folders),
+        datasets_summary=datasets_summary,
+        total_dataset_bytes=total_dataset_bytes,
+    )
+
+
 @app.route('/settings/admins/grant', methods=['POST'])
 @login_required
 def admins_grant():
@@ -12885,6 +13032,23 @@ GT_VIZ_TARGET_SIZE = 128
 GT_VIZ_JPEG_QUALITY = 70
 
 
+def _turbo_lut():
+    """256×3 uint8 LUT for the Google "Turbo" colormap. Precomputed at
+    import time via matplotlib so per-thumb rendering is a pair of
+    array lookups, not a colormap call per pixel."""
+    try:
+        from matplotlib import colormaps as _cmaps
+        cmap = _cmaps['turbo']
+    except Exception:
+        # matplotlib.cm fallback for very old matplotlib builds.
+        from matplotlib import cm as _cm
+        cmap = _cm.get_cmap('turbo')
+    return (cmap(np.linspace(0.0, 1.0, 256))[:, :3] * 255).astype(np.uint8)
+
+
+_TURBO_LUT = _turbo_lut()
+
+
 def _gt_viz_cache_key(repo_id, revision, split, col, sample_idx):
     """Stable key for an HF GT thumbnail. Revision defaults to 'main'
     so the cache survives an unpinned attachment getting later pinned
@@ -12935,6 +13099,9 @@ def _write_gt_image_thumb(value, dest_path, kind):
             # 2D path: normalize for depth, deterministic-hue for masks,
             # grayscale stretch otherwise.
             if kind == 'depth' or (arr.ndim == 2 and kind != 'mask'):
+                # Normalize → Google Turbo colormap. Same colormap the
+                # zoom-modal's Plotly heatmap uses, so the thumbnail
+                # and the zoomed view stay visually consistent.
                 a = arr.astype(np.float32)
                 finite_mask = np.isfinite(a)
                 if finite_mask.any():
@@ -12946,11 +13113,8 @@ def _write_gt_image_thumb(value, dest_path, kind):
                 norm = np.nan_to_num((a - lo) / rng, nan=0.0,
                                      posinf=1.0, neginf=0.0)
                 norm = np.clip(norm, 0.0, 1.0)
-                # Gamma 0.5 lifts the dark end so structure is visible.
-                lut = (np.linspace(0, 1, 256) ** 0.5 * 255).astype(np.uint8)
                 idx = np.clip((norm * 255).astype(np.int32), 0, 255)
-                gray = lut[idx]
-                rgb = np.stack([gray, gray, gray], axis=-1)
+                rgb = _TURBO_LUT[idx]
             elif kind == 'mask' and arr.ndim == 2:
                 lut = ((np.arange(256, dtype=np.int32) * 31 + 17) % 256).astype(np.uint8)
                 idx = arr.astype(np.int32) & 0xFF

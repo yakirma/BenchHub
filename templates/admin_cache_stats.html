@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+
+{% block title %}Cache stats — BenchHub admin{% endblock %}
+
+{% macro fmt_bytes(n) -%}
+{%- if not n %}0 B
+{%- elif n < 1024 %}{{ n }} B
+{%- elif n < 1024 * 1024 %}{{ '%.1f'|format(n / 1024) }} KB
+{%- elif n < 1024 * 1024 * 1024 %}{{ '%.1f'|format(n / (1024 * 1024)) }} MB
+{%- else %}{{ '%.2f'|format(n / (1024 * 1024 * 1024)) }} GB
+{%- endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1100px;">
+    <h1 class="h3 fw-bold mb-1">
+        <i class="bi bi-hdd-stack text-info me-1"></i>Cache stats
+    </h1>
+    <p class="text-body-secondary mb-4">
+        Per-origin breakdown of bench_cache plus disk usage of submission
+        folders + per-LB GT snapshots. Admin-only.
+    </p>
+
+    {# ---- Top-line totals ---- #}
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">bench_cache total</div>
+                    <div class="h4 mb-0">{{ fmt_bytes(cache_total_bytes) }}</div>
+                    <div class="small text-body-secondary mt-1">
+                        of {{ fmt_bytes(budget_bytes) }} budget
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">GT thumbnails</div>
+                    <div class="h4 mb-0">{{ fmt_bytes(gt_total_bytes) }}</div>
+                    <div class="small text-body-secondary mt-1">
+                        across {{ gt_groups|length }} (repo · split · col) groups
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">Submission cache</div>
+                    <div class="h4 mb-0">{{ fmt_bytes(sub_total_bytes) }}</div>
+                    <div class="small text-body-secondary mt-1">
+                        across {{ sub_groups|length }} submissions
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">Submission folders on disk</div>
+                    <div class="h4 mb-0">{{ fmt_bytes(total_sub_folder_bytes) }}</div>
+                    <div class="small text-body-secondary mt-1">
+                        across {{ sub_folder_count }} folders
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {# ---- GT thumbnails by repo+split+col ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-image me-1 text-info"></i>GT thumbnails by source
+            </h2>
+            <p class="form-text small mb-2">
+                Each row is one (HF repo · split · column) bucket cached
+                via bench_cache. JPEG q70 at {{ '%dx%d'|format(128, 128) }}.
+            </p>
+            {% if gt_groups %}
+            <div class="table-responsive">
+                <table class="table table-sm small mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Source</th>
+                            <th class="text-end">Count</th>
+                            <th class="text-end">Size</th>
+                            <th class="text-end">Last accessed</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for g in gt_groups %}
+                        <tr>
+                            <td class="font-monospace">{{ g.label }}</td>
+                            <td class="text-end font-monospace">{{ '{:,}'.format(g.count) }}</td>
+                            <td class="text-end font-monospace">{{ fmt_bytes(g.bytes) }}</td>
+                            <td class="text-end text-body-secondary small">
+                                {{ g.last.strftime('%Y-%m-%d %H:%M') if g.last else '—' }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-body-secondary small mb-0">No GT thumbnails cached yet.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ---- Submission cache entries ---- #}
+    {% if sub_groups %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-box-arrow-up me-1 text-info"></i>Submission cache entries
+            </h2>
+            <p class="form-text small mb-2">
+                Cached submission ZIPs / extracted bytes pointed at by
+                remote-mode submissions. Submissions evict first when
+                the bench_cache hits its budget.
+            </p>
+            <div class="table-responsive">
+                <table class="table table-sm small mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Submission</th>
+                            <th class="text-end">Count</th>
+                            <th class="text-end">Size</th>
+                            <th class="text-end">Last accessed</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for g in sub_groups[:30] %}
+                        <tr>
+                            <td class="font-monospace">{{ g.label }}</td>
+                            <td class="text-end font-monospace">{{ g.count }}</td>
+                            <td class="text-end font-monospace">{{ fmt_bytes(g.bytes) }}</td>
+                            <td class="text-end text-body-secondary small">
+                                {{ g.last.strftime('%Y-%m-%d %H:%M') if g.last else '—' }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ---- LB-scoped GT snapshot rows ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-database me-1 text-info"></i>LB-scoped GT snapshots
+            </h2>
+            <p class="form-text small mb-2">
+                CustomField rows written by the eval / populate task
+                that carry the GT side (label values, image markers,
+                etc.) for HF-attached LBs. ~100 bytes per row.
+            </p>
+            {% if snapshot_summary %}
+            <div class="table-responsive">
+                <table class="table table-sm small mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Leaderboard</th>
+                            <th class="text-end">Total rows</th>
+                            <th>By kind</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in snapshot_summary %}
+                        <tr>
+                            <td>
+                                <a href="{{ url_for('leaderboard_view', leaderboard_id=r.lb_id) }}"
+                                   class="text-decoration-none">{{ r.lb_name }}</a>
+                                <span class="small text-body-secondary ms-1">id={{ r.lb_id }}</span>
+                            </td>
+                            <td class="text-end font-monospace">{{ '{:,}'.format(r.total) }}</td>
+                            <td class="small">
+                                {% for kind, n in r.by_kind.items() %}
+                                <span class="badge text-bg-light border me-1">{{ kind }}: {{ n }}</span>
+                                {% endfor %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-body-secondary small mb-0">No HF GT snapshots yet.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ---- Submission folders on disk (top 20) ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-folder me-1 text-info"></i>Submission folders on disk
+                <span class="text-body-secondary fw-normal small ms-1">— top 20 by size</span>
+            </h2>
+            {% if top_sub_folders %}
+            <div class="table-responsive">
+                <table class="table table-sm small mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Folder</th>
+                            <th class="text-end">Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for f in top_sub_folders %}
+                        <tr>
+                            <td class="font-monospace">{{ f.name }}</td>
+                            <td class="text-end font-monospace">{{ fmt_bytes(f.bytes) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-body-secondary small mb-0">No submission folders on disk.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ---- Datasets ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-collection me-1 text-info"></i>Datasets
+                <span class="text-body-secondary fw-normal small ms-1">— {{ fmt_bytes(total_dataset_bytes) }} total</span>
+            </h2>
+            {% if datasets_summary %}
+            <div class="table-responsive">
+                <table class="table table-sm small mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Dataset</th>
+                            <th class="text-end">Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for d in datasets_summary %}
+                        <tr>
+                            <td>
+                                <a href="{{ url_for('dataset_view', dataset_id=d.id) }}"
+                                   class="text-decoration-none">{{ d.name }}</a>
+                                <span class="small text-body-secondary ms-1">id={{ d.id }}</span>
+                            </td>
+                            <td class="text-end font-monospace">{{ fmt_bytes(d.bytes) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-body-secondary small mb-0">No datasets.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="small text-body-secondary">
+        Cache root: <code>{{ cache_root or '(unset)' }}</code>
+    </div>
+</div>
+{% endblock %}

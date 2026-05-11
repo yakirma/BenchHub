@@ -212,6 +212,27 @@ def test_comparison_view_surfaces_gt_snapshots_for_hf_lb(client, db_session):
     assert 'label' in body
 
 
+def test_admin_cache_stats_renders_for_admin(auth_client, logged_in_user, db_session):
+    """Admin cache-stats page renders for admins, even with an empty
+    cache. Lock the view together with its summary copy."""
+    logged_in_user.is_admin = True
+    db.session.commit()
+    resp = auth_client.get('/admin/cache_stats')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'Cache stats' in body
+    assert 'GT thumbnails' in body
+    assert 'Submission cache' in body
+    assert 'Datasets' in body
+
+
+def test_admin_cache_stats_forbidden_to_non_admin(auth_client, logged_in_user, db_session):
+    logged_in_user.is_admin = False
+    db.session.commit()
+    resp = auth_client.get('/admin/cache_stats')
+    assert resp.status_code == 403
+
+
 def test_samples_only_view_hides_scalar_metric_columns(client, db_session):
     """Explore samples should suppress the GT-Stats / Submission-Stats /
     Metric-chart columns by default — they're either empty or

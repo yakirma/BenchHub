@@ -1620,15 +1620,27 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         Plotly.newPlot('modal-plotly-div', plotData, layout, { responsive: true });
                     })
                     .catch(error => {
-                        console.error('Error loading depth map data:', error);
+                        // Depth-API fetch failed (most common: HF GT
+                        // markers — we cache the JPEG thumb in
+                        // bench_cache but never persist the raw depth
+                        // grid, so /api/custom_field_depth_data 404s).
+                        // Fall back to the static JPEG so the user
+                        // still sees the depth viz, just without
+                        // hover-to-read-value interactivity.
+                        console.warn('Interactive depth map unavailable; falling back to static thumb:', error);
                         if (loadingSpinner) loadingSpinner.style.display = 'none';
-                        if (errorContainer) {
+                        if (modalPlotly) modalPlotly.style.display = 'none';
+                        if (modalImg && visUrl) {
+                            modalImg.style.display = 'block';
+                            modalImg.src = visUrl;
+                        } else if (errorContainer) {
                             errorContainer.style.display = 'block';
                             errorContainer.innerHTML = `
-                                    <div class="alert alert-danger" role="alert">
-                                        Error loading interactive depth map: ${error.message}
-                                    </div>
-                                `;
+                                <div class="alert alert-warning small" role="alert">
+                                    Couldn't load this depth sample (interactive heatmap unavailable
+                                    and no static thumbnail). ${error.message}
+                                </div>
+                            `;
                         }
                     });
             } else {
