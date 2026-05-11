@@ -153,6 +153,30 @@
             border-radius: 4px;
         }
 
+        /* When a gallery is constructed with a per-thumb opacity
+           slider, give the item extra vertical room and use a flex
+           layout so the range input lives reliably below the label
+           regardless of label length. */
+        .gallery-item.has-opacity-slider {
+            height: auto;
+            min-height: 85px;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: stretch;
+            justify-content: flex-start;
+            overflow: visible;
+            padding-bottom: 4px;
+        }
+        .gallery-item.has-opacity-slider .gallery-opacity-slider {
+            display: block;
+            width: 100%;
+            height: 14px;
+            margin: 2px 0 0 0;
+            padding: 0;
+            accent-color: #0d6efd;
+            cursor: pointer;
+        }
+
         .gallery-item:hover {
             opacity: 1;
         }
@@ -696,18 +720,13 @@
                     // out of the box only the clicked item is visible
                     // and the user dials in others as overlays.
                     if (this.onLayerOpacity) {
-                        const sliderWrap = document.createElement('div');
-                        sliderWrap.style.padding = '2px 0';
+                        div.classList.add('has-opacity-slider');
                         const slider = document.createElement('input');
                         slider.type = 'range';
                         slider.min = '0';
                         slider.max = '100';
                         slider.value = (index === this.currentIndex) ? '100' : '0';
-                        slider.className = 'gallery-opacity-slider form-range';
-                        slider.style.width = '100%';
-                        slider.style.height = '4px';
-                        slider.style.padding = '0';
-                        slider.style.margin = '0';
+                        slider.className = 'gallery-opacity-slider';
                         slider.dataset.galleryIndex = index;
                         slider.title = 'Drag to layer this thumbnail at the chosen opacity';
                         // Stop clicks/touches on the slider from
@@ -723,8 +742,7 @@
                             const v = parseInt(e.target.value, 10) || 0;
                             this.onLayerOpacity(item, index, v);
                         });
-                        sliderWrap.appendChild(slider);
-                        div.appendChild(sliderWrap);
+                        div.appendChild(slider);
                     }
 
                     // Tooltip title
