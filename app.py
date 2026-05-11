@@ -10584,14 +10584,23 @@ def comparison_view(leaderboard_id):
     sort_by = request.args.get('sort_by', '') # Default to empty (no sort)
     sort_order = request.args.get('sort_order', 'asc')
 
-    # Base query for samples
+    # Base query for samples.
+    # Two shapes:
+    #   - BH LBs (have lb.datasets): Sample rows live in the DB.
+    #   - HF-attached LBs (lb.datasets is empty, an Attachment(kind='hf')
+    #     carries the repo): no Sample rows. We synthesize stub objects
+    #     from CustomField.sample_name written by the metric-eval task,
+    #     so the comparison view can still render per-sample
+    #     predictions even though the GT lives on huggingface.co.
     dataset_ids = [ds.id for ds in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
+    has_real_dataset = bool(leaderboard.datasets)
+    hf_stub_mode = not has_real_dataset and bool(leaderboard.attachments)
     samples_query = Sample.query.filter(Sample.dataset_id.in_(dataset_ids))
-    
+
     # Apply search filter
     if search_query:
         samples_query = samples_query.filter(Sample.name.ilike(f'%{search_query}%'))
-    
+
     # Apply tag filters
     samples_query = apply_tag_filters(samples_query, request.args)
 
@@ -10639,8 +10648,50 @@ def comparison_view(leaderboard_id):
     
     custom_scalar_metric_names = [name for name, ftype in all_field_types.items() if ftype in ['scalar', 'metric']]
 
-    # Sorting
-    if sort_by:
+    # HF-attached LBs have no Sample rows — synthesize stubs from the
+    # sample_names already written into CustomField by the eval task.
+    # The rest of the route operates on these stubs the same way it
+    # operates on real Sample objects, since most lookups are by name.
+    # `.id` is a stable per-page integer (urls hitting /sample/<int:id>/
+    # 404 in this mode — they reference GT bytes we don't have on disk).
+    if hf_stub_mode:
+        class _SampleStub:
+            __slots__ = ('id', 'name', 'tags', 'custom_fields',
+                         'signal_shape', 'histogram_data', 'config_data',
+                         'dataset')
+
+            def __init__(self, name, idx):
+                self.id = idx
+                self.name = name
+                self.tags = ''
+                self.custom_fields = []
+                self.signal_shape = None
+                self.histogram_data = None
+                self.config_data = None
+                self.dataset = None
+
+        sub_ids_for_stubs = [s.id for s in submissions]
+        names_rows = (
+            db.session.query(CustomField.sample_name)
+            .filter(CustomField.submission_id.in_(sub_ids_for_stubs))
+            .filter(CustomField.sample_name.isnot(None))
+            .distinct().all()
+        )
+        names = sorted({r[0] for r in names_rows if r[0]})
+        if search_query:
+            needle = search_query.lower()
+            names = [n for n in names if needle in n.lower()]
+        # `name` is the only meaningful sort key here; everything else
+        # falls back to natural order (HF rows have a sortable s_NNNNNN
+        # naming convention so this is fine).
+        if sort_by == 'name' and sort_order == 'desc':
+            names.reverse()
+        all_stubs = [_SampleStub(n, i) for i, n in enumerate(names)]
+        total = len(all_stubs)
+        paginated_items = all_stubs[(page-1)*per_page : page*per_page]
+
+    # Sorting (BH path only — HF branch above already paginated)
+    if not hf_stub_mode and sort_by:
         if sort_by == 'name':
             if sort_order == 'desc':
                 samples_query = samples_query.order_by(Sample.name.desc())
@@ -10704,7 +10755,7 @@ def comparison_view(leaderboard_id):
         else:
              total = samples_query.count()
              paginated_items = samples_query.offset((page-1)*per_page).limit(per_page).all()
-    else:
+    elif not hf_stub_mode:
         total = samples_query.count()
         paginated_items = samples_query.offset((page-1)*per_page).limit(per_page).all()
 

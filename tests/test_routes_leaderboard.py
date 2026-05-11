@@ -155,6 +155,44 @@ def test_leaderboard_view_unknown_404(client, project):
     assert resp.status_code == 404
 
 
+def test_comparison_view_renders_for_hf_attached_lb(client, db_session):
+    """HF-attached LBs have no Sample rows — comparison_view used to
+    return an empty page because Sample.dataset_id IN (NULL) yielded
+    zero rows. Now stubs are synthesized from CustomField.sample_name
+    so the per-sample comparison table renders. User-reported:
+    "now I can see the metric result but still can't browse the
+    prediction samples"."""
+    from app import Attachment, CustomField, Submission
+
+    lb = Leaderboard(name='hf_cmp_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    sub = Submission(name='hf_cmp_sub', leaderboard_id=lb.id,
+                     storage_mode='local', processing_status='Processed')
+    db.session.add(sub); db.session.flush()
+    # Per-sample metric values the eval task would have written.
+    for i, v in enumerate([1.0, 0.0, 1.0]):
+        db.session.add(CustomField(
+            submission_id=sub.id, sample_id=None,
+            sample_name=f's_{i:06d}',
+            name='lm_1', field_type='scalar', value_float=v,
+        ))
+    db.session.commit()
+
+    resp = client.get(
+        f'/comparison/{lb.id}?compare_ids={sub.id}'
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # The three synthesized sample names render in the table.
+    assert 's_000000' in body
+    assert 's_000001' in body
+    assert 's_000002' in body
+
+
 def test_leaderboard_view_shows_hf_attachment_as_source(client, db_session):
     """LBs built from an HF dataset have no BH Dataset row — the source
     lives on huggingface.co. The header pill must still show the user
