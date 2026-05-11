@@ -11304,8 +11304,23 @@ def comparison_view(leaderboard_id):
     ]
     
     # Also ensure selected_comparison_display_columns are sorted by priority
-    selected_comparison_display_columns = sorted(selected_comparison_display_columns, 
+    selected_comparison_display_columns = sorted(selected_comparison_display_columns,
                                                   key=lambda x: get_column_priority(x, available_display_options.get(x, {}).get('type'), x in dataset_custom_fields))
+
+    # Explore-samples view: keep only image-like columns + the sample
+    # identifier(s). User asked to drop GT/pred/metric scalar columns
+    # there since the page is about browsing the cached image/depth
+    # previews — the scalar stats panel doesn't add anything when
+    # there are no submissions to compare against. The full column set
+    # remains togglable via the View Options form.
+    if samples_only_mode:
+        _image_like_kinds = {'image', 'depth', 'mask'}
+        _identifier_keys = {'sample_name', 'dataset_tags'}
+        selected_comparison_display_columns = [
+            k for k in selected_comparison_display_columns
+            if k in _identifier_keys
+            or available_display_options.get(k, {}).get('type') in _image_like_kinds
+        ]
 
     # Pass metric directions for coloring
     metric_directions = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}

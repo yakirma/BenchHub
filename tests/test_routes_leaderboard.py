@@ -212,6 +212,46 @@ def test_comparison_view_surfaces_gt_snapshots_for_hf_lb(client, db_session):
     assert 'label' in body
 
 
+def test_samples_only_view_hides_scalar_metric_columns(client, db_session):
+    """Explore samples should suppress the GT-Stats / Submission-Stats /
+    Metric-chart columns by default — they're either empty or
+    duplicate info when there are no submissions to compare. Only
+    image-like columns + sample_name/tags remain."""
+    from app import Attachment, CustomField
+    lb = Leaderboard(name='img_only_lb', summary_metrics='',
+                     visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    # GT snapshots: one scalar + one image marker per sample so both
+    # column shapes are present.
+    for i in range(3):
+        db.session.add(CustomField(
+            leaderboard_id=lb.id, sample_id=None, submission_id=None,
+            sample_name=f's_{i:06d}', name='label',
+            field_type='scalar', value_float=float(i),
+        ))
+        db.session.add(CustomField(
+            leaderboard_id=lb.id, sample_id=None, submission_id=None,
+            sample_name=f's_{i:06d}', name='image_image',
+            field_type='image', source_column='image',
+        ))
+    db.session.commit()
+
+    resp = client.get(f'/comparison/{lb.id}?samples_only=1')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Image column survives.
+    assert 'image_image' in body
+    # The scalar-stats column header is suppressed in samples-only mode.
+    # (Cannot just look for the word "Scalars" — it lives inside the
+    # per_source_stats panel that we're hiding.)
+    assert 'GT Stats' not in body
+    assert 'Submission Stats' not in body
+
+
 def test_populate_lb_samples_route_enqueues_for_hf_lb(
     auth_client, logged_in_user, db_session, monkeypatch,
 ):
