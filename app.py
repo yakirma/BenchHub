@@ -12877,37 +12877,75 @@ def _write_gt_image_thumb(value, dest_path, kind):
     whatever the HF row's column produced (PIL.Image / numpy array /
     bytes); `kind` ∈ {'image', 'mask', 'depth'}.
 
+    Single-channel inputs (mode L / I / I;16 / F numpy 2D etc.) are
+    routed through the array path so depth maps and class-id masks
+    get normalized + colormapped. Calling `.convert('RGB')` directly
+    on a depth-in-meters PIL Image would emit a near-black thumb
+    (raw depth values 0..10 mapped 1:1 onto 0..255 RGB).
+
     Best-effort: any decode error returns False and the caller skips
     caching this thumb."""
     from PIL import Image
+    SINGLE_CHANNEL_MODES = {'L', 'I', 'I;16', 'I;16B', 'I;16L', 'F'}
     try:
-        if hasattr(value, 'convert'):
-            img = value.convert('RGB')
+        # Normalize the input into a numpy array OR a ready-to-thumb
+        # RGB PIL Image. Depth/mask kinds always go via the array path
+        # so they get proper normalization; image kind takes the fast
+        # PIL path unless it's single-channel.
+        img = None
+        arr = None
+        if hasattr(value, 'convert') and hasattr(value, 'mode'):
+            if kind in ('depth', 'mask') or value.mode in SINGLE_CHANNEL_MODES:
+                arr = np.asarray(value)
+            else:
+                img = value.convert('RGB')
         elif isinstance(value, (bytes, bytearray)):
-            img = Image.open(io.BytesIO(bytes(value))).convert('RGB')
+            decoded = Image.open(io.BytesIO(bytes(value)))
+            if kind in ('depth', 'mask') or decoded.mode in SINGLE_CHANNEL_MODES:
+                arr = np.asarray(decoded)
+            else:
+                img = decoded.convert('RGB')
         else:
             arr = np.asarray(value)
+
+        if img is None:
+            if arr is None:
+                return False
+            # 2D path: normalize for depth, deterministic-hue for masks,
+            # grayscale stretch otherwise.
             if kind == 'depth' or (arr.ndim == 2 and kind != 'mask'):
-                # Normalize-then-colormap so the human can read the
-                # rough depth/structure.
-                lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+                a = arr.astype(np.float32)
+                finite_mask = np.isfinite(a)
+                if finite_mask.any():
+                    lo = float(np.nanmin(a[finite_mask]))
+                    hi = float(np.nanmax(a[finite_mask]))
+                else:
+                    lo, hi = 0.0, 1.0
                 rng = hi - lo if hi > lo else 1.0
-                norm = np.nan_to_num((arr - lo) / rng, nan=0.0)
-                # Cheap turbo-ish colormap via a 256-entry LUT.
+                norm = np.nan_to_num((a - lo) / rng, nan=0.0,
+                                     posinf=1.0, neginf=0.0)
+                norm = np.clip(norm, 0.0, 1.0)
+                # Gamma 0.5 lifts the dark end so structure is visible.
                 lut = (np.linspace(0, 1, 256) ** 0.5 * 255).astype(np.uint8)
                 idx = np.clip((norm * 255).astype(np.int32), 0, 255)
                 gray = lut[idx]
-                arr = np.stack([gray, gray, gray], axis=-1)
+                rgb = np.stack([gray, gray, gray], axis=-1)
             elif kind == 'mask' and arr.ndim == 2:
-                # Class-id mask → deterministic-hue RGB so adjacent
-                # classes are visually distinct.
                 lut = ((np.arange(256, dtype=np.int32) * 31 + 17) % 256).astype(np.uint8)
                 idx = arr.astype(np.int32) & 0xFF
                 r = lut[idx]; g = lut[(idx + 85) & 0xFF]; b = lut[(idx + 170) & 0xFF]
-                arr = np.stack([r, g, b], axis=-1).astype(np.uint8)
-            if arr.dtype != np.uint8:
-                arr = np.clip(arr, 0, 255).astype(np.uint8)
-            img = Image.fromarray(arr)
+                rgb = np.stack([r, g, b], axis=-1).astype(np.uint8)
+            elif arr.ndim == 3 and arr.shape[-1] in (3, 4):
+                rgb = arr[..., :3]
+                if rgb.dtype != np.uint8:
+                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+            else:
+                # Unknown shape — bail.
+                return False
+            if rgb.dtype != np.uint8:
+                rgb = rgb.astype(np.uint8)
+            img = Image.fromarray(rgb)
+
         img.thumbnail((GT_VIZ_TARGET_SIZE, GT_VIZ_TARGET_SIZE))
         img.save(dest_path, format='JPEG', quality=GT_VIZ_JPEG_QUALITY,
                  optimize=True)
