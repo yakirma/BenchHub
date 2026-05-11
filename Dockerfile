@@ -35,13 +35,20 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Non-root user; data dir bind-mounted at /data via Fly volume.
+# The container starts as root via the entrypoint script below so we can
+# repair ownership on the persistent Fly volume (an older revision that
+# briefly ran as root left /data/uploads/submissions/ owned by root, and
+# subsequent runs as `app` silently failed to extract submission ZIPs).
+# entrypoint then drops to `app` via `su` for the actual processes.
 RUN useradd --create-home --uid 1000 app \
  && mkdir -p /data \
- && chmod +x /app/start.sh \
- && chown -R app:app /app /data
-USER app
+ && chmod +x /app/start.sh /app/entrypoint.sh \
+ && chown -R app:app /app \
+ && chown app:app /data
 
 EXPOSE 8080
 
-# start.sh runs celery + gunicorn together with proper SIGTERM forwarding.
-CMD ["./start.sh"]
+# entrypoint.sh runs as root to fix any stale ownership on the Fly volume,
+# then drops to `app` via `su` to exec start.sh (which boots redis +
+# celery + gunicorn).
+CMD ["./entrypoint.sh"]
