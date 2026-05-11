@@ -1,88 +1,178 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>Supported Data Types</h1>
-<p class="lead">Understanding how Bench-Hub recognizes and parses your data.</p>
+<h1>Supported data types</h1>
+<p class="lead">How BenchHub recognizes, stores, and serves the fields in your datasets and submissions.</p>
 <hr>
 
-<div class="row mt-4">
-    <div class="col-md-12">
-        <p>Bench-Hub is designed to be flexible. It automatically detects the type of data in your
-            <strong>Datasets</strong> and <strong>Submissions</strong> based on file extensions and folder naming
-            conventions.</p>
+<p>
+    BenchHub auto-detects the type of each field from a combination of
+    <strong>folder prefix</strong> and <strong>file extension</strong>. The
+    same rules apply whether the field lives on the ground-truth side (a
+    Dataset uploaded as a ZIP or a HuggingFace dataset attachment) or on
+    the prediction side (a Submission uploaded via the API). Every per-LB
+    "Submission contract" you see on a leaderboard page is just a filtered
+    view of these rules.
+</p>
 
-        <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i> <strong>Note:</strong> Files are indexed when you upload a ZIP. You
-            can view recognized fields in the "Dataset View" or "Submission View".
-        </div>
-
-        <h3 class="mt-4">Recognition Rules</h3>
-        <table class="table table-bordered table-hover">
-            <thead class="table-light">
-                <tr>
-                    <th style="width: 15%">Type</th>
-                    <th style="width: 35%">Recognition Rule</th>
-                    <th>Usage & details</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><strong>Image</strong></td>
-                    <td>Extensions: <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>, <code>.bmp</code>,
-                        <code>.tiff</code></td>
-                    <td>
-                        <p class="mb-1">Detected as an image path.</p>
-                        <small class="text-muted">Used in <strong>Visualizations</strong> (converted to PIL
-                            Image).</small>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Scalar</strong></td>
-                    <td>Extension: <code>.txt</code><br>(content must be a single number)</td>
-                    <td>
-                        <p class="mb-1">Parsed as a python <code>float</code>.</p>
-                        <small class="text-muted">Used in <strong>Metrics</strong> or as simple values in the Comparison
-                            table.</small>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>JSON</strong></td>
-                    <td>Extension: <code>.json</code></td>
-                    <td>
-                        <p class="mb-1">Parsed as a python <code>dict</code>.</p>
-                        <small class="text-muted">Useful for complex data structures or configurations.</small>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Histogram</strong></td>
-                    <td><code>.npz</code> file inside a folder starting with <code>hist_</code> (or named
-                        <code>raw_histogram</code>)</td>
-                    <td>
-                        <p class="mb-1">Parsed as numpy arrays (<code>bins</code>, <code>counts</code>).</p>
-                        <small class="text-muted">Used for <strong>Entropy</strong> calculations and Histogram
-                            plots.</small>
-                    </td>
-                </tr>
-                <tr>
-                    <td><strong>Depth Map</strong></td>
-                    <td><code>.npz</code> file inside `raw_` folder, named <code>sample_WxH.npz</code></td>
-                    <td>
-                        <p class="mb-1">Specific to Depth Benchmarking.</p>
-                        <small class="text-muted">Contains raw depth arrays.</small>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
-
-        <h3 class="mt-5">Using Data in Metrics</h3>
-        <p>Once detected, these files become "Arguments" you can map in the Leaderboard Settings.</p>
-        <ul>
-            <li><strong>Scalars</strong> are passed directly as numbers.</li>
-            <li><strong>Images</strong> are passed as file paths (use <code>PIL.Image.open()</code>).</li>
-            <li><strong>JSON</strong> is passed as a dictionary.</li>
-            <li><strong>Arrays (Histogram/Depth)</strong> need custom loading usually, but Histograms are pre-processed
-                into dictionaries for some legacy metrics.</li>
-        </ul>
-    </div>
+<div class="alert alert-info small">
+    <i class="bi bi-info-circle me-2"></i>
+    Folder names that don't start with a reserved prefix
+    (<code>metric_</code>, <code>raw_</code>, <code>hist_</code>,
+    <code>raw_histogram</code>) are still indexed — their type is
+    decided by the file extension alone. The reserved prefixes carry
+    extra semantics (see below).
 </div>
+
+<h3 class="mt-4">Reference table</h3>
+<div class="table-responsive">
+    <table class="table table-bordered align-middle mb-0">
+        <thead class="table-light">
+            <tr>
+                <th style="width: 11%;">Type</th>
+                <th style="width: 12%;">File ext.</th>
+                <th style="width: 28%;">Per-sample naming</th>
+                <th>How it's stored / read</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">scalar</span></td>
+                <td class="font-monospace">.txt</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.txt' }}</td>
+                <td>
+                    UTF-8 text containing a single number. Most often a
+                    float (<code>0.873</code>) or an integer class index.
+                    Parsed to <code>float</code> when handed to metric code.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">text</span></td>
+                <td class="font-monospace">.txt</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.txt' }}</td>
+                <td>
+                    UTF-8 string. Free-form — generated captions, sentiment
+                    labels (<code>pos</code>/<code>neg</code>), short
+                    classifier outputs. Passed to metric code as a Python
+                    <code>str</code>.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">image</span></td>
+                <td class="font-monospace">.png / .jpg / .jpeg / .bmp / .tiff</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.<ext>' }}</td>
+                <td>
+                    RGB or grayscale raster. Read as a <code>PIL.Image</code>
+                    when a metric / visualization asks for it. The submit
+                    scaffold auto-converts numpy arrays / PIL Images to PNG
+                    HxWx3 uint8.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">mask</span></td>
+                <td class="font-monospace">.png</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.png' }}</td>
+                <td>
+                    Segmentation mask — either single-channel HxW
+                    (uint8/16 class IDs) or three-channel HxWx3 RGB-encoded
+                    classes. The engine inspects the shape and picks the
+                    right decode path.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">depth</span></td>
+                <td class="font-monospace">.npz</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>_<W>x<H>.npz' }}</td>
+                <td>
+                    numpy <code>.npz</code> archive with one array under
+                    key <code>depth</code> (HxW float). The
+                    <code>&lt;W&gt;x&lt;H&gt;</code> in the filename lets the
+                    engine validate shape without loading. Folder names
+                    typically start with <code>raw_</code>.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">histogram</span></td>
+                <td class="font-monospace">.npz</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.npz' }}</td>
+                <td>
+                    numpy <code>.npz</code> archive with two arrays:
+                    <code>bins</code> + <code>counts</code>. Detected when
+                    the folder starts with <code>hist_</code> or is named
+                    exactly <code>raw_histogram</code>. Surfaces in the
+                    Comparison view as an inline chart.
+                </td>
+            </tr>
+            <tr>
+                <td><span class="badge text-bg-secondary-subtle text-secondary border">json</span></td>
+                <td class="font-monospace">.json</td>
+                <td class="font-monospace text-body-secondary">{{ '<sample>.json' }}</td>
+                <td>
+                    Arbitrary structured data, parsed to a Python
+                    <code>dict</code>. Useful for per-sample config or
+                    complex predicted objects (bboxes etc.).
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<h3 class="mt-5">Reserved folder prefixes</h3>
+<p>
+    BenchHub recognizes three folder prefixes that carry semantics beyond
+    the file extension:
+</p>
+<dl class="row small">
+    <dt class="col-sm-3"><code>metric_</code></dt>
+    <dd class="col-sm-9">
+        Each <code>&lt;sample&gt;.txt</code> in the folder holds a
+        <strong>precomputed metric value</strong> (one float per sample) —
+        not a raw prediction. BenchHub reads the values directly and skips
+        re-running the metric. Use this when you already evaluated locally
+        and just want to ship the scores.
+        <span class="text-body-secondary">Never use <code>metric_</code> for
+        raw model outputs — pair the metric with a bare-name prediction
+        folder instead.</span>
+    </dd>
+
+    <dt class="col-sm-3"><code>raw_</code></dt>
+    <dd class="col-sm-9">
+        Marks the folder as carrying dense raw arrays — most commonly
+        depth maps (<code>raw_depth_map</code>) and free-form numpy
+        payloads. The <code>&lt;W&gt;x&lt;H&gt;</code> suffix on each
+        filename gives the engine the spatial shape up front.
+    </dd>
+
+    <dt class="col-sm-3"><code>hist_</code></dt>
+    <dd class="col-sm-9">
+        Marks the folder as histogram data — each <code>.npz</code> carries
+        <code>bins</code> + <code>counts</code> arrays. Folder name suffix
+        is the histogram variant (e.g. <code>hist_pred</code>,
+        <code>hist_smooth</code>); the comparison view surfaces each
+        variant as a separate chart.
+    </dd>
+</dl>
+
+<h3 class="mt-5">Using data in metrics</h3>
+<p>
+    Detected fields become arguments you map onto a metric function in the
+    Leaderboard Settings. The dispatch table:
+</p>
+<ul>
+    <li><strong>scalar / text</strong> → Python <code>float</code> /
+        <code>str</code> passed by value.</li>
+    <li><strong>image / mask</strong> → file path; load with
+        <code>PIL.Image.open(path)</code>.</li>
+    <li><strong>depth</strong> → file path; load with
+        <code>np.load(path)['depth']</code>.</li>
+    <li><strong>histogram</strong> → pre-loaded <code>dict</code> with
+        <code>'bins'</code> + <code>'counts'</code> arrays.</li>
+    <li><strong>json</strong> → pre-loaded Python <code>dict</code>.</li>
+</ul>
+
+<p class="small text-body-secondary mt-4 mb-0">
+    The per-LB "Submission contract" widget on every leaderboard page lists
+    exactly which folders <em>that</em> LB requires — same rules, scoped
+    to the metrics + visualizations on that LB.
+</p>
 {% endblock %}
