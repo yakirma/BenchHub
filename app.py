@@ -13028,7 +13028,14 @@ def _submission_viz_dir(submission):
 # evict first when the cache fills). Cache keys are shared across LBs and
 # submissions that point at the same HF repo + column + revision.
 
-GT_VIZ_TARGET_SIZE = 128
+# GT cached thumbnails preserve the source's original spatial size.
+# We still do the cheap optimizations (JPEG q70 compression, turbo
+# colormap for depth) so a 640×480 depth map drops from ~1.2 MB raw
+# to ~50 KB; we just don't downscale below the source's pixel grid.
+# Reason: the zoom modal lets the user pan + wheel-zoom the cached
+# image. With 128×128 thumbs you hit visible pixelation at ~5x,
+# which makes detail inspection useless. Original size keeps the
+# zoom usable. bench_cache LRU still bounds total disk usage.
 GT_VIZ_JPEG_QUALITY = 70
 
 
@@ -13131,7 +13138,10 @@ def _write_gt_image_thumb(value, dest_path, kind):
                 rgb = rgb.astype(np.uint8)
             img = Image.fromarray(rgb)
 
-        img.thumbnail((GT_VIZ_TARGET_SIZE, GT_VIZ_TARGET_SIZE))
+        # No thumbnail downscale: preserve original source resolution
+        # so the zoom modal can let the user pan + wheel-zoom without
+        # hitting pixelation. JPEG q70 + (for depth) the turbo
+        # colormap LUT keep the file size sane.
         img.save(dest_path, format='JPEG', quality=GT_VIZ_JPEG_QUALITY,
                  optimize=True)
         return True

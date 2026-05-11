@@ -2707,14 +2707,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             img.style.left = '0';
             img.style.width = '100%';
             img.style.height = '100%';
-            // `fill` stretches the source to the wrapper's full size
-            // (vs `contain` which letterboxes small thumbs). User
-            // asked small images stretched to the window — bench-cache
-            // thumbs are 128×96 so without this they look tiny. Side
-            // benefit: all layers share an identical pixel grid so
-            // RGB↔depth overlay alignment is exact regardless of
-            // source aspect.
-            img.style.objectFit = 'fill';
+            // `contain` preserves the source aspect ratio (no
+            // distortion). Cached layers now ship at original source
+            // size, so the zoom modal can show full detail when the
+            // user wheels in; the wrapper's aspect-fit naturally
+            // scales to fill height or width without squishing the
+            // image. RGB↔depth come from the same scene and ship at
+            // the same aspect, so the two layers letterbox identically
+            // and overlay alignment stays exact.
+            img.style.objectFit = 'contain';
             img.style.pointerEvents = 'none';
             img.style.opacity = (i === currentIndex) ? '1' : '0';
             wrap.appendChild(img);
