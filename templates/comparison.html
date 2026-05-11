@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_user_avatar.html" import user_avatar %}
 
-{% block title %}Comparison - {% if submissions %}{{ submissions[0].leaderboard.name }}{% else %}Error{% endif %}{%
+{% block title %}{% if submissions %}Comparison{% else %}Explore samples{% endif %} - {{ leaderboard.name if leaderboard else 'Leaderboard' }}{%
 endblock %}
 
 {% macro get_color_row(value, key, min_val, max_val, directions) %}
@@ -243,28 +243,53 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <!--}-->
 <!--</style>-->
 
-{% if submissions %}
+{% if submissions or samples_only_mode %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
-        <h1>Submission Comparison</h1>
+        <h1>{% if submissions %}Submission Comparison{% else %}Explore samples{% endif %}</h1>
         <p class="lead mb-0 d-flex align-items-center">
+            {% if submissions %}
             Comparing {{ submissions|length }} submissions from leaderboard:
-            <a href="{{ url_for('leaderboard_view', leaderboard_id=submissions[0].leaderboard.id) }}"
+            {% else %}
+            Browsing samples in leaderboard:
+            {% endif %}
+            <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
                 class="btn btn-sm btn-outline-primary ms-2">{{
-                submissions[0].leaderboard.name }}</a>
+                leaderboard.name }}</a>
         </p>
         <p class="text-muted d-flex align-items-center mt-2 flex-wrap">
             Underlying Datasets:
-            {% for ds in submissions[0].leaderboard.datasets %}
+            {% for ds in leaderboard.datasets %}
         <span class="me-1">{{ user_avatar(ds.owner, size=27) }}</span>
         <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
             class="btn btn-sm btn-outline-secondary ms-1 me-2 my-1">{{ ds.name }}</a>
         {% endfor %}
         </p>
     </div>
-    <a href="{{ url_for('leaderboard_view', leaderboard_id=submissions[0].leaderboard.id) }}"
+    <a href="{{ url_for('leaderboard_view', leaderboard_id=leaderboard.id) }}"
         class="btn btn-secondary">Back to Leaderboard</a>
 </div>
+
+{# Samples-only mode banner: explain what's on the page and what's
+   missing. If the LB has no submissions, suggest uploading one;
+   otherwise (admin clicked Explore) just note we're hiding the
+   submission columns. #}
+{% if samples_only_mode and not submissions %}
+<div class="alert alert-info small d-flex align-items-center gap-2 mb-3" role="alert">
+    <i class="bi bi-info-circle"></i>
+    <div class="flex-grow-1">
+        {% if paginated_samples and paginated_samples.total > 0 %}
+        Showing the leaderboard's cached samples (GT only). Upload a
+        submission to compare predictions against these.
+        {% else %}
+        No samples are cached for this leaderboard yet. For HF-attached
+        leaderboards, the sample cache populates the first time a
+        submission is evaluated. Upload at least one submission and the
+        GT preview will appear here on the next eval.
+        {% endif %}
+    </div>
+</div>
+{% endif %}
 
 <div class="card mb-4">
     <div class="card-body">
@@ -283,7 +308,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     <div class="card-body">
         <h5 class="card-title">View Options</h5>
         <div class="controls">
-            <form method="get" action="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id) }}">
+            <form method="get" action="{{ url_for('comparison_view', leaderboard_id=leaderboard.id) }}">
                 {% if current_compare_ids %}
                 <input type="hidden" name="compare_ids" value="{{ current_compare_ids }}">
                 {% endif %}
@@ -397,7 +422,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </div>
             </form>
             <form method="post"
-                action="{{ url_for('update_comparison_display_columns', leaderboard_id=submissions[0].leaderboard.id) }}"
+                action="{{ url_for('update_comparison_display_columns', leaderboard_id=leaderboard.id) }}"
                 class="d-flex align-items-end ms-3 gap-2">
                 <div>
                     <label class="form-label fw-bold mb-1" for="comp_display_columns_select">
@@ -424,7 +449,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
             {% if sample_metric_options %}
             <form method="post"
-                action="{{ url_for('update_leaderboard_metrics', leaderboard_id=submissions[0].leaderboard.id) }}"
+                action="{{ url_for('update_leaderboard_metrics', leaderboard_id=leaderboard.id) }}"
                 class="d-flex align-items-center ms-3">
                 <strong class="me-3">Add Metric:</strong>
                 {% for key, label in sample_metric_options.items() %}
@@ -446,21 +471,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         <ul class="pagination justify-content-end mb-0">
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">«
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">«
                     First</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">‹
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">‹
                     Previous</a></li>
             <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
                     paginated_samples.pages }}</span></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Next
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Next
                     ›</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=submissions[0].leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Last
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Last
                     »</a></li>
         </ul>
     </nav>
@@ -1255,7 +1280,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     let metricsRanges = {{ (metrics_ranges or { }) | tojson | safe }};
     let metricDirections = {{ (metric_directions or { }) | tojson | safe }};
     let pollingInterval = null;
-    const leaderboardId = {{ submissions[0].leaderboard.id if submissions else 'null' }};
+    const leaderboardId = {{ leaderboard.id if submissions else 'null' }};
     const submissionIds = {{ submissions| map(attribute = 'id') | list | tojson | safe }};
     const sampleIds = {{ paginated_samples.items| map(attribute = 'id') | list | tojson | safe }};
 

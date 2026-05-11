@@ -96,22 +96,32 @@ def test_comparison_view_pagination_preserves_compare_ids(
     assert b"gamma" not in resp.data
 
 
-def test_comparison_view_with_empty_subs_raises_unbound_local(
+def test_comparison_view_with_empty_subs_renders_samples_only_mode(
     client, project, lb_with_subs
 ):
-    """REAL BUG: when all submissions are filtered out (compare_ids matches
-    nothing), comparison_view's early-return path passes `metric_labels` to
-    the template — but `metric_labels` is only defined LATER in the function
-    body (line ~3839), so this raises UnboundLocalError before rendering.
+    """When compare_ids matches no submissions (or is unset on an LB with
+    none), the route falls through to "Explore samples" mode rather than
+    early-returning. The page renders the GT side and shows an empty-state
+    banner — used to be an UnboundLocalError on metric_labels."""
+    lb_id = lb_with_subs["lb"].id
 
-    Pin the bug. Fix is to initialize `metric_labels = {}` near the top of
-    the function. Flip the assertion when fixed."""
-    proj_name, lb_id = project.name, lb_with_subs["lb"].id
+    resp = client.get(f"/comparison/{lb_id}?compare_ids=999999")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    # Header text switches to the samples-only label.
+    assert "Explore samples" in body
 
-    # The Flask test client propagates server-side exceptions in TESTING mode
-    # rather than converting to a 500 response — so catch it here.
-    with pytest.raises(UnboundLocalError, match="metric_labels"):
-        client.get(f"/comparison/{lb_id}?compare_ids=999999")
+
+def test_comparison_view_samples_only_param_renders_for_lb_with_subs(
+    client, project, lb_with_subs
+):
+    """Explicit `?samples_only=1` opts into the samples-only surface even
+    when the LB has submissions. The user can browse GT-side data before
+    picking submissions to compare."""
+    lb_id = lb_with_subs["lb"].id
+    resp = client.get(f"/comparison/{lb_id}?samples_only=1")
+    assert resp.status_code == 200
+    assert b"Explore samples" in resp.data
 
 
 def test_comparison_view_search_filters_samples(client, project, lb_with_subs):

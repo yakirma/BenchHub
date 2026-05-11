@@ -10544,44 +10544,27 @@ def comparison_view(leaderboard_id):
         # Fallback to session (backward compatibility or direct nav cases)
         compare_ids = session.get('compare_ids', [])
     
+    # `samples_only_mode`: explicit "explore the cached samples"
+    # navigation when the user has no submissions to compare yet, or
+    # is poking at the dataset before uploading anything. Triggered
+    # by the `samples_only=1` query param OR the request landing here
+    # with an empty compare_ids parameter AND no submissions on the
+    # LB. The template suppresses submission-side columns and shows
+    # an empty-state banner.
+    samples_only_mode = bool(request.args.get('samples_only'))
     if compare_ids:
         # Filter if user explicitly selected a subset
         submissions = [s for s in leaderboard.submissions if str(s.id) in compare_ids and not s.is_archived]
+    elif samples_only_mode:
+        submissions = []
     else:
         submissions = [s for s in leaderboard.submissions if not s.is_archived]
-    
-    if not submissions:
-        return render_template('comparison.html', 
-                               leaderboard=leaderboard, 
-                               submissions=[], 
-                               comparison_data=[], 
-                               chart_metrics_data="[]", 
-                               selected_metrics=[], 
-                               paginated_samples=None, 
-                               submissions_json=[], 
-                               selected_comparison_display_columns=[], 
-                               all_comparison_tags=[],
-                               all_sample_tag_names=[],
-                               all_sample_prefixes=[],
-                               all_custom_fields=[],
-                               all_field_types={},
-                               dataset_custom_fields=set(),
-                               submission_custom_fields={},
-                               submission_has_histogram={},
-                               per_page_options=[5, 10, 20, 100], 
-                               current_per_page=request.args.get('per_page', 5, type=int), 
-                               search_query=request.args.get('search_query', ''), 
-                               comparison_display_options=DATASET_DISPLAY_OPTIONS, 
-                               visualization_options=VISUALIZATION_OPTIONS, 
-                               active_visualizations=[],
-                               visualization_configs={},
-                               leaderboard_viz_list=[],
-                               sort_by='', 
-                               sort_order='asc', 
-                               sample_metric_options=SAMPLE_METRIC_OPTIONS, 
-                               active_metrics=[],
-                               current_compare_ids=compare_ids_arg,
-                               metric_labels=metric_labels)
+
+    # Distinguish "you explicitly want to browse samples only" from
+    # "this LB has no submissions yet" — the template renders the
+    # same surface but with a slightly different empty-state copy.
+    if not submissions and not samples_only_mode:
+        samples_only_mode = True  # graceful fall-through
 
     # Pagination params
     page = request.args.get('page', 1, type=int)
@@ -11361,7 +11344,8 @@ def comparison_view(leaderboard_id):
                            metric_directions=metric_directions,
                            metric_labels=metric_labels,
                            active_metrics=active_metrics,
-                           current_compare_ids=compare_ids_arg)
+                           current_compare_ids=compare_ids_arg,
+                           samples_only_mode=samples_only_mode)
 
 
 

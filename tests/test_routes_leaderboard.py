@@ -212,6 +212,49 @@ def test_comparison_view_surfaces_gt_snapshots_for_hf_lb(client, db_session):
     assert 'label' in body
 
 
+def test_lb_page_has_explore_samples_button(client, db_session):
+    """The LB header carries an `Explore samples` link to /comparison
+    with samples_only=1. Visible regardless of submission count."""
+    lb = Leaderboard(name='explore_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.commit()
+    resp = client.get(f'/leaderboard/{lb.id}')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    assert 'Explore samples' in body
+    assert f'/comparison/{lb.id}?samples_only=1' in body or 'samples_only=1' in body
+
+
+def test_comparison_view_samples_only_renders_hf_gt_when_no_submissions(
+    client, db_session,
+):
+    """Explore samples for an HF-attached LB that has GT snapshots from
+    a prior eval — even after all submissions are gone, the cached samples
+    still surface."""
+    from app import Attachment, CustomField
+    lb = Leaderboard(name='hf_explore_lb', summary_metrics='',
+                     visibility='public')
+    db.session.add(lb); db.session.flush()
+    db.session.add(Attachment(
+        leaderboard_id=lb.id, hf_repo_id='fake/fake',
+        hf_split='train', role='primary',
+    ))
+    # Seeded GT snapshot from a prior eval (submission long since deleted).
+    for i, gt in enumerate([5, 9, 2]):
+        db.session.add(CustomField(
+            leaderboard_id=lb.id, sample_id=None, submission_id=None,
+            sample_name=f's_{i:06d}', name='label',
+            field_type='scalar', value_float=float(gt),
+        ))
+    db.session.commit()
+    resp = client.get(f'/comparison/{lb.id}?samples_only=1')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    # Sample names rendered → the samples view works without submissions.
+    assert 's_000000' in body
+    assert 's_000001' in body
+    assert 's_000002' in body
+
+
 def test_comparison_view_renders_for_hf_attached_lb(client, db_session):
     """HF-attached LBs have no Sample rows — comparison_view used to
     return an empty page because Sample.dataset_id IN (NULL) yielded
