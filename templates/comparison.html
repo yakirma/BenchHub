@@ -1573,6 +1573,27 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
             }
 
+            // Per-thumb-slider mode: the #vis-modal-layers stack is the
+            // sole display. Its layer IMGs are absolutely positioned and
+            // share an identical bounding rect, so overlay alignment is
+            // automatic. Showing modal-vis-img alongside (natural-size
+            // img-fluid) would produce two visually-different copies of
+            // the same picture at different sizes, breaking alignment
+            // when the user dials in a second layer.
+            const layersWrap = visModal.querySelector('#vis-modal-layers');
+            if (layersWrap && layersWrap.children.length > 0) {
+                const modalImgEl = visModal.querySelector('#modal-vis-img');
+                const modalPlotlyEl = visModal.querySelector('#modal-plotly-div');
+                const loadingSpinnerEl = visModal.querySelector('#modal-loading-spinner');
+                if (modalImgEl) modalImgEl.style.display = 'none';
+                if (modalPlotlyEl) modalPlotlyEl.style.display = 'none';
+                if (loadingSpinnerEl) loadingSpinnerEl.style.display = 'none';
+                // The gallery's setCurrentIndex already snapped the
+                // active layer's opacity to 1 and the others to 0 via
+                // resetLayerSliders.
+                return;
+            }
+
             const modalImg = visModal.querySelector('#modal-vis-img');
             const modalPlotly = visModal.querySelector('#modal-plotly-div');
             const loadingSpinner = visModal.querySelector('#modal-loading-spinner');
@@ -2633,10 +2654,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     // controls that IMG's opacity. Clicked thumb defaults to 100,
     // others to 0 — so the modal looks like a normal "click to view"
     // until the user drags another thumb's slider to dial it in.
+    //
+    // Use the table-thumb's data-vis-url so the modal layers load the
+    // full-resolution image. Falls back to the IMG's own src (which
+    // is the small table thumbnail) only when no vis-url is set.
     function _visLayerThumbSrc(item) {
-        // Prefer the gallery item's pre-rendered thumbSrc (already the
-        // bench_cache thumbnail URL); fall back to the source IMG.
-        return item.thumbSrc || (item.element && item.element.src) || '';
+        const el = item.element;
+        const fullUrl = el && el.getAttribute && el.getAttribute('data-vis-url');
+        return fullUrl || item.thumbSrc || (el && el.src) || '';
     }
 
     function _rebuildVisLayers(items, currentIndex) {

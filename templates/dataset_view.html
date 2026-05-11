@@ -1288,9 +1288,18 @@
         // controls that IMG's opacity. No more "Overlay mode" toggle —
         // click selects the base, sliders compose extras on top.
         function _cfLayerThumbSrc(item) {
-            return item.thumbSrc ||
-                (item.element && (item.element.getAttribute('data-img-url') || item.element.src)) ||
-                '';
+            const el = item.element;
+            if (!el) return item.thumbSrc || '';
+            // Depth fields publish a JSON heatmap URL via data-img-url
+            // (for Plotly); for layered display we need the PNG that
+            // serve_custom_field_image renders. Same translation the
+            // old setCustomFieldOverlay used to apply.
+            const visType = el.getAttribute('data-vis-type');
+            const imgUrl = el.getAttribute('data-img-url') || el.src;
+            if (visType === 'depth' && imgUrl && imgUrl.includes('/api/custom_field_depth_data/')) {
+                return imgUrl.replace('/api/custom_field_depth_data/', '/custom_field_image/');
+            }
+            return imgUrl || item.thumbSrc || '';
         }
         function _cfRebuildLayers(items, currentIndex) {
             const wrap = document.getElementById('custom-field-modal-layers');
@@ -1414,6 +1423,26 @@
             const modalTitleSpan = customFieldModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
                 modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+            }
+
+            // Per-thumb-slider mode: the #custom-field-modal-layers
+            // stack is the sole display. Hide the legacy base layers
+            // (modal-custom-field-img / modal-plotly-div) so two
+            // differently-sized copies of the same image don't appear
+            // — overlay alignment depends on every layer sharing one
+            // bounding rect.
+            const layersWrap = customFieldModal.querySelector('#custom-field-modal-layers');
+            if (layersWrap && layersWrap.children.length > 0) {
+                const baseImg = customFieldModal.querySelector('#modal-custom-field-img');
+                const basePlotly = customFieldModal.querySelector('#modal-plotly-div');
+                const baseSpinner = customFieldModal.querySelector('#modal-loading-spinner');
+                if (baseImg) baseImg.style.display = 'none';
+                if (basePlotly) {
+                    basePlotly.style.display = 'none';
+                    basePlotly.innerHTML = '';
+                }
+                if (baseSpinner) baseSpinner.style.display = 'none';
+                return;
             }
 
             const modalImg = customFieldModal.querySelector('#modal-custom-field-img');
