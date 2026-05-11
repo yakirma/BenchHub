@@ -11,3 +11,9 @@ Authlib>=1.3
 requests>=2.31
 huggingface_hub>=0.24
 datasets>=2.20,<3.0
+# h5py: required by some HF dataset loading scripts (notably
+# sayakpaul/nyu_depth_v2 which reads .h5 source files at stream
+# time). Other HDF5-backed depth / medical / scientific datasets
+# need it too. Pre-installing here is far cheaper than pip-installing
+# at task time inside an HF stream that already holds the volume lock.
+h5py>=3.10
