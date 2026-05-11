@@ -806,52 +806,24 @@
                         Next Sample <i class="bi bi-arrow-down"></i>
                     </button>
                 </div>
-                {# Overlay toggle: when ON, clicking a gallery thumb sets it
-                   as a translucent overlay instead of replacing the base. #}
-                <div class="form-check form-switch ms-3 me-2">
-                    <input class="form-check-input" type="checkbox" id="overlay-mode-toggle">
-                    <label class="form-check-label small" for="overlay-mode-toggle"
-                        title="Click a thumbnail with this on to overlay it on the current image.">
-                        Overlay
-                    </label>
-                </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center" style="position: relative;">
                 <div id="modal-content-wrapper"
                     style="width: 100%; height: 100%; min-height: 500px; position: relative; display: flex; align-items: center; justify-content: center; flex-direction: column;">
                     <div id="modal-error-container" style="display: none; width: 100%;"></div>
-                    {# Base layers: either #modal-custom-field-img (image
-                       fields) or #modal-plotly-div (depth heatmap). The
-                       overlay sits absolutely positioned over the wrapper,
-                       so it covers either base regardless of which is
-                       active. #}
+                    {# Base layers (image / depth heatmap) plus the
+                       per-thumb overlay layer stack. Each gallery item
+                       gets one IMG in #custom-field-modal-layers; its
+                       slider drives that IMG's opacity. #}
                     <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
-                    <img id="modal-overlay-img" src=""
-                        style="display: none; position: absolute; top: 0; left: 0;
-                               width: 100%; height: 100%;
-                               object-fit: contain;
-                               opacity: 0.5;
-                               pointer-events: none;">
+                    <div id="custom-field-modal-layers"
+                         style="position: absolute; inset: 0; pointer-events: none;"></div>
                     <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
                         style="display: none;">
                         <span class="visually-hidden">Loading...</span>
                     </div>
-                </div>
-                {# Overlay opacity control + clear button. Hidden until an
-                   overlay is set. Use d-none for hide/show — pure inline
-                   `display: none` (no !important) so JS can flip it. #}
-                <div id="overlay-controls" class="d-none align-items-center justify-content-center gap-3 mt-2">
-                    <label class="small text-body-secondary mb-0" for="overlay-opacity">
-                        Overlay opacity:
-                    </label>
-                    <input type="range" id="overlay-opacity" min="0" max="100" value="50"
-                        class="form-range" style="width: 240px;">
-                    <span id="overlay-opacity-value" class="small text-body-secondary" style="width: 3em;">50%</span>
-                    <button type="button" id="overlay-clear-btn" class="btn btn-sm btn-outline-secondary">
-                        <i class="bi bi-x-lg me-1"></i>Clear overlay
-                    </button>
                 </div>
                 <div id="custom-field-gallery-footer" class="gallery-footer-container"></div>
             </div>
@@ -1310,18 +1282,49 @@
             }
         );
 
+        // Per-thumbnail layer machinery for the custom-field modal:
+        // each gallery item gets a corresponding IMG inside
+        // #custom-field-modal-layers; the slider under its thumb
+        // controls that IMG's opacity. No more "Overlay mode" toggle —
+        // click selects the base, sliders compose extras on top.
+        function _cfLayerThumbSrc(item) {
+            return item.thumbSrc ||
+                (item.element && (item.element.getAttribute('data-img-url') || item.element.src)) ||
+                '';
+        }
+        function _cfRebuildLayers(items, currentIndex) {
+            const wrap = document.getElementById('custom-field-modal-layers');
+            if (!wrap) return;
+            wrap.innerHTML = '';
+            items.forEach((item, i) => {
+                const img = document.createElement('img');
+                img.src = _cfLayerThumbSrc(item);
+                img.dataset.layerIndex = i;
+                img.style.position = 'absolute';
+                img.style.top = '0';
+                img.style.left = '0';
+                img.style.width = '100%';
+                img.style.height = '100%';
+                img.style.objectFit = 'contain';
+                img.style.pointerEvents = 'none';
+                img.style.opacity = (i === currentIndex) ? '1' : '0';
+                wrap.appendChild(img);
+            });
+        }
+        function _cfSetLayerOpacity(index, value) {
+            const wrap = document.getElementById('custom-field-modal-layers');
+            if (!wrap) return;
+            const img = wrap.querySelector(`img[data-layer-index="${index}"]`);
+            if (img) img.style.opacity = (Math.max(0, Math.min(100, value)) / 100).toString();
+        }
+
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
             (item) => {
                 if (!item.element) return;
-                // Overlay-mode: set this modality as the overlay layer
-                // instead of replacing the base. Direct call (not .click())
-                // because Bootstrap no-ops show() on an already-open modal.
-                const overlayMode = document.getElementById('overlay-mode-toggle');
-                if (overlayMode && overlayMode.checked) {
-                    window.setCustomFieldOverlay(item.element);
-                } else {
-                    window.updateDatasetCustomFieldModalContent(item.element);
-                }
+                // Click on a thumb → make it the only visible layer.
+                // The manager's updateActiveState calls resetLayerSliders
+                // which puts the clicked slider at 100 and the rest at 0.
+                window.updateDatasetCustomFieldModalContent(item.element);
             },
             // Vertical Navigation Callback
             (direction, currentItem, currentIndex) => {
@@ -1348,8 +1351,22 @@
                         window.updateDatasetCustomFieldModalContent(targetItem);
                     }
                 }
+            },
+            // Per-thumb layer-opacity callback. Slider drag below a
+            // thumb dials its overlay in/out on top of whichever base
+            // is currently shown.
+            (item, index, value) => {
+                _cfSetLayerOpacity(index, value);
             }
         );
+
+        // Rebuild the layer stack whenever the gallery items change
+        // so each thumb has a corresponding overlay IMG.
+        const _origCfSetItems = window.customFieldGallery.setItems.bind(window.customFieldGallery);
+        window.customFieldGallery.setItems = function (items) {
+            _origCfSetItems(items);
+            _cfRebuildLayers(items, this.currentIndex);
+        };
 
         window.histGallery = new GalleryModalManager('chart-modal', 'chart-gallery-footer',
             (item) => {
@@ -1383,64 +1400,9 @@
             }
         );
 
-        // Overlay machinery: layer a second modality on top of the base
-        // image at adjustable opacity. Both layers go through the same
-        // /custom_field_image endpoint (which renders depth fields to PNG),
-        // so any image/depth modality can act as either layer.
-        window.setCustomFieldOverlay = function (button) {
-            const visType = button.getAttribute('data-vis-type');
-            const imgUrl = button.getAttribute('data-img-url');
-            // Depth fields' default URL is the JSON heatmap-data endpoint;
-            // for overlay we want the PNG that the matplotlib endpoint
-            // produces, so the layer composes as a normal image on top of
-            // whatever base is shown.
-            const pngUrl = (visType === 'depth')
-                ? imgUrl.replace('/api/custom_field_depth_data/', '/custom_field_image/')
-                : imgUrl;
-            const overlayImg = document.getElementById('modal-overlay-img');
-            const controls = document.getElementById('overlay-controls');
-            if (!overlayImg || !controls) return;
-            overlayImg.src = pngUrl;
-            overlayImg.style.display = 'block';
-            controls.classList.remove('d-none');
-            controls.classList.add('d-flex');
-        };
-
-        window.clearCustomFieldOverlay = function () {
-            const overlayImg = document.getElementById('modal-overlay-img');
-            const controls = document.getElementById('overlay-controls');
-            if (overlayImg) {
-                overlayImg.src = '';
-                overlayImg.style.display = 'none';
-            }
-            if (controls) {
-                controls.classList.add('d-none');
-                controls.classList.remove('d-flex');
-            }
-        };
-
-        // Wire up overlay controls.
-        const opacitySlider = document.getElementById('overlay-opacity');
-        const opacityLabel = document.getElementById('overlay-opacity-value');
-        const clearBtn = document.getElementById('overlay-clear-btn');
-        const overlayToggle = document.getElementById('overlay-mode-toggle');
-        if (opacitySlider) {
-            opacitySlider.addEventListener('input', (e) => {
-                const v = e.target.value;
-                const overlayImg = document.getElementById('modal-overlay-img');
-                if (overlayImg) overlayImg.style.opacity = (v / 100).toString();
-                if (opacityLabel) opacityLabel.textContent = `${v}%`;
-            });
-        }
-        if (clearBtn) clearBtn.addEventListener('click', window.clearCustomFieldOverlay);
-        // Closing the modal resets overlay state.
-        const customFieldModalEl = document.getElementById('custom-field-modal');
-        if (customFieldModalEl) {
-            customFieldModalEl.addEventListener('hidden.bs.modal', () => {
-                window.clearCustomFieldOverlay();
-                if (overlayToggle) overlayToggle.checked = false;
-            });
-        }
+        // (Old toggle-and-single-slider overlay machinery removed —
+        // per-thumb sliders in the gallery footer handle this now.
+        // See _cfRebuildLayers / _cfSetLayerOpacity above.)
 
         window.updateDatasetCustomFieldModalContent = function (button) {
             const customFieldModal = document.getElementById('custom-field-modal');

@@ -1158,10 +1158,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </div>
             <div class="modal-body text-center" style="position: relative;">
                 <div id="modal-content-wrapper"
-                    style="width: 100%; height: 100%; min-height: 500px; display: flex; align-items: center; justify-content: center; flex-direction: column;">
+                    style="width: 100%; height: 100%; min-height: 500px; position: relative; display: flex; align-items: center; justify-content: center; flex-direction: column;">
                     <div id="modal-error-container" style="display: none; width: 100%;"></div>
                     <img id="modal-vis-img" src="" class="img-fluid" style="display: none;">
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
+                    {# Per-thumbnail overlay layers go here as IMG
+                       elements (one per gallery item, hidden until the
+                       matching thumb's slider is dragged above 0).
+                       JS manages the contents — leaving the wrapper
+                       empty in the template. #}
+                    <div id="vis-modal-layers" style="position: absolute; inset: 0;
+                                                       pointer-events: none;"></div>
                     <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
                         style="display: none;">
                         <span class="visually-hidden">Loading...</span>
@@ -2621,9 +2628,50 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
     // --- Gallery Logic ---
     // --- Gallery Logic ---
+    // Per-thumbnail overlay layers. Each gallery item gets one IMG
+    // node inside #vis-modal-layers; the slider under its thumb
+    // controls that IMG's opacity. Clicked thumb defaults to 100,
+    // others to 0 — so the modal looks like a normal "click to view"
+    // until the user drags another thumb's slider to dial it in.
+    function _visLayerThumbSrc(item) {
+        // Prefer the gallery item's pre-rendered thumbSrc (already the
+        // bench_cache thumbnail URL); fall back to the source IMG.
+        return item.thumbSrc || (item.element && item.element.src) || '';
+    }
+
+    function _rebuildVisLayers(items, currentIndex) {
+        const wrap = document.getElementById('vis-modal-layers');
+        if (!wrap) return;
+        wrap.innerHTML = '';
+        items.forEach((item, i) => {
+            const img = document.createElement('img');
+            img.src = _visLayerThumbSrc(item);
+            img.dataset.layerIndex = i;
+            img.style.position = 'absolute';
+            img.style.top = '0';
+            img.style.left = '0';
+            img.style.width = '100%';
+            img.style.height = '100%';
+            img.style.objectFit = 'contain';
+            img.style.pointerEvents = 'none';
+            img.style.opacity = (i === currentIndex) ? '1' : '0';
+            wrap.appendChild(img);
+        });
+    }
+
+    function _setVisLayerOpacity(index, value) {
+        const wrap = document.getElementById('vis-modal-layers');
+        if (!wrap) return;
+        const img = wrap.querySelector(`img[data-layer-index="${index}"]`);
+        if (img) img.style.opacity = (Math.max(0, Math.min(100, value)) / 100).toString();
+    }
+
     const visGallery = new GalleryModalManager('vis-modal', 'vis-gallery-footer',
         (item, index) => {
-            if (item.element) window.updateVisModalContent(item.element);
+            if (!item.element) return;
+            // Click on a thumb → make it the only visible layer. Slider
+            // values get reset to 100/0 by the manager's updateActiveState.
+            window.updateVisModalContent(item.element);
         },
         // Vertical Navigation Callback
         (direction, currentItem, currentIndex) => {
@@ -2708,8 +2756,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     window.updateVisModalContent(targetItem);
                 }
             }
+        },
+        // Per-thumb opacity callback — slider drag dials in that
+        // layer on top of the base. Layers were built when the
+        // gallery's items were set (see updateVisGallery override
+        // below).
+        (item, index, value) => {
+            _setVisLayerOpacity(index, value);
         }
     );
+
+    // Rebuild the layer stack every time the gallery items change so
+    // each thumb has a corresponding IMG layer the slider can drive.
+    const _origVisSetItems = visGallery.setItems.bind(visGallery);
+    visGallery.setItems = function (items) {
+        _origVisSetItems(items);
+        _rebuildVisLayers(items, this.currentIndex);
+    };
 
     const histGallery = new GalleryModalManager('chart-modal', 'chart-gallery-footer',
         (item, index) => {

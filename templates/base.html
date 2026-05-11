@@ -564,13 +564,21 @@
             }
         }
         class GalleryModalManager {
-            constructor(modalId, footerContainerId, onSelectCallback, onNavigateVerticalCallback) {
+            constructor(modalId, footerContainerId, onSelectCallback, onNavigateVerticalCallback,
+                        onLayerOpacityCallback = null) {
                 this.modalId = modalId;
                 this.modalElement = document.getElementById(modalId);
                 console.log('DEBUG: GalleryModalManager initialized for', modalId, 'Found Element:', !!this.modalElement); // Log element existence
                 this.footerContainer = document.getElementById(footerContainerId);
                 this.onSelect = onSelectCallback;
                 this.onNavigateVertical = onNavigateVerticalCallback; // New callback
+                // Optional per-thumbnail opacity callback. When provided,
+                // render() adds an opacity slider under each thumb;
+                // dragging the slider calls
+                // onLayerOpacityCallback(item, index, value 0..100) so
+                // the consumer can blend that thumb into the main
+                // modal view at the chosen opacity.
+                this.onLayerOpacity = onLayerOpacityCallback;
                 this.items = [];
                 this.currentIndex = -1;
                 this._boundKeyHandler = this.handleKeydown.bind(this);
@@ -681,10 +689,65 @@
                     labelDiv.style.padding = '0 2px';
                     div.appendChild(labelDiv);
 
+                    // Per-thumbnail opacity slider. When the gallery
+                    // is constructed with an onLayerOpacity callback,
+                    // each thumb gets a tiny range under its label.
+                    // Active thumb defaults to 100, others to 0 — so
+                    // out of the box only the clicked item is visible
+                    // and the user dials in others as overlays.
+                    if (this.onLayerOpacity) {
+                        const sliderWrap = document.createElement('div');
+                        sliderWrap.style.padding = '2px 0';
+                        const slider = document.createElement('input');
+                        slider.type = 'range';
+                        slider.min = '0';
+                        slider.max = '100';
+                        slider.value = (index === this.currentIndex) ? '100' : '0';
+                        slider.className = 'gallery-opacity-slider form-range';
+                        slider.style.width = '100%';
+                        slider.style.height = '4px';
+                        slider.style.padding = '0';
+                        slider.style.margin = '0';
+                        slider.dataset.galleryIndex = index;
+                        slider.title = 'Drag to layer this thumbnail at the chosen opacity';
+                        // Stop clicks/touches on the slider from
+                        // bubbling to the parent thumbnail-onClick
+                        // handler — otherwise dragging would
+                        // accidentally select the thumb as the new
+                        // active layer.
+                        const stop = (e) => e.stopPropagation();
+                        slider.addEventListener('click', stop);
+                        slider.addEventListener('mousedown', stop);
+                        slider.addEventListener('touchstart', stop);
+                        slider.addEventListener('input', (e) => {
+                            const v = parseInt(e.target.value, 10) || 0;
+                            this.onLayerOpacity(item, index, v);
+                        });
+                        sliderWrap.appendChild(slider);
+                        div.appendChild(sliderWrap);
+                    }
+
                     // Tooltip title
                     div.title = item.label || `Item ${index + 1}`;
 
                     this.footerContainer.appendChild(div);
+                });
+            }
+
+            // Reset every per-thumb slider to its default state for
+            // the currently-active index (100% for active, 0% for
+            // others). Called after a click or arrow-nav so the
+            // composition snaps back to "single base layer".
+            resetLayerSliders() {
+                if (!this.footerContainer) return;
+                const sliders = this.footerContainer.querySelectorAll('.gallery-opacity-slider');
+                sliders.forEach((slider) => {
+                    const idx = parseInt(slider.dataset.galleryIndex, 10);
+                    const v = (idx === this.currentIndex) ? 100 : 0;
+                    slider.value = String(v);
+                    if (this.onLayerOpacity) {
+                        this.onLayerOpacity(this.items[idx], idx, v);
+                    }
                 });
             }
 
@@ -699,6 +762,8 @@
                         children[i].classList.remove('active');
                     }
                 }
+                // Re-sync slider values to match the new active index.
+                this.resetLayerSliders();
             }
         }
 
