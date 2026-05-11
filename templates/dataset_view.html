@@ -1324,7 +1324,20 @@
             const wrap = document.getElementById('custom-field-modal-layers');
             if (!wrap) return;
             const img = wrap.querySelector(`img[data-layer-index="${index}"]`);
-            if (img) img.style.opacity = (Math.max(0, Math.min(100, value)) / 100).toString();
+            if (!img) return;
+            const clamped = Math.max(0, Math.min(100, value));
+            img.style.opacity = (clamped / 100).toString();
+            // Stack picked at the bottom, non-picked with visible
+            // opacity at the top — see comparison.html for the
+            // full reasoning (RGB slider was a no-op when depth
+            // was picked because depth sat at z-top).
+            const gal = window.customFieldGallery;
+            const picked = (gal && gal.currentIndex === index);
+            if (picked) {
+                if (wrap.firstChild !== img) wrap.insertBefore(img, wrap.firstChild);
+            } else if (clamped > 0) {
+                if (wrap.lastChild !== img) wrap.appendChild(img);
+            }
         }
 
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',

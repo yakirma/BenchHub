@@ -2688,7 +2688,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         const wrap = document.getElementById('vis-modal-layers');
         if (!wrap) return;
         const img = wrap.querySelector(`img[data-layer-index="${index}"]`);
-        if (img) img.style.opacity = (Math.max(0, Math.min(100, value)) / 100).toString();
+        if (!img) return;
+        const clamped = Math.max(0, Math.min(100, value));
+        img.style.opacity = (clamped / 100).toString();
+        // DOM-order stacking: later siblings render on top. So the
+        // picked layer (currentIndex's slider is at 100) moves to the
+        // front (= bottom of stack), and any non-picked layer with
+        // visible opacity moves to the end (= top of stack), so a
+        // dragged overlay always sits ABOVE the picked base. Without
+        // this, picking depth + dragging the RGB slider had no
+        // visible effect — depth at z-top obscured the RGB layer.
+        const picked = (typeof visGallery !== 'undefined' && visGallery.currentIndex === index);
+        if (picked) {
+            if (wrap.firstChild !== img) wrap.insertBefore(img, wrap.firstChild);
+        } else if (clamped > 0) {
+            if (wrap.lastChild !== img) wrap.appendChild(img);
+        }
     }
 
     const visGallery = new GalleryModalManager('vis-modal', 'vis-gallery-footer',
