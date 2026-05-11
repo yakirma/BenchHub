@@ -525,6 +525,75 @@ def test_lb_page_links_directly_to_notebook_and_bootstrap_downloads(
             in body)
 
 
+@pytest.fixture
+def hf_attached_lb(db_session):
+    """LB with no BH-managed Dataset — just an HF Attachment. This is
+    the shape PWC imports and /hf/<repo> "save as LB" produce."""
+    from app import Attachment
+    lb = Leaderboard(name='beans_hf_lb', summary_metrics='', visibility='public')
+    db.session.add(lb); db.session.flush()
+    att = Attachment(
+        leaderboard_id=lb.id, hf_repo_id='AI-Lab-Makerere/beans',
+        hf_split='train', role='primary',
+        hf_mapping_json=json.dumps([
+            {'column': 'image', 'target_kind': 'image', 'target_field': 'image'},
+            {'column': 'labels', 'target_kind': 'scalar', 'target_field': 'labels'},
+        ]),
+    )
+    db.session.add(att); db.session.commit()
+    return lb
+
+
+def test_static_notebook_streams_hf_dataset_when_no_bh_dataset(hf_attached_lb):
+    """For an HF-attached LB (no BH Dataset row), the static notebook
+    must NOT emit /dataset/<id>/download — that URL 404s for these LBs.
+    It must instead use datasets.load_dataset(repo, split=…) and rename
+    samples with the _VirtualSample convention so the upload path
+    resolves on the BenchHub side."""
+    raw = _static_colab_notebook(hf_attached_lb)
+    nb = json.loads(raw)
+    body = '\n'.join(''.join(c.get('source', [])) for c in nb['cells'])
+
+    # No more BH-dataset download path for HF LBs.
+    assert '/dataset/' not in body or '/dataset/<id>/download' not in body
+    assert "requests.get(f'{BENCHHUB}/dataset/" not in body
+    # The HF streaming entry point is wired up.
+    assert 'from datasets import load_dataset' in body
+    assert "'AI-Lab-Makerere/beans'" in body
+    assert "'train'" in body
+    assert 'streaming=True' in body
+    assert 'trust_remote_code=True' in body
+    # Sample names follow _VirtualSample's s_NNNNNN convention so the
+    # upload-side matcher finds them.
+    assert "f's_{i:06d}'" in body
+    # Pip install includes the `datasets` library.
+    install_cell = next(
+        ''.join(c['source']) for c in nb['cells']
+        if c.get('cell_type') == 'code' and '!pip' in ''.join(c['source'])
+    )
+    assert 'datasets' in install_cell
+
+
+def test_bootstrap_py_for_hf_attached_lb_does_not_fetch_bh_dataset(
+    client, db_session, hf_attached_lb,
+):
+    """The downloadable .py mirrors the static .ipynb for HF-attached
+    LBs. Critically, it MUST NOT emit `/dataset/<id>/download` — that
+    URL 404s for HF LBs (the user reported this with beans_leaderboard:
+    'tries to download the dataset from BH while the dataset is
+    actually in hf')."""
+    resp = client.get(f'/leaderboard/{hf_attached_lb.id}/colab_bootstrap.py')
+    assert resp.status_code == 200
+    body = resp.data.decode()
+    compile(body, 'beans_submit.py', 'exec')
+
+    assert '/dataset/<id>/download' not in body
+    assert "requests.get(f'{BENCHHUB}/dataset/" not in body
+    assert 'load_dataset' in body
+    assert "'AI-Lab-Makerere/beans'" in body
+    assert "f's_{i:06d}'" in body
+
+
 def test_colab_bootstrap_route_returns_runnable_python(
     client, db_session, lb_with_one_dataset,
 ):

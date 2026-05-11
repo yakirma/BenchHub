@@ -5665,7 +5665,7 @@ def _auto_tags_for_hf(repo_id, hf_token=None, revision=None):
 # self-invalidated via a structure signature, so changing the LB's
 # datasets / metrics triggers a re-generation on the next request.
 
-_COLAB_TEMPLATE_VERSION = 'v6-structured-pred-fields'
+_COLAB_TEMPLATE_VERSION = 'v7-static-hf-attached'
 
 
 def _lb_structure_signature(lb):
@@ -5701,15 +5701,41 @@ def _lb_structure_signature(lb):
 def _static_colab_notebook(lb):
     """Fallback notebook used when no ANTHROPIC_API_KEY is set or the
     LLM call fails. Generic enough to work for any LB shape — the user
-    edits the model placeholder + the per-sample prediction format."""
+    edits the model placeholder + the per-sample prediction format.
+
+    Two dataset-source shapes:
+      - BH-managed: `lb.datasets[0]` exists; fetch via /dataset/<id>/download.
+      - HF-attached (PWC imports, /hf/... LBs): no BH Dataset row;
+        stream rows via `datasets.load_dataset(repo, split=...)`. Sample
+        names follow BenchHub's `_VirtualSample` convention (`s_000000`,
+        `s_000001`, ...) so the submission upload path resolves correctly.
+    """
     ds = lb.datasets[0] if lb.datasets else None
     ds_name = ds.name if ds else '<dataset>'
     base_url = os.environ.get('BENCHHUB_BASE_URL', 'https://benchhub.fly.dev').rstrip('/')
+    # Detect HF attachment (mirrors the LLM path's discovery in _llm_colab_notebook).
+    hf_attachment = None
+    for att in (lb.attachments or []):
+        if (getattr(att, 'kind', None) == 'hf'
+                and att.role == 'primary' and att.hf_repo_id):
+            hf_attachment = att
+            break
+    if hf_attachment:
+        ds_name = f"{hf_attachment.hf_repo_id} (HF)"
     sample_field_summary = []
     if ds and ds.samples:
         first = ds.samples[0]
         for cf in (first.custom_fields or [])[:8]:
             sample_field_summary.append(f"- `{cf.name}` ({cf.field_type})")
+    elif hf_attachment:
+        try:
+            hf_mapping = json.loads(hf_attachment.hf_mapping_json or '[]')
+        except (TypeError, ValueError):
+            hf_mapping = []
+        for m in hf_mapping[:8]:
+            col = m.get('column') or '?'
+            kind = m.get('target_kind') or '?'
+            sample_field_summary.append(f"- `{col}` ({kind})")
     field_block = '\n'.join(sample_field_summary) or '- *(no custom fields detected)*'
     metric_names = [
         lm.target_name or (lm.global_metric.name if lm.global_metric else '?')
@@ -5764,52 +5790,94 @@ def _static_colab_notebook(lb):
             },
             {
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-                "source": [
-                    "# >>> RUN-LOCALLY BOOTSTRAP <<<\n",
-                    "# This cell is a no-op on Colab (Colab already has the\n",
-                    "# notebook + can install pip packages). Copy it into a\n",
-                    "# `bootstrap.py` on your machine to set up a local run.\n",
-                    "import os, subprocess, sys, urllib.request\n",
-                    f"BENCHHUB = '{base_url}'\n",
-                    f"LEADERBOARD_ID = {lb.id}\n",
-                    f"DATASET_ID = {ds.id if ds else 'None'}\n",
-                    "if 'google.colab' not in sys.modules:\n",
-                    "    # Local run: fetch the notebook + dataset GT zip, install deps.\n",
-                    "    nb_url = f'{BENCHHUB}/leaderboard/{LEADERBOARD_ID}/colab_notebook.ipynb'\n",
-                    "    urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n",
-                    "    if DATASET_ID is not None:\n",
-                    "        urllib.request.urlretrieve(\n",
-                    "            f'{BENCHHUB}/dataset/{DATASET_ID}/download', 'gt.zip')\n",
-                    "    subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n",
-                    "                           '-q', 'requests', 'numpy', 'pillow'])\n",
-                    "    print('Saved submit.ipynb + gt.zip. Open submit.ipynb in '\n",
-                    "          'Jupyter or VS Code, then run the remaining cells.')\n",
-                    "else:\n",
-                    "    print('On Colab — skipping local bootstrap.')\n",
-                ],
+                "source": (
+                    [
+                        "# >>> RUN-LOCALLY BOOTSTRAP <<<\n",
+                        "# This cell is a no-op on Colab. The downloadable .py\n",
+                        "# version (LB page → Download submit script) already is\n",
+                        "# the local entry point and skips this cell entirely.\n",
+                        "import os, subprocess, sys, urllib.request\n",
+                        f"BENCHHUB = '{base_url}'\n",
+                        f"LEADERBOARD_ID = {lb.id}\n",
+                        "if 'google.colab' not in sys.modules:\n",
+                        "    nb_url = f'{BENCHHUB}/leaderboard/{LEADERBOARD_ID}/colab_notebook.ipynb'\n",
+                        "    urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n",
+                        "    subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n",
+                        "                           '-q', 'requests', 'numpy', 'pillow', 'datasets'])\n",
+                        "    print('Saved submit.ipynb. Open in Jupyter / VS Code, '\n",
+                        "          'then run the remaining cells.')\n",
+                        "else:\n",
+                        "    print('On Colab — skipping local bootstrap.')\n",
+                    ] if hf_attachment else [
+                        "# >>> RUN-LOCALLY BOOTSTRAP <<<\n",
+                        "# This cell is a no-op on Colab (Colab already has the\n",
+                        "# notebook + can install pip packages). Copy it into a\n",
+                        "# `bootstrap.py` on your machine to set up a local run.\n",
+                        "import os, subprocess, sys, urllib.request\n",
+                        f"BENCHHUB = '{base_url}'\n",
+                        f"LEADERBOARD_ID = {lb.id}\n",
+                        f"DATASET_ID = {ds.id if ds else 'None'}\n",
+                        "if 'google.colab' not in sys.modules:\n",
+                        "    # Local run: fetch the notebook + dataset GT zip, install deps.\n",
+                        "    nb_url = f'{BENCHHUB}/leaderboard/{LEADERBOARD_ID}/colab_notebook.ipynb'\n",
+                        "    urllib.request.urlretrieve(nb_url, 'submit.ipynb')\n",
+                        "    if DATASET_ID is not None:\n",
+                        "        urllib.request.urlretrieve(\n",
+                        "            f'{BENCHHUB}/dataset/{DATASET_ID}/download', 'gt.zip')\n",
+                        "    subprocess.check_call([sys.executable, '-m', 'pip', 'install',\n",
+                        "                           '-q', 'requests', 'numpy', 'pillow'])\n",
+                        "    print('Saved submit.ipynb + gt.zip. Open submit.ipynb in '\n",
+                        "          'Jupyter or VS Code, then run the remaining cells.')\n",
+                        "else:\n",
+                        "    print('On Colab — skipping local bootstrap.')\n",
+                    ]
+                ),
             },
             {
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-                "source": [
-                    "!pip -q install requests numpy pillow\n",
-                    "import os, io, json, zipfile, requests, numpy as np\n",
-                    "from PIL import Image\n",
-                    f"BENCHHUB = '{base_url}'\n",
-                    f"LEADERBOARD_ID = {lb.id}\n",
-                    f"DATASET_NAME = '{ds_name}'\n",
-                ],
+                "source": (
+                    [
+                        "!pip -q install requests numpy pillow datasets\n",
+                        "import os, io, json, zipfile, itertools, requests, numpy as np\n",
+                        "from PIL import Image\n",
+                        f"BENCHHUB = '{base_url}'\n",
+                        f"LEADERBOARD_ID = {lb.id}\n",
+                        f"DATASET_NAME = '{ds_name}'\n",
+                    ] if hf_attachment else [
+                        "!pip -q install requests numpy pillow\n",
+                        "import os, io, json, zipfile, requests, numpy as np\n",
+                        "from PIL import Image\n",
+                        f"BENCHHUB = '{base_url}'\n",
+                        f"LEADERBOARD_ID = {lb.id}\n",
+                        f"DATASET_NAME = '{ds_name}'\n",
+                    ]
+                ),
             },
             {
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-                "source": [
-                    "# 1. Fetch the dataset ZIP from BenchHub so we know what samples to predict on.\n",
-                    "ds_zip = requests.get(f'{BENCHHUB}/dataset/" + (str(ds.id) if ds else "<id>") + "/download', timeout=120).content\n",
-                    "open('/tmp/gt.zip', 'wb').write(ds_zip)\n",
-                    "import zipfile as zf\n",
-                    "with zf.ZipFile('/tmp/gt.zip') as z:\n",
-                    "    z.extractall('/tmp/gt')\n",
-                    "print('Extracted to /tmp/gt/'); print(os.listdir('/tmp/gt'))\n",
-                ],
+                "source": (
+                    [
+                        "# 1. Stream samples directly from the HuggingFace dataset.\n",
+                        "#    HF-attached LBs have no BenchHub ZIP — the GT lives on HF.\n",
+                        "from datasets import load_dataset\n",
+                        "CAP = 200  # bump if your model is fast or you have GPU runtime\n",
+                        f"ds_stream = load_dataset({hf_attachment.hf_repo_id!r},\n",
+                        f"                        split={(hf_attachment.hf_split or 'train')!r},\n",
+                        "                        streaming=True, trust_remote_code=True)\n",
+                        "HF_ROWS = list(itertools.islice(ds_stream, CAP))\n",
+                        f"print('Loaded', len(HF_ROWS), 'rows from "
+                        f"{hf_attachment.hf_repo_id} "
+                        f"(split={hf_attachment.hf_split or 'train'})')\n",
+                    ] if hf_attachment else [
+                        "# 1. Fetch the dataset ZIP from BenchHub so we know what samples to predict on.\n",
+                        "ds_zip = requests.get(f'{BENCHHUB}/dataset/" + (str(ds.id) if ds else "<id>") + "/download', timeout=120).content\n",
+                        "open('/tmp/gt.zip', 'wb').write(ds_zip)\n",
+                        "import zipfile as zf\n",
+                        "with zf.ZipFile('/tmp/gt.zip') as z:\n",
+                        "    z.extractall('/tmp/gt')\n",
+                        "print('Extracted to /tmp/gt/'); print(os.listdir('/tmp/gt'))\n",
+                    ]
+                ),
             },
             {
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
@@ -5837,29 +5905,48 @@ def _static_colab_notebook(lb):
             },
             {
                 "cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
-                "source": [
-                    "# 3. Walk the GT folder, run predictions, build a submission folder in BenchHub layout.\n",
-                    "from pathlib import Path\n",
-                    "import shutil\n",
-                    "GT = Path('/tmp/gt')\n",
-                    "OUT = Path('/tmp/submission')\n",
-                    "if OUT.exists(): shutil.rmtree(OUT)\n",
-                    "OUT.mkdir(parents=True)\n",
-                    "# Discover sample names from the first metric_*/ or image_*/ folder.\n",
-                    "sample_names = set()\n",
-                    "for sub in GT.iterdir():\n",
-                    "    if sub.is_dir() and sub.name not in {'__MACOSX'}:\n",
-                    "        for f in sub.iterdir():\n",
-                    "            sample_names.add(f.stem.split('_')[0])  # strip W xH suffix from raw_/\n",
-                    "sample_names = sorted(sample_names)\n",
-                    "print(f'Found {len(sample_names)} samples')\n",
-                    "\n",
-                    "PRED_KIND = {f['name']: f['kind'] for f in PRED_FIELDS}\n",
-                    "from PIL import Image\n",
-                    "for name in sample_names:\n",
-                    "    # Build per-sample inputs by reading whatever GT files match.\n",
-                    "    inputs = {}  # populate with reads as needed\n",
-                    "    preds = my_model(name, inputs)\n",
+                "source": (
+                    [
+                        "# 3. Iterate the HF dataset rows, run predictions, build a submission folder.\n",
+                        "#    Sample names follow BenchHub's _VirtualSample convention\n",
+                        "#    (s_000000, s_000001, ...) so the upload path resolves.\n",
+                        "from pathlib import Path\n",
+                        "import shutil\n",
+                        "OUT = Path('/tmp/submission')\n",
+                        "if OUT.exists(): shutil.rmtree(OUT)\n",
+                        "OUT.mkdir(parents=True)\n",
+                        "PRED_KIND = {f['name']: f['kind'] for f in PRED_FIELDS}\n",
+                        "from PIL import Image\n",
+                        "for i, row in enumerate(HF_ROWS):\n",
+                        "    name = f's_{i:06d}'\n",
+                        "    # row is a dict of {column_name: value}. Pass it as-is; your\n",
+                        "    # my_model() can pick out the inputs it needs.\n",
+                        "    preds = my_model(name, dict(row))\n",
+                    ] if hf_attachment else [
+                        "# 3. Walk the GT folder, run predictions, build a submission folder in BenchHub layout.\n",
+                        "from pathlib import Path\n",
+                        "import shutil\n",
+                        "GT = Path('/tmp/gt')\n",
+                        "OUT = Path('/tmp/submission')\n",
+                        "if OUT.exists(): shutil.rmtree(OUT)\n",
+                        "OUT.mkdir(parents=True)\n",
+                        "# Discover sample names from the first metric_*/ or image_*/ folder.\n",
+                        "sample_names = set()\n",
+                        "for sub in GT.iterdir():\n",
+                        "    if sub.is_dir() and sub.name not in {'__MACOSX'}:\n",
+                        "        for f in sub.iterdir():\n",
+                        "            sample_names.add(f.stem.split('_')[0])  # strip W xH suffix from raw_/\n",
+                        "sample_names = sorted(sample_names)\n",
+                        "print(f'Found {len(sample_names)} samples')\n",
+                        "\n",
+                        "PRED_KIND = {f['name']: f['kind'] for f in PRED_FIELDS}\n",
+                        "from PIL import Image\n",
+                        "for name in sample_names:\n",
+                        "    # Build per-sample inputs by reading whatever GT files match.\n",
+                        "    inputs = {}  # populate with reads as needed\n",
+                        "    preds = my_model(name, inputs)\n",
+                    ]
+                ) + [
                     "    # Each predicted field becomes its own folder. The kind decides\n",
                     "    # the file extension so the BenchHub engine loads it correctly:\n",
                     "    #   scalar → <sample>.txt              (float)\n",
