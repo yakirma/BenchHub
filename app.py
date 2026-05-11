@@ -2706,7 +2706,7 @@ def _bulk_import_pwc_benchmarks(*, max_imports=25, min_results=10,
     """
     import sqlite3
     from pwc_client import (
-        _index_path, _hf_repo_from_links, get_evaluation,
+        _index_path, _hf_repo_from_links, get_evaluation, suggest_hf_repo,
     )
 
     _log = (logger or print)
@@ -2744,11 +2744,27 @@ def _bulk_import_pwc_benchmarks(*, max_imports=25, min_results=10,
     }
 
     # 3. Walk candidates, attempt import for each. Cap when we reach
-    # max_imports successful creations.
+    # max_imports successful creations. Two-tier HF-repo inference:
+    # cheap `_hf_repo_from_links` from the PWC archive's link
+    # metadata first; fall back to `suggest_hf_repo` (queries HF Hub)
+    # when the archive doesn't carry an HF link, which is the common
+    # case. Cap the suggest-fallback attempts so a 1500-candidate run
+    # doesn't burn HF's anonymous quota chasing dead-end names.
+    suggest_budget = max(max_imports * 8, 100)
+    suggest_attempts = 0
     for eval_id, dataset, links_json, n_results in candidates:
         if len(out['imported']) >= max_imports:
             break
         hf_repo = _hf_repo_from_links(links_json)
+        if not hf_repo and dataset and suggest_attempts < suggest_budget:
+            suggest_attempts += 1
+            try:
+                guessed, _alts = suggest_hf_repo(dataset)
+            except Exception as e:
+                guessed = None
+                _log(f"suggest_hf_repo({dataset!r}) raised: {e}")
+            if guessed:
+                hf_repo = guessed
         if not hf_repo:
             out['skipped'].append((eval_id, dataset, 'no inferable HF repo'))
             continue
