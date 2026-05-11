@@ -11,17 +11,76 @@
 
 {% block content %}
 <style>
+    /* Multi-stop pastel wash with the brand violet leading, a hot pink
+       on the right, and warm amber bleeding in from below. Tuned to
+       barely register on background but lift the page above flat
+       white. fly.io's vibe in spirit. */
     .hero-bg {
+        position: relative;
+        overflow: hidden;
         background:
-            radial-gradient(circle at 20% -10%, rgba(13, 110, 253, 0.10), transparent 60%),
-            radial-gradient(circle at 90% 10%, rgba(255, 193, 7, 0.10), transparent 50%);
+            radial-gradient(900px 500px at 12% -10%, rgba(124, 58, 237, 0.18), transparent 60%),
+            radial-gradient(800px 500px at 95%  8%, rgba(255,   0, 138, 0.13), transparent 60%),
+            radial-gradient(700px 400px at 50% 110%, rgba(255, 200,  58, 0.13), transparent 55%);
     }
+    /* Decorative floating shapes — pure SVG, fixed in viewport,
+       behind content. pointer-events:none so they never intercept
+       clicks. */
+    .hero-decoration {
+        position: absolute;
+        pointer-events: none;
+        opacity: 0.85;
+        z-index: 0;
+    }
+    .hero-content { position: relative; z-index: 1; }
+
+    /* Editorial headline: pull Fraunces big with a slim violet→pink
+       gradient on the highlight phrase. Tighter line-height than
+       Bootstrap's default for the display sizes. */
+    .hero-headline {
+        font-family: 'Fraunces', 'Charter', 'Georgia', serif;
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        line-height: 1.05;
+        font-size: clamp(2.5rem, 5.5vw, 4.5rem);
+        color: #281950;
+    }
+    .hero-headline .accent {
+        background: linear-gradient(95deg, #7c3aed 0%, #c026d3 45%, #ff008a 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .hero-sub {
+        font-size: 1.2rem;
+        color: #564b80;
+        max-width: 38rem;
+        margin: 0 auto;
+    }
+    /* Big chunky pill CTA. Picks up the violet primary from base.html
+       but adds a soft glow to feel a touch more like the Fly hero
+       buttons. */
+    .hero-cta-primary {
+        padding: 0.85rem 1.6rem;
+        font-size: 1.05rem;
+        font-weight: 500;
+        box-shadow: 0 8px 24px -8px rgba(124, 58, 237, 0.45);
+    }
+    .hero-cta-primary:hover {
+        box-shadow: 0 10px 28px -8px rgba(124, 58, 237, 0.55);
+    }
+    .hero-cta-secondary {
+        padding: 0.85rem 1.6rem;
+        font-size: 1.05rem;
+        font-weight: 500;
+    }
+
     .feature-icon {
         width: 3rem; height: 3rem;
         display: inline-flex; align-items: center; justify-content: center;
         border-radius: 0.75rem;
-        background-color: var(--bs-primary-bg-subtle);
-        color: var(--bs-primary);
+        background-color: rgba(124, 58, 237, 0.10);
+        color: #7c3aed;
         font-size: 1.5rem;
     }
     .leaderboard-card {
@@ -29,37 +88,63 @@
     }
     .leaderboard-card:hover {
         transform: translateY(-2px);
-        box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.08);
+        box-shadow: 0 0.5rem 1.5rem rgba(40, 25, 80, 0.10);
     }
 </style>
 
 <!-- ===================== Hero ===================== -->
 <section class="hero-bg py-5 mb-5">
-    <div class="container py-md-4">
+    {# Floating background SVGs: a tilted-grid-of-dots on the left
+       (the geometric "platform" feel) and a soft asterisk on the
+       right (mirrors fly.io's whimsical accent shapes). Both fade
+       on mobile where space is tight. #}
+    <svg class="hero-decoration d-none d-md-block" style="top: 8%; left: 3%; width: 120px; height: 120px;"
+         viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <g fill="#7c3aed" opacity="0.35">
+            {% for i in range(6) %}
+            {% for j in range(6) %}
+            <circle cx="{{ 10 + j * 18 }}" cy="{{ 10 + i * 18 }}" r="2"></circle>
+            {% endfor %}
+            {% endfor %}
+        </g>
+    </svg>
+    <svg class="hero-decoration d-none d-md-block" style="top: 12%; right: 6%; width: 90px; height: 90px;"
+         viewBox="0 0 90 90" xmlns="http://www.w3.org/2000/svg">
+        <g fill="#ff008a" opacity="0.5">
+            <circle cx="45" cy="45" r="6"></circle>
+            <path d="M45 10 L45 80 M10 45 L80 45 M20 20 L70 70 M70 20 L20 70" stroke="#ff008a" stroke-width="3" stroke-linecap="round" fill="none"></path>
+        </g>
+    </svg>
+    <svg class="hero-decoration d-none d-lg-block" style="bottom: 8%; right: 12%; width: 70px; height: 70px;"
+         viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="58" height="58" rx="14" fill="none" stroke="#fd4f00" stroke-width="3" opacity="0.45" transform="rotate(15 35 35)"></rect>
+    </svg>
+
+    <div class="container py-md-5 hero-content">
         <div class="row align-items-center justify-content-center text-center">
-            <div class="col-lg-8">
-                <h1 class="display-3 fw-bold mb-3">
-                    Benchmark your model
-                    <span class="text-primary">in 60 seconds.</span>
+            <div class="col-lg-9">
+                <h1 class="hero-headline mb-4">
+                    Benchmark your model<br>
+                    <span class="accent">in 60 seconds.</span>
                 </h1>
-                <p class="lead text-body-secondary mb-4">
+                <p class="hero-sub mb-4">
                     Pick a dataset, define your metrics in Python, upload predictions,
                     and see how your model ranks. Open-source. No credit card.
                 </p>
 
                 <div class="d-flex flex-wrap gap-3 justify-content-center">
                     {% if current_user %}
-                    <a href="{{ url_for('home') }}" class="btn btn-primary btn-lg px-4">
+                    <a href="{{ url_for('home') }}" class="btn btn-primary hero-cta-primary">
                         <i class="bi bi-speedometer2 me-2"></i>Go to your dashboard
                     </a>
-                    <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary btn-lg px-4">
+                    <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary hero-cta-secondary">
                         <i class="bi bi-database me-2"></i>Browse datasets
                     </a>
                     {% else %}
-                    <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg px-4">
+                    <a href="{{ url_for('login') }}" class="btn btn-primary hero-cta-primary">
                         <i class="bi bi-github me-2"></i>Get started with GitHub
                     </a>
-                    <a href="#featured" class="btn btn-outline-secondary btn-lg px-4">
+                    <a href="#featured" class="btn btn-outline-secondary hero-cta-secondary">
                         <i class="bi bi-eye me-2"></i>See the leaderboards
                     </a>
                     {% endif %}
