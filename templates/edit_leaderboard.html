@@ -200,9 +200,15 @@
                             datasets and bench cache stay untouched, but mirrored
                             (PWC-imported) submissions and their scores are gone.
                         </p>
+                        {# Don't interpolate leaderboard.name into the JS string here:
+                           |tojson emits literal `"`s that terminate the onsubmit="..."
+                           HTML attribute early, leaving a syntactically-broken handler
+                           that silently swallows the click. The LB name is already
+                           visible in the page <h1>; the confirm message just needs to
+                           be unambiguous. #}
                         <form method="post"
                               action="{{ url_for('delete_leaderboard', leaderboard_id=leaderboard.id) }}"
-                              onsubmit="return confirm('Permanently delete leaderboard {{ leaderboard.name|tojson }} and all its submissions? This cannot be undone.');">
+                              onsubmit="return confirm('Permanently delete this leaderboard and all its submissions? This cannot be undone.');">
                             <button type="submit" class="btn btn-outline-danger w-100">
                                 <i class="bi bi-trash me-1"></i>Delete this leaderboard
                             </button>
