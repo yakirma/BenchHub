@@ -12210,9 +12210,15 @@ def serve_gt_viz(lb_id, col, sample_name):
     path = cache_get(db.session, CacheEntry, cache_root=cache_root, key=key)
     if not path or not os.path.exists(path) or os.path.getsize(path) == 0:
         abort(404)
+    # max_age=60 + Flask's default conditional GET (If-Modified-Since +
+    # ETag) gives us cheap revalidation: browser caches for a minute,
+    # then sends If-Modified-Since. If the cache entry hasn't been
+    # regenerated (file mtime unchanged), the server returns 304 with
+    # no body. After a wipe-and-repopulate (e.g. fixing a black-depth
+    # render), the mtime moves and the next refresh sees the new bytes
+    # — instead of being stuck with stale bytes for a full day.
     return send_file(
-        path, mimetype='image/jpeg',
-        max_age=86400,  # 1 day — cache keys are revision-stable.
+        path, mimetype='image/jpeg', max_age=60,
     )
 
 
