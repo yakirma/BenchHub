@@ -213,6 +213,17 @@ oauth.register(
     api_base_url='https://api.github.com/',
     client_kwargs={'scope': 'read:user user:email'},
 )
+# Google OAuth — same Authlib pattern. Configure with
+# GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET via `fly secrets set`.
+# Authorized redirect URI on the Google Cloud Console must match
+# `https://<host>/login/google/callback`.
+oauth.register(
+    name='google',
+    client_id=os.environ.get('GOOGLE_CLIENT_ID'),
+    client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'},
+)
 
 
 # Helper to determine column priority for sorting
@@ -2037,6 +2048,63 @@ def oauth_callback_github():
     flash(f"Logged in as {user.display_name}.", "success")
     next_url = session.pop('oauth_next', None) or url_for('home')
     return redirect(next_url)
+
+
+@app.route('/login/google')
+def login_google():
+    """OIDC-flow login via Google. Configure with GOOGLE_CLIENT_ID +
+    GOOGLE_CLIENT_SECRET (Fly secrets in prod). Authorized redirect
+    URI on the Google Cloud Console: <site>/oauth/callback/google."""
+    if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
+        return ("Google OAuth not configured: set GOOGLE_CLIENT_ID and "
+                "GOOGLE_CLIENT_SECRET (env vars or Fly secrets)."), 503
+    session['oauth_next'] = request.args.get('next') or url_for('home')
+    redirect_uri = url_for('oauth_callback_google', _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.route('/oauth/callback/google')
+def oauth_callback_google():
+    try:
+        token = oauth.google.authorize_access_token()
+    except Exception as e:
+        flash(f"Google login failed: {e}", "danger")
+        return redirect(url_for('login'))
+    # Authlib + Google OIDC parses the id_token into the token dict.
+    profile = (token.get('userinfo') if isinstance(token, dict) else None) or {}
+    if not profile:
+        try:
+            profile = oauth.google.parse_id_token(token, nonce=None)
+        except Exception:
+            profile = {}
+    oauth_sub = str(profile.get('sub') or '')
+    email = profile.get('email')
+    if not oauth_sub or not email:
+        flash("Google login succeeded but no email/sub was returned.", "warning")
+        return redirect(url_for('login'))
+
+    user = User.query.filter_by(oauth_provider='google', oauth_sub=oauth_sub).first()
+    if user is None:
+        user = User(
+            email=email,
+            display_name=profile.get('name') or email.split('@')[0],
+            avatar_url=profile.get('picture'),
+            oauth_provider='google',
+            oauth_sub=oauth_sub,
+        )
+        db.session.add(user)
+    else:
+        user.email = email
+        user.display_name = profile.get('name') or user.display_name
+        user.avatar_url = profile.get('picture') or user.avatar_url
+    user.last_login_at = datetime.utcnow()
+    if (user.email or '').strip().lower() in _admin_emails() and not user.is_admin:
+        user.is_admin = True
+    db.session.commit()
+
+    session['user_id'] = user.id
+    flash(f"Logged in as {user.display_name}.", "success")
+    return redirect(session.pop('oauth_next', None) or url_for('home'))
 
 
 @app.route('/logout', methods=['POST'])
@@ -4794,6 +4862,11 @@ def create_global_metric():
             flash('Metric code is required and cannot be the ZIP placeholder.', 'danger')
             return redirect(url_for('metrics_view'))
 
+        # User-created metrics default to private. Admins (BENCHHUB_ADMIN_
+        # EMAILS / is_admin) default to public so platform-curated
+        # metrics ship visible to everyone immediately. The owner can
+        # flip visibility from the detail pane anytime.
+        default_vis = 'public' if is_admin(g.current_user) else 'private'
         metric = GlobalMetric(
             name=name,
             description=description,
@@ -4801,6 +4874,7 @@ def create_global_metric():
             is_aggregated=is_aggregated,
             accepts_aggregated_inputs=accepts_aggregated_inputs,
             owner_user_id=g.current_user.id,
+            visibility=default_vis,
         )
         db.session.add(metric)
         db.session.commit()
@@ -4911,6 +4985,40 @@ def visualizations_view():
         selected=selected,
     )
 
+@app.route('/global_metric/<int:metric_id>/visibility', methods=['POST'])
+@login_required
+@owner_required(GlobalMetric, 'metric_id')
+def set_global_metric_visibility(metric_id):
+    """Flip a user-owned metric between 'private' and 'public'. Public
+    metrics show up in the global library for everyone; private stay
+    in the owner's view (and admins')."""
+    metric = GlobalMetric.query.get_or_404(metric_id)
+    target = (request.form.get('visibility') or '').strip()
+    if target not in ('public', 'private', 'unlisted'):
+        flash("Invalid visibility.", "warning")
+    else:
+        metric.visibility = target
+        db.session.commit()
+        flash(f'"{metric.name}" is now {target}.', "success")
+    return redirect(url_for('metrics_view', selected=metric.id))
+
+
+@app.route('/global_visualization/<int:viz_id>/visibility', methods=['POST'])
+@login_required
+@owner_required(GlobalVisualization, 'viz_id')
+def set_global_visualization_visibility(viz_id):
+    """Flip a user-owned visualization between private / public / unlisted."""
+    viz = GlobalVisualization.query.get_or_404(viz_id)
+    target = (request.form.get('visibility') or '').strip()
+    if target not in ('public', 'private', 'unlisted'):
+        flash("Invalid visibility.", "warning")
+    else:
+        viz.visibility = target
+        db.session.commit()
+        flash(f'"{viz.name}" is now {target}.', "success")
+    return redirect(url_for('visualizations_view', selected=viz.id))
+
+
 @app.route('/create_visualization', methods=['POST'])
 @login_required
 def create_visualization():
@@ -4935,7 +5043,9 @@ def create_visualization():
             flash('Visualization code is required.', 'danger')
             return redirect(url_for('visualizations_view'))
         
-        # Create new visualization
+        # User-created visualizations default to private. Admins default
+        # to public (curated content). Toggle via the detail pane.
+        default_vis = 'public' if is_admin(g.current_user) else 'private'
         new_viz = GlobalVisualization(
             name=name,
             description=description,
@@ -4943,6 +5053,7 @@ def create_visualization():
             is_aggregated='is_aggregated' in request.form,
             accepts_aggregated_inputs='accepts_aggregated_inputs' in request.form,
             owner_user_id=g.current_user.id,
+            visibility=default_vis,
         )
         
         db.session.add(new_viz)

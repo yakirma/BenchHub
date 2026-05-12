@@ -161,6 +161,19 @@ The pytest suite under `tests/` already covers most of the regression-prone surf
 
 Run with `pytest tests/` (not bare `pytest`, to avoid the ad-hoc root-level `test_chain*.py` files).
 
+## User-owned content visibility
+- `GlobalMetric` and `GlobalVisualization` rows created by a non-admin user default to `visibility='private'`. Admins (BENCHHUB_ADMIN_EMAILS / `is_admin` flag) default their new rows to `public`. Owners can flip via the detail-pane select on `/metrics?selected=<id>` and `/visualizations?selected=<id>` (routes: `set_global_metric_visibility`, `set_global_visualization_visibility`).
+- `Leaderboard.canonicality` ('public'/'personal') is legacy — the /explore filter is now on `Leaderboard.visibility == 'public'`. Multiple public LBs per HF repo are allowed; `canonical_for_repo` is informational metadata, NOT a uniqueness gate.
+
+## OAuth
+- GitHub + Google are wired through Authlib (`oauth.github`, `oauth.google`). Configure with `GITHUB_CLIENT_ID/SECRET` and `GOOGLE_CLIENT_ID/SECRET` (env vars in dev, `fly secrets set` in prod). Google's authorized redirect URI on the Cloud Console must be `<site>/oauth/callback/google`.
+- Apple sign-in is NOT wired up. It needs a signing key + team ID + key ID from the Apple Developer portal, which isn't something the repo can generate. When you set that up, follow the same pattern: register an `oauth.apple` Authlib client with a JWT-generated `client_secret` and add `/login/apple` + `/oauth/callback/apple` routes mirroring the Google ones.
+
+## Depth visualization
+- Depth-kind GT thumbs cache as **8-bit grayscale PNG** (normalized 0..255 of the source range). Don't burn a colormap at cache time.
+- `/api/gt_viz/<lb_id>/<col>/<sample_name>?cmap=<name>` recolors the gray PNG at view time. Supported names: `turbo`, `jet`, `viridis`, `magma`, `inferno`, `plasma`, `gray`, `normal`. Unknown names fall back to turbo. `normal` computes a Sobel-based tangent-space surface normal map; it's qualitative, not metric (no depth-unit calibration).
+- The comparison view's depth column header has a colormap select that rewrites every `.depth-img[data-col-key]` src in that column on change. `serve_custom_field_image` forwards `?cmap=` through its redirect to `serve_gt_viz` since Flask doesn't carry query args across `redirect()` automatically.
+
 ## Working notes for future sessions
 - **Write decisions down as they happen.** If a fix involves a non-obvious gotcha (CSS leak, framework default, schema quirk, ordering trap), append a bullet under the appropriate section in this file *during the change*, not after. Section anchors: "Things to be careful with", "Frontend conventions", "HF dataset attachment patterns", "Comparison view gotchas", "Metric authoring", "Migration patterns".
 - **Treat CLAUDE.md as the durable memory.** Commit messages document one change; this file documents what to know to make the NEXT change.
