@@ -9198,6 +9198,69 @@ def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
     )
 
 
+# Preference order for which HF split to stream when populating GT.
+# Test sets are the cleanest reference for benchmarking — published
+# numbers usually report against test. Validation is the runner-up
+# (held out, but sometimes used during development). Train is the
+# fallback only when neither is available, since it's contaminated
+# with anything a model was trained on. The stored `att.hf_split` is
+# treated as a hint, not a hard preference, because PWC bulk imports
+# default every attachment to 'train' regardless of what's actually
+# present in the source repo.
+_HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']
+
+
+def _resolve_hf_split_and_load(att, load_fn, *, on_log=None):
+    """Try splits in `_HF_SPLIT_PREFERENCE` order, with `att.hf_split`
+    moved to the front when it's already in that list (preserves an
+    explicit user override). Returns the first split that loads, or
+    None if every option raises. Auth / gated errors propagate."""
+    def _log(msg):
+        if on_log:
+            on_log(msg)
+    order = list(_HF_SPLIT_PREFERENCE)
+    hint = (att.hf_split or '').strip()
+    if hint and hint in order:
+        order.remove(hint)
+        order.insert(0, hint)
+    elif hint:
+        # User picked something exotic (e.g. 'train_distant'); honor it
+        # first, then fall through to the preference order.
+        order.insert(0, hint)
+    # Also pull the list of available splits out of the first error
+    # response if we get one — saves a few HTTP round-trips and lets
+    # us try splits we didn't pre-list (e.g. 'train_annotated').
+    seen_available = set()
+    last_error = None
+    for split in order:
+        if not split:
+            continue
+        try:
+            ds = load_fn(split)
+            _log(f"using split={split!r} for {att.hf_repo_id}")
+            return ds
+        except ValueError as e:
+            last_error = e
+            msg = str(e)
+            import re as _re
+            m = _re.search(r"Available splits:\s*\[(.*?)\]", msg)
+            if m:
+                for s in m.group(1).split(','):
+                    s = s.strip(" '\"")
+                    if s and s not in order:
+                        order.append(s)
+                        seen_available.add(s)
+        except Exception as e:
+            low = str(e).lower()
+            if ('401' in str(e) or 'gated' in low or 'authenticated' in low
+                    or 'restricted' in low or 'access denied' in low):
+                raise
+            last_error = e
+            continue
+    _log(f"all-split load failed for {att.hf_repo_id}: {last_error}")
+    return None
+
+
 def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
     """Stream the HF dataset behind `att` and yield _VirtualSample
     objects, one per row, capped at `cap` (or the attachment's
@@ -9213,47 +9276,9 @@ def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
             streaming=True, revision=att.hf_revision,
             token=hf_token, trust_remote_code=True,
         )
-    try:
-        ds = _load(att.hf_split or 'train')
-    except ValueError as e:
-        # "Bad split: train. Available splits: ['validation', 'test', ...]"
-        # PWC bulk imports default to split='train', but many curated
-        # PWC repos only ship test/validation. Parse the available
-        # splits out of the error and retry with the first one — better
-        # to show *some* GT than zero.
-        msg = str(e)
-        import re as _re
-        m = _re.search(r"Available splits:\s*\[(.*?)\]", msg)
-        if m:
-            avail = [s.strip(" '\"") for s in m.group(1).split(',')]
-            avail = [s for s in avail if s]
-            # Prefer 'test' → 'validation' → first available, in that
-            # order — test sets are the cleanest GT for benchmarking.
-            order = ['test', 'validation', 'val', 'dev']
-            picked = next((s for s in order if s in avail),
-                          avail[0] if avail else None)
-            if picked:
-                try:
-                    ds = _load(picked)
-                    print(f"_iter_hf_attachment_samples: fell back to split={picked!r}")
-                except Exception as e2:
-                    print(f"_iter_hf_attachment_samples split-fallback load failed: {e2}")
-                    return
-            else:
-                print(f"_iter_hf_attachment_samples load failed: {e}")
-                return
-        else:
-            print(f"_iter_hf_attachment_samples load failed: {e}")
-            return
-    except Exception as e:
-        # Re-raise gated/auth errors so the route can route to the
-        # unlock wizard. Plain transport errors degrade to "no rows".
-        msg = str(e)
-        low = msg.lower()
-        if ('401' in msg or 'gated' in low or 'authenticated' in low
-                or 'restricted' in low or 'access denied' in low):
-            raise
-        print(f"_iter_hf_attachment_samples load failed: {e}")
+    ds = _resolve_hf_split_and_load(att, _load,
+                                    on_log=lambda m: print(f"_iter_hf_attachment_samples: {m}"))
+    if ds is None:
         return
 
     classlabel_names = {}
@@ -13908,36 +13933,11 @@ def _populate_hf_gt_thumb_cache(lb, att, hf_token=None, max_thumbs=10_000,
             streaming=True, revision=att.hf_revision,
             token=hf_token, trust_remote_code=True,
         )
-    try:
-        ds = _load(att.hf_split or 'train')
-    except ValueError as e:
-        # Same split-fallback as _iter_hf_attachment_samples (see there).
-        msg = str(e)
-        import re as _re
-        m = _re.search(r"Available splits:\s*\[(.*?)\]", msg)
-        ds = None
-        if m:
-            avail = [s.strip(" '\"") for s in m.group(1).split(',')]
-            avail = [s for s in avail if s]
-            order = ['test', 'validation', 'val', 'dev']
-            picked = next((s for s in order if s in avail),
-                          avail[0] if avail else None)
-            if picked:
-                try:
-                    ds = _load(picked)
-                    if logger:
-                        logger.info(f"GT thumb stream: fell back to split={picked!r} for {att.hf_repo_id}")
-                except Exception as e2:
-                    if logger:
-                        logger.warning(f"GT thumb stream split-fallback failed for {att.hf_repo_id}: {e2}")
-                    return 0
-        if ds is None:
-            if logger:
-                logger.warning(f"GT thumb stream failed for {att.hf_repo_id}: {e}")
-            return 0
-    except Exception as e:
-        if logger:
-            logger.warning(f"GT thumb stream failed for {att.hf_repo_id}: {e}")
+    ds = _resolve_hf_split_and_load(
+        att, _load,
+        on_log=(logger.info if logger else None),
+    )
+    if ds is None:
         return 0
     for i, row in enumerate(ds):
         if i >= max_thumbs:
