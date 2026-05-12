@@ -163,7 +163,15 @@ Run with `pytest tests/` (not bare `pytest`, to avoid the ad-hoc root-level `tes
 
 ## User-owned content visibility
 - `GlobalMetric` and `GlobalVisualization` rows created by a non-admin user default to `visibility='private'`. Admins (BENCHHUB_ADMIN_EMAILS / `is_admin` flag) default their new rows to `public`. Owners can flip via the detail-pane select on `/metrics?selected=<id>` and `/visualizations?selected=<id>` (routes: `set_global_metric_visibility`, `set_global_visualization_visibility`).
+- **Name uniqueness is two-tier**: `GlobalMetric.name` and `GlobalVisualization.name` are NOT globally unique anymore. Two users can each have a private `my_iou` metric. Two SQLite indexes (added in `check_and_migrate_db`) carry the new contract:
+  - `uq_<table>_name_public` — partial unique on `name` WHERE `visibility='public'` (cross-user uniqueness only for public).
+  - `uq_<table>_name_per_owner` — composite unique on `(owner_user_id, name)` so a single user can't have two metrics named the same.
+- **Promote-to-public collision UX**: `set_global_metric_visibility` (and the viz variant) detects a public-name collision before flipping the row and redirects to `resolve_name_collision.html`, which proposes a `<name>_<N>` suggestion via `_suggest_unique_public_name()` and lets the user edit. The `/visibility/confirm` route is the second hop — it re-checks (and re-suggests if the user tried another taken name) before committing.
 - `Leaderboard.canonicality` ('public'/'personal') is legacy — the /explore filter is now on `Leaderboard.visibility == 'public'`. Multiple public LBs per HF repo are allowed; `canonical_for_repo` is informational metadata, NOT a uniqueness gate.
+
+## FeatureRequest
+- New `FeatureRequest` table backs `/feature_requests` (user-facing form + list of own submissions) and `/admin/feature_requests` (admin triage with status + note). Used for new-data-type asks now that we're NOT shipping a user-pluggable field-type system this round.
+- Statuses: `open` (default), `planned`, `in_progress`, `resolved`, `declined`. Admin can attach an `admin_note` visible to the requester.
 
 ## OAuth
 - GitHub + Google are wired through Authlib (`oauth.github`, `oauth.google`). Configure with `GITHUB_CLIENT_ID/SECRET` and `GOOGLE_CLIENT_ID/SECRET` (env vars in dev, `fly secrets set` in prod). Google's authorized redirect URI on the Cloud Console must be `<site>/oauth/callback/google`.
