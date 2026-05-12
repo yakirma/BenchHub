@@ -340,6 +340,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {% if current_compare_ids %}
                 <input type="hidden" name="compare_ids" value="{{ current_compare_ids }}">
                 {% endif %}
+                {% if samples_only_mode %}
+                {# Preserve samples_only across the View-Options form
+                   submit so picking new filters keeps the GT-only mode. #}
+                <input type="hidden" name="samples_only" value="1">
+                {% endif %}
                 <!-- Row 1: Tag Filters -->
                 <div class="mb-3 p-2 bg-body-tertiary border rounded">
                     <strong>Tag Filters:</strong>
@@ -517,21 +522,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         <ul class="pagination justify-content-end mb-0">
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">«
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">«
                     First</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">‹
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">‹
                     Previous</a></li>
             <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
                     paginated_samples.pages }}</span></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Next
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Next
                     ›</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids) }}">Last
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Last
                     »</a></li>
         </ul>
     </nav>
