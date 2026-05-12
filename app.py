@@ -11988,19 +11988,19 @@ def comparison_view(leaderboard_id):
     selected_comparison_display_columns = sorted(selected_comparison_display_columns,
                                                   key=lambda x: get_column_priority(x, available_display_options.get(x, {}).get('type'), x in dataset_custom_fields))
 
-    # Explore-samples view: keep only image-like columns + the sample
-    # identifier(s). User asked to drop GT/pred/metric scalar columns
-    # there since the page is about browsing the cached image/depth
-    # previews — the scalar stats panel doesn't add anything when
-    # there are no submissions to compare against. The full column set
-    # remains togglable via the View Options form.
+    # Explore-samples view: drop ONLY panels that need submission data.
+    # Image/depth/mask thumbs render straight from cache; text/scalar/
+    # json/audio GT columns are useful for browsing too (e.g. the user
+    # wants the `label_class` text column visible on ImageNet-256).
+    # `per_sample_metrics` and `per_source_stats` are the two that need
+    # actual submissions to populate.
     if samples_only_mode:
-        _image_like_kinds = {'image', 'depth', 'mask'}
-        _identifier_keys = {'sample_name', 'dataset_tags'}
+        _hide_in_samples_only = {'per_sample_metrics', 'per_source_stats',
+                                 'pred_histogram'}
         selected_comparison_display_columns = [
             k for k in selected_comparison_display_columns
-            if k in _identifier_keys
-            or available_display_options.get(k, {}).get('type') in _image_like_kinds
+            if k not in _hide_in_samples_only
+            and not k.startswith('viz_')
         ]
 
     # Pass metric directions for coloring
@@ -12713,27 +12713,13 @@ def update_comparison_display_columns(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     chosen = set(request.form.getlist('comparison_display_columns'))
     rendered = set(request.form.getlist('comparison_display_columns_all'))
-    # The pre-existing CSV stored what the *previous* page render
-    # selected, but we also need to preserve any user-chosen columns
-    # that weren't rendered on this page (e.g. tucked-away GT fields
-    # that only showed up after a populate). Take the union with the
-    # chosen set, then drop anything explicitly *un*-checked.
-    prev = {
-        c.strip() for c in (leaderboard.comparison_display_columns or '').split(',')
-        if c.strip()
-    }
-    new_visible = (prev - rendered) | chosen
-    # Comparison view filters to `available_display_options` anyway, so
-    # writing the whole union is harmless; the renderer drops anything
-    # that's gone stale.
-    leaderboard.comparison_display_columns = ','.join(sorted(new_visible)) or 'sample_name'
-    # `hidden_comparison_display_columns` is legacy — the new CSV is the
-    # authoritative list, so clear stale exclusions and let any future
-    # render compute hidden = rendered - selected naturally.
-    hidden_within_rendered = rendered - chosen
-    leaderboard.hidden_comparison_display_columns = (
-        ','.join(sorted(hidden_within_rendered)) if hidden_within_rendered else None
-    )
+    # Inverted-visibility model: the comparison_view renderer treats
+    # `available_display_options - hidden_comparison_display_columns`
+    # as the visible set, so all we have to persist is the user's
+    # explicit exclusions on this page (rendered checkboxes they didn't
+    # tick). Anything they couldn't see (not rendered) is untouched.
+    hidden = rendered - chosen
+    leaderboard.hidden_comparison_display_columns = ','.join(sorted(hidden)) if hidden else None
     db.session.commit()
     return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
