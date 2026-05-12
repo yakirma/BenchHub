@@ -3110,12 +3110,17 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
     ))
     db.session.flush()
 
-    # Pick the canonical GT field for arg_mappings. Priority:
-    # scalar (ClassLabel-y) before depth before image — the most common
-    # PWC-imported task is image classification where the scalar label
-    # is what we want to score against.
+    # Pick the canonical GT field for arg_mappings. The default
+    # priority (scalar > depth > image > mask > text) fits image
+    # classification, but it's wrong for generation / segmentation /
+    # depth tasks where the user's prediction is the *image-like*
+    # output, not the conditioning label. _pwc_task_pred_kind_priority
+    # returns a task-aware ordering — falls back to the default when
+    # the task name doesn't match a known pattern.
+    task_name = (evaluation.get('task') or '').strip()
+    priority = _pwc_task_pred_kind_priority(task_name)
     gt_field = None
-    for kind in ('scalar', 'depth', 'image', 'mask', 'text'):
+    for kind in priority:
         for m in inferred_mapping:
             if m.get('target_kind') == kind:
                 gt_field = m.get('target_field') or m.get('column')
@@ -4000,6 +4005,14 @@ def edit_leaderboard(leaderboard_id):
             .all()
         ) if cat
     })
+    # Pred-field editor state: current schema (merge of metric-derived +
+    # required_pred_fields_json) + a "is the LB editable?" flag (no
+    # verified submissions → editor is open).
+    pred_fields_schema = _lb_submission_pred_fields(leaderboard)
+    has_verified_subs = any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (leaderboard.submissions or [])
+    )
     return render_template('edit_leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_fields=dataset_fields,
@@ -4017,6 +4030,8 @@ def edit_leaderboard(leaderboard_id):
                            global_metrics=global_metrics,
                            global_visualizations=global_visualizations,
                            known_categories=known_categories,
+                           pred_fields_schema=pred_fields_schema,
+                           pred_fields_editable=not has_verified_subs,
                            all_datasets=Dataset.query.all())
                            
 
@@ -4793,6 +4808,40 @@ _PWC_AREA_RULES = [
 ]
 
 
+def _pwc_task_pred_kind_priority(task_name):
+    """Given a PWC task name (e.g. 'Image Generation', 'Medical Image
+    Segmentation', 'Depth Estimation'), return a tuple of target_kind
+    values to try in order when picking the pred field for the LB's
+    arg_mappings. Generation/segmentation/depth tasks need the
+    image-like output, not the conditioning label — so they override
+    the default (scalar > depth > image > mask > text) priority.
+
+    Returns a tuple covering every known kind so the picker always
+    finds something."""
+    DEFAULT = ('scalar', 'depth', 'image', 'mask', 'audio', 'text', 'json', 'histogram')
+    if not task_name:
+        return DEFAULT
+    t = task_name.lower()
+    # Order matters: more specific patterns first.
+    if 'segmentation' in t:
+        return ('mask', 'image', 'depth', 'scalar', 'text', 'json')
+    if 'depth estimation' in t or 'depth' in t:
+        return ('depth', 'image', 'mask', 'scalar', 'text', 'json')
+    if ('image generation' in t or 'image synthesis' in t
+            or 'super.resolution' in t or 'deblurring' in t
+            or 'denoising' in t or 'inpainting' in t
+            or 'image-to-image' in t):
+        return ('image', 'mask', 'depth', 'scalar', 'text', 'json')
+    if 'translation' in t or 'summarization' in t or 'speech recognition' in t:
+        return ('text', 'scalar', 'json', 'audio')
+    if 'relation extraction' in t or 'question answering' in t:
+        return ('json', 'text', 'scalar')
+    if 'pose estimation' in t or 'keypoint' in t:
+        return ('json', 'image', 'scalar')
+    # Classification / ranking / default
+    return DEFAULT
+
+
 def _pwc_task_to_category(task_name):
     """PWC `task` string → "Area/Task".
 
@@ -5131,6 +5180,72 @@ def _public_name_in_use(model_cls, name, exclude_id=None):
     if exclude_id is not None:
         q = q.filter(model_cls.id != exclude_id)
     return q.first() is not None
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/pred_fields', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def edit_lb_pred_fields(leaderboard_id):
+    """Editable pred-field schema for an LB. Allowed only while the
+    LB has no verified submissions — once people have uploaded
+    predictions, the contract is frozen so existing submissions don't
+    silently re-interpret their files.
+
+    Form payload shape:
+      name_N           — pred-field name (must end `_pred`)
+      kind_N           — image|mask|depth|audio|scalar|text|json|histogram
+      description_N    — free-form text (optional)
+    (N is a per-row index used only to collate; we don't trust ordering.)"""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    # Refuse on LBs with real (non-mirrored) submissions: changing kinds
+    # would silently re-route existing CFs through the wrong decoder.
+    has_verified = any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (lb.submissions or [])
+    )
+    if has_verified:
+        flash("Can't edit prediction fields — this LB already has "
+              "verified submissions. Delete them first to unlock.", "warning")
+        return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+
+    valid_kinds = {
+        'image', 'mask', 'depth', 'audio',
+        'scalar', 'text', 'json', 'histogram',
+    }
+    # Collate by index. Form keys look like `name_0`, `kind_0`,
+    # `description_0`, `name_1`, ...
+    rows = {}
+    for key, value in request.form.items():
+        for tag in ('name', 'kind', 'description'):
+            prefix = f'{tag}_'
+            if key.startswith(prefix):
+                try:
+                    idx = int(key[len(prefix):])
+                except ValueError:
+                    continue
+                rows.setdefault(idx, {})[tag] = (value or '').strip()
+                break
+    saved = []
+    for idx in sorted(rows.keys()):
+        r = rows[idx]
+        name = r.get('name') or ''
+        if not name:
+            continue
+        if not name.endswith('_pred'):
+            name = name + '_pred'
+        kind = r.get('kind') or 'scalar'
+        if kind not in valid_kinds:
+            kind = 'scalar'
+        desc = r.get('description') or ''
+        gt_field = name[:-len('_pred')]
+        saved.append({
+            'name': name, 'kind': kind, 'gt_field': gt_field,
+            'description': desc,
+        })
+    lb.required_pred_fields_json = json.dumps(saved) if saved else None
+    db.session.commit()
+    flash(f"Saved {len(saved)} prediction field(s).", "success")
+    return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
 
 @app.route('/global_metric/<int:metric_id>/visibility', methods=['POST'])

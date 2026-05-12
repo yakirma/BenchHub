@@ -117,6 +117,10 @@
         <button class="nav-link" id="viz-tab" data-bs-toggle="tab" data-bs-target="#viz-pane" type="button"
             role="tab">Visualizations</button>
     </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="pred-tab" data-bs-toggle="tab" data-bs-target="#pred-pane" type="button"
+            role="tab">Prediction fields</button>
+    </li>
 </ul>
 
 <div class="tab-content" id="leaderboardSettingsTabsContent">
@@ -730,7 +734,144 @@
             </div>
         </div>
     </div>
+
+    <!-- Tab 4: Prediction fields editor -->
+    <div class="tab-pane fade" id="pred-pane" role="tabpanel" aria-labelledby="pred-tab">
+        <div class="card border-0 shadow-sm">
+            <div class="card-body p-4">
+                <h5 class="fw-bold mb-2">Prediction fields</h5>
+                <p class="text-body-secondary small">
+                    The schema submissions to this leaderboard must follow.
+                    Each row maps to a folder named <code>&lt;type&gt;_&lt;field_name&gt;</code>
+                    in the submission ZIP.
+                </p>
+                {% if not pred_fields_editable %}
+                <div class="alert alert-warning small">
+                    <i class="bi bi-lock me-1"></i>
+                    This leaderboard already has verified submissions, so
+                    the prediction schema is frozen — changing kinds
+                    would silently re-interpret existing prediction files.
+                    Delete the submissions if you really need to edit.
+                </div>
+                {% endif %}
+
+                <form method="post"
+                      action="{{ url_for('edit_lb_pred_fields', leaderboard_id=leaderboard.id) }}">
+                    <table class="table align-middle">
+                        <thead class="small text-uppercase text-body-secondary">
+                            <tr>
+                                <th style="width: 38%;">Field name</th>
+                                <th style="width: 18%;">Kind</th>
+                                <th>Description</th>
+                                <th style="width: 6%;"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="pred-rows">
+                            {% for pf in pred_fields_schema %}
+                            <tr class="pred-row">
+                                <td>
+                                    <input type="text" class="form-control form-control-sm font-monospace pred-name"
+                                           name="name_{{ loop.index0 }}"
+                                           value="{{ pf.name }}"
+                                           {{ '' if pred_fields_editable else 'readonly' }}
+                                           required pattern="[A-Za-z0-9_][A-Za-z0-9_.-]*_pred"
+                                           title="Must end in _pred">
+                                    {% if pf.used_by %}
+                                    <div class="small text-body-secondary mt-1">
+                                        used by {{ pf.used_by|join(', ') }}
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <select class="form-select form-select-sm pred-kind"
+                                            name="kind_{{ loop.index0 }}"
+                                            {{ '' if pred_fields_editable else 'disabled' }}>
+                                        {% for k in ['image', 'mask', 'depth', 'audio', 'scalar', 'text', 'json', 'histogram'] %}
+                                        <option value="{{ k }}" {{ 'selected' if pf.kind == k }}>{{ k }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="text" class="form-control form-control-sm pred-desc"
+                                           name="description_{{ loop.index0 }}"
+                                           value="{{ pf.description or '' }}"
+                                           {{ '' if pred_fields_editable else 'readonly' }}>
+                                </td>
+                                <td>
+                                    {% if pred_fields_editable %}
+                                    <button type="button" class="btn btn-sm btn-outline-danger pred-remove"
+                                            title="Remove this field">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    {% if pred_fields_editable %}
+                    <div class="d-flex justify-content-between">
+                        <button type="button" id="pred-add-row" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-plus-lg me-1"></i>Add prediction field
+                        </button>
+                        <button type="submit" class="btn btn-primary">
+                            Save prediction schema
+                        </button>
+                    </div>
+                    {% endif %}
+                </form>
+            </div>
+        </div>
+    </div>
 </div>
+
+{% if pred_fields_editable %}
+<script>
+    // Pred-field editor: add/remove rows. Index is just so server-side
+    // collation knows the rows are independent — final ordering is
+    // decided by the server.
+    (function () {
+        const tbody = document.getElementById('pred-rows');
+        if (!tbody) return;
+        let nextIdx = tbody.querySelectorAll('tr.pred-row').length;
+        function bindRemove(btn) {
+            btn.addEventListener('click', () => btn.closest('tr.pred-row').remove());
+        }
+        tbody.querySelectorAll('button.pred-remove').forEach(bindRemove);
+        const addBtn = document.getElementById('pred-add-row');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                const idx = nextIdx++;
+                const kinds = ['image','mask','depth','audio','scalar','text','json','histogram'];
+                const opts = kinds.map(k => `<option value="${k}">${k}</option>`).join('');
+                const tr = document.createElement('tr');
+                tr.className = 'pred-row';
+                tr.innerHTML = `
+                    <td>
+                        <input type="text" class="form-control form-control-sm font-monospace pred-name"
+                               name="name_${idx}" required
+                               pattern="[A-Za-z0-9_][A-Za-z0-9_.-]*_pred"
+                               placeholder="e.g. label_pred">
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm pred-kind" name="kind_${idx}">${opts}</select>
+                    </td>
+                    <td>
+                        <input type="text" class="form-control form-control-sm pred-desc"
+                               name="description_${idx}" placeholder="(optional)">
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-danger pred-remove">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </td>`;
+                tbody.appendChild(tr);
+                bindRemove(tr.querySelector('button.pred-remove'));
+            });
+        }
+    })();
+</script>
+{% endif %}
 
 <!-- Datalists for Argument Mapping Suggestions -->
 <datalist id="dataset-fields-list">
