@@ -9164,12 +9164,44 @@ def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
         from datasets import load_dataset
     except ImportError:
         return
-    try:
-        ds = load_dataset(
-            att.hf_repo_id, split=att.hf_split or 'train',
+    def _load(split):
+        return load_dataset(
+            att.hf_repo_id, split=split,
             streaming=True, revision=att.hf_revision,
             token=hf_token, trust_remote_code=True,
         )
+    try:
+        ds = _load(att.hf_split or 'train')
+    except ValueError as e:
+        # "Bad split: train. Available splits: ['validation', 'test', ...]"
+        # PWC bulk imports default to split='train', but many curated
+        # PWC repos only ship test/validation. Parse the available
+        # splits out of the error and retry with the first one — better
+        # to show *some* GT than zero.
+        msg = str(e)
+        import re as _re
+        m = _re.search(r"Available splits:\s*\[(.*?)\]", msg)
+        if m:
+            avail = [s.strip(" '\"") for s in m.group(1).split(',')]
+            avail = [s for s in avail if s]
+            # Prefer 'test' → 'validation' → first available, in that
+            # order — test sets are the cleanest GT for benchmarking.
+            order = ['test', 'validation', 'val', 'dev']
+            picked = next((s for s in order if s in avail),
+                          avail[0] if avail else None)
+            if picked:
+                try:
+                    ds = _load(picked)
+                    print(f"_iter_hf_attachment_samples: fell back to split={picked!r}")
+                except Exception as e2:
+                    print(f"_iter_hf_attachment_samples split-fallback load failed: {e2}")
+                    return
+            else:
+                print(f"_iter_hf_attachment_samples load failed: {e}")
+                return
+        else:
+            print(f"_iter_hf_attachment_samples load failed: {e}")
+            return
     except Exception as e:
         # Re-raise gated/auth errors so the route can route to the
         # unlock wizard. Plain transport errors degrade to "no rows".
@@ -13820,11 +13852,41 @@ def _populate_hf_gt_thumb_cache(lb, att, hf_token=None, max_thumbs=10_000,
     written = 0
     try:
         from datasets import load_dataset
-        ds = load_dataset(
-            att.hf_repo_id, split=att.hf_split or 'train',
+    except ImportError:
+        return 0
+    def _load(split):
+        return load_dataset(
+            att.hf_repo_id, split=split,
             streaming=True, revision=att.hf_revision,
             token=hf_token, trust_remote_code=True,
         )
+    try:
+        ds = _load(att.hf_split or 'train')
+    except ValueError as e:
+        # Same split-fallback as _iter_hf_attachment_samples (see there).
+        msg = str(e)
+        import re as _re
+        m = _re.search(r"Available splits:\s*\[(.*?)\]", msg)
+        ds = None
+        if m:
+            avail = [s.strip(" '\"") for s in m.group(1).split(',')]
+            avail = [s for s in avail if s]
+            order = ['test', 'validation', 'val', 'dev']
+            picked = next((s for s in order if s in avail),
+                          avail[0] if avail else None)
+            if picked:
+                try:
+                    ds = _load(picked)
+                    if logger:
+                        logger.info(f"GT thumb stream: fell back to split={picked!r} for {att.hf_repo_id}")
+                except Exception as e2:
+                    if logger:
+                        logger.warning(f"GT thumb stream split-fallback failed for {att.hf_repo_id}: {e2}")
+                    return 0
+        if ds is None:
+            if logger:
+                logger.warning(f"GT thumb stream failed for {att.hf_repo_id}: {e}")
+            return 0
     except Exception as e:
         if logger:
             logger.warning(f"GT thumb stream failed for {att.hf_repo_id}: {e}")
