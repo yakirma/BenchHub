@@ -11199,11 +11199,16 @@ def comparison_view(leaderboard_id):
     # LB. The template suppresses submission-side columns and shows
     # an empty-state banner.
     samples_only_mode = bool(request.args.get('samples_only'))
-    if compare_ids:
+    if samples_only_mode:
+        # Explicit ?samples_only=1 wins over a stale session.compare_ids.
+        # Without this gate, clicking "Explore samples" on a PWC LB while
+        # the session still held compare_ids from a previous LB would
+        # surface 50 mirrored-submission columns the user did not ask for.
+        submissions = []
+        compare_ids = []
+    elif compare_ids:
         # Filter if user explicitly selected a subset
         submissions = [s for s in leaderboard.submissions if str(s.id) in compare_ids and not s.is_archived]
-    elif samples_only_mode:
-        submissions = []
     else:
         submissions = [s for s in leaderboard.submissions if not s.is_archived]
 
