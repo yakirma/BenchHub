@@ -11924,13 +11924,21 @@ def comparison_view(leaderboard_id):
         else:
             submission_fields_dict[field_name] = field_type
     
-    # Add dataset fields first
+    # Add dataset fields first. Only skip `metric` — those go through
+    # the per_sample_metrics chart panel. Scalar GT (e.g. WN18RR's
+    # `head`/`tail` entity IDs, ImageNet's `label`) IS the ground truth
+    # for many LBs and needs to be togglable as a column.
     for field_name in sorted(dataset_fields_dict.keys()):
         field_type = dataset_fields_dict[field_name]
-        if field_type in ['scalar', 'metric']: continue
-        available_display_options[field_name] = {'label': field_name, 'type': field_type, 'default_width': '300px'}
+        if field_type == 'metric': continue
+        # Narrower column for scalars since they render as a single
+        # numeric/text value, not a 300px-wide image preview.
+        default_width = '120px' if field_type == 'scalar' else '300px'
+        available_display_options[field_name] = {
+            'label': field_name, 'type': field_type, 'default_width': default_width,
+        }
         if field_type in ['image', 'depth']: custom_image_fields.append(field_name)
-    
+
     # Build submission field mapping
     submission_field_map = {}
     for sub_id, field_names in submission_custom_fields.items():
@@ -11938,13 +11946,16 @@ def comparison_view(leaderboard_id):
             if field_name not in dataset_custom_fields:
                 if field_name not in submission_field_map: submission_field_map[field_name] = []
                 submission_field_map[field_name].append((sub_id, field_name))
-    
+
     for base_name in sorted(submission_field_map.keys()):
         sorted_entries = sorted(submission_field_map[base_name], key=lambda x: x[0])
         for sub_id, field_name in sorted_entries:
             field_type = all_field_types.get(field_name, 'image')
-            if field_type in ['scalar', 'metric']: continue
-            available_display_options[field_name] = {'label': field_name, 'type': field_type, 'default_width': '300px'}
+            if field_type == 'metric': continue
+            default_width = '120px' if field_type == 'scalar' else '300px'
+            available_display_options[field_name] = {
+                'label': field_name, 'type': field_type, 'default_width': default_width,
+            }
             if field_type in ['image', 'depth']: custom_image_fields.append(field_name)
 
     # 1. Check GT fields availability (only for samples on current page for UI rendering hint)

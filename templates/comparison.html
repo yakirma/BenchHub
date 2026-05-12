@@ -1025,7 +1025,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_scalar_value is
                             not none %}
                             <div class="text-center fw-bold">
-                                {{ "%.4f"|format(data.custom_fields[col_key].gt_scalar_value) }}
+                                {% set _v = data.custom_fields[col_key].gt_scalar_value %}
+                                {# Integer-valued scalars (entity IDs,
+                                   ClassLabel indices, counts) → no
+                                   trailing .0000. Real floats stay 4dp. #}
+                                {% if _v|smart_num != _v %}{{ _v|smart_num }}{% else %}{{ "%.4f"|format(_v) }}{% endif %}
                             </div>
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_text_value %}
                             {# text / json fields: render the raw value
