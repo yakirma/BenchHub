@@ -12713,8 +12713,27 @@ def update_comparison_display_columns(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
     chosen = set(request.form.getlist('comparison_display_columns'))
     rendered = set(request.form.getlist('comparison_display_columns_all'))
-    hidden = rendered - chosen
-    leaderboard.hidden_comparison_display_columns = ','.join(sorted(hidden)) if hidden else None
+    # The pre-existing CSV stored what the *previous* page render
+    # selected, but we also need to preserve any user-chosen columns
+    # that weren't rendered on this page (e.g. tucked-away GT fields
+    # that only showed up after a populate). Take the union with the
+    # chosen set, then drop anything explicitly *un*-checked.
+    prev = {
+        c.strip() for c in (leaderboard.comparison_display_columns or '').split(',')
+        if c.strip()
+    }
+    new_visible = (prev - rendered) | chosen
+    # Comparison view filters to `available_display_options` anyway, so
+    # writing the whole union is harmless; the renderer drops anything
+    # that's gone stale.
+    leaderboard.comparison_display_columns = ','.join(sorted(new_visible)) or 'sample_name'
+    # `hidden_comparison_display_columns` is legacy — the new CSV is the
+    # authoritative list, so clear stale exclusions and let any future
+    # render compute hidden = rendered - selected naturally.
+    hidden_within_rendered = rendered - chosen
+    leaderboard.hidden_comparison_display_columns = (
+        ','.join(sorted(hidden_within_rendered)) if hidden_within_rendered else None
+    )
     db.session.commit()
     return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
