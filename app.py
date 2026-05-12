@@ -12367,10 +12367,12 @@ def datasets_list():
         .filter(visible_in_list(Leaderboard, viewer))
         .subquery()
     )
+    # NB: `Attachment.kind` is a Python @property, not a DB column —
+    # filter on hf_repo_id (the column that defines an HF attachment).
     hf_att_rows = (
         db.session.query(Attachment, Leaderboard)
         .join(Leaderboard, Leaderboard.id == Attachment.leaderboard_id)
-        .filter(Attachment.kind == 'hf', Attachment.hf_repo_id.isnot(None))
+        .filter(Attachment.hf_repo_id.isnot(None))
         .filter(Leaderboard.id.in_(db.session.query(visible_lb_subq)))
         .all()
     )

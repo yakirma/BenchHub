@@ -89,6 +89,7 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 
 ## Things to be careful with
 - The `Sample` class redefines `histogram_data` and `signal_shape` as @properties *after* declaring them as relationships; the Python descriptor wins at attribute access time. Don't "clean this up" without verifying every read site.
+- `Attachment.kind` is a Python `@property` that returns `'bh'` or `'hf'` from `dataset_id IS NULL`. **It is NOT a DB column**, so filtering a query with `.filter(Attachment.kind == 'hf')` silently matches zero rows. Filter on the underlying columns (`Attachment.hf_repo_id.isnot(None)` for HF, `Attachment.dataset_id.isnot(None)` for BH) when writing SQL; use `att.kind` only in Python code that's already iterating rows.
 - `secret_key = 'supersecretkey'` is hardcoded; fine for local dev, do not assume any auth/CSRF protections.
 - `evaluate_dynamic_metric` calls `exec()` on user-supplied Python — by design. Treat this app as trusted-local-network only.
 - `app.py` uses `@app.url_value_preprocessor` + `@app.url_defaults` + a monkey-patch of `werkzeug.routing.Map.is_endpoint_expecting` to inject `project_name` into every URL automatically. New routes that take a `<project_name>` path component will get the value injected on `url_for(...)` without you passing it.
