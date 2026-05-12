@@ -242,9 +242,21 @@
                     
                     {% endif %}
 
+                    {% set _bh_ds_count = lb.datasets|length %}
+                    {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
                     <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
                         <span><i class="bi bi-people me-1"></i>{{ lb.submissions|length }} submissions</span>
-                        <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
+                        {% if _bh_ds_count %}
+                        <span><i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}</span>
+                        {% endif %}
+                        {% if _hf_atts %}
+                        <span><i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}</span>
+                        {% endif %}
+                        {% if lb.canonical_for_repo %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border" title="Imported from Papers With Code">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>PWC
+                        </span>
+                        {% endif %}
                     </div>
 
                     {% if lb %}

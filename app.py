@@ -698,6 +698,11 @@ class Leaderboard(db.Model):
     # [{name, gt_field, kind, description}]. Surfaced in the
     # "Submission contract" widget alongside metric-derived fields.
     required_pred_fields_json = db.Column(db.Text, nullable=True)
+    # Two-level taxonomy "area/task" (e.g. "Vision/Depth Estimation").
+    # Auto-populated for PWC imports from the source task name via
+    # `_pwc_task_to_category`; manual LBs can override via the
+    # Settings page. /explore renders a tree sidebar by splitting on '/'.
+    category = db.Column(db.String(120), nullable=True, index=True)
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
@@ -2841,6 +2846,7 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
         visibility='public',
         canonicality='public',
         canonical_for_repo=hf_repo,
+        category=_pwc_task_to_category(evaluation.get('task')),
     )
     db.session.add(lb); db.session.flush()
 
@@ -3221,6 +3227,9 @@ def explore():
     """
     q = (request.args.get('q') or '').strip()
     tag_filter = (request.args.get('tag') or '').strip().lower()
+    # ?category=Vision               → filter by area
+    # ?category=Vision/Depth Estim.. → filter by area + task
+    category_filter = (request.args.get('category') or '').strip()
     sort = request.args.get('sort', 'activity')
     if sort not in ('activity', 'recent', 'popular'):
         sort = 'activity'
@@ -3273,6 +3282,18 @@ def explore():
                 .join(Tag, Tag.id == leaderboard_tags.c.tag_id)
                 .filter(Tag.name == tag_filter)
         )
+
+    if category_filter:
+        # Single-arg ?category=Vision filters every LB whose category
+        # starts with "Vision/" (or is exactly "Vision"). Two-segment
+        # ?category=Vision/Depth+Estimation matches that exact path.
+        if '/' in category_filter:
+            base = base.filter(Leaderboard.category == category_filter)
+        else:
+            base = base.filter(or_(
+                Leaderboard.category == category_filter,
+                Leaderboard.category.like(f"{category_filter}/%"),
+            ))
 
     if sort == 'recent':
         base = base.order_by(Leaderboard.upload_date.desc())
@@ -3349,6 +3370,43 @@ def explore():
             _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
         )
 
+    # Category tree: per-area / per-task counts over visible+canonical LBs.
+    # We compute counts independent of the current category filter so the
+    # tree always shows the full breakdown (clicking a leaf scopes the
+    # results panel but the tree itself stays stable).
+    cat_rows = (
+        db.session.query(Leaderboard.category, func.count(Leaderboard.id))
+        .filter(visible_lb_filter)
+        .filter(Leaderboard.canonicality == 'public')
+        .filter(Leaderboard.category.isnot(None))
+        .group_by(Leaderboard.category)
+        .all()
+    )
+    category_tree = {}  # area → {'count': int, 'tasks': [(task, cnt)]}
+    for cat, cnt in cat_rows:
+        if not cat:
+            continue
+        if '/' in cat:
+            area, task = cat.split('/', 1)
+        else:
+            area, task = cat, ''
+        bucket = category_tree.setdefault(area, {'count': 0, 'tasks': {}})
+        bucket['count'] += int(cnt or 0)
+        if task:
+            bucket['tasks'][task] = bucket['tasks'].get(task, 0) + int(cnt or 0)
+    # Stable render: areas alphabetised, tasks by count desc then name.
+    category_tree = [
+        {
+            'area': area,
+            'count': v['count'],
+            'tasks': sorted(
+                [{'name': t, 'count': c} for t, c in v['tasks'].items()],
+                key=lambda x: (-x['count'], x['name']),
+            ),
+        }
+        for area, v in sorted(category_tree.items())
+    ]
+
     return render_template(
         'explore.html',
         rows=rows,
@@ -3357,6 +3415,8 @@ def explore():
         tag_cloud=tag_cloud,
         active_tag=tag_filter,
         leaderboard_thumbs=leaderboard_thumbs,
+        category_tree=category_tree,
+        active_category=category_filter,
     )
 
 
@@ -4343,6 +4403,123 @@ def supported_types():
     return render_template('supported_types.html')
 
 
+# Heuristic-only metric → domain bucket. Inspect the lowercased
+# metric name + description for known tokens; first match wins.
+# Kept ordered so e.g. 'segmentation' beats 'accuracy' when both
+# words appear in one name.
+_METRIC_DOMAIN_RULES = [
+    ('Segmentation & Detection', (
+        r'\bm?iou\b', r'\bdice\b', r'\bmap\b', r'\bap50\b',
+        r'\bap75\b', r'\bap\b', r'segmentation', r'detection',
+    )),
+    ('Regression & Depth', (
+        r'\bmae\b', r'\bmse\b', r'\brmse\b', r'\brms\b', r'\bnmse\b',
+        r'\bmape\b', r'absrel', r'sqrel', r'log10', r'silog',
+        r'\bdelta\b', r'depth',
+    )),
+    ('Image Quality & Generation', (
+        r'\bpsnr\b', r'\bssim\b', r'\blpips\b', r'\bfid\b', r'\bkid\b',
+        r'\bis\b.*inception',
+    )),
+    ('NLP / Speech', (
+        r'\bbleu\b', r'\brouge\b', r'\bmeteor\b', r'\bwer\b', r'\bcer\b',
+        r'perplex', r'\bppl\b', r'\bf1\b.*\b(nlp|qa|squad)\b',
+    )),
+    ('Classification', (
+        r'top.?\d', r'accuracy', r'\bf1\b', r'precision', r'recall',
+        r'\bauc\b', r'\broc\b', r'\bmcc\b',
+    )),
+    ('Trajectory & Pose', (
+        r'\bade\b', r'\bfde\b', r'\bpose\b', r'\bpck\b',
+    )),
+    ('Loss / Generic Error', (
+        r'\bloss\b', r'\berror\b',
+    )),
+]
+
+
+# PWC task name → top-level area. First regex hit wins, so order matters:
+# Medical/Speech/Code MUST come before Vision/NLP so domain-specific words
+# (e.g. "medical image segmentation", "speech recognition", "code generation")
+# don't get grabbed by the broader Vision/NLP regexes.
+_PWC_AREA_RULES = [
+    ('Medical', (
+        r'medical', r'\bmri\b', r'\bct\b.*scan', r'pathology',
+        r'tumor', r'lesion', r'clinical', r'radiograph', r'\bx.?ray\b',
+    )),
+    ('Speech & Audio', (
+        r'speech', r'\basr\b', r'voice', r'\baudio\b', r'\bsound\b',
+        r'music', r'keyword.spotting', r'\btts\b',
+    )),
+    ('Code', (
+        r'code.generation', r'code.completion', r'program.synthesis',
+        r'\bprogramming\b',
+    )),
+    ('Reinforcement Learning', (
+        r'reinforcement', r'\brl\b', r'atari', r'\bgame\b',
+    )),
+    ('Graph', (
+        r'\bgraph\b', r'node.classification', r'link.prediction',
+        r'molecul', r'protein.folding',
+    )),
+    ('Recommendation', (
+        r'recommendation', r'recommender', r'collaborative.filtering',
+    )),
+    ('Time Series', (
+        r'time.series', r'forecasting',
+    )),
+    ('Tabular', (
+        r'tabular', r'feature.engineering',
+    )),
+    ('NLP', (
+        r'translation', r'summarization', r'question.answering',
+        r'sentiment', r'\bner\b', r'language.mod', r'\bnli\b',
+        r'natural.language', r'\btext\b', r'parsing', r'reading.comprehension',
+        r'dialog', r'paraphras', r'entail', r'relation.extraction',
+        r'common.sense', r'reasoning', r'entity.linking', r'word.sense',
+    )),
+    ('Vision', (
+        r'depth', r'segmentation', r'object.detection', r'image.classification',
+        r'image.recognition', r'action.recognition', r'face.recognition',
+        r'super.resolution', r'denoising', r'inpainting', r'optical.flow',
+        r'tracking', r'\bocr\b', r'\b3d\b', r'reconstruction', r'pose.estimation',
+        r'\bimage\b', r'\bvideo\b', r'visual', r'face', r'point.cloud',
+        r'\bgan\b', r'image.generation', r'video.generation', r'deblur',
+        r'\bre.identification\b', r'anomaly.detection', r'\bsr\b',
+    )),
+]
+
+
+def _pwc_task_to_category(task_name):
+    """PWC `task` string → "Area/Task". Empty/unknown task → None so the
+    caller can leave Leaderboard.category null (the LB still renders, it
+    just lands under 'Uncategorized' in the /explore tree)."""
+    if not task_name:
+        return None
+    blob = str(task_name).lower()
+    area = 'Other'
+    for label, patterns in _PWC_AREA_RULES:
+        if any(re.search(p, blob) for p in patterns):
+            area = label
+            break
+    return f"{area}/{task_name.strip()}"
+
+
+def _metric_domain(metric):
+    """Return the bucket label for one GlobalMetric. Falls through to
+    'Other' when no rule matches — that bucket is the catchall and
+    intentionally last in the sidebar render order."""
+    blob = ' '.join([
+        (metric.name or ''),
+        (metric.description or ''),
+    ]).lower()
+    for label, patterns in _METRIC_DOMAIN_RULES:
+        for pat in patterns:
+            if re.search(pat, blob):
+                return label
+    return 'Other'
+
+
 @app.route('/metrics')
 def metrics_view():
     metrics = (
@@ -4351,7 +4528,31 @@ def metrics_view():
         .order_by(GlobalMetric.name)
         .all()
     )
-    return render_template('metrics.html', metrics=metrics)
+    # Group by domain heuristic. Preserve the bucket order from the
+    # _METRIC_DOMAIN_RULES table so the sidebar reads in a sensible
+    # order (Classification first, generic Loss/Error toward the end,
+    # Other last).
+    groups = {}
+    for m in metrics:
+        groups.setdefault(_metric_domain(m), []).append(m)
+    order = [label for label, _ in _METRIC_DOMAIN_RULES] + ['Other']
+    grouped_metrics = [
+        (label, groups[label]) for label in order if label in groups
+    ]
+    # Selected metric id for the right pane (?selected=<id>). Falls
+    # back to the first metric in the first non-empty group.
+    selected_id = request.args.get('selected', type=int)
+    selected = None
+    if selected_id:
+        selected = next((m for m in metrics if m.id == selected_id), None)
+    if selected is None and grouped_metrics:
+        selected = grouped_metrics[0][1][0]
+    return render_template(
+        'metrics.html',
+        metrics=metrics,
+        grouped_metrics=grouped_metrics,
+        selected=selected,
+    )
 
 def extract_code_from_file(file_storage):
     """Extract Python code from a .txt, .py, or .zip file with robustness for high-security environments."""
@@ -4523,14 +4724,32 @@ def download_metric(metric_id):
 
 @app.route('/visualizations')
 def visualizations_view():
-    """List all visualizations for the project."""
+    """List all visualizations. Mirrors /metrics layout: domain-bucketed
+    sidebar on md+, single picker on mobile, detail pane for the
+    `?selected=<id>` viz (defaults to the first)."""
     visualizations = (
         GlobalVisualization.query
         .filter(visible_in_list(GlobalVisualization, getattr(g, 'current_user', None)))
         .order_by(GlobalVisualization.name)
         .all()
     )
-    return render_template('visualizations.html', visualizations=visualizations)
+    groups = {}
+    for v in visualizations:
+        groups.setdefault(_metric_domain(v), []).append(v)
+    order = [label for label, _ in _METRIC_DOMAIN_RULES] + ['Other']
+    grouped = [(label, groups[label]) for label in order if label in groups]
+    selected_id = request.args.get('selected', type=int)
+    selected = None
+    if selected_id:
+        selected = next((v for v in visualizations if v.id == selected_id), None)
+    if selected is None and grouped:
+        selected = grouped[0][1][0]
+    return render_template(
+        'visualizations.html',
+        visualizations=visualizations,
+        grouped_visualizations=grouped,
+        selected=selected,
+    )
 
 @app.route('/create_visualization', methods=['POST'])
 @login_required
@@ -8647,7 +8866,14 @@ def _llm_infer_mapping(features, dataset_repo=None):
 
 def _infer_mapping(features):
     """Heuristic: map each feature into a BenchHub field type, or 'skip'.
-    Returns a list of {column, target_kind, target_field, reason}."""
+    Returns a list of {column, target_kind, target_field, reason}.
+
+    PWC bulk imports leaned on this when no LLM is configured, and any
+    column flagged 'skip' produces zero GT in the LB-scoped cache (so
+    the comparison view ends up empty). String / Audio / arbitrary-
+    sequence columns therefore default to 'text' or 'audio' rather than
+    'skip' — better to show *something* than nothing.
+    """
     out = []
     for col, desc in features.items():
         col_lc = col.lower()
@@ -8661,6 +8887,10 @@ def _infer_mapping(features):
                 out.append({'column': col, 'target_kind': 'image',
                             'target_field': f'image_{col}',
                             'reason': "Image-typed column → image_*"})
+        elif t == 'Audio':
+            out.append({'column': col, 'target_kind': 'audio',
+                        'target_field': f'audio_{col}',
+                        'reason': "Audio-typed column → audio waveform thumb"})
         elif t.startswith('Value:'):
             dtype = t.split(':', 1)[1]
             if dtype in ('int8', 'int16', 'int32', 'int64',
@@ -8674,14 +8904,13 @@ def _infer_mapping(features):
                                        f"already holds a user-precomputed "
                                        f"metric value.")})
             elif dtype == 'string':
-                if col_lc in ('caption', 'text', 'tag', 'tags'):
-                    out.append({'column': col, 'target_kind': 'text',
-                                'target_field': col,
-                                'reason': "Text-shaped column"})
-                else:
-                    out.append({'column': col, 'target_kind': 'skip',
-                                'target_field': '',
-                                'reason': "String column with no obvious mapping"})
+                # Default to text for *any* string column. The previous
+                # whitelist-only behaviour (caption/text/tag) skipped
+                # almost every QA / code / dialog dataset, which left
+                # the GT cache empty for the bulk-PWC imports.
+                out.append({'column': col, 'target_kind': 'text',
+                            'target_field': col,
+                            'reason': "String column → GT text field"})
             else:
                 out.append({'column': col, 'target_kind': 'skip',
                             'target_field': '',
@@ -8695,18 +8924,28 @@ def _infer_mapping(features):
         elif t.startswith('Sequence:'):
             inner = t.split(':', 1)[1]
             length = desc.get('length', -1)
-            if inner in ('int32', 'int64', 'uint8', 'uint16', 'uint32') and length in (256, 512, 1024, 2048):
+            if inner == 'string':
+                out.append({'column': col, 'target_kind': 'text',
+                            'target_field': col,
+                            'reason': "Sequence:string → join into GT text"})
+            elif inner in ('int32', 'int64', 'uint8', 'uint16', 'uint32') and length in (256, 512, 1024, 2048):
                 out.append({'column': col, 'target_kind': 'histogram',
                             'target_field': f'hist_{col}',
                             'reason': f"Fixed-length int sequence ({length}) → hist_*"})
             else:
-                out.append({'column': col, 'target_kind': 'skip',
-                            'target_field': '',
-                            'reason': f"Sequence:{inner} (length={length}) — no auto-mapping"})
+                # Lists of floats/ints, ClassLabels (e.g. answer-span
+                # offsets in QA datasets), bounding boxes etc. Persist
+                # as serialized JSON so the comparison view can render
+                # them as a compact key/value card.
+                out.append({'column': col, 'target_kind': 'json',
+                            'target_field': col,
+                            'reason': f"Sequence:{inner} → GT json field"})
         else:
-            out.append({'column': col, 'target_kind': 'skip',
-                        'target_field': '',
-                        'reason': f"Unsupported feature type '{t}'"})
+            # Catch-all (dict / Translation / Audio sequence / etc.) —
+            # serialize the row's value to JSON so SOMETHING shows up.
+            out.append({'column': col, 'target_kind': 'json',
+                        'target_field': col,
+                        'reason': f"Feature type '{t}' → GT json field"})
     return out
 
 
@@ -8833,12 +9072,21 @@ def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
         if not col or kind == 'skip' or col not in row:
             continue
         value = row[col]
-        if kind in ('image', 'depth', 'histogram') and value is not None:
+        if kind in ('image', 'mask', 'depth', 'audio', 'histogram') and value is not None:
             cfs.append(_VirtualCustomField(
                 name=target_field, source_column=col,
-                field_type=('depth' if kind == 'depth'
-                            else 'histogram' if kind == 'histogram'
-                            else 'image'),
+                field_type=kind,
+            ))
+        elif kind == 'json' and value is not None:
+            # Serialize arbitrary structured values (dicts, lists,
+            # bboxes, span offsets) so they can land in CustomField.
+            try:
+                value_text = json.dumps(value, default=str)
+            except Exception:
+                value_text = str(value)
+            cfs.append(_VirtualCustomField(
+                name=target_field, field_type='json',
+                value_text=value_text, source_column=col,
             ))
         elif kind in ('scalar', 'metric') and value is not None:
             names = classlabel_names.get(col)
@@ -8880,9 +9128,19 @@ def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
                         value_text=value.strip(), source_column=col,
                     ))
         elif kind == 'text' and value is not None:
+            # Lists/tuples (Sequence:string columns from PWC datasets
+            # like QA answers / code tests) → join with ' | ' so the
+            # comparison view shows the whole thing.
+            if isinstance(value, (list, tuple)):
+                value_text = ' | '.join(str(x) for x in value if x is not None)
+            elif isinstance(value, dict):
+                # Translation features land here as {'en': '...', 'de': '...'}.
+                value_text = ' | '.join(f"{k}: {v}" for k, v in value.items())
+            else:
+                value_text = str(value)
             cfs.append(_VirtualCustomField(
                 name=target_field, field_type='text',
-                value_text=str(value), source_column=col,
+                value_text=value_text, source_column=col,
             ))
     return _VirtualSample(
         name=sample_name,
@@ -10926,7 +11184,7 @@ def comparison_view(leaderboard_id):
             CustomField.submission_id == None
         ).distinct().all()
 
-    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in ['image', 'depth', 'mask', 'scalar', 'metric', 'text']}
+    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in ['image', 'depth', 'mask', 'audio', 'scalar', 'metric', 'text', 'json']}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
     
     # Submission fields
@@ -11157,12 +11415,16 @@ def comparison_view(leaderboard_id):
             'custom_metrics': {}
         }
         
-        # Add GT custom fields for this sample
+        # Add GT custom fields for this sample. Non-image kinds (text,
+        # json, scalar) get their value surfaced alongside the field_id;
+        # the template branches on whichever attribute is non-null.
         for cf in sample.custom_fields:
-            if cf.field_type in ['image', 'depth', 'scalar']:
+            if cf.field_type in ['image', 'depth', 'mask', 'audio', 'scalar', 'text', 'json']:
                 sample_info['custom_fields'][cf.name] = {
-                    'gt_field_id': cf.id if cf.field_type in ['image', 'depth'] else None,
+                    'gt_field_id': cf.id if cf.field_type in ['image', 'depth', 'mask', 'audio'] else None,
                     'gt_scalar_value': cf.value_float if cf.field_type == 'scalar' else None,
+                    'gt_text_value': cf.value_text if cf.field_type in ('text', 'json') else None,
+                    'gt_field_type': cf.field_type,
                     'submissions': {},
                     'sub_scalars': {}
                 }
@@ -12531,6 +12793,12 @@ def serve_gt_viz(lb_id, col, sample_name):
     # no body. After a wipe-and-repopulate (e.g. fixing a black-depth
     # render), the mtime moves and the next refresh sees the new bytes
     # — instead of being stuck with stale bytes for a full day.
+    # Sniff PNG header so audio waveform thumbs serve with the right
+    # mimetype (they're PNG; image/mask/depth thumbs are JPEG).
+    with open(path, 'rb') as fh:
+        magic = fh.read(4)
+    if magic == b'\x89PNG':
+        return send_file(path, mimetype='image/png', max_age=60)
     return send_file(
         path, mimetype='image/jpeg', max_age=60,
     )
@@ -13317,6 +13585,67 @@ def _write_gt_image_thumb(value, dest_path, kind):
         return False
 
 
+def _write_gt_audio_thumb(value, dest_path):
+    """Render an HF Audio cell into a small waveform PNG. `value` is
+    typically `{'array': np.ndarray, 'sampling_rate': int, 'path': str}`
+    or a numpy array directly. Falls through to False on any error so
+    the caller can skip caching this entry."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"DEBUG: matplotlib not available for audio thumb: {e}")
+        return False
+    try:
+        arr = None
+        sr = None
+        if isinstance(value, dict):
+            arr = value.get('array')
+            sr = value.get('sampling_rate')
+            if arr is None and value.get('path'):
+                try:
+                    import soundfile as sf
+                    arr, sr = sf.read(value['path'])
+                except Exception:
+                    arr = None
+        elif isinstance(value, (list, tuple, np.ndarray)):
+            arr = np.asarray(value)
+        if arr is None:
+            return False
+        arr = np.asarray(arr)
+        if arr.ndim == 2:
+            # Mix stereo → mono for the thumb.
+            arr = arr.mean(axis=1) if arr.shape[1] in (2, 4) else arr[:, 0]
+        if arr.size == 0:
+            return False
+        # Downsample to ~600 points for a compact waveform.
+        target = 600
+        if arr.size > target:
+            stride = arr.size // target
+            arr = arr[: stride * target].reshape(target, stride).mean(axis=1)
+        peak = float(np.max(np.abs(arr))) or 1.0
+        arr = arr / peak
+
+        fig = plt.figure(figsize=(6, 1.5), dpi=80)
+        ax = fig.add_subplot(111)
+        ax.fill_between(np.arange(arr.size), arr, -arr, color='#7c3aed', alpha=0.85, linewidth=0)
+        ax.set_ylim(-1.05, 1.05)
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_facecolor('#fcfcff')
+        fig.patch.set_facecolor('#fcfcff')
+        fig.tight_layout(pad=0.1)
+        fig.savefig(dest_path, format='png', dpi=80,
+                    facecolor=fig.get_facecolor())
+        plt.close(fig)
+        return True
+    except Exception as e:
+        print(f"DEBUG: gt audio thumb failed for {dest_path}: {e}")
+        return False
+
+
 def _cache_gt_image_thumb(repo_id, revision, split, col, sample_idx,
                           value, kind):
     """Materialize one HF GT cell as a JPEG in bench_cache. Returns the
@@ -13336,7 +13665,10 @@ def _cache_gt_image_thumb(repo_id, revision, split, col, sample_idx,
         return existing
 
     def _writer(tmp_path):
-        ok = _write_gt_image_thumb(value, tmp_path, kind)
+        if kind == 'audio':
+            ok = _write_gt_audio_thumb(value, tmp_path)
+        else:
+            ok = _write_gt_image_thumb(value, tmp_path, kind)
         if not ok:
             # cache_put expects bytes to land at tmp_path; if the
             # thumb failed, write a placeholder zero-byte file so
@@ -13415,10 +13747,10 @@ def _persist_hf_eval_snapshots(lb, samples_iter):
                     field_type='text',
                     value_text=cf.value_text,
                 ))
-            elif ftype in ('image', 'mask', 'depth'):
-                # Image/mask/depth: don't persist bytes — write a
-                # marker row that points at the served thumbnail URL.
-                # The actual JPEG lives in bench_cache (populated by
+            elif ftype in ('image', 'mask', 'depth', 'audio'):
+                # Visual/audio: don't persist bytes — write a marker
+                # row that points at the served thumbnail URL. The
+                # actual JPEG/PNG lives in bench_cache (populated by
                 # _populate_hf_gt_thumb_cache).
                 db.session.add(CustomField(
                     leaderboard_id=lb.id,
@@ -13427,6 +13759,36 @@ def _persist_hf_eval_snapshots(lb, samples_iter):
                     field_type=ftype,
                     source_column=getattr(cf, 'source_column', None),
                 ))
+            elif ftype == 'json':
+                # JSON-shaped GT (bounding boxes, span offsets, dicts).
+                # Stored as text — comparison view detects the field_type
+                # and renders it as a key/value card.
+                value_text = getattr(cf, 'value_text', None)
+                if value_text is None and getattr(cf, 'value_blob', None):
+                    try:
+                        value_text = cf.value_blob.decode('utf-8', errors='replace')
+                    except Exception:
+                        value_text = None
+                if value_text is not None:
+                    db.session.add(CustomField(
+                        leaderboard_id=lb.id,
+                        sample_name=sample.name,
+                        name=name,
+                        field_type='json',
+                        value_text=value_text,
+                    ))
+            elif ftype == 'histogram':
+                # Histogram bins: persist the raw blob so the comparison
+                # view can sparkline it.
+                value_blob = getattr(cf, 'value_blob', None)
+                if value_blob is not None:
+                    db.session.add(CustomField(
+                        leaderboard_id=lb.id,
+                        sample_name=sample.name,
+                        name=name,
+                        field_type='histogram',
+                        value_blob=value_blob,
+                    ))
     db.session.commit()
 
 
@@ -13451,7 +13813,7 @@ def _populate_hf_gt_thumb_cache(lb, att, hf_token=None, max_thumbs=10_000,
     image_cols = [
         (m.get('column'), m.get('target_kind'))
         for m in mapping
-        if m.get('target_kind') in ('image', 'mask', 'depth')
+        if m.get('target_kind') in ('image', 'mask', 'depth', 'audio')
     ]
     if not image_cols:
         return 0
@@ -14237,7 +14599,10 @@ def check_and_migrate_db():
                     'image_width': 'TEXT',
                     'last_sample_filter': 'TEXT',
                     'metric_aggregation': 'TEXT DEFAULT "{}"',
-                    'comparison_display_columns': 'TEXT DEFAULT "{}"' 
+                    'comparison_display_columns': 'TEXT DEFAULT "{}"',
+                    # Two-level taxonomy "area/task". Populated for PWC
+                    # imports; manual LBs are nullable.
+                    'category': 'VARCHAR(120) DEFAULT NULL',
                 }
                 
                 for col_name, col_type in columns_to_check.items():
@@ -14251,6 +14616,70 @@ def check_and_migrate_db():
                             print(f"Successfully added '{col_name}'.")
                         except Exception as e:
                             print(f"Failed to add '{col_name}': {e}")
+
+                # --- 3b. Backfill LB categories from PWC archive ---
+                # Idempotent: only operates on canonical_for_repo LBs
+                # whose category is still NULL. Two-stage match:
+                #   1. PWC archive HF-repo join (works when the source
+                #      eval's links_json carried an HF link)
+                #   2. Parse "<task> on <dataset>" out of lb.name and
+                #      match against pwc_evaluation.task (catches LBs
+                #      imported via suggest_hf_repo where the link
+                #      wasn't in PWC's archive)
+                try:
+                    cursor.execute(
+                        "SELECT id, name, canonical_for_repo FROM leaderboard "
+                        "WHERE canonical_for_repo IS NOT NULL AND (category IS NULL OR category = '')"
+                    )
+                    pending = cursor.fetchall()
+                    if pending:
+                        try:
+                            import pwc_client
+                            pwc_path = pwc_client._index_path()
+                            if os.path.exists(pwc_path):
+                                pwc_conn = sqlite3.connect(pwc_path)
+                                pcur = pwc_conn.cursor()
+                                pwc_tasks = {
+                                    t.lower() for (t,) in pcur.execute(
+                                        "SELECT DISTINCT task FROM pwc_evaluation WHERE task IS NOT NULL"
+                                    )
+                                }
+                                updated = 0
+                                for lb_id, lb_name, repo in pending:
+                                    task = None
+                                    # Stage 1: HF-repo join
+                                    pcur.execute(
+                                        "SELECT e.task FROM pwc_evaluation e "
+                                        "JOIN pwc_dataset d ON d.id = e.dataset_id "
+                                        "WHERE d.name = ? "
+                                        "ORDER BY json_array_length(e.results_json) DESC LIMIT 1",
+                                        (repo,),
+                                    )
+                                    row = pcur.fetchone()
+                                    if row and row[0]:
+                                        task = row[0]
+                                    # Stage 2: split "<task> on <dataset>" from lb.name
+                                    if not task and lb_name and ' on ' in lb_name:
+                                        head = lb_name.split(' on ', 1)[0].strip()
+                                        if head.lower() in pwc_tasks:
+                                            task = head
+                                    if not task:
+                                        continue
+                                    cat = _pwc_task_to_category(task)
+                                    if cat:
+                                        cursor.execute(
+                                            "UPDATE leaderboard SET category=? WHERE id=?",
+                                            (cat, lb_id),
+                                        )
+                                        updated += 1
+                                pwc_conn.close()
+                                if updated:
+                                    conn.commit()
+                                    print(f"Backfilled category for {updated} PWC-imported LB(s).")
+                        except Exception as e:
+                            print(f"PWC category backfill skipped: {e}")
+                except Exception as e:
+                    print(f"Category backfill probe failed: {e}")
 
                 # --- 8. AuthorProfile merging migration ---
                 try:

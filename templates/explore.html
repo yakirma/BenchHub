@@ -71,6 +71,51 @@
         margin-right: 0.25em;
     }
 
+    /* Category tree sidebar. */
+    .cat-tree { font-size: 0.9rem; }
+    .cat-tree details { margin-bottom: 0.2rem; }
+    .cat-tree summary {
+        cursor: pointer;
+        padding: 0.25rem 0.4rem;
+        border-radius: 0.4rem;
+        list-style: none;
+        font-weight: 600;
+    }
+    .cat-tree summary::-webkit-details-marker { display: none; }
+    .cat-tree summary::before {
+        content: "\25B8";  /* ▸ */
+        display: inline-block;
+        width: 1em;
+        transition: transform 0.1s ease;
+        color: var(--bs-body-secondary);
+    }
+    .cat-tree details[open] > summary::before { transform: rotate(90deg); }
+    .cat-tree summary:hover { background: var(--bs-tertiary-bg); }
+    .cat-tree .task-link {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.15rem 0.4rem 0.15rem 1.6rem;
+        border-radius: 0.4rem;
+        text-decoration: none;
+        color: var(--bs-body);
+    }
+    .cat-tree .task-link:hover { background: var(--bs-tertiary-bg); }
+    .cat-tree .task-link.active {
+        background: var(--bs-primary-bg-subtle);
+        color: var(--bs-primary-text-emphasis);
+        font-weight: 600;
+    }
+    .cat-tree summary.active {
+        background: var(--bs-primary-bg-subtle);
+        color: var(--bs-primary-text-emphasis);
+    }
+    .cat-tree .badge-count {
+        font-size: 0.7rem;
+        font-weight: normal;
+        color: var(--bs-body-secondary);
+    }
+
     /* LB thumbnail — matches the home grid treatment. */
     .lb-card-thumb {
         height: 140px;
@@ -94,7 +139,8 @@
             <p class="text-body-secondary mb-0">
                 {% if rows %}
                 {{ rows|length }} public leaderboard{{ '' if rows|length == 1 else 's' }}{% if active_tag %} tagged
-                <span class="badge text-bg-primary">{{ active_tag }}</span>{% endif %}.
+                <span class="badge text-bg-primary">{{ active_tag }}</span>{% endif %}{% if active_category %}
+                in <span class="badge text-bg-info">{{ active_category }}</span>{% endif %}.
                 {% else %}
                 Nothing matches your filters yet.
                 {% endif %}
@@ -157,9 +203,59 @@
         </div>
     </form>
 
-    {# ---- Results grid ---- #}
+    {# ---- Two-pane: category tree + results grid ---- #}
+    <div class="row g-4">
+    {% if category_tree %}
+    <aside class="col-md-3">
+        <div class="card border-0 shadow-sm" style="position: sticky; top: 80px;">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="mb-0 fw-bold">
+                        <i class="bi bi-diagram-3 me-1 text-primary"></i>Categories
+                    </h6>
+                    {% if active_category %}
+                    <a href="{{ url_for('explore', q=q, sort=sort, tag=active_tag) }}"
+                       class="small link-secondary" title="Clear category filter">
+                        <i class="bi bi-x-lg"></i>
+                    </a>
+                    {% endif %}
+                </div>
+                <div class="cat-tree">
+                    <a class="task-link {{ 'active' if not active_category }}"
+                       href="{{ url_for('explore', q=q, sort=sort, tag=active_tag) }}"
+                       style="padding-left: 0.4rem;">
+                        <span>All</span>
+                    </a>
+                    {% for area in category_tree %}
+                    {% set is_active_area = active_category == area.area or (active_category and active_category.startswith(area.area + '/')) %}
+                    <details {{ 'open' if is_active_area }}>
+                        <summary class="{{ 'active' if active_category == area.area }}">
+                            <a href="{{ url_for('explore', category=area.area, q=q, sort=sort, tag=active_tag) }}"
+                               class="text-decoration-none text-reset stretched-link"
+                               onclick="event.stopPropagation();">
+                                {{ area.area }}
+                            </a>
+                            <span class="badge-count ms-1">{{ area.count }}</span>
+                        </summary>
+                        {% for task in area.tasks %}
+                        {% set task_path = area.area ~ '/' ~ task.name %}
+                        <a class="task-link {{ 'active' if active_category == task_path }}"
+                           href="{{ url_for('explore', category=task_path, q=q, sort=sort, tag=active_tag) }}">
+                            <span class="text-truncate" title="{{ task.name }}">{{ task.name }}</span>
+                            <span class="badge-count ms-1">{{ task.count }}</span>
+                        </a>
+                        {% endfor %}
+                    </details>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </aside>
+    {% endif %}
+
+    <main class="{{ 'col-md-9' if category_tree else 'col-12' }}">
     {% if rows %}
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-2 g-3">
         {% for row in rows %}
         {% set lb = row.lb %}
         <div class="col">
@@ -184,6 +280,25 @@
                         {% endif %}
                     </div>
 
+                    {% if lb.category %}
+                    {% set _cat_parts = lb.category.split('/', 1) %}
+                    <div class="mb-2 small">
+                        <a href="{{ url_for('explore', category=_cat_parts[0]) }}"
+                           class="text-decoration-none text-body-secondary"
+                           onclick="event.stopPropagation();" style="position: relative; z-index: 2;">
+                            <i class="bi bi-diagram-3 me-1"></i>{{ _cat_parts[0] }}
+                        </a>
+                        {% if _cat_parts|length > 1 %}
+                        <span class="text-body-secondary">›</span>
+                        <a href="{{ url_for('explore', category=lb.category) }}"
+                           class="text-decoration-none text-body"
+                           onclick="event.stopPropagation();" style="position: relative; z-index: 2;">
+                            {{ _cat_parts[1] }}
+                        </a>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+
                     {% if lb.tags %}
                     <div class="mb-2">
                         {% for t in lb.tags %}
@@ -193,9 +308,24 @@
                     </div>
                     {% endif %}
 
+                    {# Count BH datasets + HF attachments separately;
+                       a count of 0 for a PWC-imported LB is misleading
+                       (it does have a source, just on huggingface.co). #}
+                    {% set _bh_ds_count = lb.datasets|length %}
+                    {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
                     <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
                         <span><i class="bi bi-people me-1"></i>{{ row.total }} submission{{ '' if row.total == 1 else 's' }}</span>
-                        <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }} dataset{{ '' if lb.datasets|length == 1 else 's' }}</span>
+                        {% if _bh_ds_count %}
+                        <span><i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}</span>
+                        {% endif %}
+                        {% if _hf_atts %}
+                        <span><i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}</span>
+                        {% endif %}
+                        {% if lb.canonical_for_repo %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border" title="Imported from Papers With Code">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>PWC
+                        </span>
+                        {% endif %}
                     </div>
 
                     <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
@@ -209,12 +339,14 @@
     <div class="text-center py-5 text-body-secondary">
         <i class="bi bi-funnel display-5 d-block mb-3 opacity-50"></i>
         <p class="mb-1">No public leaderboards match those filters.</p>
-        {% if q %}
+        {% if q or active_category %}
         <p class="small mb-0">
             <a href="{{ url_for('explore') }}" class="link-secondary">Clear filters</a>
         </p>
         {% endif %}
     </div>
     {% endif %}
+    </main>
+    </div>{# /two-pane row #}
 </div>
 {% endblock %}

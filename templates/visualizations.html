@@ -3,74 +3,154 @@
 {% block title %}Visualizations{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-    <h1>Visualizations</h1>
-    <!-- Add new visualization button trigger modal -->
-    <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addVizModal">
-        + Create New Visualization
-    </button>
+<div class="container-fluid py-3" style="max-width: 1400px;">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="mb-0">Visualizations</h1>
+        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addVizModal">
+            <i class="bi bi-plus-lg me-1"></i>Create new visualization
+        </button>
+    </div>
+
+    {% if not visualizations %}
+    <div class="alert alert-info">No global visualizations defined yet. Create one to get started!</div>
+    {% else %}
+    {# Mobile-only picker (see metrics.html for the same pattern). #}
+    <div class="d-md-none mb-3">
+        <label for="viz-picker-mobile" class="form-label small fw-semibold mb-1">Pick a visualization</label>
+        <select id="viz-picker-mobile" class="form-select"
+                onchange="if (this.value) window.location.href = this.value;">
+            <option value="">— select —</option>
+            {% for label, group in grouped_visualizations %}
+            <optgroup label="{{ label }}">
+                {% for v in group %}
+                <option value="{{ url_for('visualizations_view', selected=v.id) }}"
+                        {{ 'selected' if selected and selected.id == v.id }}>
+                    {{ v.name }}{% if v.is_aggregated %} (agg){% endif %}
+                </option>
+                {% endfor %}
+            </optgroup>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="row g-3">
+        <aside class="col-md-4 col-lg-3 d-none d-md-block">
+            <div class="card border-0 shadow-sm" style="position: sticky; top: 80px; max-height: calc(100vh - 100px); overflow-y: auto;">
+                <div class="card-body p-3">
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <input type="text" class="form-control" id="viz-filter"
+                               placeholder="Filter visualizations…">
+                    </div>
+                    {% for label, group in grouped_visualizations %}
+                    <div class="viz-domain mb-3">
+                        <h6 class="small text-uppercase fw-bold text-body-secondary mb-1 mt-2 px-1">
+                            {{ label }}
+                            <span class="badge text-bg-light border ms-1 fw-normal">{{ group|length }}</span>
+                        </h6>
+                        <ul class="list-unstyled mb-0">
+                            {% for v in group %}
+                            <li class="viz-sidebar-item" data-name="{{ v.name|lower }}" data-desc="{{ (v.description or '')|lower }}">
+                                <a href="{{ url_for('visualizations_view', selected=v.id) }}"
+                                   class="d-flex justify-content-between align-items-center px-2 py-1 rounded text-decoration-none small {{ 'fw-semibold bg-primary-subtle text-primary' if selected and selected.id == v.id else 'text-body' }}">
+                                    <span class="font-monospace text-truncate" title="{{ v.name }}">{{ v.name }}</span>
+                                    {% if v.is_aggregated %}
+                                    <span class="badge text-bg-info-subtle text-info-emphasis border" style="font-size: 0.65rem;" title="Aggregated">agg</span>
+                                    {% endif %}
+                                </a>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </aside>
+
+        <main class="col-12 col-md-8 col-lg-9">
+            {% if selected %}
+            <div class="card border-0 shadow-sm">
+                <div class="card-body p-4">
+                    <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+                        <h2 class="h4 font-monospace mb-0">{{ selected.name }}</h2>
+                        {% if selected.is_aggregated %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border">Aggregated</span>
+                        {% else %}
+                        <span class="badge text-bg-secondary-subtle text-secondary border">Per-sample</span>
+                        {% endif %}
+                    </div>
+
+                    {% if selected.description %}
+                    <p class="text-body-secondary">{{ selected.description }}</p>
+                    {% else %}
+                    <p class="text-body-secondary small fst-italic">No description.</p>
+                    {% endif %}
+
+                    <h3 class="h6 mt-4 mb-2">Python implementation</h3>
+                    <pre class="bg-body-tertiary p-3 rounded border" style="max-height: 480px; overflow: auto;"><code class="language-python">{{ selected.python_code }}</code></pre>
+
+                    <div class="d-flex flex-wrap gap-2 mt-3">
+                        <button class="btn btn-sm btn-outline-primary edit-viz-btn"
+                                data-id="{{ selected.id }}" data-name="{{ selected.name }}"
+                                data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
+                                data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                            <i class="bi bi-pencil me-1"></i>Edit
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary duplicate-viz-btn"
+                                data-id="{{ selected.id }}" data-name="{{ selected.name }}"
+                                data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
+                                data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                            <i class="bi bi-copy me-1"></i>Duplicate
+                        </button>
+                        <a href="{{ url_for('download_visualization', viz_id=selected.id) }}"
+                           class="btn btn-sm btn-outline-success">
+                            <i class="bi bi-download me-1"></i>Download
+                        </a>
+                        <button class="btn btn-sm btn-outline-info update-from-file-btn"
+                                data-id="{{ selected.id }}" data-name="{{ selected.name }}"
+                                data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
+                                data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                            <i class="bi bi-upload me-1"></i>Update from file
+                        </button>
+                        <form action="{{ url_for('delete_visualization', viz_id=selected.id) }}" method="post"
+                              onsubmit="return confirm('Remove this visualization from ALL leaderboards using it?');"
+                              class="m-0">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="bi bi-trash me-1"></i>Delete
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="alert alert-info">Pick a visualization from the left to see its details.</div>
+            {% endif %}
+        </main>
+    </div>
+    {% endif %}
 </div>
 
-<!-- List of Global Visualizations -->
-<div class="row">
-    {% for viz in visualizations %}
-    <div class="col-md-6 mb-4">
-        <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">{{ viz.name }}</h5>
-                {% if viz.is_aggregated %}
-                <span class="badge bg-info text-dark">Aggregated</span>
-                {% else %}
-                <span class="badge bg-secondary">Per-Sample</span>
-                {% endif %}
-            </div>
-            <div class="card-body">
-                {% if viz.description %}
-                <p class="card-text text-muted">{{ viz.description }}</p>
-                {% endif %}
-                <h6>Python Code:</h6>
-                <pre class="bg-body-tertiary p-2 rounded border"
-                    style="max-height: 200px; overflow-y: auto;"><code class="language-python">{{ viz.python_code }}</code></pre>
-            </div>
-            <div class="card-footer d-flex justify-content-end">
-                <button class="btn btn-sm btn-outline-info me-2 update-from-file-btn" data-id="{{ viz.id }}"
-                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}"
-                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
-                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}"
-                    data-code="{{ viz.python_code }}">
-                    <i class="bi bi-upload"></i> Update from File
-                </button>
-                <a href="{{ url_for('download_visualization', viz_id=viz.id) }}"
-                    class="btn btn-sm btn-outline-success me-2">
-                    <i class="bi bi-download"></i> Download
-                </a>
-                <button class="btn btn-sm btn-outline-secondary me-2 duplicate-viz-btn" data-id="{{ viz.id }}"
-                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}" data-code="{{ viz.python_code }}"
-                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
-                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}">
-                    <i class="bi bi-copy"></i> Duplicate
-                </button>
-                <button class="btn btn-sm btn-outline-primary me-2 edit-viz-btn" data-id="{{ viz.id }}"
-                    data-name="{{ viz.name }}" data-desc="{{ viz.description }}" data-code="{{ viz.python_code }}"
-                    data-aggregated="{{ 'true' if viz.is_aggregated else 'false' }}"
-                    data-accepts-agg="{{ 'true' if viz.accepts_aggregated_inputs else 'false' }}">
-                    <i class="bi bi-pencil"></i> Edit
-                </button>
-                <form action="{{ url_for('delete_visualization', viz_id=viz.id) }}"
-                    method="post"
-                    onsubmit="return confirm('Are you sure? This will remove the visualization from ALL leaderboards using it.');">
-                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i>
-                        Delete</button>
-                </form>
-            </div>
-        </div>
-    </div>
-    {% else %}
-    <div class="col-12">
-        <div class="alert alert-info">No global visualizations defined yet. Create one to get started!</div>
-    </div>
-    {% endfor %}
-</div>
+<script>
+    (function () {
+        const input = document.getElementById('viz-filter');
+        if (!input) return;
+        input.addEventListener('input', () => {
+            const q = input.value.trim().toLowerCase();
+            document.querySelectorAll('.viz-sidebar-item').forEach((li) => {
+                const hay = (li.dataset.name || '') + ' ' + (li.dataset.desc || '');
+                li.style.display = (!q || hay.includes(q)) ? '' : 'none';
+            });
+            document.querySelectorAll('.viz-domain').forEach((g) => {
+                const visible = Array.from(g.querySelectorAll('.viz-sidebar-item'))
+                    .some((li) => li.style.display !== 'none');
+                g.style.display = visible ? '' : 'none';
+            });
+        });
+    })();
+</script>
 
 <!-- Add/Edit Modal -->
 <div class="modal fade" id="addVizModal" tabindex="-1" aria-hidden="true">

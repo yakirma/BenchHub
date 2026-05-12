@@ -177,9 +177,23 @@
                         {{ lb.name }}
                     </a>
                 </h6>
+                {% set _bh_ds_count = lb.datasets|length %}
+                {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
                 <div class="small text-body-secondary d-flex flex-wrap gap-2">
                     <span><i class="bi bi-people me-1"></i>{{ lb.submissions|length }}</span>
-                    <span><i class="bi bi-database me-1"></i>{{ lb.datasets|length }}</span>
+                    {% if _bh_ds_count %}
+                    <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
+                        <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
+                    </span>
+                    {% endif %}
+                    {% if _hf_atts %}
+                    <span title="{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}">
+                        <i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }}
+                    </span>
+                    {% endif %}
+                    {% if lb.canonical_for_repo %}
+                    <span class="badge text-bg-info-subtle text-info-emphasis border small" title="Imported from Papers With Code">PWC</span>
+                    {% endif %}
                 </div>
             </div>
         </div>

@@ -688,7 +688,7 @@ def reaggregate_submission_metrics(self, submission_id):
         session.remove()
 
 
-@celery.task(bind=True, max_retries=0, ignore_result=True)
+@celery.task(bind=True, max_retries=0, ignore_result=True, soft_time_limit=300, time_limit=360)
 def populate_lb_samples(self, lb_id, max_samples=200):
     """Populate the LB-scoped sample cache without needing a submission
     upload. Triggered from the "Explore samples" empty-state on
@@ -696,7 +696,15 @@ def populate_lb_samples(self, lb_id, max_samples=200):
     all). Streams the HF dataset, writes GT scalar/text CustomField
     snapshots, and warms the bench_cache thumbnail entries.
 
-    Skipped for BH-attached LBs (their Sample rows already carry GT)."""
+    Skipped for BH-attached LBs (their Sample rows already carry GT).
+
+    Wrapped in a 5-minute soft timeout because PWC's auto-suggested HF
+    repos sometimes point at multi-GB monolithic HDF5 files that take
+    forever to download and can OOM the worker (e.g. btherien/imagenet-
+    64x64x3 ships a 100GB .h5 that load_dataset materializes fully
+    before yielding row 0). Soft timeout lets the worker abandon the
+    task and move on instead of taking down the whole machine."""
+    from celery.exceptions import SoftTimeLimitExceeded
     from app import (
         Leaderboard, _iter_lb_eval_samples, _persist_hf_eval_snapshots,
         _populate_hf_gt_thumb_cache,
@@ -734,6 +742,12 @@ def populate_lb_samples(self, lb_id, max_samples=200):
                     f"{att.hf_repo_id} (split={att.hf_split})"
                 )
         logger.info(f"populate_lb_samples: LB {lb_id} sample cache populated")
+    except SoftTimeLimitExceeded:
+        session.rollback()
+        logger.warning(
+            f"populate_lb_samples LB {lb_id} hit soft timeout — likely a "
+            f"large monolithic dataset (HDF5 etc). Skipping."
+        )
     except Exception as e:
         session.rollback()
         logger.exception(f"populate_lb_samples LB {lb_id} failed: {e}")

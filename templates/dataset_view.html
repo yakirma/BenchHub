@@ -702,7 +702,7 @@
                     </div>
                     {% elif col_key in custom_fields_map[sample.id] %}
                     {% set field_data = custom_fields_map[sample.id][col_key] %}
-                    {% if field_data.type == 'image' or field_data.type == 'depth' %}
+                    {% if field_data.type in ['image', 'depth', 'mask', 'audio'] %}
                     <div class="text-center">
                         <img src="{{ url_for('serve_custom_field_image', field_id=field_data.field_id) }}"
                             class="border rounded shadow-sm clickable-vis"

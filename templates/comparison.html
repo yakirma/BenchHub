@@ -1022,6 +1022,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center fw-bold">
                                 {{ "%.4f"|format(data.custom_fields[col_key].gt_scalar_value) }}
                             </div>
+                            {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_text_value %}
+                            {# text / json fields: render the raw value
+                               in a small scrollbox so long QA answers
+                               or JSON payloads stay inside the cell. #}
+                            <div class="text-start small p-1"
+                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">
+                                {{ data.custom_fields[col_key].gt_text_value }}
+                            </div>
                             {% endif %}
                         </td>
                         {% endif %}
