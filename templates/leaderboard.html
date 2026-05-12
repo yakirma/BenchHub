@@ -349,15 +349,35 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </span>
         </a>
         {% else %}
+        {# No samples cached yet. If the viewer is the owner/admin,
+           let them kick off populate_lb_samples directly from here so
+           they don't have to know the route exists. Non-owners just
+           see the disabled state (they can't trigger the celery task
+           anyway — `populate_lb_samples_route` is owner_required). #}
+        {% if current_user and (current_user_is_admin or (leaderboard.owner_user_id and leaderboard.owner_user_id == current_user.id)) and leaderboard.attachments and (leaderboard.attachments|selectattr('kind', 'equalto', 'hf')|list) %}
+        <form method="post"
+              action="{{ url_for('populate_lb_samples_route', leaderboard_id=leaderboard.id) }}"
+              class="d-inline m-0">
+            <button type="submit" class="btn btn-outline-warning"
+                    title="Stream the HF dataset to cache GT samples — usually finishes in 30–120 seconds.">
+                <i class="bi bi-cloud-download me-1"></i>Populate samples
+                <span class="badge text-bg-warning-subtle text-warning-emphasis border ms-1"
+                      style="font-size: 0.7em;">
+                    <i class="bi bi-hourglass-split"></i>
+                </span>
+            </button>
+        </form>
+        {% else %}
         <span class="btn btn-outline-secondary disabled"
               tabindex="-1" role="button" aria-disabled="true"
-              title="No GT samples cached for this leaderboard yet — the explore page would be empty.">
+              title="No GT samples cached for this leaderboard yet — the owner can populate them.">
             <i class="bi bi-grid me-1"></i>No samples yet
             <span class="badge text-bg-warning-subtle text-warning-emphasis border ms-1"
                   style="font-size: 0.7em;">
                 <i class="bi bi-hourglass-split"></i>
             </span>
         </span>
+        {% endif %}
         {% endif %}
         {# Submit-scaffold dropdown: Colab (one-click) + direct downloads
            of the notebook and the local-run bootstrap script. The two
