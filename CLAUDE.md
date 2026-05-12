@@ -82,3 +82,50 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - `secret_key = 'supersecretkey'` is hardcoded; fine for local dev, do not assume any auth/CSRF protections.
 - `evaluate_dynamic_metric` calls `exec()` on user-supplied Python — by design. Treat this app as trusted-local-network only.
 - `app.py` uses `@app.url_value_preprocessor` + `@app.url_defaults` + a monkey-patch of `werkzeug.routing.Map.is_endpoint_expecting` to inject `project_name` into every URL automatically. New routes that take a `<project_name>` path component will get the value injected on `url_for(...)` without you passing it.
+
+## Frontend conventions (theme, layout)
+- **Theme is light-only by design.** `<html data-bs-theme="light">` is hardcoded in `base.html`. The CSS override block sets identical values for `[data-bs-theme="light"]` and `[data-bs-theme="dark"]`, but Bootstrap's own navbar CSS vars (`--bs-navbar-color`, `--bs-tertiary-bg-rgb`) aren't covered, so any dark-mode rendering leaks white-on-white. `global_settings.theme_mode` still defaults to `'dark'` in SQLite but the template no longer reads it. Don't reintroduce a real dark mode without overriding *every* `--bs-navbar-*` and `-rgb` variant.
+- **Navbar text is pinned manually** (`.navbar .nav-link { color: #281950 }` etc.) as belt-and-suspenders.
+- **`stretched-link` inside a sticky sidebar needs `position: relative` on the parent.** Without it the first card's anchor covers the entire scroll container and intercepts every later click. Bit us in `/explore` category tree.
+- **Mobile pattern for long lists** (metrics, visualizations): render a `<select>` with `d-md-none`, hide the sidebar with `d-none d-md-block`. Keeps the detail pane on-screen without a Bootstrap collapse dance.
+
+## HF dataset attachment patterns
+- **`_HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']`** in `app.py`. PWC bulk imports default `Attachment.hf_split='train'`, but that's a hint, not a hard preference. `_resolve_hf_split_and_load(att, load_fn)` walks the preference order, probes row 0 to verify mapped GT columns aren't all null, falls back to first loadable split if none have full GT, and **persists the resolved split back via `_persist_resolved_split`** so the LB-detail badge tells the truth.
+- **`_infer_mapping(features)` defaults string→text, Audio→audio, everything-else→json.** Used to skip-and-leave-empty for any column it didn't recognise, silently dropping most QA / relation-extraction / structured GT. If you change this, double-check `_persist_hf_eval_snapshots` and `_virtual_sample_from_hf_row` still know how to persist the new kind.
+- **`Value:unknown` (HF's flattening of nested types) → json**, not skip. DocRED's `sents`/`vertexSet`/`labels` look like this.
+- **`_pwc_task_to_category` strips domain prefixes** (Medical, Aerial, Satellite, Few-Shot, Self-Supervised, …) before classification, so "Medical Image Segmentation" → "Vision/Image Segmentation". New prefixes go in `_DOMAIN_PREFIXES` — order them shortest-first so "medical image" doesn't get half-eaten.
+- **`populate_lb_samples` has a 5-min `soft_time_limit`.** PWC's `suggest_hf_repo` fallback sometimes lands on a monolithic HDF5 repo (e.g. `btherien/imagenet-64x64x3` is 100GB+ behind `load_dataset`), and without the timeout one task takes down the whole worker. **The Fly machine hosts Flask + Celery + Redis on one box** — don't bulk-enqueue dozens of populate tasks; the site becomes unresponsive. Use the per-LB "Populate samples" button instead, or rate-limit any bulk operation.
+
+## Field-type taxonomy (CustomField.field_type)
+
+| field_type   | Storage | Comparison cell | Notes |
+|--------------|---------|-----------------|-------|
+| `scalar`     | `value_float` | `gt_scalar_value`, smart_num-formatted (integer → no `.0000`) | Togglable as a column (used to live only in `per_source_stats`). |
+| `text`       | `value_text` | `gt_text_value`, scrollable card | Default for any string column. |
+| `metric`     | `value_float` | Goes through `per_sample_metrics` chart panel | NOT togglable as a normal column. |
+| `image`/`depth`/`mask` | marker row + bench_cache | `<img>` → `serve_custom_field_image` → `serve_gt_viz` | Bytes don't live on the volume. |
+| `audio`      | marker row + bench_cache (waveform PNG) | Same `<img>` path; route sniffs PNG magic | HF Audio decode needs `soundfile`. |
+| `json`       | `value_text` (serialised JSON) | JSON scroll box | Dicts / Sequence-of-dict / bboxes / Translation features. `get_metric_context` json-decodes back into Python. |
+| `topk_list`  | `value_text` (JSON array) | Falls back to text render | Ranked-list predictions for Hits@N / MRR. Deserialised by `get_metric_context` into a Python list. |
+| `histogram`  | `value_blob` | Sparkline / chart | Fixed-length int sequences. |
+
+## Comparison view (`/comparison/<lb_id>`) gotchas
+- **`samples_only=1` must thread through every navigation link** (pagination, View Options form, filters). Without it the page collapses back into full submission-comparison mode the moment the URL drops the param.
+- **`samples_only_mode` filters out only submission-needing panels** (`per_sample_metrics`, `per_source_stats`, `pred_histogram`, `viz_*`) — NOT scalar/text/json/audio columns.
+- **`leaderboard.comparison_display_columns` CSV is legacy.** The renderer uses `available_display_options - hidden_comparison_display_columns`. The form persists only `hidden_*`. Don't rely on the CSV for visibility decisions.
+- **The template gates header+cell on `all_field_types.get(col_key) != 'metric'`** (used to be `not in ['scalar', 'metric']`). If you add a new field type, make sure it isn't accidentally excluded.
+
+## "Explorable" status
+- `_compute_explorable_lb_ids(lb_ids)` returns the LB IDs whose GT is actually cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — the HF-stub marker rows). Drives the green/yellow pill on `/explore`, `/home`, `/landing`, and the "Explore samples" button label on the LB detail page.
+- **An LB with `canonical_for_repo IS NOT NULL` and zero GT CFs is effectively broken** — surface the owner-only "Populate samples" button instead of silently rendering an empty Explore page.
+
+## Metric authoring
+- **LLM-authored metrics from `_llm_generate_metric_code` are not safe to ship verbatim** for non-trivial cases (rank-based, span-overlap, BLEU-family). They tend to mix scalar-vs-list logic awkwardly and quietly return the wrong number. The rank-based LBs (Link Prediction) needed manual rewrites with `_rank_of_gt(gt, pred_list)` helpers; spot-check any new ones before relying on the column.
+- **Metrics are stored as Python source on `GlobalMetric.python_code`** and exec'd inside `evaluate_dynamic_metric` with `numpy as np` available. To replace one cleanly, query the row by name and overwrite `python_code` — no migration needed.
+
+## Migration patterns
+- **Every model-level column add needs a corresponding `ALTER TABLE ... ADD COLUMN` block in `check_and_migrate_db()`** (no Alembic). Recent additions: `Leaderboard.category` (two-level "Area/Task" taxonomy).
+- **Idempotent data backfill belongs in the same `check_and_migrate_db()` block** after the ALTER, gated on "any existing rows still NULL". The PWC-category backfill at `--- 3b. ---` is the template: probe optional resources (`pwc_client._index_path()`), best-effort match, swallow exceptions so fresh installs aren't blocked.
+
+## Tests
+There are still none. The `test_*.py` files at the root are ad-hoc Celery chain experiments. If you're about to touch a regression-prone path (split resolution, mapping inference, rank metric, category classifier, samples_only_mode threading), write a `pytest` test against an in-memory SQLite + fixture HF-features dict so the next contributor doesn't accidentally re-introduce the bug.
