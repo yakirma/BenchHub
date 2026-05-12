@@ -2021,16 +2021,26 @@ def oauth_callback_github():
     # Upsert: provider+sub is the stable identity; email can change on GitHub side.
     user = User.query.filter_by(oauth_provider='github', oauth_sub=oauth_sub).first()
     if user is None:
-        # Email collision against a different provider would land here on a new
-        # provider. For now: GitHub-only, so this just means a brand-new account.
-        user = User(
-            email=email,
-            display_name=profile.get('name') or profile.get('login') or email.split('@')[0],
-            avatar_url=profile.get('avatar_url'),
-            oauth_provider='github',
-            oauth_sub=oauth_sub,
-        )
-        db.session.add(user)
+        # Cross-provider account link: if the same email already belongs
+        # to a user (e.g. they previously signed in with Google), link
+        # the GitHub identity to that row instead of inserting a
+        # duplicate (User.email is UNIQUE).
+        existing = User.query.filter(func.lower(User.email) == email.lower()).first()
+        if existing is not None:
+            existing.oauth_provider = 'github'
+            existing.oauth_sub = oauth_sub
+            existing.display_name = profile.get('name') or profile.get('login') or existing.display_name
+            existing.avatar_url = profile.get('avatar_url') or existing.avatar_url
+            user = existing
+        else:
+            user = User(
+                email=email,
+                display_name=profile.get('name') or profile.get('login') or email.split('@')[0],
+                avatar_url=profile.get('avatar_url'),
+                oauth_provider='github',
+                oauth_sub=oauth_sub,
+            )
+            db.session.add(user)
     else:
         # Refresh denormalized profile fields in case the user changed them on GitHub.
         user.email = email
@@ -2085,14 +2095,27 @@ def oauth_callback_google():
 
     user = User.query.filter_by(oauth_provider='google', oauth_sub=oauth_sub).first()
     if user is None:
-        user = User(
-            email=email,
-            display_name=profile.get('name') or email.split('@')[0],
-            avatar_url=profile.get('picture'),
-            oauth_provider='google',
-            oauth_sub=oauth_sub,
-        )
-        db.session.add(user)
+        # Cross-provider account link: if the email already belongs to
+        # a user (e.g. GitHub login last time), point THAT row at the
+        # Google identity instead of inserting a duplicate row (which
+        # would trip the User.email UNIQUE constraint). This is the
+        # standard "same email → same account" merge.
+        existing = User.query.filter(func.lower(User.email) == email.lower()).first()
+        if existing is not None:
+            existing.oauth_provider = 'google'
+            existing.oauth_sub = oauth_sub
+            existing.display_name = profile.get('name') or existing.display_name
+            existing.avatar_url = profile.get('picture') or existing.avatar_url
+            user = existing
+        else:
+            user = User(
+                email=email,
+                display_name=profile.get('name') or email.split('@')[0],
+                avatar_url=profile.get('picture'),
+                oauth_provider='google',
+                oauth_sub=oauth_sub,
+            )
+            db.session.add(user)
     else:
         user.email = email
         user.display_name = profile.get('name') or user.display_name
