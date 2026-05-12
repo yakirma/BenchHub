@@ -43,11 +43,15 @@
                                placeholder="Filter visualizations…">
                     </div>
                     {% for label, group in grouped_visualizations %}
-                    <div class="viz-domain mb-3">
-                        <h6 class="small text-uppercase fw-bold text-body-secondary mb-1 mt-2 px-1">
-                            {{ label }}
+                    {% set _group_open = (selected and selected in group) or (loop.first and not selected) %}
+                    <details class="viz-domain mb-2" {{ 'open' if _group_open }}>
+                        <summary class="small text-uppercase fw-bold text-body-secondary mb-1 mt-2 px-1 d-flex align-items-center gap-1"
+                                 style="cursor: pointer; list-style: none;">
+                            <i class="bi bi-chevron-right viz-domain-caret"
+                               style="transition: transform 0.1s ease;"></i>
+                            <span>{{ label }}</span>
                             <span class="badge text-bg-light border ms-1 fw-normal">{{ group|length }}</span>
-                        </h6>
+                        </summary>
                         <ul class="list-unstyled mb-0">
                             {% for v in group %}
                             <li class="viz-sidebar-item" data-name="{{ v.name|lower }}" data-desc="{{ (v.description or '')|lower }}">
@@ -61,8 +65,12 @@
                             </li>
                             {% endfor %}
                         </ul>
-                    </div>
+                    </details>
                     {% endfor %}
+                    <style>
+                        details.viz-domain summary::-webkit-details-marker { display: none; }
+                        details.viz-domain[open] > summary .viz-domain-caret { transform: rotate(90deg); }
+                    </style>
                 </div>
             </div>
         </aside>

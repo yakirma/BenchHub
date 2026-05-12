@@ -47,11 +47,19 @@
                                placeholder="Filter metrics…">
                     </div>
                     {% for label, group in grouped_metrics %}
-                    <div class="metric-domain mb-3">
-                        <h6 class="small text-uppercase fw-bold text-body-secondary mb-1 mt-2 px-1">
-                            {{ label }}
+                    {# Open the group when (a) it's the first one and
+                       no selection yet, or (b) the currently selected
+                       metric belongs to it — so users land on the
+                       relevant section already expanded. #}
+                    {% set _group_open = (selected and selected in group) or (loop.first and not selected) %}
+                    <details class="metric-domain mb-2" {{ 'open' if _group_open }}>
+                        <summary class="small text-uppercase fw-bold text-body-secondary mb-1 mt-2 px-1 d-flex align-items-center gap-1"
+                                 style="cursor: pointer; list-style: none;">
+                            <i class="bi bi-chevron-right metric-domain-caret"
+                               style="transition: transform 0.1s ease;"></i>
+                            <span>{{ label }}</span>
                             <span class="badge text-bg-light border ms-1 fw-normal">{{ group|length }}</span>
-                        </h6>
+                        </summary>
                         <ul class="list-unstyled mb-0">
                             {% for m in group %}
                             <li class="metric-sidebar-item" data-name="{{ m.name|lower }}" data-desc="{{ (m.description or '')|lower }}">
@@ -65,8 +73,12 @@
                             </li>
                             {% endfor %}
                         </ul>
-                    </div>
+                    </details>
                     {% endfor %}
+                    <style>
+                        details.metric-domain summary::-webkit-details-marker { display: none; }
+                        details.metric-domain[open] > summary .metric-domain-caret { transform: rotate(90deg); }
+                    </style>
                 </div>
             </div>
         </aside>

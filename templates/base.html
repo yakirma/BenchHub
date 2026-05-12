@@ -69,13 +69,19 @@
             --bs-link-hover-color-rgb: 91, 33, 182;
             --bs-body-color: #3a2614;
             --bs-body-color-rgb: 58, 38, 20;
-            --bs-body-bg: #f7ecd6;
-            --bs-body-bg-rgb: 247, 236, 214;
+            --bs-body-bg: #f3e6c4;
+            --bs-body-bg-rgb: 243, 230, 196;
             --bs-secondary-color: #6b5942;
             --bs-secondary-bg: #ede1c6;
-            --bs-tertiary-bg: #f2e5c8;
-            --bs-tertiary-bg-rgb: 242, 229, 200;
+            --bs-tertiary-bg: #fbf4e2;
+            --bs-tertiary-bg-rgb: 251, 244, 226;
             --bs-border-color: #ddcfa9;
+            /* Lift cards + list-groups off the body. The body keeps
+               the saturated cream; surfaces inside reach for a near-
+               white-warm tone so headers, cards, and list rows have
+               clear hierarchy. */
+            --bs-card-bg: #fdf8ea;
+            --bs-list-group-bg: #fdf8ea;
             --bs-border-color-translucent: rgba(214, 194, 160, 0.5);
             --bs-emphasis-color: #2a1f10;
 
@@ -158,9 +164,9 @@
            (white-on-white invisibility). */
         .navbar.bg-body-tertiary,
         .navbar {
-            /* Warm cream, slightly more saturated than the body bg
-               so the navbar reads as a distinct surface. */
-            background-color: rgba(247, 236, 214, 0.92) !important;
+            /* Navbar matches the body bg (saturated cream) so it
+               feels continuous with the page rather than floating. */
+            background-color: rgba(243, 230, 196, 0.92) !important;
             backdrop-filter: saturate(180%) blur(8px);
             -webkit-backdrop-filter: saturate(180%) blur(8px);
             border-bottom: 1px solid var(--bs-border-color);
