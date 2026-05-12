@@ -80,6 +80,10 @@
         border-radius: 0.4rem;
         list-style: none;
         font-weight: 600;
+        /* Anchor stretched-link to this <summary> instead of the
+           parent card — without it the first area's link covers the
+           entire sidebar and intercepts every later click. */
+        position: relative;
     }
     .cat-tree summary::-webkit-details-marker { display: none; }
     .cat-tree summary::before {
@@ -231,7 +235,7 @@
                     <details {{ 'open' if is_active_area }}>
                         <summary class="{{ 'active' if active_category == area.area }}">
                             <a href="{{ url_for('explore', category=area.area, q=q, sort=sort, tag=active_tag) }}"
-                               class="text-decoration-none text-reset stretched-link"
+                               class="text-decoration-none text-reset"
                                onclick="event.stopPropagation();">
                                 {{ area.area }}
                             </a>
