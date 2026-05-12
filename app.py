@@ -8955,9 +8955,14 @@ def _infer_mapping(features):
                             'target_field': col,
                             'reason': "String column → GT text field"})
             else:
-                out.append({'column': col, 'target_kind': 'skip',
-                            'target_field': '',
-                            'reason': f"Unknown dtype '{dtype}'"})
+                # HF's schema parser sometimes flattens complex nested
+                # features (Sequence-of-dict, list-of-list, Translation)
+                # into `Value:unknown` instead of preserving the shape.
+                # Persist as JSON so the row's actual value (dict / list)
+                # still lands in the GT cache for human inspection.
+                out.append({'column': col, 'target_kind': 'json',
+                            'target_field': col,
+                            'reason': f"Value:{dtype} → GT json field (complex/nested)"})
         elif t == 'ClassLabel':
             out.append({'column': col, 'target_kind': 'scalar',
                         'target_field': col,
