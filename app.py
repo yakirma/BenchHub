@@ -3085,6 +3085,40 @@ def privacy():
 # ===================== Project routes =====================
 
 
+def _compute_explorable_lb_ids(lb_ids):
+    """Return the subset of `lb_ids` whose LB has cached GT samples
+    somewhere — i.e. clicking "Explore samples" will surface real rows.
+    BH-attached LBs qualify once the `Sample` table has rows for any of
+    their attached datasets. HF-attached LBs qualify once
+    `populate_lb_samples` has written LB-scoped GT CustomFields
+    (sample_id+submission_id both NULL). Templates render a
+    green-checkmark pill on cards in this set and a "no samples yet"
+    pill on the rest, so users don't waste a click on a LB whose GT
+    pipeline hasn't run (or failed)."""
+    if not lb_ids:
+        return set()
+    lb_ids = list(lb_ids)
+    bh_explorable = (
+        db.session.query(leaderboard_datasets.c.leaderboard_id)
+        .join(Sample, Sample.dataset_id == leaderboard_datasets.c.dataset_id)
+        .filter(leaderboard_datasets.c.leaderboard_id.in_(lb_ids))
+        .distinct()
+    )
+    hf_explorable = (
+        db.session.query(CustomField.leaderboard_id)
+        .filter(
+            CustomField.leaderboard_id.in_(lb_ids),
+            CustomField.submission_id.is_(None),
+            CustomField.sample_id.is_(None),
+        )
+        .distinct()
+    )
+    return (
+        {row[0] for row in bh_explorable.all()}
+        | {row[0] for row in hf_explorable.all()}
+    )
+
+
 @app.route('/')
 def landing():
     """Public marketing landing page (Phase 6 Slice 1).
@@ -3129,11 +3163,13 @@ def landing():
 
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
+    explorable_lb_ids = _compute_explorable_lb_ids([lb.id for lb, _ in featured])
 
 
     return render_template(
         'landing.html',
         featured=featured_rows,
+        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -3202,6 +3238,7 @@ def home():
         leaderboard_thumbs[lb.id] = (
             _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
         )
+    explorable_lb_ids = _compute_explorable_lb_ids([lb.id for lb in leaderboards])
 
     return render_template(
         'home.html',
@@ -3211,6 +3248,7 @@ def home():
         personal_lbs=personal_lbs,
         dataset_thumbs=dataset_thumbs,
         leaderboard_thumbs=leaderboard_thumbs,
+        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -3312,6 +3350,8 @@ def explore():
         {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0)}
         for lb, r, t in base.limit(60).all()
     ]
+    # Per-LB "explorability" flag (see _compute_explorable_lb_ids).
+    explorable_lb_ids = _compute_explorable_lb_ids([r['lb'].id for r in rows])
 
     # Tag cloud: count of *visible* leaderboards per tag, plus dataset
     # tag counts folded in. Only tags with at least one visible item show.
@@ -3417,6 +3457,7 @@ def explore():
         leaderboard_thumbs=leaderboard_thumbs,
         category_tree=category_tree,
         active_category=category_filter,
+        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -5550,8 +5591,10 @@ def leaderboard_view(leaderboard_id):
                             if (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored']
     mirrored_submissions = [s for s in submissions
                             if (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored']
+    lb_explorable = leaderboard.id in _compute_explorable_lb_ids([leaderboard.id])
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
+                           lb_explorable=lb_explorable,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
                            submissions=verified_submissions,

@@ -194,6 +194,13 @@
                     {% if lb.canonical_for_repo %}
                     <span class="badge text-bg-info-subtle text-info-emphasis border small" title="Imported from Papers With Code">PWC</span>
                     {% endif %}
+                    {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
+                    <span class="badge text-bg-success-subtle text-success-emphasis border small"
+                          title="Ground-truth samples cached"><i class="bi bi-check-circle-fill"></i></span>
+                    {% else %}
+                    <span class="badge text-bg-warning-subtle text-warning-emphasis border small"
+                          title="No GT samples cached yet"><i class="bi bi-hourglass-split"></i></span>
+                    {% endif %}
                 </div>
             </div>
         </div>
