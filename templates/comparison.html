@@ -616,7 +616,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         </th>
 
                         {% for col_key in selected_comparison_display_columns %}
-                        {% if all_field_types.get(col_key) not in ['scalar', 'metric'] %}
+                        {% if all_field_types.get(col_key) != 'metric' %}
                         {% if col_key == 'per_source_stats' %}
                         <th draggable="true"
                             style="width: {{ global_settings.config_width }}; min-width: {{ global_settings.config_width }}; overflow: hidden; text-overflow: ellipsis;">
@@ -645,8 +645,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endif %}
                         {% endfor %}
 
-                        {% elif col_key in all_custom_fields and all_field_types.get(col_key) not in ['scalar',
-                        'metric'] %}
+                        {% elif col_key in all_custom_fields and all_field_types.get(col_key) != 'metric' %}
                         {# Complex Custom Field Columns (GT + Subs) for both images and scalars #}
                         {% set label = comparison_display_options[col_key].label or col_key %}
                         {% if col_key in dataset_custom_fields %}
@@ -737,7 +736,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         </td>
 
                         {% for col_key in selected_comparison_display_columns %}
-                        {% if all_field_types.get(col_key) not in ['scalar', 'metric'] %}
+                        {% if all_field_types.get(col_key) != 'metric' %}
                         {% if col_key == 'sample_name' %}
                         <td>{{ data.sample_name }}</td>
                         {% elif col_key == 'per_sample_metrics' %}
@@ -1005,7 +1004,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
                         {% endif %}
 
-                        {% if col_key in all_custom_fields and all_field_types.get(col_key) not in ['scalar', 'metric']
+                        {% if col_key in all_custom_fields and all_field_types.get(col_key) != 'metric'
                         %}
                         <!-- GT custom field -->
                         {% if col_key in dataset_custom_fields %}
