@@ -128,6 +128,7 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 ## "Explorable" status
 - `_compute_explorable_lb_ids(lb_ids)` returns the LB IDs whose GT is actually cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — the HF-stub marker rows). Drives the green/yellow pill on `/explore`, `/home`, `/landing`, and the "Explore samples" button label on the LB detail page.
 - **An LB with `canonical_for_repo IS NOT NULL` and zero GT CFs is effectively broken** — surface the owner-only "Populate samples" button instead of silently rendering an empty Explore page.
+- **`/datasets` lists two sections**: the regular `Dataset` rows (BH ZIP uploads) and a "Cached HuggingFace datasets" section built from distinct `Attachment.hf_repo_id` rows whose owning LB is in `_compute_explorable_lb_ids`. Each HF row links to the first LB's Explore-samples view. Filter is intentional: a non-explorable HF row would link to an empty page.
 
 ## Metric authoring
 - **LLM-authored metrics from `_llm_generate_metric_code` are not safe to ship verbatim** for non-trivial cases (rank-based, span-overlap, BLEU-family). They tend to mix scalar-vs-list logic awkwardly and quietly return the wrong number. The rank-based LBs (Link Prediction) needed manual rewrites with `_rank_of_gt(gt, pred_list)` helpers; spot-check any new ones before relying on the column.

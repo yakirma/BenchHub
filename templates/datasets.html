@@ -130,6 +130,72 @@
                 <i class="bi bi-info-circle me-2"></i> No datasets found. Upload one to get started.
             </div>
             {% endif %}
+
+            {# ---- Cached HuggingFace datasets ----
+               HF-attached LBs don't write a Dataset row — they live as
+               Attachment pointers. List the distinct repos here so the
+               page reflects "everything you can browse samples for",
+               not just the local-ZIP ones. Filtered to LBs with cached
+               GT so a row links to a real Explore-samples view. #}
+            {% if hf_datasets %}
+            <h2 class="h4 mb-3 mt-5 text-body-emphasis">
+                Cached HuggingFace datasets
+                <span class="badge bg-secondary fs-6 align-middle ms-2">{{ hf_datasets|length }}</span>
+            </h2>
+            <p class="text-body-secondary small mb-3">
+                These are referenced from leaderboards directly — no local upload needed.
+                Each row links to the first leaderboard's <em>Explore samples</em> view.
+            </p>
+            <div class="list-group mb-4 shadow-sm">
+                {% for hf in hf_datasets %}
+                {% set primary_lb = hf.leaderboards[0] %}
+                <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3">
+                    <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
+                         style="width:64px; height:64px; border-radius:6px;
+                                background: var(--bs-info-bg-subtle, var(--bs-tertiary-bg));
+                                color: var(--bs-info-text-emphasis, var(--bs-body-secondary));">
+                        <i class="bi bi-cloud-arrow-down fs-3"></i>
+                    </div>
+                    <div class="flex-grow-1 min-w-0">
+                        <div class="d-flex align-items-center mb-1 flex-wrap gap-1">
+                            <a href="https://huggingface.co/datasets/{{ hf.hf_repo_id }}"
+                               target="_blank" rel="noopener"
+                               class="text-decoration-none text-body fw-bold font-monospace text-truncate"
+                               title="Open {{ hf.hf_repo_id }} on HuggingFace (new tab)">
+                                {{ hf.hf_repo_id }}
+                                <i class="bi bi-box-arrow-up-right small text-body-secondary"></i>
+                            </a>
+                            {% if hf.hf_split %}
+                            <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
+                                  title="HF split currently streamed for GT">
+                                split: {{ hf.hf_split }}
+                            </span>
+                            {% endif %}
+                            {% if hf.hf_revision %}
+                            <span class="badge text-bg-light border small ms-1 font-monospace"
+                                  title="Pinned revision">
+                                @{{ hf.hf_revision[:8] }}
+                            </span>
+                            {% endif %}
+                        </div>
+                        <small class="d-block text-body-secondary mt-1">
+                            <i class="bi bi-card-image me-1"></i>{{ hf.sample_count }} cached samples
+                            <span class="mx-2 opacity-50">|</span>
+                            <i class="bi bi-trophy me-1"></i>Used by
+                            {% for lb in hf.leaderboards %}<a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                                class="text-decoration-none">{{ lb.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+                        </small>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <a href="{{ url_for('comparison_view', leaderboard_id=primary_lb.id, samples_only=1) }}"
+                           class="btn btn-sm btn-outline-primary me-2">
+                            <i class="bi bi-grid"></i> Explore
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
         </div>
 
         {# Upload card. Sticky so it stays in view as the user scrolls

@@ -12354,8 +12354,66 @@ def datasets_list():
     # custom field on any sample, rendered to PNG by the existing
     # /custom_field_image endpoint. None when the dataset is metric-only.
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
-    return render_template('datasets.html', datasets=datasets,
-                           dataset_thumbs=dataset_thumbs)
+
+    # HF-attached datasets. These don't live as Dataset rows — they're
+    # referenced by Attachment rows pointing at huggingface.co. Group by
+    # (hf_repo_id, hf_revision, hf_split) so the same repo at different
+    # pins lists once each. Only surface entries whose owning LB has
+    # cached GT (_compute_explorable_lb_ids); otherwise the row would
+    # link to an empty Explore-samples view.
+    viewer = getattr(g, 'current_user', None)
+    visible_lb_subq = (
+        db.session.query(Leaderboard.id)
+        .filter(visible_in_list(Leaderboard, viewer))
+        .subquery()
+    )
+    hf_att_rows = (
+        db.session.query(Attachment, Leaderboard)
+        .join(Leaderboard, Leaderboard.id == Attachment.leaderboard_id)
+        .filter(Attachment.kind == 'hf', Attachment.hf_repo_id.isnot(None))
+        .filter(Leaderboard.id.in_(db.session.query(visible_lb_subq)))
+        .all()
+    )
+    explorable_lb_ids = _compute_explorable_lb_ids([lb.id for _att, lb in hf_att_rows])
+    hf_groups = {}
+    for att, lb in hf_att_rows:
+        if lb.id not in explorable_lb_ids:
+            continue
+        key = (att.hf_repo_id, att.hf_revision or '', att.hf_split or '')
+        bucket = hf_groups.setdefault(key, {
+            'hf_repo_id': att.hf_repo_id,
+            'hf_revision': att.hf_revision,
+            'hf_split': att.hf_split,
+            'leaderboards': [],
+        })
+        bucket['leaderboards'].append(lb)
+    # Per-group cached-sample count (LB-scoped CustomField marker rows).
+    lb_id_to_cf_count = dict(
+        db.session.query(
+            CustomField.leaderboard_id,
+            func.count(CustomField.id),
+        )
+        .filter(
+            CustomField.leaderboard_id.in_(explorable_lb_ids or [0]),
+            CustomField.submission_id.is_(None),
+            CustomField.sample_id.is_(None),
+        )
+        .group_by(CustomField.leaderboard_id)
+        .all()
+    )
+    hf_datasets = []
+    for bucket in hf_groups.values():
+        bucket['sample_count'] = max(
+            (lb_id_to_cf_count.get(lb.id, 0) for lb in bucket['leaderboards']),
+            default=0,
+        )
+        hf_datasets.append(bucket)
+    hf_datasets.sort(key=lambda b: (-b['sample_count'], b['hf_repo_id']))
+
+    return render_template('datasets.html',
+                           datasets=datasets,
+                           dataset_thumbs=dataset_thumbs,
+                           hf_datasets=hf_datasets)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):
