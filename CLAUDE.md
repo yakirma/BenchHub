@@ -19,9 +19,19 @@ celery -A app.celery worker --loglevel=info
 python app.py
 ```
 
-There are no test, lint, or build commands wired up. The repo's `test_*.py` files at the root (`test_chain.py`, `test_celery_chain.py`, `test_chain_app.py`) are ad-hoc Celery chain experiments, not a real test suite.
+**Tests live under `tests/`** (60+ files) and run with `pytest tests/`. Shared fixtures are in `tests/conftest.py`:
+- Per-session `app` fixture wires Flask + Celery into TEST mode (`task_always_eager=True`) so submission/eval flows run inline.
+- Per-test `db_session` drops + recreates all tables, so tests are independent.
+- `auth_client` is a `client` with `session['user_id']` already set to a fresh `logged_in_user`.
+- `make_zip(name, layout, root_folder=...)` builds a fake submission/dataset ZIP for upload-path tests.
 
-Dependencies: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery, redis, numpy, scipy). Matplotlib and PIL are also imported by `app.py` but missing from `requirements.txt`; install separately if needed.
+`BENCHHUB_DATA_DIR` is redirected to a per-session tempdir so tests never touch `~/.dtofbenchmarking`.
+
+The standalone `test_chain.py` / `test_celery_chain.py` / `test_chain_app.py` files at the repo root are ad-hoc Celery experiments — NOT part of the pytest suite. Run pytest with `pytest tests/` (not bare `pytest`) so it doesn't try to collect them.
+
+No lint or build commands are wired up.
+
+Dependencies: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery, redis, numpy, scipy, matplotlib, Pillow, h5py, soundfile, …). `pytest` isn't pinned in requirements.txt — install separately for the test suite.
 
 ## Data and config locations
 
@@ -128,4 +138,20 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - **Idempotent data backfill belongs in the same `check_and_migrate_db()` block** after the ALTER, gated on "any existing rows still NULL". The PWC-category backfill at `--- 3b. ---` is the template: probe optional resources (`pwc_client._index_path()`), best-effort match, swallow exceptions so fresh installs aren't blocked.
 
 ## Tests
-There are still none. The `test_*.py` files at the root are ad-hoc Celery chain experiments. If you're about to touch a regression-prone path (split resolution, mapping inference, rank metric, category classifier, samples_only_mode threading), write a `pytest` test against an in-memory SQLite + fixture HF-features dict so the next contributor doesn't accidentally re-introduce the bug.
+The pytest suite under `tests/` already covers most of the regression-prone surface — PWC import, HF features fallback, attachment iteration, metric context, comparison routes, smart_num, etc. **Add a test next to the closest existing one when you fix a bug** rather than writing it after the fact:
+
+| Touched code | Test file to extend |
+|--------------|---------------------|
+| `_pwc_task_to_category`, `_PWC_AREA_RULES`, `_DOMAIN_PREFIXES` | `tests/test_pwc_category.py` |
+| `_resolve_hf_split_and_load`, `_HF_SPLIT_PREFERENCE`, `_persist_resolved_split` | `tests/test_hf_split_resolver.py` |
+| `_infer_mapping` (the `Value:unknown` → json fall-through, Audio kind, Sequence-of-* fallback) | `tests/test_pwc_import.py` or `tests/test_hf_features_fallback.py` |
+| `_compute_explorable_lb_ids` | `tests/test_explorable.py` |
+| `_VirtualSample` / `_VirtualCustomField` json/topk_list/audio dispatch | `tests/test_attachment_iter.py` |
+| `get_metric_context` deserialization of text/json/topk_list | `tests/test_metric_context_arrays.py` |
+| Samples-only mode in `comparison_view` (incl. pagination + form param threading) | `tests/test_routes_comparison.py` |
+
+Run with `pytest tests/` (not bare `pytest`, to avoid the ad-hoc root-level `test_chain*.py` files).
+
+## Working notes for future sessions
+- **Write decisions down as they happen.** If a fix involves a non-obvious gotcha (CSS leak, framework default, schema quirk, ordering trap), append a bullet under the appropriate section in this file *during the change*, not after. Section anchors: "Things to be careful with", "Frontend conventions", "HF dataset attachment patterns", "Comparison view gotchas", "Metric authoring", "Migration patterns".
+- **Treat CLAUDE.md as the durable memory.** Commit messages document one change; this file documents what to know to make the NEXT change.
