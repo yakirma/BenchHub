@@ -124,6 +124,12 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - **`_pwc_task_to_category` strips domain prefixes** (Medical, Aerial, Satellite, Few-Shot, Self-Supervised, …) before classification, so "Medical Image Segmentation" → "Vision/Image Segmentation". New prefixes go in `_DOMAIN_PREFIXES` — order them shortest-first so "medical image" doesn't get half-eaten.
 - **`populate_lb_samples` has a 5-min `soft_time_limit`.** PWC's `suggest_hf_repo` fallback sometimes lands on a monolithic HDF5 repo (e.g. `btherien/imagenet-64x64x3` is 100GB+ behind `load_dataset`), and without the timeout one task takes down the whole worker. **The Fly machine hosts Flask + Celery + Redis on one box** — don't bulk-enqueue dozens of populate tasks; the site becomes unresponsive. Use the per-LB "Populate samples" button instead, or rate-limit any bulk operation.
 
+## Editing the LB pred-field schema
+- Owner/admin can edit each LB's prediction-field schema on `/edit_leaderboard/<id>` → "Prediction fields" tab. Each row: name (`<x>_pred`), kind (`image`/`mask`/`depth`/`audio`/`scalar`/`text`/`json`/`histogram`), description, remove. Add-row button for extras.
+- Frozen once **verified** submissions exist (mirrored PWC submissions don't count) — changing kinds afterwards would silently re-interpret existing prediction files through the wrong decoder. Delete the verified subs to unlock.
+- Writes the list to `Leaderboard.required_pred_fields_json`; `_lb_submission_pred_fields` already merges that as an authoritative override of metric-derived entries.
+- `_create_lb_from_pwc_benchmark` picks the gt_field for arg_mappings via `_pwc_task_pred_kind_priority(task_name)` — task-aware ordering so image-generation tasks land on the image kind, segmentation on mask, depth on depth, etc. Falls back to the default `(scalar > depth > image > mask > text)` order. Add new patterns there when a future bulk import lands a task type that's not covered.
+
 ## Mask vs image disambiguation
 Both upload paths now route segmentation masks to `target_kind='mask'` (rendered with the deterministic-hue palette + paired with IoU-family metric defaults) rather than 'image':
 - **HF datasets** (`_infer_mapping`): an `Image`-typed column whose name contains any of `mask`, `segmentation`, `segment_map`, `seg_map`, `annotation`, `panoptic`, `label_map`, `semseg` → mask. Tokens live in `_HF_MASK_TOKENS`; check via `_col_name_looks_like_mask(col)`.
