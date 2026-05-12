@@ -9213,32 +9213,44 @@ _HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']
 def _resolve_hf_split_and_load(att, load_fn, *, on_log=None):
     """Try splits in `_HF_SPLIT_PREFERENCE` order, with `att.hf_split`
     moved to the front when it's already in that list (preserves an
-    explicit user override). Returns the first split that loads, or
-    None if every option raises. Auth / gated errors propagate."""
+    explicit user override).
+
+    Smart-skip: probe row 0 of each candidate split and verify that the
+    columns mapped as GT (target_kind != 'skip') actually carry non-
+    null values. A split that loads but has only inputs (e.g. a
+    held-out test split for a contest where labels are withheld) is
+    skipped in favor of the next preference, so we don't end up
+    benchmarking against missing GT.
+
+    Returns the first split that loads AND has GT, or — failing that —
+    the first split that just loads (better SOME data than none).
+    Auth / gated errors propagate."""
     def _log(msg):
         if on_log:
             on_log(msg)
+    try:
+        mapping = json.loads(att.hf_mapping_json or '[]')
+    except (TypeError, ValueError):
+        mapping = []
+    gt_cols = [
+        m.get('column') for m in mapping
+        if m.get('column') and m.get('target_kind') not in (None, '', 'skip')
+    ]
     order = list(_HF_SPLIT_PREFERENCE)
     hint = (att.hf_split or '').strip()
     if hint and hint in order:
         order.remove(hint)
         order.insert(0, hint)
     elif hint:
-        # User picked something exotic (e.g. 'train_distant'); honor it
-        # first, then fall through to the preference order.
         order.insert(0, hint)
-    # Also pull the list of available splits out of the first error
-    # response if we get one — saves a few HTTP round-trips and lets
-    # us try splits we didn't pre-list (e.g. 'train_annotated').
-    seen_available = set()
     last_error = None
+    fallback_loadable_ds = None
+    fallback_split = None
     for split in order:
         if not split:
             continue
         try:
             ds = load_fn(split)
-            _log(f"using split={split!r} for {att.hf_repo_id}")
-            return ds
         except ValueError as e:
             last_error = e
             msg = str(e)
@@ -9249,7 +9261,7 @@ def _resolve_hf_split_and_load(att, load_fn, *, on_log=None):
                     s = s.strip(" '\"")
                     if s and s not in order:
                         order.append(s)
-                        seen_available.add(s)
+            continue
         except Exception as e:
             low = str(e).lower()
             if ('401' in str(e) or 'gated' in low or 'authenticated' in low
@@ -9257,6 +9269,38 @@ def _resolve_hf_split_and_load(att, load_fn, *, on_log=None):
                 raise
             last_error = e
             continue
+        # Loaded. If we have GT cols to check, peek at row 0.
+        if gt_cols:
+            try:
+                row0 = next(iter(ds))
+                missing = [
+                    c for c in gt_cols
+                    if row0.get(c) in (None, '', [], {})
+                ]
+                if missing:
+                    _log(
+                        f"split={split!r} on {att.hf_repo_id} lacks GT in "
+                        f"columns {missing}; trying next split"
+                    )
+                    # Keep it as a last-resort fallback, but keep searching.
+                    if fallback_loadable_ds is None:
+                        fallback_loadable_ds = load_fn(split)
+                        fallback_split = split
+                    continue
+            except StopIteration:
+                _log(f"split={split!r} on {att.hf_repo_id} is empty; trying next")
+                continue
+            except Exception as e:
+                _log(f"split={split!r} probe err: {e}; using it anyway")
+                ds = load_fn(split)
+        _log(f"using split={split!r} for {att.hf_repo_id}")
+        return ds
+    if fallback_loadable_ds is not None:
+        _log(
+            f"falling back to split={fallback_split!r} on {att.hf_repo_id} "
+            f"(no preferred split had full GT)"
+        )
+        return fallback_loadable_ds
     _log(f"all-split load failed for {att.hf_repo_id}: {last_error}")
     return None
 
