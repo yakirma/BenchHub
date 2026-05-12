@@ -588,7 +588,12 @@ def _smart_num(value):
 
 class GlobalMetric(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True) # Unique name for global reference
+    # Was column-level UNIQUE; now relaxed so private metrics can
+    # coexist with the same name across users (each user has their
+    # own slot). Uniqueness is enforced via two indexes added in
+    # check_and_migrate_db: a composite (owner_user_id, name) and a
+    # partial unique on name WHERE visibility='public'.
+    name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
     python_code = db.Column(db.Text, nullable=False)  # The function definition: def metric_func(...)
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)
@@ -628,10 +633,32 @@ class LeaderboardMetric(db.Model):
     global_metric = db.relationship('GlobalMetric', backref='leaderboard_usages')
     leaderboard = db.relationship('Leaderboard', backref=db.backref('leaderboard_metrics', lazy=True, cascade="all, delete-orphan"))
 
+class FeatureRequest(db.Model):
+    """User-submitted requests for new features, data types, or
+    visualisations the platform doesn't yet support. Admins triage
+    these via /admin/feature_requests. Lightweight: free-form
+    title/description, no comments thread."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'),
+                        nullable=False, index=True)
+    kind = db.Column(db.String(30), nullable=False, default='feature',
+                     server_default='feature')
+    title = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default='open',
+                       server_default='open')
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    admin_note = db.Column(db.Text, nullable=True)
+    user = db.relationship('User', foreign_keys=[user_id])
+
+
 class GlobalVisualization(db.Model):
     """Global visualization definition (analogous to GlobalMetric but returns PIL.Image)"""
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)
+    # Same uniqueness semantics as GlobalMetric.name: relaxed so private
+    # rows can coexist; partial unique on name WHERE visibility='public'
+    # + composite (owner_user_id, name) enforced via the migration block.
+    name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=True)
     python_code = db.Column(db.Text, nullable=False)  # Function definition: def viz_func(...) -> PIL.Image
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)  # True: single image, False: per-sample
@@ -5008,21 +5035,96 @@ def visualizations_view():
         selected=selected,
     )
 
+def _suggest_unique_public_name(model_cls, base_name, exclude_id=None):
+    """Find a unique name for promoting to public. Tries the base name
+    first; on collision, appends _2, _3, … until a free slot is found.
+    Used by the metric + viz promote routes when the owner's chosen
+    name already belongs to another public entity."""
+    candidate = base_name
+    n = 2
+    while True:
+        q = model_cls.query.filter(
+            model_cls.name == candidate,
+            model_cls.visibility == 'public',
+        )
+        if exclude_id is not None:
+            q = q.filter(model_cls.id != exclude_id)
+        if q.first() is None:
+            return candidate
+        candidate = f"{base_name}_{n}"
+        n += 1
+
+
+def _public_name_in_use(model_cls, name, exclude_id=None):
+    q = model_cls.query.filter(
+        model_cls.name == name, model_cls.visibility == 'public',
+    )
+    if exclude_id is not None:
+        q = q.filter(model_cls.id != exclude_id)
+    return q.first() is not None
+
+
 @app.route('/global_metric/<int:metric_id>/visibility', methods=['POST'])
 @login_required
 @owner_required(GlobalMetric, 'metric_id')
 def set_global_metric_visibility(metric_id):
-    """Flip a user-owned metric between 'private' and 'public'. Public
-    metrics show up in the global library for everyone; private stay
-    in the owner's view (and admins')."""
+    """Flip a user-owned metric between visibility tiers. When the
+    target is 'public' and the metric's name collides with an existing
+    public metric, redirect to a tiny resolve page that offers a
+    non-colliding suggestion and lets the user edit before committing."""
     metric = GlobalMetric.query.get_or_404(metric_id)
     target = (request.form.get('visibility') or '').strip()
     if target not in ('public', 'private', 'unlisted'):
         flash("Invalid visibility.", "warning")
+        return redirect(url_for('metrics_view', selected=metric.id))
+    if target == 'public' and _public_name_in_use(GlobalMetric, metric.name, exclude_id=metric.id):
+        suggestion = _suggest_unique_public_name(GlobalMetric, metric.name, exclude_id=metric.id)
+        return render_template(
+            'resolve_name_collision.html',
+            entity='metric',
+            metric_id=metric.id, viz_id=None,
+            current_name=metric.name,
+            suggested_name=suggestion,
+            target='public',
+            action_url=url_for('set_global_metric_visibility_confirm', metric_id=metric.id),
+        )
+    metric.visibility = target
+    db.session.commit()
+    flash(f'"{metric.name}" is now {target}.', "success")
+    return redirect(url_for('metrics_view', selected=metric.id))
+
+
+@app.route('/global_metric/<int:metric_id>/visibility/confirm', methods=['POST'])
+@login_required
+@owner_required(GlobalMetric, 'metric_id')
+def set_global_metric_visibility_confirm(metric_id):
+    """Second hop of promote-with-rename. The user already saw the
+    resolve page and confirmed (or edited) the suggested name."""
+    metric = GlobalMetric.query.get_or_404(metric_id)
+    new_name = (request.form.get('new_name') or '').strip()
+    if not new_name:
+        flash("Name can't be empty.", "warning")
+        return redirect(url_for('metrics_view', selected=metric.id))
+    if _public_name_in_use(GlobalMetric, new_name, exclude_id=metric.id):
+        suggestion = _suggest_unique_public_name(GlobalMetric, new_name, exclude_id=metric.id)
+        return render_template(
+            'resolve_name_collision.html',
+            entity='metric',
+            metric_id=metric.id, viz_id=None,
+            current_name=new_name,
+            suggested_name=suggestion,
+            target='public',
+            action_url=url_for('set_global_metric_visibility_confirm', metric_id=metric.id),
+            collision_repeat=True,
+        )
+    old_name = metric.name
+    metric.name = new_name
+    metric.visibility = 'public'
+    db.session.commit()
+    if new_name != old_name:
+        flash(f'Renamed "{old_name}" → "{new_name}" and promoted to public.', "success")
     else:
-        metric.visibility = target
-        db.session.commit()
-        flash(f'"{metric.name}" is now {target}.', "success")
+        flash(f'"{new_name}" is now public.', "success")
     return redirect(url_for('metrics_view', selected=metric.id))
 
 
@@ -5030,16 +5132,124 @@ def set_global_metric_visibility(metric_id):
 @login_required
 @owner_required(GlobalVisualization, 'viz_id')
 def set_global_visualization_visibility(viz_id):
-    """Flip a user-owned visualization between private / public / unlisted."""
     viz = GlobalVisualization.query.get_or_404(viz_id)
     target = (request.form.get('visibility') or '').strip()
     if target not in ('public', 'private', 'unlisted'):
         flash("Invalid visibility.", "warning")
-    else:
-        viz.visibility = target
-        db.session.commit()
-        flash(f'"{viz.name}" is now {target}.', "success")
+        return redirect(url_for('visualizations_view', selected=viz.id))
+    if target == 'public' and _public_name_in_use(GlobalVisualization, viz.name, exclude_id=viz.id):
+        suggestion = _suggest_unique_public_name(GlobalVisualization, viz.name, exclude_id=viz.id)
+        return render_template(
+            'resolve_name_collision.html',
+            entity='visualization',
+            metric_id=None, viz_id=viz.id,
+            current_name=viz.name,
+            suggested_name=suggestion,
+            target='public',
+            action_url=url_for('set_global_visualization_visibility_confirm', viz_id=viz.id),
+        )
+    viz.visibility = target
+    db.session.commit()
+    flash(f'"{viz.name}" is now {target}.', "success")
     return redirect(url_for('visualizations_view', selected=viz.id))
+
+
+@app.route('/global_visualization/<int:viz_id>/visibility/confirm', methods=['POST'])
+@login_required
+@owner_required(GlobalVisualization, 'viz_id')
+def set_global_visualization_visibility_confirm(viz_id):
+    viz = GlobalVisualization.query.get_or_404(viz_id)
+    new_name = (request.form.get('new_name') or '').strip()
+    if not new_name:
+        flash("Name can't be empty.", "warning")
+        return redirect(url_for('visualizations_view', selected=viz.id))
+    if _public_name_in_use(GlobalVisualization, new_name, exclude_id=viz.id):
+        suggestion = _suggest_unique_public_name(GlobalVisualization, new_name, exclude_id=viz.id)
+        return render_template(
+            'resolve_name_collision.html',
+            entity='visualization',
+            metric_id=None, viz_id=viz.id,
+            current_name=new_name,
+            suggested_name=suggestion,
+            target='public',
+            action_url=url_for('set_global_visualization_visibility_confirm', viz_id=viz.id),
+            collision_repeat=True,
+        )
+    old_name = viz.name
+    viz.name = new_name
+    viz.visibility = 'public'
+    db.session.commit()
+    if new_name != old_name:
+        flash(f'Renamed "{old_name}" → "{new_name}" and promoted to public.', "success")
+    else:
+        flash(f'"{new_name}" is now public.', "success")
+    return redirect(url_for('visualizations_view', selected=viz.id))
+
+
+# ===================== FeatureRequest routes =====================
+
+@app.route('/feature_requests', methods=['GET'])
+@login_required
+def feature_requests_list():
+    """User-facing list of feature requests. Each user sees their own +
+    everyone's public ones. Admins see them all via /admin/feature_requests."""
+    mine = (
+        FeatureRequest.query
+        .filter_by(user_id=g.current_user.id)
+        .order_by(FeatureRequest.created_at.desc())
+        .all()
+    )
+    return render_template('feature_requests.html', mine=mine)
+
+
+@app.route('/feature_requests/new', methods=['POST'])
+@login_required
+def feature_request_new():
+    title = (request.form.get('title') or '').strip()
+    kind = (request.form.get('kind') or 'feature').strip()
+    desc = (request.form.get('description') or '').strip()
+    if not title:
+        flash("Title is required.", "warning")
+        return redirect(url_for('feature_requests_list'))
+    if kind not in ('feature', 'data_type', 'metric', 'visualization', 'other'):
+        kind = 'other'
+    fr = FeatureRequest(
+        user_id=g.current_user.id, kind=kind,
+        title=title[:200], description=desc or None,
+    )
+    db.session.add(fr); db.session.commit()
+    flash("Request submitted — admins will see it.", "success")
+    return redirect(url_for('feature_requests_list'))
+
+
+@app.route('/admin/feature_requests', methods=['GET'])
+@login_required
+def admin_feature_requests():
+    if not is_admin(g.current_user):
+        abort(403)
+    rows = (
+        FeatureRequest.query
+        .order_by(FeatureRequest.status.asc(), FeatureRequest.created_at.desc())
+        .all()
+    )
+    return render_template('admin_feature_requests.html', rows=rows)
+
+
+@app.route('/admin/feature_requests/<int:req_id>/status', methods=['POST'])
+@login_required
+def admin_feature_request_status(req_id):
+    if not is_admin(g.current_user):
+        abort(403)
+    fr = FeatureRequest.query.get_or_404(req_id)
+    target = (request.form.get('status') or '').strip()
+    if target in ('open', 'planned', 'in_progress', 'resolved', 'declined'):
+        fr.status = target
+    note = (request.form.get('admin_note') or '').strip()
+    if note:
+        fr.admin_note = note
+    db.session.commit()
+    flash(f'Updated #{fr.id}.', "success")
+    return redirect(url_for('admin_feature_requests'))
 
 
 @app.route('/create_visualization', methods=['POST'])
@@ -15264,6 +15474,139 @@ def check_and_migrate_db():
                         print("Migration successful: Added 'category' column to dataset.")
                     except Exception as e:
                         print(f"Migration error (dataset.category): {e}")
+
+                # --- Relax global UNIQUE on GlobalMetric.name + GlobalVisualization.name ---
+                # Private rows now coexist with the same name across users; only
+                # visibility='public' rows must have a globally unique name.
+                # SQLite can't `ALTER TABLE DROP CONSTRAINT`, so for each table:
+                #   1. detect the auto-created UNIQUE index on `name`
+                #   2. rebuild the table (CREATE ... AS SELECT) if found
+                #   3. add the new composite + partial-public indexes
+                for _tbl in ('global_metric', 'global_visualization'):
+                    try:
+                        cursor.execute(f"PRAGMA index_list({_tbl})")
+                        indexes = cursor.fetchall()
+                        auto_unique_on_name = None
+                        for _i in indexes:
+                            # row shape: (seq, name, unique, origin, partial)
+                            iname = _i[1]; uniq = _i[2]; origin = _i[3] if len(_i) > 3 else 'c'
+                            partial = _i[4] if len(_i) > 4 else 0
+                            if not uniq:
+                                continue
+                            # Only target the implicit SQLAlchemy `unique=True`
+                            # autoindex (origin='u', non-partial). My own
+                            # `CREATE UNIQUE INDEX … WHERE visibility='public'`
+                            # has origin='c' / partial=1 — must NOT rebuild
+                            # the table on every boot.
+                            if origin != 'u' or partial:
+                                continue
+                            cursor.execute(f"PRAGMA index_info({iname})")
+                            cols = [r[2] for r in cursor.fetchall()]
+                            if cols == ['name']:
+                                auto_unique_on_name = iname
+                                break
+                        if auto_unique_on_name:
+                            # Rebuild. Pull column list from PRAGMA so we don't
+                            # have to hardcode every column in the model.
+                            cursor.execute(f"PRAGMA table_info({_tbl})")
+                            col_rows = cursor.fetchall()
+                            col_names = [r[1] for r in col_rows]
+                            cols_csv = ', '.join(col_names)
+                            new_tbl = f"{_tbl}__rebuild"
+                            cursor.execute(f"DROP TABLE IF EXISTS {new_tbl}")
+                            # Recreate via CTAS then swap; UNIQUE constraints get lost
+                            # but the PK INTEGER PRIMARY KEY does too — so we add it
+                            # back explicitly via a temp rename + structured rebuild.
+                            cursor.execute(
+                                f"CREATE TABLE {new_tbl} AS SELECT {cols_csv} FROM {_tbl} WHERE 0"
+                            )
+                            # Insert preserving ids; SQLite keeps NOT NULL types
+                            # from AS SELECT but loses the PK constraint, so
+                            # rebuild with the original schema sans UNIQUE.
+                            cursor.execute(f"DROP TABLE {new_tbl}")
+                            # Read original schema:
+                            cursor.execute(
+                                f"SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                                (_tbl,),
+                            )
+                            ddl_row = cursor.fetchone()
+                            if ddl_row and ddl_row[0]:
+                                ddl = ddl_row[0]
+                                # SQLAlchemy emits the UNIQUE as a table-level
+                                # constraint by default (`UNIQUE (name)`) — not
+                                # inline on the column. Strip both forms.
+                                import re as _re
+                                # Inline form (rare).
+                                ddl_new = _re.sub(
+                                    r'("?name"?\s+VARCHAR\(\d+\)\s+NOT NULL)\s+UNIQUE',
+                                    r'\1',
+                                    ddl,
+                                )
+                                # Table-level form: `, UNIQUE ("name")` or
+                                # `UNIQUE (name)` somewhere in the body.
+                                ddl_new = _re.sub(
+                                    r',\s*UNIQUE\s*\(\s*"?name"?\s*\)',
+                                    '',
+                                    ddl_new,
+                                )
+                                ddl_new = _re.sub(
+                                    r'UNIQUE\s*\(\s*"?name"?\s*\)\s*,?',
+                                    '',
+                                    ddl_new,
+                                )
+                                # SQLAlchemy emits the table name quoted
+                                # (`CREATE TABLE "global_metric"`). Cover
+                                # both quoted and unquoted variants.
+                                ddl_new = _re.sub(
+                                    rf'CREATE TABLE\s+"?{_tbl}"?',
+                                    f'CREATE TABLE "{new_tbl}"',
+                                    ddl_new, count=1,
+                                )
+                                cursor.execute(ddl_new)
+                                cursor.execute(
+                                    f"INSERT INTO {new_tbl} ({cols_csv}) SELECT {cols_csv} FROM {_tbl}"
+                                )
+                                cursor.execute(f"DROP TABLE {_tbl}")
+                                cursor.execute(f"ALTER TABLE {new_tbl} RENAME TO {_tbl}")
+                                print(f"Migration: dropped column-level UNIQUE(name) on {_tbl}")
+                        # Add the new indexes (idempotent via IF NOT EXISTS).
+                        cursor.execute(
+                            f"CREATE UNIQUE INDEX IF NOT EXISTS "
+                            f"uq_{_tbl}_name_per_owner ON {_tbl} (owner_user_id, name)"
+                        )
+                        cursor.execute(
+                            f"CREATE UNIQUE INDEX IF NOT EXISTS "
+                            f"uq_{_tbl}_name_public ON {_tbl} (name) WHERE visibility = 'public'"
+                        )
+                        conn.commit()
+                    except Exception as e:
+                        print(f"Migration error ({_tbl} unique relax): {e}")
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+
+                # --- FeatureRequest table ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS feature_request ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  user_id INTEGER NOT NULL REFERENCES user(id),"
+                        "  kind VARCHAR(30) NOT NULL DEFAULT 'feature',"
+                        "  title VARCHAR(200) NOT NULL,"
+                        "  description TEXT,"
+                        "  status VARCHAR(20) NOT NULL DEFAULT 'open',"
+                        "  created_at DATETIME NOT NULL,"
+                        "  admin_note TEXT"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_feature_request_user_id "
+                        "ON feature_request (user_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (feature_request): {e}")
                 
                 # Add git_author column to submission table
                 cursor.execute("PRAGMA table_info(submission)")

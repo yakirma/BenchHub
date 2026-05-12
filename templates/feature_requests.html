@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Feature requests — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 800px;">
+    <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="h3 fw-bold mb-1">Feature requests</h1>
+            <p class="text-body-secondary mb-0">
+                Missing a data type, metric, visualisation, or other feature?
+                File it here — admins triage these.
+            </p>
+        </div>
+    </div>
+
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <form method="post" action="{{ url_for('feature_request_new') }}">
+                <div class="row g-2 mb-2">
+                    <div class="col-md-9">
+                        <label for="fr-title" class="form-label small fw-semibold">Title</label>
+                        <input type="text" id="fr-title" name="title" class="form-control" required
+                               placeholder="e.g. Support for point-cloud GT fields">
+                    </div>
+                    <div class="col-md-3">
+                        <label for="fr-kind" class="form-label small fw-semibold">Kind</label>
+                        <select id="fr-kind" name="kind" class="form-select">
+                            <option value="feature">Feature</option>
+                            <option value="data_type">Data type</option>
+                            <option value="metric">Metric</option>
+                            <option value="visualization">Visualization</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="fr-desc" class="form-label small fw-semibold">Description (optional)</label>
+                    <textarea id="fr-desc" name="description" class="form-control" rows="3"
+                              placeholder="What would the feature look like? Any specific use case?"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-send me-1"></i>Submit request
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <h2 class="h5 fw-semibold mb-3">Your requests</h2>
+    {% if mine %}
+    <div class="list-group shadow-sm">
+        {% for r in mine %}
+        <div class="list-group-item">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">
+                <strong>{{ r.title }}</strong>
+                <div class="d-flex gap-1 align-items-center">
+                    <span class="badge text-bg-light border small">{{ r.kind|replace('_', ' ') }}</span>
+                    {% if r.status == 'open' %}
+                    <span class="badge text-bg-warning-subtle text-warning-emphasis border small">open</span>
+                    {% elif r.status == 'planned' %}
+                    <span class="badge text-bg-info-subtle text-info-emphasis border small">planned</span>
+                    {% elif r.status == 'in_progress' %}
+                    <span class="badge text-bg-primary-subtle text-primary-emphasis border small">in progress</span>
+                    {% elif r.status == 'resolved' %}
+                    <span class="badge text-bg-success-subtle text-success-emphasis border small">resolved</span>
+                    {% else %}
+                    <span class="badge text-bg-secondary-subtle text-body border small">{{ r.status }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% if r.description %}
+            <p class="small text-body-secondary mb-1 mt-1" style="white-space: pre-wrap;">{{ r.description }}</p>
+            {% endif %}
+            {% if r.admin_note %}
+            <div class="small alert alert-light border mt-2 mb-1 py-2">
+                <strong>Admin note:</strong> {{ r.admin_note }}
+            </div>
+            {% endif %}
+            <small class="text-body-secondary">
+                <i class="bi bi-clock me-1"></i>{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}
+            </small>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">
+        <i class="bi bi-info-circle me-2"></i>No requests yet. Use the form above.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

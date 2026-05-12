@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Admin: feature requests — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1000px;">
+    <h1 class="h3 fw-bold mb-3">Feature requests (admin)</h1>
+    {% if rows %}
+    <div class="list-group shadow-sm">
+        {% for r in rows %}
+        <div class="list-group-item">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-1 flex-wrap">
+                <div>
+                    <strong>#{{ r.id }}</strong>
+                    <span class="badge text-bg-light border small ms-1">{{ r.kind|replace('_', ' ') }}</span>
+                    <span class="ms-2">{{ r.title }}</span>
+                </div>
+                <small class="text-body-secondary">
+                    by <a href="{{ url_for('user_profile', user_id=r.user.id) if r.user else '#' }}"
+                          class="text-decoration-none">{{ r.user.display_name if r.user else 'unknown' }}</a>
+                    · {{ r.created_at.strftime('%Y-%m-%d') }}
+                </small>
+            </div>
+            {% if r.description %}
+            <p class="small text-body-secondary mt-2 mb-1" style="white-space: pre-wrap;">{{ r.description }}</p>
+            {% endif %}
+            <form method="post" action="{{ url_for('admin_feature_request_status', req_id=r.id) }}"
+                  class="d-flex gap-2 align-items-center mt-2">
+                <select name="status" class="form-select form-select-sm" style="width: auto;">
+                    {% for s in ['open', 'planned', 'in_progress', 'resolved', 'declined'] %}
+                    <option value="{{ s }}" {{ 'selected' if r.status == s }}>{{ s|replace('_', ' ') }}</option>
+                    {% endfor %}
+                </select>
+                <input type="text" name="admin_note" class="form-control form-control-sm"
+                       value="{{ r.admin_note or '' }}" placeholder="Admin note (visible to requester)">
+                <button type="submit" class="btn btn-sm btn-primary">Save</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">No requests yet.</div>
+    {% endif %}
+</div>
+{% endblock %}

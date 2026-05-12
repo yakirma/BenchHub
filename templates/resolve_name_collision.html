@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Name collision — promote to public{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 640px;">
+    <h1 class="h4 fw-bold mb-3">
+        <i class="bi bi-exclamation-triangle text-warning me-2"></i>
+        Pick a unique name
+    </h1>
+    {% if collision_repeat %}
+    <div class="alert alert-warning small">
+        That name is already taken by another public {{ entity }}. Try again.
+    </div>
+    {% else %}
+    <p class="text-body-secondary">
+        Promoting "<code>{{ current_name }}</code>" to public, but the
+        name is already in use by another public {{ entity }}. Public
+        {{ entity }} names must be unique across the platform (private
+        ones can still share names — only promotion collides).
+    </p>
+    {% endif %}
+
+    <form method="post" action="{{ action_url }}" class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <label for="new_name" class="form-label fw-semibold">
+                New name (suggested, you can edit)
+            </label>
+            <input type="text" class="form-control" id="new_name" name="new_name"
+                   value="{{ suggested_name }}" required autofocus
+                   pattern="[A-Za-z0-9_][A-Za-z0-9_.-]*"
+                   title="Letters, digits, underscores, dots, dashes.">
+            <div class="form-text small mt-1">
+                We pre-filled the next free <code>{{ current_name }}_N</code>.
+                Pick anything else if you'd rather — we'll check it's still free.
+            </div>
+            <div class="d-flex justify-content-between mt-3">
+                <a href="{{ url_for('metrics_view' if entity == 'metric' else 'visualizations_view',
+                                     selected=metric_id if entity == 'metric' else viz_id) }}"
+                   class="btn btn-outline-secondary">Cancel</a>
+                <button type="submit" class="btn btn-primary">
+                    Rename and make public
+                </button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}

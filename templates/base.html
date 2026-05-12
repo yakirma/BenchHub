@@ -557,10 +557,20 @@
                                         <i class="bi bi-pie-chart me-1"></i> Storage usage
                                     </a>
                                 </li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('feature_requests_list') }}">
+                                        <i class="bi bi-lightbulb me-1"></i> Feature requests
+                                    </a>
+                                </li>
                                 {% if current_user_is_admin %}
                                 <li>
                                     <a class="dropdown-item" href="{{ url_for('admins_settings') }}">
                                         <i class="bi bi-shield-fill-check me-1 text-warning"></i> Manage admins
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('admin_feature_requests') }}">
+                                        <i class="bi bi-lightbulb me-1 text-warning"></i> Feature requests (admin)
                                     </a>
                                 </li>
                                 {% endif %}
