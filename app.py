@@ -9343,15 +9343,39 @@ def _resolve_hf_split_and_load(att, load_fn, *, on_log=None):
                 _log(f"split={split!r} probe err: {e}; using it anyway")
                 ds = load_fn(split)
         _log(f"using split={split!r} for {att.hf_repo_id}")
+        _persist_resolved_split(att, split, on_log=_log)
         return ds
     if fallback_loadable_ds is not None:
         _log(
             f"falling back to split={fallback_split!r} on {att.hf_repo_id} "
             f"(no preferred split had full GT)"
         )
+        _persist_resolved_split(att, fallback_split, on_log=_log)
         return fallback_loadable_ds
     _log(f"all-split load failed for {att.hf_repo_id}: {last_error}")
     return None
+
+
+def _persist_resolved_split(att, resolved_split, *, on_log=None):
+    """Write the split we actually streamed back to Attachment.hf_split
+    so the LB detail page's "Using datasets" badge reflects reality
+    (not the importer's `train` default that the resolver may have
+    fallen back from). Best-effort: any DB error is swallowed since
+    this is just metadata polish, not a correctness requirement."""
+    if not resolved_split:
+        return
+    current = (att.hf_split or '').strip()
+    if current == resolved_split:
+        return
+    try:
+        att.hf_split = resolved_split
+        db.session.commit()
+        if on_log:
+            on_log(f"updated Attachment.hf_split: {current!r} → {resolved_split!r}")
+    except Exception as e:
+        db.session.rollback()
+        if on_log:
+            on_log(f"could not persist resolved split: {e}")
 
 
 def _iter_hf_attachment_samples(att, *, hf_token=None, cap=None):
