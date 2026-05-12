@@ -4532,18 +4532,62 @@ _PWC_AREA_RULES = [
 
 
 def _pwc_task_to_category(task_name):
-    """PWC `task` string → "Area/Task". Empty/unknown task → None so the
-    caller can leave Leaderboard.category null (the LB still renders, it
-    just lands under 'Uncategorized' in the /explore tree)."""
+    """PWC `task` string → "Area/Task".
+
+    Two-step:
+      1. Strip domain-modality prefixes (Medical, Aerial, Satellite,
+         3D, Few-Shot, Zero-Shot, …) from the task name so e.g.
+         "Medical Image Segmentation" → "Image Segmentation". The
+         modality is metadata, not the task itself.
+      2. Classify the stripped name into an area via the regex rules.
+
+    Empty/unknown task → None so the caller can leave Leaderboard.
+    category null."""
     if not task_name:
         return None
-    blob = str(task_name).lower()
+    raw = str(task_name).strip()
+    # Order: domain-only prefixes (e.g. "Medical ") first, so
+    # "Medical Image Segmentation" → "Image Segmentation". Multi-word
+    # prefixes that swallow part of the task ("medical image ", which
+    # would leave just "Segmentation") are explicitly NOT listed.
+    _DOMAIN_PREFIXES = (
+        'medical ', 'biomedical ',
+        'aerial ', 'satellite ', 'remote sensing ',
+        'document ', 'scientific ',
+        'monocular ', 'stereo ',
+        'few-shot ', 'few shot ', 'zero-shot ', 'zero shot ',
+        'one-shot ', 'one shot ',
+        'self-supervised ', 'self supervised ',
+        'weakly-supervised ', 'weakly supervised ',
+        'semi-supervised ', 'semi supervised ',
+        'unsupervised ',
+        'multi-task ', 'multi task ',
+        'low-light ', 'low light ',
+    )
+    stripped = raw
+    lower = raw.lower()
+    for prefix in _DOMAIN_PREFIXES:
+        if lower.startswith(prefix):
+            stripped = raw[len(prefix):].strip()
+            break
+    # Title-case the rebuilt task: "image segmentation" → "Image Segmentation".
+    # PWC's source casing varies (some use Title Case, some lowercase
+    # after the prefix); normalise so the /explore tree groups
+    # "Image Segmentation" rows from different sources together.
+    if stripped:
+        stripped = ' '.join(
+            w.capitalize() if w.islower() else w
+            for w in stripped.split()
+        )
+    else:
+        stripped = raw
     area = 'Other'
+    blob = stripped.lower()
     for label, patterns in _PWC_AREA_RULES:
         if any(re.search(p, blob) for p in patterns):
             area = label
             break
-    return f"{area}/{task_name.strip()}"
+    return f"{area}/{stripped}"
 
 
 def _metric_domain(metric):
