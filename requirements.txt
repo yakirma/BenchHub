@@ -17,3 +17,7 @@ datasets>=2.20,<3.0
 # need it too. Pre-installing here is far cheaper than pip-installing
 # at task time inside an HF stream that already holds the volume lock.
 h5py>=3.10
+# soundfile: HF Audio feature decoding routes through it (the datasets
+# lib raises "please install 'soundfile'" otherwise). Required for any
+# PWC audio benchmark — speech recognition, keyword spotting, etc.
+soundfile>=0.12
