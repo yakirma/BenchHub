@@ -132,22 +132,57 @@
             {% endif %}
 
             {# ---- Cached HuggingFace datasets ----
-               HF-attached LBs don't write a Dataset row — they live as
-               Attachment pointers. List the distinct repos here so the
-               page reflects "everything you can browse samples for",
-               not just the local-ZIP ones. Filtered to LBs with cached
-               GT so a row links to a real Explore-samples view. #}
-            {% if hf_datasets %}
+               Grouped by the same Area/Task taxonomy used on /explore
+               (sourced from the owning LB's category field). Each row
+               links to the first leaderboard's Explore-samples view. #}
+            {% if hf_datasets or hf_category_tree %}
             <h2 class="h4 mb-3 mt-5 text-body-emphasis">
                 Cached HuggingFace datasets
                 <span class="badge bg-secondary fs-6 align-middle ms-2">{{ hf_datasets|length }}</span>
             </h2>
             <p class="text-body-secondary small mb-3">
-                These are referenced from leaderboards directly — no local upload needed.
-                Each row links to the first leaderboard's <em>Explore samples</em> view.
+                Referenced from leaderboards directly — no local upload needed.
+                Categories mirror the leaderboard taxonomy.
             </p>
+
+            {% if hf_category_tree and hf_category_tree|length > 1 %}
+            <div class="d-flex flex-wrap gap-1 mb-3">
+                <a href="{{ url_for('datasets_list') }}"
+                   class="badge text-decoration-none {{ 'text-bg-primary' if not active_hf_category else 'text-bg-light border text-body' }}">
+                    All
+                    <span class="ms-1 opacity-75">{{ hf_datasets|length if not active_hf_category else (hf_category_tree|sum(attribute='count')) }}</span>
+                </a>
+                {% for area in hf_category_tree %}
+                <a href="{{ url_for('datasets_list', category=area.area) }}"
+                   class="badge text-decoration-none {{ 'text-bg-primary' if active_hf_category == area.area else 'text-bg-light border text-body' }}"
+                   title="{{ area.count }} HF dataset{{ '' if area.count == 1 else 's' }} in {{ area.area }}">
+                    <i class="bi bi-diagram-3 me-1"></i>{{ area.area }}
+                    <span class="ms-1 opacity-75">{{ area.count }}</span>
+                </a>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {# Group rendered list by area heading, then task sub-heading.
+               When a category filter is active we still keep the headings
+               for visual continuity. #}
+            {% set _last_area = namespace(v=None) %}
+            {% set _last_task = namespace(v=None) %}
             <div class="list-group mb-4 shadow-sm">
                 {% for hf in hf_datasets %}
+                {% if hf.area != _last_area.v %}
+                <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
+                    <i class="bi bi-diagram-3 me-1"></i>{{ hf.area }}
+                </div>
+                {% set _last_area.v = hf.area %}
+                {% set _last_task.v = None %}
+                {% endif %}
+                {% if hf.task and hf.task != _last_task.v %}
+                <div class="list-group-item bg-body py-1 px-4 small text-body-secondary border-0 border-bottom">
+                    <i class="bi bi-chevron-right me-1 opacity-50"></i>{{ hf.task }}
+                </div>
+                {% set _last_task.v = hf.task %}
+                {% endif %}
                 {% set primary_lb = hf.leaderboards[0] %}
                 <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3">
                     <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
