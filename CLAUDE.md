@@ -114,6 +114,11 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - **`_pwc_task_to_category` strips domain prefixes** (Medical, Aerial, Satellite, Few-Shot, Self-Supervised, …) before classification, so "Medical Image Segmentation" → "Vision/Image Segmentation". New prefixes go in `_DOMAIN_PREFIXES` — order them shortest-first so "medical image" doesn't get half-eaten.
 - **`populate_lb_samples` has a 5-min `soft_time_limit`.** PWC's `suggest_hf_repo` fallback sometimes lands on a monolithic HDF5 repo (e.g. `btherien/imagenet-64x64x3` is 100GB+ behind `load_dataset`), and without the timeout one task takes down the whole worker. **The Fly machine hosts Flask + Celery + Redis on one box** — don't bulk-enqueue dozens of populate tasks; the site becomes unresponsive. Use the per-LB "Populate samples" button instead, or rate-limit any bulk operation.
 
+## Mask vs image disambiguation
+Both upload paths now route segmentation masks to `target_kind='mask'` (rendered with the deterministic-hue palette + paired with IoU-family metric defaults) rather than 'image':
+- **HF datasets** (`_infer_mapping`): an `Image`-typed column whose name contains any of `mask`, `segmentation`, `segment_map`, `seg_map`, `annotation`, `panoptic`, `label_map`, `semseg` → mask. Tokens live in `_HF_MASK_TOKENS`; check via `_col_name_looks_like_mask(col)`.
+- **BH ZIP uploads** (`detect_custom_fields`): folder-name token check short-circuits to mask. Otherwise `_classify_image_path(path)` peeks the first file and inspects PIL `mode` + unique-value/color count (downsampled to 256×256 for speed): mode `P` → mask; mode `L`/`I` with ≤32 unique values → mask; mode `RGB`/`RGBA` with ≤32 unique colors → mask; else image.
+
 ## Field-type taxonomy (CustomField.field_type)
 
 | field_type   | Storage | Comparison cell | Notes |
