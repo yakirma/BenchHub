@@ -94,6 +94,13 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - `evaluate_dynamic_metric` calls `exec()` on user-supplied Python — by design. Treat this app as trusted-local-network only.
 - `app.py` uses `@app.url_value_preprocessor` + `@app.url_defaults` + a monkey-patch of `werkzeug.routing.Map.is_endpoint_expecting` to inject `project_name` into every URL automatically. New routes that take a `<project_name>` path component will get the value injected on `url_for(...)` without you passing it.
 
+## Palette (warm-cream after Cabinet retheme)
+- Body bg: `#fcf9f4` (warm off-white), tertiary/card bg `#f5efe2` (warm cream).
+- Body / heading text: `#3a2614` and `#2a1f10` (warm dark brown).
+- Border / divider: `#e8dfc8` (tan).
+- Primary accent **kept violet** `#7c3aed` (brand identity). Don't swap the primary without an explicit ask — many components (badges, focus rings, hover states) lean on it.
+- Background radial gradients are amber `rgba(217,119,6,…)` + peach `rgba(244,114,89,…)`; if you re-tint the page bg, keep the gradient stops in the same hue family or it'll clash.
+
 ## Frontend conventions (theme, layout)
 - **Theme is light-only by design.** `<html data-bs-theme="light">` is hardcoded in `base.html`. The CSS override block sets identical values for `[data-bs-theme="light"]` and `[data-bs-theme="dark"]`, but Bootstrap's own navbar CSS vars (`--bs-navbar-color`, `--bs-tertiary-bg-rgb`) aren't covered, so any dark-mode rendering leaks white-on-white. `global_settings.theme_mode` still defaults to `'dark'` in SQLite but the template no longer reads it. Don't reintroduce a real dark mode without overriding *every* `--bs-navbar-*` and `-rgb` variant.
 - **Navbar text is pinned manually** (`.navbar .nav-link { color: #281950 }` etc.) as belt-and-suspenders.

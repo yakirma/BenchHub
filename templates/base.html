@@ -57,22 +57,27 @@
         :root,
         [data-bs-theme="light"],
         [data-bs-theme="dark"] {
-            /* Violet primary, deep-indigo text, pale-violet surface */
+            /* Warm-cream surface inspired by Cabinet (runcabinet.com):
+               cream body bg + tan-tinted cards + warm-brown body text.
+               Violet primary kept as the brand accent so identity
+               doesn't drift, but the page chrome reads warm. */
             --bs-primary: #7c3aed;
             --bs-primary-rgb: 124, 58, 237;
             --bs-link-color: #7c3aed;
             --bs-link-color-rgb: 124, 58, 237;
             --bs-link-hover-color: #5b21b6;
             --bs-link-hover-color-rgb: 91, 33, 182;
-            --bs-body-color: #281950;
-            --bs-body-color-rgb: 40, 25, 80;
-            --bs-body-bg: #fcfcff;
-            --bs-body-bg-rgb: 252, 252, 255;
-            --bs-secondary-color: #564b80;
-            --bs-secondary-bg: #f1f2f9;
-            --bs-tertiary-bg: #f5f3ff;
-            --bs-border-color: #e1e4ef;
-            --bs-emphasis-color: #281950;
+            --bs-body-color: #3a2614;
+            --bs-body-color-rgb: 58, 38, 20;
+            --bs-body-bg: #fcf9f4;
+            --bs-body-bg-rgb: 252, 249, 244;
+            --bs-secondary-color: #6b5942;
+            --bs-secondary-bg: #f1eadd;
+            --bs-tertiary-bg: #f5efe2;
+            --bs-tertiary-bg-rgb: 245, 239, 226;
+            --bs-border-color: #e8dfc8;
+            --bs-border-color-translucent: rgba(214, 194, 160, 0.5);
+            --bs-emphasis-color: #2a1f10;
 
             /* Pill buttons + softer card radius */
             --bs-border-radius: 0.625rem;
@@ -87,23 +92,24 @@
             --bs-font-monospace: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
         }
 
-        /* Subtle multi-stop pastel wash behind everything — barely
-           visible, but adds the soft Fly-style depth. fixed so it
-           doesn't scroll with the page. */
+        /* Warm cream wash — amber + peach radial gradients instead of
+           the previous violet/pink pair. Matches Cabinet's cream-on-
+           cream feel; barely visible per-pixel but adds depth. */
         body {
             background-image:
-                radial-gradient(1200px 600px at 0% -10%, rgba(124, 58, 237, 0.06), transparent 60%),
-                radial-gradient(1000px 500px at 100% 0%, rgba(255, 0, 138, 0.04), transparent 60%);
+                radial-gradient(1200px 600px at 0% -10%, rgba(217, 119, 6, 0.06), transparent 60%),
+                radial-gradient(1000px 500px at 100% 0%, rgba(244, 114, 89, 0.05), transparent 60%);
             background-attachment: fixed;
         }
 
-        /* Headings: wedge-serif, tighter line-height, slightly heavier */
+        /* Headings: wedge-serif, tighter line-height, slightly heavier.
+           Color shifted to warm dark brown to match the new body text. */
         h1, h2, h3, h4, h5, h6,
         .h1, .h2, .h3, .h4, .h5, .h6 {
             font-family: 'Fraunces', 'Charter', 'Georgia', serif;
             font-weight: 600;
             letter-spacing: -0.01em;
-            color: #281950;
+            color: #2a1f10;
         }
         h1, .h1 { font-weight: 700; letter-spacing: -0.02em; }
 
@@ -152,14 +158,15 @@
            (white-on-white invisibility). */
         .navbar.bg-body-tertiary,
         .navbar {
-            background-color: rgba(252, 252, 255, 0.85) !important;
+            /* Warm cream w/ a touch of translucency, matching Cabinet. */
+            background-color: rgba(252, 249, 244, 0.92) !important;
             backdrop-filter: saturate(180%) blur(8px);
             -webkit-backdrop-filter: saturate(180%) blur(8px);
             border-bottom: 1px solid var(--bs-border-color);
             box-shadow: none;
         }
         .navbar .nav-link {
-            color: #281950;  /* deep indigo, matches body text in light mode */
+            color: #3a2614;  /* warm brown, matches body text */
         }
         .navbar .nav-link:hover,
         .navbar .nav-link:focus {
@@ -172,11 +179,12 @@
         .navbar-brand {
             font-family: 'Fraunces', serif;
             font-weight: 700;
+            font-size: 1.4rem;
             letter-spacing: -0.01em;
-            color: #281950;
+            color: #2a1f10;
         }
-        .navbar-brand:hover, .navbar-brand:focus { color: #281950; }
-        .navbar .navbar-toggler { color: #281950; border-color: rgba(40, 25, 80, 0.2); }
+        .navbar-brand:hover, .navbar-brand:focus { color: #2a1f10; }
+        .navbar .navbar-toggler { color: #3a2614; border-color: rgba(58, 38, 20, 0.2); }
 
         /* Inline code + <code> blocks: lavender-tinted */
         code, .font-monospace {
@@ -420,7 +428,7 @@
                        Park-bench shape: backrest top bar + two backrest verticals
                        + seat bar + two legs. Same warning-yellow as the previous
                        grid icon so the navbar palette doesn't shift. #}
-                    <svg class="me-2" width="22" height="22"
+                    <svg class="me-2" width="32" height="32"
                          viewBox="0 0 16 16" fill="currentColor"
                          style="color: var(--bs-warning); flex-shrink: 0;">
                       <path d="M2 3h12v1.5H2zM3 3v3.5h1V3zM12 3v3.5h1V3zM1 7h14v2.2H1zM3 9.2h1.5v5.5H3zM11.5 9.2H13v5.5h-1.5z"/>
