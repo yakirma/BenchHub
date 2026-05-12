@@ -1234,6 +1234,31 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None, category=Non
             shutil.rmtree(temp_dir)
 
 
+# Canonical folder-name → field_type prefix convention.
+# Each known kind has a prefix; a folder named `<prefix>_<field_name>`
+# inside a dataset/submission ZIP is treated as that kind, with the
+# field name being everything after the prefix (the full
+# `<prefix>_<field_name>` is kept verbatim as the CustomField name so
+# the contract between dataset and submission is unambiguous).
+# Override: a folder name that starts with one of these prefixes is
+# AUTHORITATIVE — content peek + name heuristics don't fire. Folder
+# names without a known prefix fall back to the legacy detection.
+_FIELD_TYPE_PREFIXES = (
+    'image', 'mask', 'depth', 'audio',
+    'scalar', 'text', 'json',
+    'histogram', 'metric',
+)
+
+
+def _folder_name_prefix_kind(folder_name):
+    """Return the canonical kind iff `folder_name` matches
+    `<known_prefix>_<rest>`. None when the prefix isn't recognised."""
+    if not folder_name or '_' not in folder_name:
+        return None
+    prefix = folder_name.split('_', 1)[0].lower()
+    return prefix if prefix in _FIELD_TYPE_PREFIXES else None
+
+
 def _classify_image_path(path, max_unique_for_mask=32):
     """Inspect a PNG/JPEG and decide 'image' vs 'mask'. A segmentation
     mask is detected when:
@@ -1293,15 +1318,15 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
     for folder_name in custom_folders:
         folder_path = os.path.join(base_path, folder_name)
 
-        # Determine field type purely from file extension + content. The
-        # legacy reserved prefixes (metric_, hist_, raw_) were dropped:
-        # any folder can hold any type, and we infer from what's inside.
-        # The only remaining hard-coded folder is `tags` (always text,
-        # never re-parsed as numeric — otherwise ClassLabel name lists
-        # like ['0', '1'] get coerced to scalars and the sample loses
-        # its tags).
+        # Folder-name convention: `<type>_<field_name>` is now the
+        # canonical way to declare a field's type at upload time. When
+        # the prefix is recognised we use it as authoritative —
+        # content-peek + heuristics only fire for folders that lack
+        # the prefix (back-compat with legacy datasets uploaded before
+        # the convention). `tags` stays as the always-text exception.
         is_tags_folder = (folder_name == 'tags')
-        field_type = 'text' if is_tags_folder else None
+        prefix_kind = _folder_name_prefix_kind(folder_name)
+        field_type = 'text' if is_tags_folder else prefix_kind
 
         # Check what's inside the folder
         field_data = {}
@@ -9443,87 +9468,66 @@ def _infer_mapping(features):
     for col, desc in features.items():
         col_lc = col.lower()
         t = desc.get('type', '')
+
+        def _emit(kind, *, reason):
+            """Emit a mapping entry using the canonical
+            `<kind>_<col>` target_field convention. Skipping kinds
+            don't emit a target_field at all."""
+            if kind == 'skip':
+                out.append({'column': col, 'target_kind': 'skip',
+                            'target_field': '', 'reason': reason})
+            else:
+                # Strip an accidental existing prefix so we don't end
+                # up with `image_image_foo` when a HF column is
+                # already `image_foo`.
+                bare = col
+                lead = col_lc.split('_', 1)[0] if '_' in col_lc else ''
+                if lead == kind:
+                    bare = col[len(lead) + 1:]
+                if not bare:
+                    bare = col
+                out.append({'column': col, 'target_kind': kind,
+                            'target_field': f'{kind}_{bare}',
+                            'reason': reason})
+
         if t == 'Image':
             if any(k in col_lc for k in _HF_DEPTH_NAMES):
-                out.append({'column': col, 'target_kind': 'depth',
-                            'target_field': f'raw_{col}',
-                            'reason': "Image-typed column with depth-suggesting name"})
+                _emit('depth', reason="Image-typed column with depth-suggesting name")
             elif _col_name_looks_like_mask(col):
-                # Segmentation mask: bytes are a label map, not a
-                # photograph. Renderer + metric framework treat
-                # 'mask' specially (deterministic-hue colorization,
-                # IoU/dice metric defaults, etc).
-                out.append({'column': col, 'target_kind': 'mask',
-                            'target_field': f'mask_{col}',
-                            'reason': "Image-typed column with mask/segmentation-suggesting name"})
+                _emit('mask', reason="Image-typed column with mask/segmentation-suggesting name")
             else:
-                out.append({'column': col, 'target_kind': 'image',
-                            'target_field': f'image_{col}',
-                            'reason': "Image-typed column → image_*"})
+                _emit('image', reason="Image-typed column → image_*")
         elif t == 'Audio':
-            out.append({'column': col, 'target_kind': 'audio',
-                        'target_field': f'audio_{col}',
-                        'reason': "Audio-typed column → audio waveform thumb"})
+            _emit('audio', reason="Audio-typed column → audio waveform thumb")
         elif t.startswith('Value:'):
             dtype = t.split(':', 1)[1]
             if dtype in ('int8', 'int16', 'int32', 'int64',
                          'uint8', 'uint16', 'uint32',
                          'float16', 'float32', 'float64', 'bool'):
-                out.append({'column': col, 'target_kind': 'scalar',
-                            'target_field': col,
-                            'reason': (f"Numeric scalar ({dtype}) → GT "
-                                       f"scalar field. Pick `metric` "
-                                       f"explicitly only when the column "
-                                       f"already holds a user-precomputed "
-                                       f"metric value.")})
+                _emit('scalar', reason=(
+                    f"Numeric scalar ({dtype}) → GT scalar field. "
+                    f"Pick `metric` explicitly only when the column "
+                    f"already holds a user-precomputed metric value."
+                ))
             elif dtype == 'string':
-                # Default to text for *any* string column. The previous
-                # whitelist-only behaviour (caption/text/tag) skipped
-                # almost every QA / code / dialog dataset, which left
-                # the GT cache empty for the bulk-PWC imports.
-                out.append({'column': col, 'target_kind': 'text',
-                            'target_field': col,
-                            'reason': "String column → GT text field"})
+                _emit('text', reason="String column → GT text field")
             else:
-                # HF's schema parser sometimes flattens complex nested
-                # features (Sequence-of-dict, list-of-list, Translation)
-                # into `Value:unknown` instead of preserving the shape.
-                # Persist as JSON so the row's actual value (dict / list)
-                # still lands in the GT cache for human inspection.
-                out.append({'column': col, 'target_kind': 'json',
-                            'target_field': col,
-                            'reason': f"Value:{dtype} → GT json field (complex/nested)"})
+                _emit('json', reason=f"Value:{dtype} → GT json field (complex/nested)")
         elif t == 'ClassLabel':
-            out.append({'column': col, 'target_kind': 'scalar',
-                        'target_field': col,
-                        'reason': ("ClassLabel → store integer index as a "
-                                   "GT scalar (metric_* is reserved for "
-                                   "user-precomputed metric values).")})
+            _emit('scalar', reason=(
+                "ClassLabel → store integer index as a GT scalar."
+            ))
         elif t.startswith('Sequence:'):
             inner = t.split(':', 1)[1]
             length = desc.get('length', -1)
             if inner == 'string':
-                out.append({'column': col, 'target_kind': 'text',
-                            'target_field': col,
-                            'reason': "Sequence:string → join into GT text"})
+                _emit('text', reason="Sequence:string → join into GT text")
             elif inner in ('int32', 'int64', 'uint8', 'uint16', 'uint32') and length in (256, 512, 1024, 2048):
-                out.append({'column': col, 'target_kind': 'histogram',
-                            'target_field': f'hist_{col}',
-                            'reason': f"Fixed-length int sequence ({length}) → hist_*"})
+                _emit('histogram', reason=f"Fixed-length int sequence ({length}) → histogram_*")
             else:
-                # Lists of floats/ints, ClassLabels (e.g. answer-span
-                # offsets in QA datasets), bounding boxes etc. Persist
-                # as serialized JSON so the comparison view can render
-                # them as a compact key/value card.
-                out.append({'column': col, 'target_kind': 'json',
-                            'target_field': col,
-                            'reason': f"Sequence:{inner} → GT json field"})
+                _emit('json', reason=f"Sequence:{inner} → GT json field")
         else:
-            # Catch-all (dict / Translation / Audio sequence / etc.) —
-            # serialize the row's value to JSON so SOMETHING shows up.
-            out.append({'column': col, 'target_kind': 'json',
-                        'target_field': col,
-                        'reason': f"Feature type '{t}' → GT json field"})
+            _emit('json', reason=f"Feature type '{t}' → GT json field")
     return out
 
 

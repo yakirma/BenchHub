@@ -11,106 +11,144 @@
     </p>
 
     <p>
-        BenchHub auto-detects the type of each field from a combination
-        of the <strong>file extension</strong> and (for <code>.npz</code>)
-        the archive's key names. No reserved folder prefixes — name your
-        folders whatever makes sense for your data, and the engine reads
-        the type from what's inside. The same rules apply on the
+        BenchHub recognises a field's type from its <strong>folder
+        name</strong> in your ZIP. The canonical convention is
+        <code>&lt;type&gt;_&lt;field_name&gt;</code> — e.g.
+        <code>image_rgb</code>, <code>mask_annotation</code>,
+        <code>depth_gt</code>, <code>scalar_score</code>,
+        <code>text_caption</code>. The prefix is authoritative; everything
+        after the underscore is the field name BenchHub will use to refer
+        to that field on the LB, in the comparison view, and inside
+        metric/visualisation code. The same rules apply on the
         ground-truth side (a Dataset uploaded as a ZIP, or a HuggingFace
-        dataset attachment) and on the prediction side (a Submission
-        uploaded via the API). Every per-leaderboard
-        <em>Submission contract</em> is just a filtered view of these
-        rules — which folders <em>that</em> LB needs.
+        dataset attachment — column names follow the same convention) and
+        on the prediction side (a Submission uploaded via the API).
     </p>
+    <div class="alert alert-secondary small">
+        <strong>Back-compat:</strong> folders without a known prefix
+        still get inferred from file extension + content (PIL mode +
+        unique-value count for image-vs-mask, <code>.npz</code> keys
+        for histogram-vs-depth, etc.). Mixing styles in a single ZIP
+        works, but the explicit <code>&lt;type&gt;_</code> prefix is
+        always preferred — clearer to readers and avoids edge cases
+        where an unusual photograph reads as a mask (or vice versa).
+    </div>
 
     <h2 class="h4 fw-semibold mt-4">Reference table</h2>
     <div class="table-responsive">
         <table class="table align-middle">
             <thead class="table-light">
                 <tr>
-                    <th style="width: 11%;">Type</th>
-                    <th style="width: 14%;">File ext.</th>
-                    <th style="width: 28%;">Per-sample naming</th>
+                    <th style="width: 10%;">Type</th>
+                    <th style="width: 18%;">Folder name</th>
+                    <th style="width: 12%;">File ext.</th>
+                    <th style="width: 18%;">Per-sample naming</th>
                     <th>How it's stored / read</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">scalar</span></td>
+                    <td class="font-monospace small">scalar_&lt;name&gt;</td>
                     <td class="font-monospace small">.txt</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
                     <td class="small">
-                        UTF-8 text containing a single number. Most often a
-                        float (<code>0.873</code>) or an integer class
-                        index. Parsed to <code>float</code> when handed to
-                        metric code.
+                        UTF-8 text containing a single number — float
+                        or integer class index. Parsed to
+                        <code>float</code> for metric code.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">text</span></td>
+                    <td class="font-monospace small">text_&lt;name&gt;</td>
                     <td class="font-monospace small">.txt</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
                     <td class="small">
-                        UTF-8 string. Free-form — generated captions,
-                        sentiment labels (<code>pos</code>/<code>neg</code>),
-                        short classifier outputs. Passed to metric code as
-                        a Python <code>str</code>.
+                        UTF-8 string. Free-form — captions, sentiment
+                        labels, short classifier outputs. Passed to
+                        metric code as a Python <code>str</code>.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">image</span></td>
+                    <td class="font-monospace small">image_&lt;name&gt;</td>
                     <td class="font-monospace small">.png / .jpg / .jpeg / .bmp / .tiff</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.<ext>' }}</td>
                     <td class="small">
-                        RGB or grayscale raster. Read as a
+                        RGB or grayscale photograph. Read as a
                         <code>PIL.Image</code> when a metric or viz
-                        asks for it. The submit scaffold auto-converts
-                        numpy arrays / PIL Images to PNG HxWx3 uint8.
+                        asks for it. Auto-detected as mask instead
+                        when the bytes look paletted / low-color.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">mask</span></td>
+                    <td class="font-monospace small">mask_&lt;name&gt;</td>
                     <td class="font-monospace small">.png</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.png' }}</td>
                     <td class="small">
-                        Segmentation mask — either single-channel HxW
-                        (uint8/16 class IDs) or three-channel HxWx3
-                        RGB-encoded classes. The engine inspects the shape
-                        and picks the right decode path.
+                        Segmentation mask — single-channel HxW class IDs
+                        OR low-color RGB. Renders with the
+                        deterministic-hue palette; pairs naturally with
+                        IoU / Dice metrics.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">depth</span></td>
+                    <td class="font-monospace small">depth_&lt;name&gt;</td>
                     <td class="font-monospace small">.npz</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.npz' }}</td>
                     <td class="small">
-                        numpy <code>.npz</code> archive with one array
-                        under key <code>depth</code> (HxW float). The
-                        engine peeks at the keys to disambiguate from
-                        a histogram archive.
+                        numpy <code>.npz</code> archive carrying the
+                        HxW float depth map (key <code>depth</code>).
+                        Cached as 8-bit grayscale PNG; the comparison
+                        view applies a colormap (turbo / viridis /
+                        normal-map) at render time via
+                        <code>?cmap=</code>.
+                    </td>
+                </tr>
+                <tr>
+                    <td><span class="badge text-bg-secondary-subtle text-secondary border">audio</span></td>
+                    <td class="font-monospace small">audio_&lt;name&gt;</td>
+                    <td class="font-monospace small">.wav / .mp3 / .flac</td>
+                    <td class="font-monospace small text-body-secondary">{{ '<sample>.<ext>' }}</td>
+                    <td class="small">
+                        Decoded via <code>soundfile</code>. Cached as a
+                        small waveform PNG.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">histogram</span></td>
+                    <td class="font-monospace small">histogram_&lt;name&gt;</td>
                     <td class="font-monospace small">.npz</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.npz' }}</td>
                     <td class="small">
-                        numpy <code>.npz</code> archive with two arrays:
-                        <code>bins</code> + <code>counts</code>. Detected
-                        by inspecting the archive's keys. Surfaces in the
-                        Comparison view as an inline chart and exposes a
-                        <code>sub_entropy_&lt;field&gt;</code> convenience
-                        value to metric code.
+                        numpy <code>.npz</code> with two arrays:
+                        <code>bins</code> + <code>counts</code>. Exposes
+                        a <code>sub_entropy_&lt;field&gt;</code>
+                        convenience value to metric code.
                     </td>
                 </tr>
                 <tr>
                     <td><span class="badge text-bg-secondary-subtle text-secondary border">json</span></td>
+                    <td class="font-monospace small">json_&lt;name&gt;</td>
                     <td class="font-monospace small">.json</td>
                     <td class="font-monospace small text-body-secondary">{{ '<sample>.json' }}</td>
                     <td class="small">
                         Arbitrary structured data, parsed to a Python
-                        <code>dict</code>. Useful for per-sample config
-                        or complex predicted objects (bboxes etc.).
+                        <code>dict</code>. Bboxes, span offsets, per-
+                        sample config, etc.
+                    </td>
+                </tr>
+                <tr>
+                    <td><span class="badge text-bg-secondary-subtle text-secondary border">metric</span></td>
+                    <td class="font-monospace small">metric_&lt;name&gt;</td>
+                    <td class="font-monospace small">.txt</td>
+                    <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
+                    <td class="small">
+                        Pre-computed per-sample metric value (single
+                        float). Surfaces in the per-sample metrics
+                        chart instead of as a normal column.
                     </td>
                 </tr>
             </tbody>

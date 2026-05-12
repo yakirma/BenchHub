@@ -67,14 +67,24 @@ Dependencies: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery
    - Updates `Submission.processing_status` granularly (`Pending` → `Processing: Metric N/M (name)` → `Generating Visualizations` → `Processed` / `Error: ...`).
 4. Batch recalculation uses `process_submissions_batch_sequential` which runs submissions one-at-a-time on purpose — concurrency was rolled back (see commit `8a77b48`), so don't re-introduce a `group()`/`chord()` here without checking why.
 
-### Folder convention for ZIPs (dynamic field detection)
-`detect_custom_fields` scans every folder in a dataset/submission ZIP and infers types from prefix + file extensions:
-| Prefix          | Type      | Files                                  |
-| --------------- | --------- | -------------------------------------- |
-| `metric_`       | metric    | `<sample>.txt` containing a float      |
-| `hist_` / `raw_histogram` / `hist` | histogram | `<sample>.npz` (`bins`, `counts`) |
-| `raw_`          | depth     | `<sample>_<W>x<H>.npz`                 |
-| (anything else) | image / scalar / json / text | by file extension          |
+### Folder convention for ZIPs (`<type>_<field_name>`)
+The canonical naming for any dataset/submission folder is `<type>_<field_name>`. Recognised type prefixes live in `_FIELD_TYPE_PREFIXES`:
+
+| Type | Folder example | File(s) |
+|------|----------------|---------|
+| `image` | `image_rgb` | `<sample>.png` / `.jpg` / `.jpeg` / `.bmp` / `.tiff` |
+| `mask` | `mask_annotation` | `<sample>.png` (single-channel class IDs or low-color RGB) |
+| `depth` | `depth_gt` | `<sample>.npz` (key `depth`, HxW float) |
+| `audio` | `audio_clip` | `<sample>.wav` / `.mp3` / `.flac` |
+| `scalar` | `scalar_score` | `<sample>.txt` (one float) |
+| `text` | `text_caption` | `<sample>.txt` |
+| `json` | `json_bbox` | `<sample>.json` |
+| `histogram` | `histogram_dtof` | `<sample>.npz` (`bins`, `counts`) |
+| `metric` | `metric_iou` | `<sample>.txt` (pre-computed) |
+
+`_folder_name_prefix_kind(folder_name)` returns the canonical kind when the prefix matches, and that decision is **authoritative** — the content-peek heuristics (`_classify_image_path`, `_classify_npz`) only run for folders without a recognised prefix (back-compat with legacy datasets). The `tags` folder is the one hardcoded exception (always text).
+
+The same convention is mirrored on the HF-import side: `_infer_mapping` emits `target_field=<kind>_<col>` for every kind so the field name on the LB matches what a BH-uploaded dataset would use. If the HF column name already starts with that kind prefix, it's not double-prefixed.
 
 `git_info.json` (or `git.info`) at the ZIP root is parsed for commit metadata; if `author` is absent, `get_author_from_git_commit` shells out to `git -C $GIT_REPO_PATH log origin/<branch>` to recover it.
 
