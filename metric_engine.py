@@ -458,6 +458,25 @@ def get_metric_context(sample, sub=None, submission_folder=None,
         if cf.field_type == 'scalar':
              context[f"gt_{cf.name}"] = cf.value_float
              context[cf.name] = cf.value_float
+        elif cf.field_type == 'text':
+            context[f"gt_{cf.name}"] = cf.value_text
+            context[cf.name] = cf.value_text
+        elif cf.field_type == 'json':
+            try:
+                parsed = json.loads(cf.value_text) if cf.value_text else None
+            except Exception:
+                parsed = cf.value_text
+            context[f"gt_{cf.name}"] = parsed
+            context[cf.name] = parsed
+        elif cf.field_type == 'topk_list':
+            try:
+                parsed = json.loads(cf.value_text) if cf.value_text else []
+            except Exception:
+                parsed = []
+            if not isinstance(parsed, list):
+                parsed = [parsed]
+            context[f"gt_{cf.name}"] = parsed
+            context[cf.name] = parsed
         elif cf.field_type in ('image', 'depth'):
             arr = _load_gt_array(cf, upload_folder)
             if arr is None and pointer_resolver is not None and getattr(cf, 'source_column', None):
@@ -514,7 +533,7 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                 if cf.field_type == 'metric' or cf.field_type == 'scalar':
                      context[f"sub_{cf.name}"] = cf.value_float
                      context[cf.name] = cf.value_float # Also store without prefix for direct access
-                     
+
                      # [FIX] Fallback for lm_{id} naming: also provide friendly name in context
                      if cf.name.startswith('lm_'):
                          try:
@@ -526,6 +545,36 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                                  context[friendly_name] = cf.value_float
                                  context[f"sub_{friendly_name}"] = cf.value_float
                          except: pass
+                elif cf.field_type == 'topk_list':
+                    # Ranked-list predictions (e.g. link-prediction
+                    # Hits@N / MRR). Stored as a JSON array string;
+                    # surface to the metric as a real Python list so
+                    # the per-sample function can index into it.
+                    raw = cf.value_text or ''
+                    try:
+                        parsed = json.loads(raw) if raw else []
+                    except Exception:
+                        parsed = []
+                    if not isinstance(parsed, list):
+                        parsed = [parsed]
+                    context[f"sub_{cf.name}"] = parsed
+                    context[cf.name] = parsed
+                elif cf.field_type == 'text':
+                    # Text predictions surfaced verbatim for string-
+                    # comparison metrics (BLEU/EM/F1 over QA / translation).
+                    context[f"sub_{cf.name}"] = cf.value_text
+                    context[cf.name] = cf.value_text
+                elif cf.field_type == 'json':
+                    # JSON predictions (bboxes, span offsets, structured
+                    # outputs). Deserialise so metric code sees the dict
+                    # / list shape, not the raw string.
+                    raw = cf.value_text or ''
+                    try:
+                        parsed = json.loads(raw) if raw else None
+                    except Exception:
+                        parsed = cf.value_text
+                    context[f"sub_{cf.name}"] = parsed
+                    context[cf.name] = parsed
         
         # Add 'sub_peak' convenience if it exists
         # 'detect_custom_fields' creates CustomFields so it should be in there.
