@@ -1234,6 +1234,38 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None, category=Non
             shutil.rmtree(temp_dir)
 
 
+def _classify_image_path(path, max_unique_for_mask=32):
+    """Inspect a PNG/JPEG and decide 'image' vs 'mask'. A segmentation
+    mask is detected when:
+      - PIL mode is 'P' (paletted) — almost always a mask.
+      - Mode 'L' or 'I' with ≤ max_unique_for_mask unique pixel values.
+      - Mode 'RGB' with ≤ max_unique_for_mask unique colors.
+    Any error reading the file degrades to 'image' (safe default;
+    means we won't accidentally render a photo with the mask
+    deterministic-hue palette)."""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            mode = im.mode
+            if mode == 'P':
+                return 'mask'
+            if mode in ('L', 'I', 'I;16', 'I;16B', 'I;16L'):
+                arr = np.asarray(im)
+                if arr.size and len(np.unique(arr.reshape(-1)[:50000])) <= max_unique_for_mask:
+                    return 'mask'
+                return 'image'
+            if mode == 'RGB' or mode == 'RGBA':
+                # Quantise + count unique colours over a downsampled sample
+                # so we don't load full-resolution arrays for every file.
+                small = im.resize((min(im.width, 256), min(im.height, 256)))
+                arr = np.asarray(small).reshape(-1, 3 if mode == 'RGB' else 4)[:, :3]
+                if len(np.unique(arr, axis=0)) <= max_unique_for_mask:
+                    return 'mask'
+            return 'image'
+    except Exception:
+        return 'image'
+
+
 def detect_custom_fields(base_path, sample_names, known_folders, is_submission=False):
     """
     Detect custom fields (images, scalars, metrics) in a dataset or submission folder.
@@ -1296,7 +1328,19 @@ def detect_custom_fields(base_path, sample_names, known_folders, is_submission=F
                 img_file_name = f'{sample_name}{ext}'
                 if img_file_name in folder_files:
                     if field_type is None:
-                        field_type = 'image'
+                        # Mask-vs-image disambiguation:
+                        # 1. Folder name hints (mask/seg/annotation/label_map).
+                        # 2. PIL mode + unique-value count on the first file:
+                        #    'P' (paletted) → mask;
+                        #    'L'/'I' with ≤32 unique values → mask;
+                        #    'RGB' with ≤32 unique colors → mask;
+                        #    otherwise → image.
+                        if _col_name_looks_like_mask(folder_name):
+                            field_type = 'mask'
+                        else:
+                            field_type = _classify_image_path(
+                                os.path.join(folder_path, img_file_name)
+                            )
                     field_data[sample_name] = os.path.join(folder_path, img_file_name)
                     break
 
@@ -6195,6 +6239,20 @@ def import_from_hf_gated_wizard():
 _HF_DEPTH_NAMES = {'depth', 'depth_map', 'gt_depth', 'disparity'}
 _HF_RGB_NAMES = {'image', 'rgb', 'color', 'photo', 'pixel_values'}
 _HF_METRIC_NAMES = {'label', 'class', 'score', 'metric', 'target', 'y'}
+# Segmentation-mask column-name patterns. Substring match (lower-cased)
+# so 'segmentation_map', 'gt_mask', 'instance_seg', etc. all qualify.
+_HF_MASK_TOKENS = ('mask', 'segmentation', 'segment_map', 'seg_map',
+                   'annotation', 'panoptic', 'label_map', 'semseg')
+
+
+def _col_name_looks_like_mask(col_name):
+    """True iff the HF column name suggests a segmentation mask.
+    Used in _infer_mapping to route Image-typed columns whose names
+    contain a mask-y token to target_kind='mask' instead of 'image',
+    so the renderer + metric framework treat the bytes as a label
+    map rather than a photo."""
+    s = (col_name or '').lower()
+    return any(tok in s for tok in _HF_MASK_TOKENS)
 
 
 def _resolve_hf_token(form_token):
@@ -9390,6 +9448,14 @@ def _infer_mapping(features):
                 out.append({'column': col, 'target_kind': 'depth',
                             'target_field': f'raw_{col}',
                             'reason': "Image-typed column with depth-suggesting name"})
+            elif _col_name_looks_like_mask(col):
+                # Segmentation mask: bytes are a label map, not a
+                # photograph. Renderer + metric framework treat
+                # 'mask' specially (deterministic-hue colorization,
+                # IoU/dice metric defaults, etc).
+                out.append({'column': col, 'target_kind': 'mask',
+                            'target_field': f'mask_{col}',
+                            'reason': "Image-typed column with mask/segmentation-suggesting name"})
             else:
                 out.append({'column': col, 'target_kind': 'image',
                             'target_field': f'image_{col}',
