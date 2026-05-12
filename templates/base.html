@@ -552,6 +552,11 @@
                                         <i class="bi bi-cloud me-1"></i> HuggingFace token
                                     </a>
                                 </li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('user_usage') }}">
+                                        <i class="bi bi-pie-chart me-1"></i> Storage usage
+                                    </a>
+                                </li>
                                 {% if current_user_is_admin %}
                                 <li>
                                     <a class="dropdown-item" href="{{ url_for('admins_settings') }}">

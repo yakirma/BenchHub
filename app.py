@@ -413,6 +413,10 @@ class Dataset(db.Model):
     # Updated alongside file writes/deletes so quota checks don't have to du
     # the volume on every request.
     storage_bytes = db.Column(db.BigInteger, nullable=False, default=0, server_default='0')
+    # Two-level "Area/Task" string. Set at upload time or via the
+    # dataset settings page. LBs created from this dataset inherit
+    # the category if the LB doesn't already have one.
+    category = db.Column(db.String(120), nullable=True, index=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
@@ -968,12 +972,13 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
-def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
+def process_dataset_zip(zip_path, dataset_name, owner_user_id=None, category=None):
     """
     Helper to process a dataset zip file and create database entries.
     Name collisions are rejected — users must delete the existing dataset
     explicitly. owner_user_id (Phase 1 multi-tenancy) is the User who
-    uploaded; None means "legacy / scripted" upload.
+    uploaded; None means "legacy / scripted" upload. `category` is the
+    optional "Area/Task" taxonomy string set on the upload form.
     Returns (success: bool, message: str, dataset_id: int or None)
     """
     temp_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'temp_dataset_extract_' + datetime.now().strftime('%Y%m%d%H%M%S%f'))
@@ -1012,7 +1017,11 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None):
             return False, f"Dataset '{dataset_name}' already exists.", None
 
         # Create preliminary entry
-        new_dataset = Dataset(name=dataset_name, owner_user_id=owner_user_id)
+        new_dataset = Dataset(
+            name=dataset_name,
+            owner_user_id=owner_user_id,
+            category=(category or '').strip() or None,
+        )
         db.session.add(new_dataset)
         db.session.commit() # Commit immediately to release lock and get ID
         prelim_dataset = new_dataset
@@ -1776,6 +1785,48 @@ def _format_bytes(n):
             return f"{n:.0f} {unit}" if unit == 'B' else f"{n:.1f} {unit}"
         n /= 1024
     return f"{n:.1f} GB"
+
+
+@app.route('/me/usage')
+@login_required
+def user_usage():
+    """Per-user storage breakdown + quota. Shows total used vs the
+    user's `quota_max_storage_bytes` cap (default 200MB), per-dataset
+    rows ordered by size, and submission-rate state."""
+    user = g.current_user
+    ds_rows = (
+        Dataset.query
+        .filter(Dataset.owner_user_id == user.id)
+        .order_by(Dataset.storage_bytes.desc().nullslast())
+        .all()
+    )
+    items = []
+    for ds in ds_rows:
+        items.append({
+            'id': ds.id,
+            'name': ds.name,
+            'category': ds.category,
+            'bytes': int(ds.storage_bytes or 0),
+            'pct': (
+                float(ds.storage_bytes or 0) * 100.0
+                / max(int(user.quota_max_storage_bytes or 1), 1)
+            ),
+        })
+    used = storage_used_bytes(user)
+    cap = int(user.quota_max_storage_bytes or 200 * 1024 * 1024)
+    return render_template(
+        'user_usage.html',
+        items=items,
+        used_bytes=used,
+        cap_bytes=cap,
+        used_pct=(used * 100.0 / max(cap, 1)),
+        used_human=_format_bytes(used),
+        cap_human=_format_bytes(cap),
+        dataset_count=len(items),
+        ds_count_cap=user.quota_max_datasets,
+        sub_count_24h=daily_submission_count(user),
+        sub_count_cap=user.quota_max_submissions_per_day,
+    )
 
 
 def check_quota(user, *, kind, incoming_bytes=0):
@@ -5739,6 +5790,7 @@ def upload_dataset():
         success, message, ds_id = process_dataset_zip(
             temp_zip_path, dataset_name,
             owner_user_id=g.current_user.id,
+            category=request.form.get('category'),
         )
 
         if success:
@@ -12488,12 +12540,22 @@ def datasets_list():
                 if d['area'] == active_hf_category
             ]
 
+    # Datalist suggestions for the upload form. Categories already in
+    # use anywhere on the site (BH dataset OR LB), distinct.
+    known_categories = sorted({
+        c for (c,) in db.session.execute(db.text(
+            "SELECT DISTINCT category FROM dataset WHERE category IS NOT NULL "
+            "UNION SELECT DISTINCT category FROM leaderboard WHERE category IS NOT NULL"
+        )).all() if c
+    })
+
     return render_template('datasets.html',
                            datasets=datasets,
                            dataset_thumbs=dataset_thumbs,
                            hf_datasets=hf_datasets,
                            hf_category_tree=hf_category_tree,
-                           active_hf_category=active_hf_category)
+                           active_hf_category=active_hf_category,
+                           known_categories=known_categories)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):
@@ -13173,6 +13235,12 @@ def serve_gt_viz(lb_id, col, sample_name):
     # mimetype (they're PNG; image/mask/depth thumbs are JPEG).
     with open(path, 'rb') as fh:
         magic = fh.read(4)
+    # Depth cells now cache as grayscale PNG; pick colormap at view time.
+    # When ?cmap= is supplied (or the file is gray PNG), render via the
+    # depth-recolor helper below.
+    requested_cmap = (request.args.get('cmap') or '').strip().lower()
+    if magic == b'\x89PNG' and requested_cmap:
+        return _render_depth_png(path, requested_cmap)
     if magic == b'\x89PNG':
         return send_file(path, mimetype='image/png', max_age=60)
     return send_file(
@@ -13195,12 +13263,17 @@ def serve_custom_field_image(field_id):
         col = custom_field.source_column or custom_field.name
         if not col or not custom_field.sample_name:
             abort(404)
-        return redirect(url_for(
-            'serve_gt_viz',
-            lb_id=custom_field.leaderboard_id,
-            col=col,
-            sample_name=custom_field.sample_name,
-        ))
+        # Forward any ?cmap=<name> param (used for depth colormap
+        # selection) through the redirect — Flask doesn't carry query
+        # args across `redirect()` automatically.
+        url_kwargs = {
+            'lb_id': custom_field.leaderboard_id,
+            'col': col,
+            'sample_name': custom_field.sample_name,
+        }
+        if request.args.get('cmap'):
+            url_kwargs['cmap'] = request.args['cmap']
+        return redirect(url_for('serve_gt_viz', **url_kwargs))
 
     if custom_field.field_type == 'depth':
         return serve_depth_image(custom_field.value_text)
@@ -13875,6 +13948,77 @@ def _gt_viz_cache_key(repo_id, revision, split, col, sample_idx):
     return f"gt_viz:{repo_id}@{rev}:{split or 'train'}:{col}:{sample_idx}"
 
 
+def _matplotlib_lut(name):
+    """256×3 uint8 LUT for a named matplotlib colormap. Cached in
+    `_MPL_LUT_CACHE` so the second hit is a dict lookup. Falls back
+    to the precomputed turbo LUT for unknown names."""
+    try:
+        global _MPL_LUT_CACHE
+    except NameError:
+        pass
+    if not hasattr(_matplotlib_lut, '_cache'):
+        _matplotlib_lut._cache = {}
+    cache = _matplotlib_lut._cache
+    if name in cache:
+        return cache[name]
+    try:
+        from matplotlib import colormaps as _cmaps
+        cmap = _cmaps[name]
+    except Exception:
+        cache[name] = _TURBO_LUT
+        return _TURBO_LUT
+    lut = (cmap(np.linspace(0.0, 1.0, 256))[:, :3] * 255).astype(np.uint8)
+    cache[name] = lut
+    return lut
+
+
+def _render_depth_png(gray_path, cmap):
+    """Load a grayscale depth PNG from `gray_path`, apply the requested
+    colormap (or normal-map projection) on the fly, and return a Flask
+    response with the recolored PNG bytes. Used by serve_gt_viz when
+    the request asks for a specific cmap."""
+    from PIL import Image
+    try:
+        with Image.open(gray_path) as src:
+            arr = np.asarray(src.convert('L'), dtype=np.uint8)
+    except Exception:
+        abort(404)
+    if cmap == 'gray':
+        # Echo the grayscale PNG verbatim — caller asked for raw depth.
+        return send_file(gray_path, mimetype='image/png', max_age=60)
+    if cmap == 'normal':
+        # Surface normals from height: ∂z/∂x, ∂z/∂y → unit normal → RGB.
+        # Cheap Sobel via numpy gradient; the source is already
+        # normalized 0..255 so the gradient magnitude is meaningful
+        # without depth-units calibration (it's still an artistic /
+        # qualitative normal map, not metric).
+        z = arr.astype(np.float32) / 255.0
+        gy, gx = np.gradient(z)
+        # Empirical scale so a 1-pixel depth step yields a visible tilt.
+        nx = -gx * 8.0
+        ny = -gy * 8.0
+        nz = np.ones_like(z)
+        length = np.sqrt(nx * nx + ny * ny + nz * nz)
+        length[length == 0] = 1.0
+        nx /= length; ny /= length; nz /= length
+        # Map [-1, 1] → [0, 255] in standard tangent-space normal-map
+        # encoding (X=right, Y=up, Z=out → RGB).
+        rgb = np.stack([
+            ((nx + 1.0) * 127.5).astype(np.uint8),
+            ((ny + 1.0) * 127.5).astype(np.uint8),
+            ((nz + 1.0) * 127.5).astype(np.uint8),
+        ], axis=-1)
+    else:
+        lut = _matplotlib_lut(cmap)
+        rgb = lut[arr]
+    out = Image.fromarray(rgb)
+    buf = io.BytesIO()
+    out.save(buf, format='PNG', optimize=False)
+    buf.seek(0)
+    resp = send_file(buf, mimetype='image/png', max_age=60)
+    return resp
+
+
 def _write_gt_image_thumb(value, dest_path, kind):
     """Render an HF GT cell into a tiny JPEG at `dest_path`. `value` is
     whatever the HF row's column produced (PIL.Image / numpy array /
@@ -13916,10 +14060,32 @@ def _write_gt_image_thumb(value, dest_path, kind):
                 return False
             # 2D path: normalize for depth, deterministic-hue for masks,
             # grayscale stretch otherwise.
-            if kind == 'depth' or (arr.ndim == 2 and kind != 'mask'):
-                # Normalize → Google Turbo colormap. Same colormap the
-                # zoom-modal's Plotly heatmap uses, so the thumbnail
-                # and the zoomed view stay visually consistent.
+            if kind == 'depth':
+                # Store depth as 8-bit GRAYSCALE PNG. Users pick the
+                # colormap (or normal-map projection) at view time via
+                # /api/gt_depth_render?cmap=... — the cache holds the
+                # canonical normalized signal so future viewers don't
+                # have to round-trip a colormapped JPEG.
+                a = arr.astype(np.float32)
+                if a.ndim == 3 and a.shape[-1] in (3, 4):
+                    a = a[..., 0]  # squeeze single-channel out of RGB-ish wrappers
+                finite_mask = np.isfinite(a)
+                if finite_mask.any():
+                    lo = float(np.nanmin(a[finite_mask]))
+                    hi = float(np.nanmax(a[finite_mask]))
+                else:
+                    lo, hi = 0.0, 1.0
+                rng = hi - lo if hi > lo else 1.0
+                norm = np.nan_to_num((a - lo) / rng, nan=0.0,
+                                     posinf=1.0, neginf=0.0)
+                norm = np.clip(norm, 0.0, 1.0)
+                gray = (norm * 255).astype(np.uint8)
+                img = Image.fromarray(gray, mode='L')
+                # PNG keeps the gray exact (lossless); cheap to recolour
+                # client-side or via /api/gt_depth_render. Skip JPEG path.
+                img.save(dest_path, format='PNG', optimize=True)
+                return True
+            if arr.ndim == 2 and kind != 'mask':
                 a = arr.astype(np.float32)
                 finite_mask = np.isfinite(a)
                 if finite_mask.any():
@@ -13951,8 +14117,7 @@ def _write_gt_image_thumb(value, dest_path, kind):
 
         # No thumbnail downscale: preserve original source resolution
         # so the zoom modal can let the user pan + wheel-zoom without
-        # hitting pixelation. JPEG q70 + (for depth) the turbo
-        # colormap LUT keep the file size sane.
+        # hitting pixelation.
         img.save(dest_path, format='JPEG', quality=GT_VIZ_JPEG_QUALITY,
                  optimize=True)
         return True
@@ -14956,6 +15121,15 @@ def check_and_migrate_db():
                         print("Migration successful: Added 'git_author' column to dataset.")
                     except Exception as e:
                         print(f"Migration error (dataset.git_author): {e}")
+
+                if 'category' not in dataset_columns:
+                    print("Migrating DB: Adding 'category' to 'dataset' table...")
+                    try:
+                        cursor.execute("ALTER TABLE dataset ADD COLUMN category VARCHAR(120) DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'category' column to dataset.")
+                    except Exception as e:
+                        print(f"Migration error (dataset.category): {e}")
                 
                 # Add git_author column to submission table
                 cursor.execute("PRAGMA table_info(submission)")

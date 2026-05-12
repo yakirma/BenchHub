@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Storage usage — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 900px;">
+    <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-3">
+        <div>
+            <h1 class="h3 fw-bold mb-1">Your storage</h1>
+            <p class="text-body-secondary mb-0">
+                Where your {{ cap_human }} cap is going.
+            </p>
+        </div>
+        <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-primary">
+            <i class="bi bi-plus-circle me-1"></i>Upload a dataset
+        </a>
+    </div>
+
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <div class="d-flex justify-content-between align-items-baseline mb-2">
+                <strong>Used</strong>
+                <span class="font-monospace">{{ used_human }} / {{ cap_human }}</span>
+            </div>
+            <div class="progress" style="height: 14px;" role="progressbar"
+                 aria-valuenow="{{ used_pct|round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar {% if used_pct > 90 %}bg-danger{% elif used_pct > 70 %}bg-warning{% else %}bg-primary{% endif %}"
+                     style="width: {{ used_pct|round(1) }}%;">
+                    {{ used_pct|round(0, 'floor')|int }}%
+                </div>
+            </div>
+            <div class="row mt-3 small">
+                <div class="col-md-6">
+                    <i class="bi bi-database me-1"></i>{{ dataset_count }} / {{ ds_count_cap }} datasets
+                </div>
+                <div class="col-md-6">
+                    <i class="bi bi-upload me-1"></i>{{ sub_count_24h }} / {{ sub_count_cap }} submissions in the last 24h
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <h2 class="h5 fw-semibold mb-3">Per-dataset breakdown</h2>
+    {% if items %}
+    <div class="list-group shadow-sm mb-4">
+        {% for it in items %}
+        <a href="{{ url_for('dataset_view', dataset_id=it.id) }}"
+           class="list-group-item list-group-item-action">
+            <div class="d-flex justify-content-between align-items-center gap-3 mb-1">
+                <span class="fw-semibold text-truncate">{{ it.name }}</span>
+                <span class="font-monospace small text-body-secondary">{{ '%.1f MB'|format(it.bytes / 1024.0 / 1024.0) }}</span>
+            </div>
+            <div class="progress" style="height: 6px;">
+                <div class="progress-bar bg-primary" style="width: {{ it.pct|round(2) }}%;"></div>
+            </div>
+            {% if it.category %}
+            <div class="small text-body-secondary mt-1">
+                <i class="bi bi-diagram-3 me-1"></i>{{ it.category }}
+            </div>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">
+        <i class="bi bi-info-circle me-2"></i>No datasets yet. Upload one to start using your quota.
+    </div>
+    {% endif %}
+
+    <p class="small text-body-secondary mt-4">
+        Submission ZIPs don't count against your storage quota — they live on the
+        leaderboard owner's allotment. Only datasets you uploaded yourself fill this bar.
+    </p>
+</div>
+{% endblock %}

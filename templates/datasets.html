@@ -276,6 +276,14 @@
                         <input type="text" class="form-control mb-3" id="dataset_name" name="dataset_name"
                             placeholder="Name (auto from filename)" autocomplete="off">
 
+                        <input type="text" class="form-control mb-3" id="dataset_category" name="category"
+                               list="upload-known-categories"
+                               placeholder="Category (e.g. Vision/Image Segmentation)"
+                               autocomplete="off">
+                        <datalist id="upload-known-categories">
+                            {% for c in known_categories or [] %}<option value="{{ c }}"></option>{% endfor %}
+                        </datalist>
+
                         <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
                     </form>
                 </div>
