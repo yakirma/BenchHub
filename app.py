@@ -3212,11 +3212,14 @@ def home():
     )
     # Split user's LBs into "public canonical" (admin-promoted, also
     # appear on /explore) and "personal" (their own work that hasn't
-    # been promoted). /home shows both, public first.
+    # been promoted). /home shows both, public first. After the
+    # visibility-driven /explore change, "public" here means
+    # visibility=='public' (user has promoted their LB to the public
+    # catalog).
     public_lbs = (
         Leaderboard.query
         .filter(Leaderboard.owner_user_id == user.id,
-                Leaderboard.canonicality == 'public')
+                Leaderboard.visibility == 'public')
         .order_by(Leaderboard.upload_date.desc())
         .limit(24)
         .all()
@@ -3224,7 +3227,7 @@ def home():
     personal_lbs = (
         Leaderboard.query
         .filter(Leaderboard.owner_user_id == user.id,
-                Leaderboard.canonicality != 'public')
+                Leaderboard.visibility != 'public')
         .order_by(Leaderboard.upload_date.desc())
         .limit(24)
         .all()
@@ -3304,10 +3307,11 @@ def explore():
         .outerjoin(recent_activity, Leaderboard.id == recent_activity.c.lb_id)
         .outerjoin(total_activity, Leaderboard.id == total_activity.c.lb_id)
         .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
-        # /explore is the canonical catalog. Personal LBs live on their
-        # owner's /home; surfacing every fork here makes the page noisy
-        # and dilutes admin-promoted entries.
-        .filter(Leaderboard.canonicality == 'public')
+        # /explore lists every LB the user has flipped to public
+        # visibility. Multiple LBs per HF repo are now permitted —
+        # `canonical_for_repo` is informational metadata, NOT a uniqueness
+        # gate. Each owner promotes/demotes their own LB independently.
+        .filter(Leaderboard.visibility == 'public')
     )
 
 
@@ -3410,14 +3414,14 @@ def explore():
             _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
         )
 
-    # Category tree: per-area / per-task counts over visible+canonical LBs.
-    # We compute counts independent of the current category filter so the
-    # tree always shows the full breakdown (clicking a leaf scopes the
-    # results panel but the tree itself stays stable).
+    # Category tree: per-area / per-task counts over visible public LBs.
+    # Counts are computed independent of the current category filter so
+    # the tree always shows the full breakdown (clicking a leaf scopes
+    # the results panel but the tree stays stable).
     cat_rows = (
         db.session.query(Leaderboard.category, func.count(Leaderboard.id))
         .filter(visible_lb_filter)
-        .filter(Leaderboard.canonicality == 'public')
+        .filter(Leaderboard.visibility == 'public')
         .filter(Leaderboard.category.isnot(None))
         .group_by(Leaderboard.category)
         .all()
@@ -10055,13 +10059,14 @@ def import_from_hf_auto():
         for pf in (p.get('pred_fields') or []):
             seen_pred.setdefault(pf['name'], pf)
 
-    # Canonicality nudge: if an admin-promoted public LB already exists
-    # for this repo, surface a "submit there instead" callout. Doesn't
-    # block creation — users can still fork into a personal LB.
+    # Soft "submit there instead" nudge: if any public LB already
+    # backs this HF repo, point new creators at it. Multiple public
+    # LBs per repo are allowed (canonical_for_repo is informational
+    # metadata, not a uniqueness gate), so this is purely a hint.
     canonical_existing = (
         Leaderboard.query
         .filter(Leaderboard.canonical_for_repo == repo_id,
-                Leaderboard.canonicality == 'public')
+                Leaderboard.visibility == 'public')
         .first()
     )
 
