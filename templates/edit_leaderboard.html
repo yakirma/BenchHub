@@ -137,8 +137,26 @@
                             </div>
 
                             <div class="mb-3">
+                                <label for="category" class="form-label fw-bold">Category</label>
+                                <input type="text" class="form-control" id="category" name="category"
+                                       value="{{ leaderboard.category or '' }}"
+                                       list="known-categories"
+                                       placeholder="e.g. Vision/Image Segmentation">
+                                <datalist id="known-categories">
+                                    {% for c in known_categories %}<option value="{{ c }}"></option>{% endfor %}
+                                </datalist>
+                                <div class="form-text small">
+                                    Two-level <code>Area/Task</code> path used by the explore tree
+                                    (e.g. <code>Vision/Image Segmentation</code>, <code>NLP/Question Answering</code>).
+                                    Leave blank to land under <em>Uncategorized</em>.
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
                                 <label class="form-label fw-bold">Associated Datasets</label>
                                 <div class="p-2 border rounded bg-body-tertiary">
+                                    {% set _hf_atts = leaderboard.attachments|selectattr('hf_repo_id')|list if leaderboard.attachments else [] %}
+                                    {% set _has_any = leaderboard.datasets|length or _hf_atts|length %}
                                     {% for dataset in leaderboard.datasets %}
                                     {% set ds_role = (dataset_roles.get(dataset.id) if dataset_roles else 'primary') %}
                                     <div class="d-flex align-items-center mb-2 last-child-mb-0">
@@ -153,13 +171,39 @@
                                         </select>
                                     </div>
                                     {% endfor %}
+                                    {# HF-attached datasets: read-only here (split is
+                                       resolved at stream time, not edited from the
+                                       LB form). Surfacing them prevents the empty
+                                       "Associated Datasets" box on HF-only LBs. #}
+                                    {% for att in _hf_atts %}
+                                    <div class="d-flex align-items-center mb-2 last-child-mb-0">
+                                        <i class="bi bi-cloud-arrow-down me-2 text-info"></i>
+                                        <a href="https://huggingface.co/datasets/{{ att.hf_repo_id }}"
+                                           target="_blank" rel="noopener"
+                                           class="me-2 text-decoration-none font-monospace">{{ att.hf_repo_id }}</a>
+                                        {% if att.hf_split %}
+                                        <span class="badge text-bg-primary-subtle text-primary-emphasis border small me-2"
+                                              title="HF split currently streamed for GT">
+                                            split: {{ att.hf_split }}
+                                        </span>
+                                        {% endif %}
+                                        <span class="badge text-bg-light border small ms-auto">{{ att.role }}</span>
+                                    </div>
+                                    {% endfor %}
+                                    {% if not _has_any %}
+                                    <div class="text-body-secondary small fst-italic">
+                                        No datasets attached yet.
+                                    </div>
+                                    {% endif %}
                                 </div>
                                 <div class="form-text small">
                                     Use <code>gt_source</code> to fold a paired GT
                                     dataset (e.g. the clean-images half of a
                                     denoising-pair benchmark) into the metric
                                     context. The primary dataset owns the
-                                    submission's sample-name list.
+                                    submission's sample-name list. HF-ref attachments
+                                    are managed at LB creation; edit them via the
+                                    HF picker, not here.
                                 </div>
                             </div>
 

@@ -53,11 +53,22 @@
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
                 <div class="row g-2 align-items-end">
-                    <div class="col-md-9">
+                    <div class="col-md-6">
                         <label class="form-label small fw-semibold mb-1">Leaderboard name</label>
                         <input type="text" name="leaderboard_name"
                             class="form-control" required
                             value="{{ leaderboard_name }}">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small fw-semibold mb-1">Category</label>
+                        <input type="text" name="category"
+                               class="form-control"
+                               list="known-categories"
+                               placeholder="e.g. Vision/Image Segmentation"
+                               value="{{ category_suggestion or '' }}">
+                        <datalist id="known-categories">
+                            {% for c in known_categories or [] %}<option value="{{ c }}"></option>{% endfor %}
+                        </datalist>
                     </div>
                     <div class="col-md-3">
                         <p class="form-label small fw-semibold mb-1">Backed by</p>

@@ -3539,6 +3539,14 @@ def edit_leaderboard(leaderboard_id):
     if request.method == 'POST':
         if 'name' in request.form:
             leaderboard.name = request.form.get('name', leaderboard.name)
+        # Category lives as a free-form "Area/Task" string. Owners can
+        # type their own, the form also provides a datalist of existing
+        # categories used elsewhere on the site. Stripping to None when
+        # blank so the explore-tree groups "no category" under
+        # Uncategorized rather than the empty-string bucket.
+        if 'category' in request.form:
+            cat = (request.form.get('category') or '').strip()
+            leaderboard.category = cat or None
         # Per-attached-dataset role updates: form sends one
         # `dataset_role_<id>` field per dataset row.
         for ds in leaderboard.datasets:
@@ -3743,6 +3751,17 @@ def edit_leaderboard(leaderboard_id):
         ds.id: (_lb_dataset_role(leaderboard.id, ds.id) or 'primary')
         for ds in leaderboard.datasets
     }
+    # Distinct categories already in use across visible LBs — feeds the
+    # datalist suggestions on the Category input so owners pick a
+    # consistent value instead of inventing variants.
+    known_categories = sorted({
+        cat for (cat,) in (
+            db.session.query(Leaderboard.category)
+            .filter(Leaderboard.category.isnot(None))
+            .distinct()
+            .all()
+        ) if cat
+    })
     return render_template('edit_leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_fields=dataset_fields,
@@ -3759,6 +3778,7 @@ def edit_leaderboard(leaderboard_id):
                            metric_to_lm=metric_to_lm,
                            global_metrics=global_metrics,
                            global_visualizations=global_visualizations,
+                           known_categories=known_categories,
                            all_datasets=Dataset.query.all())
                            
 
@@ -10275,6 +10295,7 @@ def create_leaderboard():
         name=leaderboard_name,
         summary_metrics=','.join(request.form.getlist('summary_metrics')),
         owner_user_id=g.current_user.id,
+        category=(request.form.get('category') or '').strip() or None,
     )
 
     # Handle multiple datasets
@@ -10367,7 +10388,7 @@ def _collect_auto_lb_proposals_for_hf_ref(repo_id, mapping, *, revision=None,
 def _create_lb_with_hf_attachment(lb_name, *, owner_user_id, repo_id,
                                   mapping, revision=None, split='train',
                                   metric_proposals=None, viz_proposals=None,
-                                  hf_sample_cap=None):
+                                  hf_sample_cap=None, category=None):
     """Create a Leaderboard whose primary attachment is an HF ref
     (NOT a BH Dataset). Persists LB + Attachment + the supplied
     metric/viz proposals in one transaction. Returns
@@ -10387,6 +10408,7 @@ def _create_lb_with_hf_attachment(lb_name, *, owner_user_id, repo_id,
         name=lb_name,
         summary_metrics=','.join(p['target_name'] for p in metric_proposals),
         owner_user_id=owner_user_id,
+        category=(category or '').strip() or None,
     )
     db.session.add(lb)
     db.session.flush()
@@ -10535,6 +10557,7 @@ def create_leaderboard_auto_finalize():
             repo_id=hf_repo_id, mapping=mapping,
             revision=revision, split=split,
             metric_proposals=kept_metrics, viz_proposals=kept_viz,
+            category=request.form.get('category'),
         )
         if ok and lb_id:
             combined_extras = _merge_pred_field_extras(
