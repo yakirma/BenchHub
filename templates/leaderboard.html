@@ -482,31 +482,99 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 </div>
 {% endif %}
 
-{# --- Submission contract: which folders the user must include in their ZIP --- #}
-{% if pred_field_schema %}
+{# --- Submission contract: input, GT, and prediction fields --- #}
+{% if pred_field_schema or input_field_schema or gt_field_schema %}
 <div class="card border-0 shadow-sm mb-3">
     <div class="card-body p-3">
         <div class="d-flex align-items-center gap-2 mb-2">
             <i class="bi bi-upload text-primary"></i>
-            <h2 class="h6 mb-0 fw-semibold">Submission contract — required folders</h2>
-            <span class="badge text-bg-light border small ms-auto">{{ pred_field_schema|length }}
-                field{{ '' if pred_field_schema|length == 1 else 's' }}</span>
+            <h2 class="h6 mb-0 fw-semibold">Submission contract</h2>
         </div>
-        <p class="small text-body-secondary mb-2">
-            Submissions to this leaderboard must include one folder per
-            row below. File extension drives the type — no reserved
-            folder prefixes required.
+        <p class="small text-body-secondary mb-3">
+            At inference time your model receives the <strong>Input</strong>
+            fields and must produce values for the <strong>Prediction</strong>
+            fields, which are scored against the held-out
+            <strong>GT</strong> fields on the server.
             <a href="{{ url_for('supported_types') }}" class="ms-1">
                 See supported types <i class="bi bi-arrow-up-right-square small"></i>
             </a>
         </p>
+
+        {% if input_field_schema %}
+        <h3 class="h6 fw-semibold mt-2 mb-1">
+            <i class="bi bi-arrow-right-circle text-info me-1"></i>
+            Input <span class="text-body-secondary">({{ input_field_schema|length }})</span>
+            <span class="badge text-bg-info-subtle text-info-emphasis border small fw-normal ms-1">
+                given to your model
+            </span>
+        </h3>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-2">
+                <thead class="table-light small">
+                    <tr>
+                        <th class="ps-3" style="width: 32%;">HF column</th>
+                        <th style="width: 16%;">Kind</th>
+                        <th>Stored as</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for f in input_field_schema %}
+                    <tr>
+                        <td class="ps-3 font-monospace small">{{ f.column }}</td>
+                        <td><span class="badge text-bg-info-subtle text-info-emphasis border">{{ f.kind }}</span></td>
+                        <td class="font-monospace small text-body-secondary">{{ f.target_field }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% if gt_field_schema %}
+        <h3 class="h6 fw-semibold mt-3 mb-1">
+            <i class="bi bi-lock-fill text-warning me-1"></i>
+            Ground truth <span class="text-body-secondary">({{ gt_field_schema|length }})</span>
+            <span class="badge text-bg-warning-subtle text-warning-emphasis border small fw-normal ms-1">
+                held on server
+            </span>
+        </h3>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-2">
+                <thead class="table-light small">
+                    <tr>
+                        <th class="ps-3" style="width: 32%;">HF column</th>
+                        <th style="width: 16%;">Kind</th>
+                        <th>Stored as</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for f in gt_field_schema %}
+                    <tr>
+                        <td class="ps-3 font-monospace small">{{ f.column }}</td>
+                        <td><span class="badge text-bg-warning-subtle text-warning-emphasis border">{{ f.kind }}</span></td>
+                        <td class="font-monospace small text-body-secondary">{{ f.target_field }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        {% if pred_field_schema %}
+        <h3 class="h6 fw-semibold mt-3 mb-1">
+            <i class="bi bi-box-arrow-up-right text-primary me-1"></i>
+            Prediction <span class="text-body-secondary">({{ pred_field_schema|length }})</span>
+            <span class="badge text-bg-primary-subtle text-primary-emphasis border small fw-normal ms-1">
+                you ship in the ZIP
+            </span>
+        </h3>
         <div class="table-responsive">
             <table class="table table-sm align-middle mb-0">
                 <thead class="table-light small">
                     <tr>
                         <th class="ps-3" style="width: 26%;">Folder</th>
-                        <th style="width: 14%;">Type</th>
-                        <th style="width: 16%;">Compares to GT</th>
+                        <th style="width: 12%;">Kind</th>
+                        <th style="width: 16%;">Scores against GT</th>
                         <th>Meaning</th>
                         <th style="width: 22%;">Used by</th>
                     </tr>
@@ -515,7 +583,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     {% for pf in pred_field_schema %}
                     <tr>
                         <td class="ps-3 font-monospace small">{{ pf.name }}/</td>
-                        <td><span class="badge text-bg-secondary-subtle text-secondary border">{{ pf.kind }}</span></td>
+                        <td><span class="badge text-bg-primary-subtle text-primary-emphasis border">{{ pf.kind }}</span></td>
                         <td class="font-monospace small text-body-secondary">{{ pf.gt_field }}</td>
                         <td class="small">{{ pf.description }}</td>
                         <td class="small text-body-secondary">
@@ -528,6 +596,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </tbody>
             </table>
         </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}

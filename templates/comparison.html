@@ -656,6 +656,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% if _is_depth %}
                             <select class="form-select form-select-sm depth-cmap-select d-inline-block ms-1"
                                     style="width: auto; max-width: 140px;"
+                                    draggable="false"
+                                    onmousedown="event.stopPropagation();"
+                                    onclick="event.stopPropagation();"
                                     data-col-key="{{ col_key }}"
                                     title="Colormap to apply to the cached grayscale depth map">
                                 <option value="gray">gray</option>
@@ -3230,22 +3233,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     // and returns a recolored PNG. Each depth column has its own
     // selector in the header; changing it rewrites every .depth-img
     // src in that column.
-    (function () {
-        document.querySelectorAll('select.depth-cmap-select').forEach((sel) => {
-            sel.addEventListener('change', () => {
-                const colKey = sel.getAttribute('data-col-key');
-                const cmap = sel.value || '';
-                document.querySelectorAll(`.depth-cell[data-col-key="${colKey}"]`).forEach((cell) => {
-                    const base = cell.getAttribute('data-depth-base');
-                    if (!base) return;
-                    const url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
-                    cell.querySelectorAll('img.depth-img').forEach((img) => {
-                        img.src = url;
-                        img.setAttribute('data-vis-url', url);
-                    });
-                });
+    // Event delegation so the listener still works if the column
+    // header is re-rendered by the drag-and-drop reorder logic.
+    document.addEventListener('change', function (ev) {
+        const sel = ev.target;
+        if (!sel || !sel.classList || !sel.classList.contains('depth-cmap-select')) return;
+        const colKey = sel.getAttribute('data-col-key');
+        const cmap = sel.value || '';
+        // Only recolour depth columns. The cell selector is gated on
+        // matching col_key so we don't smear the same query param onto
+        // a sibling image_image column.
+        document.querySelectorAll('.depth-cell[data-col-key="' + colKey + '"]').forEach(function (cell) {
+            const base = cell.getAttribute('data-depth-base');
+            if (!base) return;
+            const url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
+            cell.querySelectorAll('img.depth-img').forEach(function (img) {
+                img.src = url;
+                img.setAttribute('data-vis-url', url);
             });
         });
-    })();
+    });
 </script>
 {% endblock %}

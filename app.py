@@ -6342,6 +6342,32 @@ def leaderboard_view(leaderboard_id):
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in leaderboard.datasets}
 
     pred_field_schema = _lb_submission_pred_fields(leaderboard)
+    # Split the dataset-side schema into Input fields (handed to the
+    # submitter at inference time) and GT fields (held server-side).
+    # Both render as a stacked widget on the LB page so submitters see
+    # the full data shape, not just the pred contract.
+    input_field_schema = []
+    gt_field_schema = []
+    for att in (leaderboard.attachments or []):
+        if not att.hf_repo_id:
+            continue
+        try:
+            _mapping = json.loads(att.hf_mapping_json or '[]')
+        except (TypeError, ValueError):
+            _mapping = []
+        for _m in _mapping:
+            if _m.get('target_kind') == 'skip':
+                continue
+            row = {
+                'column': _m.get('column'),
+                'target_field': _m.get('target_field') or _m.get('column'),
+                'kind': _m.get('target_kind'),
+                'reason': _m.get('reason') or '',
+            }
+            if (_m.get('role') or 'gt') == 'input':
+                input_field_schema.append(row)
+            else:
+                gt_field_schema.append(row)
     # Phase 15: split mirrored (PWC-style) submissions into a separate
     # render bucket. They share the Submission table but show in a
     # second "Reported scores" section so the trust gradient stays
@@ -6356,6 +6382,8 @@ def leaderboard_view(leaderboard_id):
                            lb_explorable=lb_explorable,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
+                           input_field_schema=input_field_schema,
+                           gt_field_schema=gt_field_schema,
                            submissions=verified_submissions,
                            mirrored_submissions=mirrored_submissions,
                            all_metrics=all_metrics,
