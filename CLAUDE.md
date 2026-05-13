@@ -198,7 +198,8 @@ Run with `pytest tests/` (not bare `pytest`, to avoid the ad-hoc root-level `tes
   - `uq_<table>_name_public` — partial unique on `name` WHERE `visibility='public'` (cross-user uniqueness only for public).
   - `uq_<table>_name_per_owner` — composite unique on `(owner_user_id, name)` so a single user can't have two metrics named the same.
 - **Promote-to-public collision UX**: `set_global_metric_visibility` (and the viz variant) detects a public-name collision before flipping the row and redirects to `resolve_name_collision.html`, which proposes a `<name>_<N>` suggestion via `_suggest_unique_public_name()` and lets the user edit. The `/visibility/confirm` route is the second hop — it re-checks (and re-suggests if the user tried another taken name) before committing.
-- `Leaderboard.canonicality` ('public'/'personal') is legacy — the /explore filter is now on `Leaderboard.visibility == 'public'`. Multiple public LBs per HF repo are allowed; `canonical_for_repo` is informational metadata, NOT a uniqueness gate.
+- `Leaderboard.canonicality` is **dropped** as a concept. The column stays in the DB for back-compat (no destructive column drop on SQLite) but no code reads it. Visibility (public/private/unlisted) is the only catalog-membership flag. The legacy `admin_promote_leaderboard` route still exists as a back-compat alias that just flips `visibility`; it's owner-OR-admin now, not admin-only.
+- `Leaderboard.canonical_for_repo` is **informational metadata** ("this LB tracks the X HF repo"). Multiple LBs may share a repo. Admin-only `admin_set_canonical_for_repo` route lets you adjust the label without affecting visibility.
 
 ## FeatureRequest
 - New `FeatureRequest` table backs `/feature_requests` (user-facing form + list of own submissions) and `/admin/feature_requests` (admin triage with status + note). Used for new-data-type asks now that we're NOT shipping a user-pluggable field-type system this round.
