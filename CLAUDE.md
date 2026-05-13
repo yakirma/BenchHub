@@ -131,6 +131,9 @@ Every HF-attachment mapping entry now carries an optional `role` field: `input` 
 - Owner-editable on `/edit_leaderboard/<id>` → Prediction-fields tab → "Dataset field roles" panel. Frozen on LBs with verified submissions.
 - The arg_mappings on LeaderboardMetric rows must reference a GT-role column or the metric won't have a valid pred field. The `.tag_input_gt.py` one-shot script (kept for reference) walks every PWC LB, flips roles per task, and rewrites arg_mappings to point at the highest-priority GT field.
 
+## Metric / Visualization input-kind declarations
+`GlobalMetric.input_kinds` and `GlobalVisualization.input_kinds` are nullable JSON arrays of accepted `target_kind` strings in argument order. NULL = unconstrained (legacy / undeclared). The metric detail pane on `/metrics?selected=<id>` surfaces a small "Accepts: <kind>×<kind>" row; backfilled for 18 curated metrics in `.backfill_input_kinds.py`. The LB→metric binding UI doesn't yet *enforce* the kinds — that's the next step in a follow-up. Add new patterns to `KIND_HINTS` in `.backfill_input_kinds.py` when a new metric ships.
+
 ## Editing the LB pred-field schema
 - Owner/admin can edit each LB's prediction-field schema on `/edit_leaderboard/<id>` → "Prediction fields" tab. Each row: name (`<x>_pred`), kind (`image`/`mask`/`depth`/`audio`/`scalar`/`text`/`json`/`histogram`), description, remove. Add-row button for extras.
 - Frozen once **verified** submissions exist (mirrored PWC submissions don't count) — changing kinds afterwards would silently re-interpret existing prediction files through the wrong decoder. Delete the verified subs to unlock.
