@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
-{% block title %}Explore leaderboards — BenchHub{% endblock %}
+{% block title %}Leaderboards — BenchHub{% endblock %}
 
-{% set meta_title = 'Explore leaderboards — BenchHub' %}
+{% set meta_title = 'Leaderboards — BenchHub' %}
 {% set meta_description = 'Browse public benchmarking leaderboards on BenchHub. Filter by name, sort by activity, find communities benchmarking models against shared datasets.' %}
 
 {% block flash_messages %}{% endblock %}
@@ -125,7 +125,7 @@
 <div class="container py-4">
     <div class="d-flex flex-wrap justify-content-between align-items-end mb-4 gap-3">
         <div>
-            <h1 class="h3 fw-bold mb-1">Explore leaderboards</h1>
+            <h1 class="h3 fw-bold mb-1">Leaderboards</h1>
             <p class="text-body-secondary mb-0">
                 {% if rows %}
                 {{ rows|length }} public leaderboard{{ '' if rows|length == 1 else 's' }}{% if active_tag %} tagged
@@ -150,7 +150,7 @@
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body p-3 tag-cloud text-center">
             {% for t in tag_cloud %}
-            <a href="{{ url_for('explore', tag=t.name, q=q, sort=sort) }}"
+            <a href="{{ url_for('leaderboards', tag=t.name, q=q, sort=sort) }}"
                 class="tier-{{ t.tier }} hue-{{ t.color_idx }} {{ 'active' if t.name == active_tag }}"
                 title="{{ t.count }} item{{ '' if t.count == 1 else 's' }}">
                 {{ t.name }}
@@ -159,7 +159,7 @@
             {% endfor %}
             {% if active_tag %}
             <div class="mt-2">
-                <a href="{{ url_for('explore', q=q, sort=sort) }}" class="small link-secondary">
+                <a href="{{ url_for('leaderboards', q=q, sort=sort) }}" class="small link-secondary">
                     <i class="bi bi-x-lg me-1"></i>Clear tag filter
                 </a>
             </div>
@@ -169,7 +169,7 @@
     {% endif %}
 
     {# ---- Filters ---- #}
-    <form method="GET" action="{{ url_for('explore') }}" class="mb-4">
+    <form method="GET" action="{{ url_for('leaderboards') }}" class="mb-4">
         {% if active_tag %}<input type="hidden" name="tag" value="{{ active_tag }}">{% endif %}
         <div class="row g-2">
             <div class="col-md-7">
@@ -204,7 +204,7 @@
                         <i class="bi bi-diagram-3 me-1 text-primary"></i>Categories
                     </h6>
                     {% if active_category %}
-                    <a href="{{ url_for('explore', q=q, sort=sort, tag=active_tag) }}"
+                    <a href="{{ url_for('leaderboards', q=q, sort=sort, tag=active_tag) }}"
                        class="small link-secondary" title="Clear category filter">
                         <i class="bi bi-x-lg"></i>
                     </a>
@@ -212,7 +212,7 @@
                 </div>
                 <div class="cat-tree">
                     <a class="task-link {{ 'active' if not active_category }}"
-                       href="{{ url_for('explore', q=q, sort=sort, tag=active_tag) }}"
+                       href="{{ url_for('leaderboards', q=q, sort=sort, tag=active_tag) }}"
                        style="padding-left: 0.4rem;">
                         <span>All</span>
                     </a>
@@ -220,7 +220,7 @@
                     {% set is_active_area = active_category == area.area or (active_category and active_category.startswith(area.area + '/')) %}
                     <details {{ 'open' if is_active_area }}>
                         <summary class="{{ 'active' if active_category == area.area }}">
-                            <a href="{{ url_for('explore', category=area.area, q=q, sort=sort, tag=active_tag) }}"
+                            <a href="{{ url_for('leaderboards', category=area.area, q=q, sort=sort, tag=active_tag) }}"
                                class="text-decoration-none text-reset"
                                onclick="event.stopPropagation();">
                                 {{ area.area }}
@@ -230,7 +230,7 @@
                         {% for task in area.tasks %}
                         {% set task_path = area.area ~ '/' ~ task.name %}
                         <a class="task-link {{ 'active' if active_category == task_path }}"
-                           href="{{ url_for('explore', category=task_path, q=q, sort=sort, tag=active_tag) }}">
+                           href="{{ url_for('leaderboards', category=task_path, q=q, sort=sort, tag=active_tag) }}">
                             <span class="text-truncate" title="{{ task.name }}">{{ task.name }}</span>
                             <span class="badge-count ms-1">{{ task.count }}</span>
                         </a>
@@ -261,7 +261,7 @@
         <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
             <i class="bi bi-diagram-3 me-1"></i>
             {% if _area == 'Uncategorized' %}{{ _area }}{% else %}
-            <a href="{{ url_for('explore', category=_area, q=q, sort=sort, tag=active_tag) }}"
+            <a href="{{ url_for('leaderboards', category=_area, q=q, sort=sort, tag=active_tag) }}"
                class="text-decoration-none text-reset">{{ _area }}</a>
             {% endif %}
         </div>
@@ -271,7 +271,7 @@
         {% if _task and _task != _last_task.v %}
         <div class="list-group-item bg-body py-1 px-4 small text-body-secondary border-0 border-bottom">
             <i class="bi bi-chevron-right me-1 opacity-50"></i>
-            <a href="{{ url_for('explore', category=_area ~ '/' ~ _task, q=q, sort=sort, tag=active_tag) }}"
+            <a href="{{ url_for('leaderboards', category=_area ~ '/' ~ _task, q=q, sort=sort, tag=active_tag) }}"
                class="text-decoration-none text-body-secondary">{{ _task }}</a>
         </div>
         {% set _last_task.v = _task %}
@@ -330,7 +330,7 @@
                 {% if lb.tags %}
                 <div class="mb-1 d-flex flex-wrap gap-1">
                     {% for t in lb.tags %}
-                    <a href="{{ url_for('explore', tag=t.name) }}" class="tag-pill"
+                    <a href="{{ url_for('leaderboards', tag=t.name) }}" class="tag-pill"
                        onclick="event.stopPropagation();">{{ t.name }}</a>
                     {% endfor %}
                 </div>
@@ -387,7 +387,7 @@
         <p class="mb-1">No public leaderboards match those filters.</p>
         {% if q or active_category %}
         <p class="small mb-0">
-            <a href="{{ url_for('explore') }}" class="link-secondary">Clear filters</a>
+            <a href="{{ url_for('leaderboards') }}" class="link-secondary">Clear filters</a>
         </p>
         {% endif %}
     </div>

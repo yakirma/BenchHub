@@ -3529,6 +3529,15 @@ def home():
 
 @app.route('/explore')
 def explore():
+    """Back-compat alias: old `/explore` URLs (external bookmarks,
+    inbound links) keep working but redirect to the canonical
+    `/leaderboards` endpoint. All in-app callers should use
+    `url_for('leaderboards', ...)` directly."""
+    return redirect(url_for('leaderboards', **request.args))
+
+
+@app.route('/leaderboards')
+def leaderboards():
     """Public catalog of leaderboards (Phase 6 Slice 2).
 
     Visible to everyone (anonymous or signed-in). Filtering/sorting via
@@ -3730,7 +3739,7 @@ def explore():
     ]
 
     return render_template(
-        'explore.html',
+        'leaderboards.html',
         rows=rows,
         q=q,
         sort=sort,

@@ -12,3 +12,39 @@ uploads/
 /dataset*.zip
 /dataset_*/
 /dataset.csv
+
+# Ad-hoc one-shot maintenance scripts at repo root (audit/diag/backfill/fix/
+# inspect/purge/refresh/reclassify/reenqueue/tag/delete/populate/probe/bulk/
+# fixup). They live as dotfiles by convention and are run manually against
+# the prod DB — not part of the pytest suite.
+/.audit_*.py
+/.backfill_*.py
+/.bulk_*.py
+/.delete_*.py
+/.diag_*.py
+/.fix_*.py
+/.fixup_*.py
+/.inspect_*.py
+/.populate_*.py
+/.probe_*.py
+/.purge_*.py
+/.reclassify_*.py
+/.reenqueue*.py
+/.refresh_*.py
+/.tag_*.py
+
+# Submission-side notebooks / scaffolding scripts dropped at repo root.
+/*_submit.py
+/*_submit-*.py
+/*_submit.ipynb
+/*_bootstrap.py
+
+# Ad-hoc Celery experiments noted in CLAUDE.md as NOT part of pytest.
+/test_chain.py
+/test_chain_app.py
+/test_celery_chain.py
+
+# IDE + tooling state.
+.idea/
+.coverage
+.claude/

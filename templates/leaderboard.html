@@ -278,7 +278,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {% if leaderboard.visibility == 'public' %}
                 <span class="badge text-bg-success-subtle text-success border align-middle"
                       style="font-size: 0.5em;"
-                      title="Public — visible on /explore">
+                      title="Public — visible on /leaderboards">
                     <i class="bi bi-globe me-1"></i>public
                 </span>
                 {% elif leaderboard.visibility == 'private' %}
@@ -304,10 +304,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </a>
                 {% endif %}
                 {% if leaderboard.category %}
-                <a href="{{ url_for('explore', category=leaderboard.category) }}"
+                <a href="{{ url_for('leaderboards', category=leaderboard.category) }}"
                    class="badge text-bg-info-subtle text-info-emphasis border text-decoration-none align-middle"
                    style="font-size: 0.5em;"
-                   title="Filter /explore by this category">
+                   title="Filter /leaderboards by this category">
                     <i class="bi bi-diagram-3 me-1"></i>{{ leaderboard.category }}
                 </a>
                 {% endif %}
@@ -367,7 +367,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
                 {% if leaderboard.tags %}
                 {% for t in leaderboard.tags %}
-                <a href="{{ url_for('explore', tag=t.name) }}"
+                <a href="{{ url_for('leaderboards', tag=t.name) }}"
                     class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
                     <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
                 </a>

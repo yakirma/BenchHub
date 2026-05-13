@@ -464,8 +464,8 @@
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link {{ 'active' if request.endpoint == 'explore' }}"
-                                href="{{ url_for('explore') }}">
+                            <a class="nav-link {{ 'active' if request.endpoint == 'leaderboards' }}"
+                                href="{{ url_for('leaderboards') }}">
                                 <i class="bi bi-trophy me-1"></i> Leaderboards
                             </a>
                         </li>
@@ -491,10 +491,6 @@
 
                     <div class="d-flex align-items-center">
                         {# Discoverability links — always visible, public. #}
-                        <a class="nav-link {{ 'active' if request.endpoint == 'explore' }} me-2"
-                            href="{{ url_for('explore') }}">
-                            <i class="bi bi-compass me-1"></i> Explore
-                        </a>
                         <a class="nav-link {{ 'active' if request.endpoint == 'docs' }} me-2"
                             href="{{ url_for('docs') }}">
                             <i class="bi bi-book me-1"></i> Docs
@@ -620,7 +616,7 @@
                     <p class="mb-0 text-muted small">
                         BenchHub &copy; {{ now.year if now else '2026' }} ·
                         <span class="version-info fw-bold">v{{ version }}</span> ·
-                        <a href="{{ url_for('explore') }}" class="link-secondary text-decoration-none">Explore</a> ·
+                        <a href="{{ url_for('leaderboards') }}" class="link-secondary text-decoration-none">Leaderboards</a> ·
                         <a href="{{ url_for('terms') }}" class="link-secondary text-decoration-none">Terms</a> ·
                         <a href="{{ url_for('privacy') }}" class="link-secondary text-decoration-none">Privacy</a>
                         {% if current_user %}

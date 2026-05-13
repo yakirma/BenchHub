@@ -42,7 +42,7 @@
             <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
                 {% if dataset.tags %}
                 {% for t in dataset.tags %}
-                <a href="{{ url_for('explore', tag=t.name) }}"
+                <a href="{{ url_for('leaderboards', tag=t.name) }}"
                     class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
                     <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
                 </a>

@@ -84,7 +84,7 @@
                         {% if dataset.tags %}
                         <div class="mt-1 d-flex flex-wrap gap-1">
                             {% for t in dataset.tags %}
-                            <a href="{{ url_for('explore', tag=t.name) }}"
+                            <a href="{{ url_for('leaderboards', tag=t.name) }}"
                                 class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none small"
                                 onclick="event.stopPropagation();"
                                 title="See others tagged '{{ t.name }}'">
