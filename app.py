@@ -3626,6 +3626,12 @@ def explore():
         {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0)}
         for lb, r, t in base.limit(60).all()
     ]
+    # Stable secondary sort by category so the template can render
+    # Area > Task headers over contiguous runs. The DB-side sort
+    # (activity / recent / popular) is preserved within each group
+    # because Python's sorted() is stable. Empty/None categories sink
+    # to the bottom via the high sentinel.
+    rows.sort(key=lambda r: (r['lb'].category or '￿').lower())
     # Per-LB "explorability" flag (see _compute_explorable_lb_ids).
     explorable_lb_ids = _compute_explorable_lb_ids([r['lb'].id for r in rows])
 

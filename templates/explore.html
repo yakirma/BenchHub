@@ -120,20 +120,6 @@
         color: var(--bs-body-secondary);
     }
 
-    /* LB thumbnail — matches the home grid treatment. */
-    .lb-card-thumb {
-        height: 140px;
-        background-size: cover;
-        background-position: center;
-        background-color: var(--bs-tertiary-bg);
-        border-top-left-radius: var(--bs-card-inner-border-radius);
-        border-top-right-radius: var(--bs-card-inner-border-radius);
-    }
-    .lb-card-thumb.lb-card-placeholder {
-        display: flex; align-items: center; justify-content: center;
-        color: var(--bs-body-secondary);
-        font-size: 2.5rem;
-    }
 </style>
 
 <div class="container py-4">
@@ -259,93 +245,138 @@
 
     <main class="{{ 'col-md-9' if category_tree else 'col-12' }}">
     {% if rows %}
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-2 g-3">
+    {# Grouped list mirroring /datasets cached-HF section: Area headers
+       in uppercase, Task sub-headers with chevron, then one row per LB
+       with a thumb, name, meta, and Explore CTA. The route stably
+       re-sorts rows by category so contiguous runs share a header. #}
+    {% set _last_area = namespace(v=None) %}
+    {% set _last_task = namespace(v=None) %}
+    <div class="list-group mb-4 shadow-sm">
         {% for row in rows %}
         {% set lb = row.lb %}
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm overflow-hidden">
-                {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
-                {% if thumb %}
-                <div class="lb-card-thumb" style="background-image: url('{{ thumb }}');"></div>
-                {% else %}
-                <div class="lb-card-thumb lb-card-placeholder">
-                    <i class="bi bi-trophy"></i>
+        {% set _cat_parts = (lb.category or '').split('/', 1) %}
+        {% set _area = _cat_parts[0] if _cat_parts[0] else 'Uncategorized' %}
+        {% set _task = _cat_parts[1] if _cat_parts|length > 1 else None %}
+        {% if _area != _last_area.v %}
+        <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
+            <i class="bi bi-diagram-3 me-1"></i>
+            {% if _area == 'Uncategorized' %}{{ _area }}{% else %}
+            <a href="{{ url_for('explore', category=_area, q=q, sort=sort, tag=active_tag) }}"
+               class="text-decoration-none text-reset">{{ _area }}</a>
+            {% endif %}
+        </div>
+        {% set _last_area.v = _area %}
+        {% set _last_task.v = None %}
+        {% endif %}
+        {% if _task and _task != _last_task.v %}
+        <div class="list-group-item bg-body py-1 px-4 small text-body-secondary border-0 border-bottom">
+            <i class="bi bi-chevron-right me-1 opacity-50"></i>
+            <a href="{{ url_for('explore', category=_area ~ '/' ~ _task, q=q, sort=sort, tag=active_tag) }}"
+               class="text-decoration-none text-body-secondary">{{ _task }}</a>
+        </div>
+        {% set _last_task.v = _task %}
+        {% endif %}
+
+        {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
+        {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
+        {% set _hf = _hf_atts[0] if _hf_atts else None %}
+        {% set _bh_ds_count = lb.datasets|length %}
+        <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3">
+            {% if thumb %}
+            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+               class="flex-shrink-0"
+               style="display:block; width:64px; height:64px; border-radius:6px;
+                      background-image: url('{{ thumb }}');
+                      background-size: cover; background-position: center;"
+               title="{{ lb.name }}"
+               aria-label="{{ lb.name }} thumbnail"></a>
+            {% else %}
+            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+               class="flex-shrink-0 d-flex align-items-center justify-content-center text-decoration-none"
+               style="width:64px; height:64px; border-radius:6px;
+                      background: var(--bs-info-bg-subtle, var(--bs-tertiary-bg));
+                      color: var(--bs-info-text-emphasis, var(--bs-body-secondary));"
+               title="{{ lb.name }}"
+               aria-label="{{ lb.name }} thumbnail">
+                <i class="bi bi-{{ 'cloud-arrow-down' if _hf else 'trophy' }} fs-3"></i>
+            </a>
+            {% endif %}
+            <div class="flex-grow-1 min-w-0">
+                <div class="d-flex align-items-center mb-1 flex-wrap gap-1">
+                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                       class="text-decoration-none text-body fw-bold fs-6 text-truncate"
+                       title="{{ lb.name }}">
+                        {{ lb.name }}
+                    </a>
+                    {% if _hf and _hf.hf_split %}
+                    <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
+                          title="HF split currently used for GT">
+                        split: {{ _hf.hf_split }}
+                    </span>
+                    {% endif %}
+                    {% if lb.canonical_for_repo %}
+                    <span class="badge text-bg-info-subtle text-info-emphasis border small"
+                          title="Imported from Papers With Code">
+                        <i class="bi bi-cloud-arrow-down me-1"></i>PWC
+                    </span>
+                    {% endif %}
+                    {% if row.recent > 0 %}
+                    <span class="badge text-bg-light border small"
+                          title="{{ row.recent }} submission{{ '' if row.recent == 1 else 's' }} in the last 30 days">
+                        <i class="bi bi-arrow-up-right me-1"></i>{{ row.recent }}
+                    </span>
+                    {% endif %}
+                </div>
+                {% if lb.tags %}
+                <div class="mb-1 d-flex flex-wrap gap-1">
+                    {% for t in lb.tags %}
+                    <a href="{{ url_for('explore', tag=t.name) }}" class="tag-pill"
+                       onclick="event.stopPropagation();">{{ t.name }}</a>
+                    {% endfor %}
                 </div>
                 {% endif %}
-                <div class="card-body p-4 d-flex flex-column">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <h5 class="card-title fw-semibold mb-0 text-truncate" title="{{ lb.name }}">
-                            {{ lb.name }}
-                        </h5>
-                        {% if row.recent > 0 %}
-                        <span class="badge text-bg-light ms-2 flex-shrink-0" title="Submissions in the last 30 days">
-                            <i class="bi bi-arrow-up-right me-1"></i>{{ row.recent }}
-                        </span>
-                        {% endif %}
-                    </div>
-
-                    {% if lb.category %}
-                    {% set _cat_parts = lb.category.split('/', 1) %}
-                    <div class="mb-2 small">
-                        <a href="{{ url_for('explore', category=_cat_parts[0]) }}"
-                           class="text-decoration-none text-body-secondary"
-                           onclick="event.stopPropagation();" style="position: relative; z-index: 2;">
-                            <i class="bi bi-diagram-3 me-1"></i>{{ _cat_parts[0] }}
-                        </a>
-                        {% if _cat_parts|length > 1 %}
-                        <span class="text-body-secondary">›</span>
-                        <a href="{{ url_for('explore', category=lb.category) }}"
-                           class="text-decoration-none text-body"
-                           onclick="event.stopPropagation();" style="position: relative; z-index: 2;">
-                            {{ _cat_parts[1] }}
-                        </a>
-                        {% endif %}
-                    </div>
+                <small class="d-block text-body-secondary mt-1">
+                    <i class="bi bi-people me-1"></i>{{ row.total }} submission{{ '' if row.total == 1 else 's' }}
+                    {% if _hf %}
+                    <span class="mx-2 opacity-50">|</span>
+                    <i class="bi bi-cloud-arrow-down me-1"></i>
+                    <a href="https://huggingface.co/datasets/{{ _hf.hf_repo_id }}"
+                       target="_blank" rel="noopener"
+                       class="text-decoration-none font-monospace"
+                       title="Open {{ _hf.hf_repo_id }} on HuggingFace (new tab)">
+                        {{ _hf.hf_repo_id }}<i class="bi bi-box-arrow-up-right small ms-1"></i>
+                    </a>
+                    {% elif _bh_ds_count %}
+                    <span class="mx-2 opacity-50">|</span>
+                    <i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}
                     {% endif %}
-
-                    {% if lb.tags %}
-                    <div class="mb-2">
-                        {% for t in lb.tags %}
-                        <a href="{{ url_for('explore', tag=t.name) }}" class="tag-pill"
-                            onclick="event.stopPropagation();">{{ t.name }}</a>
-                        {% endfor %}
-                    </div>
+                    <span class="mx-2 opacity-50">|</span>
+                    {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
+                    <span class="text-success-emphasis"
+                          title="Ground-truth samples cached — Explore samples will show data">
+                        <i class="bi bi-check-circle-fill me-1"></i>Explorable
+                    </span>
+                    {% else %}
+                    <span class="text-warning-emphasis"
+                          title="No GT samples cached yet — Explore samples will be empty">
+                        <i class="bi bi-hourglass-split me-1"></i>No samples
+                    </span>
                     {% endif %}
-
-                    {# Count BH datasets + HF attachments separately;
-                       a count of 0 for a PWC-imported LB is misleading
-                       (it does have a source, just on huggingface.co). #}
-                    {% set _bh_ds_count = lb.datasets|length %}
-                    {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
-                    <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
-                        <span><i class="bi bi-people me-1"></i>{{ row.total }} submission{{ '' if row.total == 1 else 's' }}</span>
-                        {% if _bh_ds_count %}
-                        <span><i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}</span>
-                        {% endif %}
-                        {% if _hf_atts %}
-                        <span><i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}</span>
-                        {% endif %}
-                        {% if lb.canonical_for_repo %}
-                        <span class="badge text-bg-info-subtle text-info-emphasis border" title="Imported from Papers With Code">
-                            <i class="bi bi-cloud-arrow-down me-1"></i>PWC
-                        </span>
-                        {% endif %}
-                        {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
-                        <span class="badge text-bg-success-subtle text-success-emphasis border"
-                              title="Ground-truth samples cached — Explore samples will show data">
-                            <i class="bi bi-check-circle-fill me-1"></i>Explorable
-                        </span>
-                        {% else %}
-                        <span class="badge text-bg-warning-subtle text-warning-emphasis border"
-                              title="No GT samples cached yet — Explore samples will be empty">
-                            <i class="bi bi-hourglass-split me-1"></i>No samples
-                        </span>
-                        {% endif %}
-                    </div>
-
-                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-                        class="stretched-link" aria-label="Open {{ lb.name }}"></a>
-                </div>
+                </small>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
+                <a href="{{ url_for('comparison_view', leaderboard_id=lb.id, samples_only=1) }}"
+                   class="btn btn-sm btn-outline-primary"
+                   title="Explore cached samples">
+                    <i class="bi bi-grid"></i> Explore
+                </a>
+                {% endif %}
+                <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                   class="btn btn-sm btn-outline-primary"
+                   title="Open leaderboard">
+                    <i class="bi bi-trophy"></i> View
+                </a>
             </div>
         </div>
         {% endfor %}
