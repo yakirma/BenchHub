@@ -124,6 +124,13 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - **`_pwc_task_to_category` strips domain prefixes** (Medical, Aerial, Satellite, Few-Shot, Self-Supervised, …) before classification, so "Medical Image Segmentation" → "Vision/Image Segmentation". New prefixes go in `_DOMAIN_PREFIXES` — order them shortest-first so "medical image" doesn't get half-eaten.
 - **`populate_lb_samples` has a 5-min `soft_time_limit`.** PWC's `suggest_hf_repo` fallback sometimes lands on a monolithic HDF5 repo (e.g. `btherien/imagenet-64x64x3` is 100GB+ behind `load_dataset`), and without the timeout one task takes down the whole worker. **The Fly machine hosts Flask + Celery + Redis on one box** — don't bulk-enqueue dozens of populate tasks; the site becomes unresponsive. Use the per-LB "Populate samples" button instead, or rate-limit any bulk operation.
 
+## Input vs GT roles on dataset columns
+Every HF-attachment mapping entry now carries an optional `role` field: `input` (conditioning given to the submitter at inference time, NOT predicted) or `gt` (held server-side, target of prediction). Default = `gt` when missing (back-compat).
+- `_pwc_task_input_kinds(task_name)` returns the set of `target_kind`s that should be flagged `input` for a given PWC task. New entries land via `_create_lb_from_pwc_benchmark` at import time.
+- `_lb_submission_pred_fields` filters out pred fields whose GT column is flagged `input` — so e.g. `label_pred` no longer appears in the Image-Generation submission contract.
+- Owner-editable on `/edit_leaderboard/<id>` → Prediction-fields tab → "Dataset field roles" panel. Frozen on LBs with verified submissions.
+- The arg_mappings on LeaderboardMetric rows must reference a GT-role column or the metric won't have a valid pred field. The `.tag_input_gt.py` one-shot script (kept for reference) walks every PWC LB, flips roles per task, and rewrites arg_mappings to point at the highest-priority GT field.
+
 ## Editing the LB pred-field schema
 - Owner/admin can edit each LB's prediction-field schema on `/edit_leaderboard/<id>` → "Prediction fields" tab. Each row: name (`<x>_pred`), kind (`image`/`mask`/`depth`/`audio`/`scalar`/`text`/`json`/`histogram`), description, remove. Add-row button for extras.
 - Frozen once **verified** submissions exist (mirrored PWC submissions don't count) — changing kinds afterwards would silently re-interpret existing prediction files through the wrong decoder. Delete the verified subs to unlock.
