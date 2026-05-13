@@ -250,87 +250,142 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 {% endif %}
 {% endmacro %}
 
+{# Header mirrors the dataset-detail layout: owner avatar on the left,
+   title + meta + tag pills + dataset-source rail in the centre, action
+   buttons on the right. Same hierarchy + spacing as /dataset/<id>. #}
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
-    <div class="flex-grow-1" style="min-width: 0;">
-        <h1 class="text-break">{{ leaderboard.name }}</h1>
-        <div class="lead d-flex align-items-center flex-wrap gap-2">
-            <span class="text-body-secondary small">Using datasets:</span>
-            {% for ds in leaderboard.datasets %}
-            {% set thumb = dataset_thumbs.get(ds.id) if dataset_thumbs else None %}
-            <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
-                class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
-                title="Open {{ ds.name }}">
-                {# Thumbnail (or placeholder) prefixed to the dataset name. #}
-                {% if thumb %}
-                <span style="display:inline-block; width:28px; height:28px; border-radius:4px;
-                             background-image: url('{{ thumb }}');
-                             background-size: cover; background-position: center;"></span>
-                {% else %}
-                <span style="display:inline-flex; align-items:center; justify-content:center;
-                             width:28px; height:28px; border-radius:4px;
-                             background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
-                    <i class="bi bi-database"></i>
-                </span>
-                {% endif %}
-                <span class="fw-semibold">{{ ds.name }}</span>
-            </a>
-            {% endfor %}
-            {# HF-attached sources have no BH Dataset row — render them
-               here so the "where does this benchmark live?" answer is
-               visible on the LB page. Links straight to huggingface.co
-               since BenchHub doesn't host a /hf/<repo> page. #}
-            {% for att in (leaderboard.attachments or []) %}
-            {% if att.kind == 'hf' and att.hf_repo_id %}
-            <a href="https://huggingface.co/datasets/{{ att.hf_repo_id }}"
-               target="_blank" rel="noopener"
-               class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
-               title="Open {{ att.hf_repo_id }} on HuggingFace (new tab)">
-                <span style="display:inline-flex; align-items:center; justify-content:center;
-                             width:28px; height:28px; border-radius:4px;
-                             background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
-                    <i class="bi bi-link-45deg"></i>
-                </span>
-                <span class="fw-semibold font-monospace">{{ att.hf_repo_id }}</span>
-                {% if att.role == 'gt_source' %}
-                <span class="badge text-bg-info-subtle text-info-emphasis border small ms-1">gt</span>
-                {% endif %}
-                {% if att.hf_split %}
-                <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
-                      title="HuggingFace split used for GT (preference: test › validation › val › dev › train)">
-                    split: {{ att.hf_split }}
-                </span>
-                {% endif %}
-                <i class="bi bi-box-arrow-up-right small text-body-secondary ms-1"></i>
-            </a>
-            {% endif %}
-            {% endfor %}
-        </div>
+    <div class="d-flex align-items-center gap-3 flex-grow-1" style="min-width: 0;">
+        {% if leaderboard.owner %}
+        {{ user_avatar(leaderboard.owner, size=53) }}
+        {% else %}
+        <span class="d-inline-flex align-items-center justify-content-center"
+              style="width:53px; height:53px; border-radius:50%;
+                     background:var(--bs-tertiary-bg); color:var(--bs-body-secondary);">
+            <i class="bi bi-trophy"></i>
+        </span>
+        {% endif %}
         <div>
-            {% if leaderboard.tags %}
-            {% for t in leaderboard.tags %}
-            <a href="{{ url_for('explore', tag=t.name) }}"
-                class="badge text-bg-light border text-decoration-none me-1">
-                <i class="bi bi-tag me-1"></i>{{ t.name }}
-            </a>
-            {% endfor %}
-            {% endif %}
-            {% if current_user and leaderboard.owner_user_id == current_user.id %}
-            <button class="btn btn-sm btn-outline-secondary py-0 px-2 align-baseline ms-1"
-                type="button" data-bs-toggle="collapse" data-bs-target="#lb-tags-edit">
-                <i class="bi bi-pencil"></i>
-            </button>
-            <div class="collapse mt-2" id="lb-tags-edit">
-                <form method="post"
-                    action="{{ url_for('update_leaderboard_tags', leaderboard_id=leaderboard.id) }}"
-                    class="d-flex gap-2 align-items-center">
-                    <input type="text" name="tags" class="form-control form-control-sm"
-                        value="{{ leaderboard.tags|map(attribute='name')|join(', ') }}"
-                        placeholder="depth, segmentation, indoor"
-                        style="max-width: 480px;">
-                    <button type="submit" class="btn btn-sm btn-primary">Save</button>
-                </form>
+            <h1 class="d-flex align-items-center gap-2 flex-wrap text-break mb-1">
+                {{ leaderboard.name }}
+                {% if leaderboard.visibility == 'public' %}
+                <span class="badge text-bg-success-subtle text-success border align-middle"
+                      style="font-size: 0.5em;"
+                      title="Public — visible on /explore">
+                    <i class="bi bi-globe me-1"></i>public
+                </span>
+                {% elif leaderboard.visibility == 'private' %}
+                <span class="badge text-bg-secondary-subtle text-body border align-middle"
+                      style="font-size: 0.5em;">
+                    <i class="bi bi-lock me-1"></i>private
+                </span>
+                {% elif leaderboard.visibility == 'unlisted' %}
+                <span class="badge text-bg-warning-subtle text-warning-emphasis border align-middle"
+                      style="font-size: 0.5em;">
+                    <i class="bi bi-link-45deg me-1"></i>unlisted
+                </span>
+                {% endif %}
+                {% if leaderboard.canonical_for_repo %}
+                <a href="https://huggingface.co/datasets/{{ leaderboard.canonical_for_repo }}"
+                   target="_blank" rel="noopener"
+                   class="badge text-bg-light border text-decoration-none align-middle"
+                   style="font-size: 0.5em;"
+                   title="HF repo this LB tracks — click to view on HuggingFace">
+                    <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg"
+                         alt="HF" width="14" height="14" class="me-1">
+                    HF: {{ leaderboard.canonical_for_repo }}
+                </a>
+                {% endif %}
+                {% if leaderboard.category %}
+                <a href="{{ url_for('explore', category=leaderboard.category) }}"
+                   class="badge text-bg-info-subtle text-info-emphasis border text-decoration-none align-middle"
+                   style="font-size: 0.5em;"
+                   title="Filter /explore by this category">
+                    <i class="bi bi-diagram-3 me-1"></i>{{ leaderboard.category }}
+                </a>
+                {% endif %}
+            </h1>
+            <p class="text-muted mb-0 small">
+                <i class="bi bi-clock me-1"></i>Created
+                {{ leaderboard.upload_date.strftime('%Y-%m-%d %H:%M') if leaderboard.upload_date else '—' }}
+                <span class="mx-2 opacity-50">|</span>
+                <i class="bi bi-people me-1"></i>{{ leaderboard.submissions|length }} submission{{ '' if leaderboard.submissions|length == 1 else 's' }}
+            </p>
+
+            {# Dataset / HF source rail — same look as the dataset
+               page's "HF source" badge but expanded to multi-source. #}
+            <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
+                {% for ds in leaderboard.datasets %}
+                {% set thumb = dataset_thumbs.get(ds.id) if dataset_thumbs else None %}
+                <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                    class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
+                    title="Open {{ ds.name }}">
+                    {% if thumb %}
+                    <span style="display:inline-block; width:24px; height:24px; border-radius:4px;
+                                 background-image: url('{{ thumb }}'); background-size: cover; background-position: center;"></span>
+                    {% else %}
+                    <span style="display:inline-flex; align-items:center; justify-content:center;
+                                 width:24px; height:24px; border-radius:4px;
+                                 background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
+                        <i class="bi bi-database"></i>
+                    </span>
+                    {% endif %}
+                    <span class="fw-semibold small">{{ ds.name }}</span>
+                </a>
+                {% endfor %}
+                {% for att in (leaderboard.attachments or []) %}
+                {% if att.kind == 'hf' and att.hf_repo_id %}
+                <a href="https://huggingface.co/datasets/{{ att.hf_repo_id }}"
+                   target="_blank" rel="noopener"
+                   class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
+                   title="Open {{ att.hf_repo_id }} on HuggingFace (new tab)">
+                    <span style="display:inline-flex; align-items:center; justify-content:center;
+                                 width:24px; height:24px; border-radius:4px;
+                                 background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
+                        <i class="bi bi-link-45deg"></i>
+                    </span>
+                    <span class="fw-semibold font-monospace small">{{ att.hf_repo_id }}</span>
+                    {% if att.hf_split %}
+                    <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1">
+                        {{ att.hf_split }}
+                    </span>
+                    {% endif %}
+                    <i class="bi bi-box-arrow-up-right small text-body-secondary"></i>
+                </a>
+                {% endif %}
+                {% endfor %}
             </div>
-            {% endif %}
+
+            {# Tags row, matching the dataset page's read-or-edit pattern. #}
+            <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
+                {% if leaderboard.tags %}
+                {% for t in leaderboard.tags %}
+                <a href="{{ url_for('explore', tag=t.name) }}"
+                    class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
+                    <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
+                </a>
+                {% endfor %}
+                {% elif current_user and leaderboard.owner_user_id == current_user.id %}
+                <span class="text-body-secondary small fst-italic">No tags yet —</span>
+                {% endif %}
+                {% if current_user and leaderboard.owner_user_id == current_user.id %}
+                <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    type="button" data-bs-toggle="collapse" data-bs-target="#lb-tags-edit">
+                    <i class="bi bi-pencil me-1"></i>{{ 'Edit tags' if leaderboard.tags else 'Add tags' }}
+                </button>
+                <div class="collapse mt-2 w-100" id="lb-tags-edit">
+                    <form method="post"
+                        action="{{ url_for('update_leaderboard_tags', leaderboard_id=leaderboard.id) }}"
+                        class="d-flex gap-2 align-items-center">
+                        <input type="text" name="tags" class="form-control form-control-sm"
+                            value="{{ leaderboard.tags|map(attribute='name')|join(', ') }}"
+                            placeholder="depth, segmentation, indoor"
+                            style="max-width: 480px;">
+                        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                    </form>
+                    <div class="form-text small">Comma-separated. Click any tag to find datasets/leaderboards with the same tag.</div>
+                </div>
+                {% endif %}
+            </div>
         </div>
     </div>
     <div class="d-flex align-items-center gap-2">
