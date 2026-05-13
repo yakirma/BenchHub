@@ -133,6 +133,20 @@
                     <p class="text-body-secondary small fst-italic">No description.</p>
                     {% endif %}
 
+                    {% set _ik = selected.input_kinds %}
+                    {% if _ik %}
+                    {% set _ik_list = _ik|from_json if _ik is string else _ik %}
+                    {% if _ik_list %}
+                    <div class="small mb-2">
+                        <span class="text-body-secondary me-1">Accepts:</span>
+                        {% for k in _ik_list %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border me-1">{{ k }}</span>
+                        {% if not loop.last %}<span class="text-body-secondary">×</span>{% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% endif %}
+
                     <h3 class="h6 mt-4 mb-2">Python implementation</h3>
                     <pre class="bg-body-tertiary p-3 rounded border" style="max-height: 480px; overflow: auto;"><code class="language-python">{{ selected.python_code }}</code></pre>
 

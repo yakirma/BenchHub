@@ -598,6 +598,13 @@ class GlobalMetric(db.Model):
     python_code = db.Column(db.Text, nullable=False)  # The function definition: def metric_func(...)
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)
     accepts_aggregated_inputs = db.Column(db.Boolean, default=False)
+    # JSON array of `target_kind` strings this metric accepts as inputs,
+    # in argument order (`['mask', 'mask']` = IoU on two masks;
+    # `['image', 'image']` = FID on two image populations). NULL means
+    # "unconstrained" (legacy metrics where we haven't declared the
+    # contract yet). The LB editor's metric→field binding filters
+    # available GT/pred columns by these kinds.
+    input_kinds = db.Column(db.Text, nullable=True)
     # Phase 1 Slice 4 multi-tenancy. NOTE: `name` is still globally unique;
     # two users can't both ship a metric called "L1Loss". For Phase 1 that's
     # acceptable (rename your fork). Composite (owner, name) uniqueness is a
@@ -663,6 +670,9 @@ class GlobalVisualization(db.Model):
     python_code = db.Column(db.Text, nullable=False)  # Function definition: def viz_func(...) -> PIL.Image
     is_aggregated = db.Column(db.Boolean, default=False, nullable=False)  # True: single image, False: per-sample
     accepts_aggregated_inputs = db.Column(db.Boolean, default=False)
+    # Same shape as GlobalMetric.input_kinds — JSON array of accepted
+    # `target_kind`s in argument order.
+    input_kinds = db.Column(db.Text, nullable=True)
     upload_date = db.Column(db.DateTime, default=datetime.utcnow)
     # Phase 1 Slice 4 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
@@ -15894,6 +15904,20 @@ def check_and_migrate_db():
                             conn.rollback()
                         except Exception:
                             pass
+
+                # --- GlobalMetric.input_kinds / GlobalVisualization.input_kinds ---
+                for _tbl in ('global_metric', 'global_visualization'):
+                    try:
+                        cursor.execute(f"PRAGMA table_info({_tbl})")
+                        cols = [r[1] for r in cursor.fetchall()]
+                        if 'input_kinds' not in cols:
+                            cursor.execute(
+                                f"ALTER TABLE {_tbl} ADD COLUMN input_kinds TEXT DEFAULT NULL"
+                            )
+                            conn.commit()
+                            print(f"Migration: added {_tbl}.input_kinds")
+                    except Exception as e:
+                        print(f"Migration error ({_tbl}.input_kinds): {e}")
 
                 # --- FeatureRequest table ---
                 try:
