@@ -544,6 +544,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 <div class="page-container">
     <div class="content-wrapper">
+        {# Skip the per-submission status legend when every submission is
+           a mirrored PWC row — there's no per-sample data to inspect,
+           so the legend is busy decoration. #}
+        {% if not all_mirrored %}
         <div class="mb-3 p-2 bg-body-tertiary border rounded">
             <strong>Submissions:</strong>
             {% for sub in submissions %}
@@ -554,6 +558,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <span class="me-2">{{ sub.name }}</span>{% if not loop.last %}, {% endif %}
             {% endfor %}
         </div>
+        {% endif %}
 
         <!-- Aggregated Visualizations -->
         {% set aggregated_viz_list = [] %}
@@ -758,7 +763,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% for col_key in selected_comparison_display_columns %}
                         {% if all_field_types.get(col_key) != 'metric' %}
                         {% if col_key == 'sample_name' %}
-                        <td>{{ data.sample_name }}</td>
+                        <td title="cache key: {{ data.sample_name }}">{{ data.display_name or data.sample_name }}</td>
                         {% elif col_key == 'per_sample_metrics' %}
                         <td>
                             <div class="sample-metrics-chart-container">
@@ -1033,12 +1038,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             data.custom_fields[col_key].gt_field_id %}
                             {% set _vis_type = comparison_display_options[col_key].type %}
                             {% set _src = url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) %}
+                            {# Default initial render of depth columns is turbo to match the
+                               column-header dropdown's pre-selected option. Other kinds keep
+                               the raw URL. #}
+                            {% set _initial_src = (_src + '?cmap=turbo') if _vis_type == 'depth' else _src %}
                             <div class="text-center depth-cell" data-depth-base="{{ _src }}" data-col-key="{{ col_key }}">
-                                <img src="{{ _src }}"
+                                <img src="{{ _initial_src }}"
                                     class="border rounded shadow-sm clickable-vis depth-img"
                                     style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
                                     data-bs-toggle="modal" data-bs-target="#vis-modal"
-                                    data-vis-url="{{ _src }}"
+                                    data-vis-url="{{ _initial_src }}"
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].gt_field_id) }}"
                                     data-group-id="gt-{{ col_key }}" data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _vis_type }}" alt="{{ col_key }}">

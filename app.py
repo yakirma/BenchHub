@@ -9896,13 +9896,20 @@ class _VirtualCustomField:
 class _VirtualSample:
     """Quack-like-Sample for HF-ref iteration."""
     __slots__ = (
-        'id', 'name', 'tags', 'custom_fields', 'source_ref_json',
-        'histogram_data', 'dataset',
+        'id', 'name', 'display_name', 'tags', 'custom_fields',
+        'source_ref_json', 'histogram_data', 'dataset',
     )
 
-    def __init__(self, name, source_ref_json, custom_fields, tags=''):
+    def __init__(self, name, source_ref_json, custom_fields, tags='',
+                 display_name=None):
         self.id = None
         self.name = name
+        # Human-friendly label extracted from a natural-key column
+        # (file_name / sample_id / id / …) when the row has one; None
+        # if no usable column was found. UI renders display_name when
+        # present, falls back to `name` (the synthetic s_NNNNNN that
+        # serves as the stable cache + URL key).
+        self.display_name = display_name
         self.tags = tags
         self.custom_fields = custom_fields
         self.source_ref_json = source_ref_json
@@ -9912,12 +9919,55 @@ class _VirtualSample:
         self.dataset = None
 
 
+_HF_NATURAL_NAME_COLS = (
+    'sample_id', 'sample_name', 'sample',
+    'file_name', 'filename', 'file', 'image_id',
+    'id', 'name', 'uid', 'key',
+)
+
+
+def _natural_sample_name(row, fallback):
+    """Pick a human-friendly sample name from the row's natural-key
+    columns when present, otherwise fall back to the synthetic
+    `s_NNNNNN`. Values are stringified, slugified to `[A-Za-z0-9._-]`,
+    and capped at 80 chars so the cache_key + URL stay sane. Returns
+    `fallback` when no usable column is found."""
+    if not isinstance(row, dict):
+        return fallback
+    for col in _HF_NATURAL_NAME_COLS:
+        if col not in row:
+            continue
+        val = row[col]
+        if val is None:
+            continue
+        try:
+            s = str(val).strip()
+        except Exception:
+            continue
+        if not s:
+            continue
+        # Strip filesystem-unfriendly characters but keep extension
+        # info readable (`xyz.png` stays `xyz.png`).
+        import re as _re
+        slug = _re.sub(r'[^A-Za-z0-9._-]+', '_', s).strip('._-')
+        if slug:
+            return slug[:80]
+    return fallback
+
+
 def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
     """Build (_VirtualSample, list_of_inline_field_descriptions) from
     one streamed HF row + the attachment's mapping. Handles the same
     field-kind dispatch the importer used to do; image/depth columns
-    become pointer-only fields (engine streams via bench_cache)."""
+    become pointer-only fields (engine streams via bench_cache).
+
+    Sample name stays as the synthetic `s_NNNNNN` so the `serve_gt_viz`
+    cache-route can parse the row index out of the URL. A separate
+    `display_name` carries the human-friendly name (file_name / id /
+    sample_id / …) when the row has one, so the comparison view +
+    export show real names without breaking the cache addressing."""
     sample_name = f"s_{row_idx:06d}"
+    display_name = _natural_sample_name(row, fallback=None)
     cfs = []
     tags_list = []
     try:
@@ -10003,6 +10053,7 @@ def _virtual_sample_from_hf_row(att, row, row_idx, classlabel_names):
             ))
     return _VirtualSample(
         name=sample_name,
+        display_name=display_name,
         source_ref_json=json.dumps({
             'repo_id': att.hf_repo_id,
             'revision': att.hf_revision,
@@ -12222,13 +12273,16 @@ def comparison_view(leaderboard_id):
     # 404 in this mode — they reference GT bytes we don't have on disk).
     if hf_stub_mode:
         class _SampleStub:
-            __slots__ = ('id', 'name', 'tags', 'custom_fields',
-                         'signal_shape', 'histogram_data', 'config_data',
-                         'dataset')
+            __slots__ = ('id', 'name', 'display_name', 'tags',
+                         'custom_fields', 'signal_shape',
+                         'histogram_data', 'config_data', 'dataset')
 
             def __init__(self, name, idx):
                 self.id = idx
                 self.name = name
+                # Filled in below from the persisted __display_name__
+                # marker CF when one exists for this sample_name.
+                self.display_name = None
                 self.tags = ''
                 self.custom_fields = []
                 self.signal_shape = None
@@ -12275,10 +12329,15 @@ def comparison_view(leaderboard_id):
                 CustomField.sample_name.in_(visible_names),
             ).all()
             gt_by_name = {}
+            display_by_name = {}
             for cf in gt_rows:
+                if cf.name == '__display_name__':
+                    display_by_name[cf.sample_name] = cf.value_text
+                    continue  # don't surface as a real field
                 gt_by_name.setdefault(cf.sample_name, []).append(cf)
             for stub in paginated_items:
                 stub.custom_fields = gt_by_name.get(stub.name, [])
+                stub.display_name = display_by_name.get(stub.name)
 
     # Sorting (BH path only — HF branch above already paginated)
     if not hf_stub_mode and sort_by:
@@ -12396,6 +12455,7 @@ def comparison_view(leaderboard_id):
         sample_info = {
             'sample_id': sample.id,
             'sample_name': sample.name,
+            'display_name': getattr(sample, 'display_name', None) or sample.name,
             'dataset_tags': [t.strip() for t in sample.tags.split(',')] if sample.tags else [],
             'ground_truth': {
                 'config': sample.config_data.parsed_config if sample.config_data else {},
@@ -12893,7 +12953,14 @@ def comparison_view(leaderboard_id):
     # wants the `label_class` text column visible on ImageNet-256).
     # `per_sample_metrics` and `per_source_stats` are the two that need
     # actual submissions to populate.
-    if samples_only_mode:
+    # Mirrored-only LBs have no per-sample predictions on disk, so the
+    # same submission-needing panels we hide in samples_only_mode are
+    # equally useless here. Apply the same filter.
+    all_mirrored_local = bool(submissions) and all(
+        (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored'
+        for s in submissions
+    )
+    if samples_only_mode or all_mirrored_local:
         _hide_in_samples_only = {'per_sample_metrics', 'per_source_stats',
                                  'pred_histogram'}
         selected_comparison_display_columns = [
@@ -12905,9 +12972,19 @@ def comparison_view(leaderboard_id):
     # Pass metric directions for coloring
     metric_directions = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}
 
-    return render_template('comparison.html', 
-                           leaderboard=leaderboard, 
+    # True iff every submission being rendered is a mirrored PWC row
+    # (no per-sample predictions on disk). The template uses this to
+    # skip the busy submission legend and the per-sample chart column,
+    # both of which are meaningless without per-sample data.
+    all_mirrored = bool(submissions) and all(
+        (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored'
+        for s in submissions
+    )
+
+    return render_template('comparison.html',
+                           leaderboard=leaderboard,
                            submissions=submissions,
+                           all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
                            selected_metrics=all_selected_metrics,
                            chart_metrics_data=chart_metrics_data, 
@@ -14678,26 +14755,44 @@ def _render_depth_png(gray_path, cmap):
         # Echo the grayscale PNG verbatim — caller asked for raw depth.
         return send_file(gray_path, mimetype='image/png', max_age=60)
     if cmap == 'normal':
-        # Surface normals from height: ∂z/∂x, ∂z/∂y → unit normal → RGB.
-        # Cheap Sobel via numpy gradient; the source is already
-        # normalized 0..255 so the gradient magnitude is meaningful
-        # without depth-units calibration (it's still an artistic /
-        # qualitative normal map, not metric).
+        # Surface normals from height. The naive `np.gradient * 8` on a
+        # 0..1 normalized depth map gives near-flat normals (mostly
+        # (0,0,1) → purple); we want enough z-axis tilt that surface
+        # orientation is actually visible.
+        #
+        # Approach:
+        # 1. Light Gaussian smooth to suppress single-pixel noise.
+        # 2. 3x3 Sobel for the gradient (better than np.gradient for
+        #    visualizing surface orientation — central-difference is
+        #    too soft on sharp edges).
+        # 3. Auto-scale the gradient so the 98th-percentile of the
+        #    magnitude lands at ~1.0. Keeps the normal map well-
+        #    saturated regardless of how "rough" the depth is.
+        from scipy.ndimage import gaussian_filter
         z = arr.astype(np.float32) / 255.0
-        gy, gx = np.gradient(z)
-        # Empirical scale so a 1-pixel depth step yields a visible tilt.
-        nx = -gx * 8.0
-        ny = -gy * 8.0
-        nz = np.ones_like(z)
+        z = gaussian_filter(z, sigma=1.0)
+        # Sobel kernels via convolution. scipy.signal.convolve2d would
+        # add another import; we use simple np slicing instead.
+        gx = np.zeros_like(z)
+        gy = np.zeros_like(z)
+        gx[:, 1:-1] = (z[:, 2:] - z[:, :-2]) * 0.5
+        gy[1:-1, :] = (z[2:, :] - z[:-2, :]) * 0.5
+        # Auto-scale to land the 98th-percentile magnitude near 1.
+        mag = np.sqrt(gx * gx + gy * gy)
+        p98 = float(np.percentile(mag, 98)) or 1e-6
+        scale = 1.0 / max(p98, 1e-3)
+        nx = -gx * scale
+        ny = gy * scale  # +Y points UP in tangent-space convention
+        nz = np.ones_like(z) * 0.5  # base flatness; clamp later
         length = np.sqrt(nx * nx + ny * ny + nz * nz)
         length[length == 0] = 1.0
         nx /= length; ny /= length; nz /= length
         # Map [-1, 1] → [0, 255] in standard tangent-space normal-map
         # encoding (X=right, Y=up, Z=out → RGB).
         rgb = np.stack([
-            ((nx + 1.0) * 127.5).astype(np.uint8),
-            ((ny + 1.0) * 127.5).astype(np.uint8),
-            ((nz + 1.0) * 127.5).astype(np.uint8),
+            np.clip(((nx + 1.0) * 127.5), 0, 255).astype(np.uint8),
+            np.clip(((ny + 1.0) * 127.5), 0, 255).astype(np.uint8),
+            np.clip(((nz + 1.0) * 127.5), 0, 255).astype(np.uint8),
         ], axis=-1)
     else:
         lut = _matplotlib_lut(cmap)
@@ -14954,6 +15049,19 @@ def _persist_hf_eval_snapshots(lb, samples_iter):
                 row_idx = int(sample.name[2:])
             except ValueError:
                 row_idx = None
+        # Persist the human-friendly display_name (from natural-key
+        # columns: file_name / sample_id / id / …) as a hidden text
+        # CustomField. The comparison view substitutes it for the
+        # synthetic `s_NNNNNN` sample_name when rendering.
+        dn = getattr(sample, 'display_name', None)
+        if dn:
+            db.session.add(CustomField(
+                leaderboard_id=lb.id,
+                sample_name=sample.name,
+                name='__display_name__',
+                field_type='text',
+                value_text=dn,
+            ))
         for cf in (sample.custom_fields or []):
             ftype = getattr(cf, 'field_type', None)
             name = getattr(cf, 'name', None)
