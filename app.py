@@ -2724,53 +2724,52 @@ def admin_lb_sota_notebook(lb_id):
     )
 
 
-@app.route('/admin/leaderboard/<int:lb_id>/promote', methods=['POST'])
+@app.route('/admin/leaderboard/<int:lb_id>/canonical_for_repo', methods=['POST'])
 @login_required
-def admin_promote_leaderboard(lb_id):
-    """Mark an LB as the canonical public leaderboard for an HF repo.
-
-    Why: anyone can fork a public dataset into their own personal LB; we
-    only want one entry on /explore per repo so the catalog stays
-    legible. Admin-curated single-source-of-truth.
-
-    Form params:
-      - canonicality: 'public' (promote) or 'personal' (demote)
-      - canonical_for_repo: HF repo id (only used on 'public')
-    """
+def admin_set_canonical_for_repo(lb_id):
+    """Set/unset the informational `canonical_for_repo` metadata. With
+    the canonicality concept dropped, this is purely a label (which
+    HF repo backs this LB) — multiple LBs may share the same repo.
+    Admin-only because it affects how the LB appears in catalog
+    listings (PWC badge etc.)."""
     if not is_admin(g.current_user):
         abort(403)
     lb = Leaderboard.query.get_or_404(lb_id)
+    repo = (request.form.get('canonical_for_repo') or '').strip() or None
+    lb.canonical_for_repo = repo
+    db.session.commit()
+    flash(f"Set canonical_for_repo on '{lb.name}' to {repo!r}.", "success")
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
+@app.route('/admin/leaderboard/<int:lb_id>/promote', methods=['POST'])
+@login_required
+def admin_promote_leaderboard(lb_id):
+    """Legacy promote endpoint. The canonicality concept has been
+    dropped — visibility (public/private/unlisted) is now the only
+    catalog-membership gate, and multiple LBs per HF repo are allowed.
+    This route is preserved for back-compat: it forwards to the
+    visibility setter so old form posts (and any third-party
+    integrations) keep working.
+
+    Form params:
+      - canonicality: 'public' → flips visibility to 'public'
+                      'personal' → flips visibility to 'private'
+      - canonical_for_repo: ignored (use the dedicated route).
+    Allowed for the LB owner OR an admin (no longer admin-only —
+    each user manages their own LB's visibility).
+    """
+    lb = Leaderboard.query.get_or_404(lb_id)
+    if not (is_admin(g.current_user)
+            or (lb.owner_user_id and lb.owner_user_id == g.current_user.id)):
+        abort(403)
     target = (request.form.get('canonicality') or 'public').strip()
     if target not in ('public', 'personal'):
         flash("canonicality must be 'public' or 'personal'.", "warning")
         return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
-    if target == 'personal':
-        lb.canonicality = 'personal'
-        lb.canonical_for_repo = None
-        db.session.commit()
-        flash(f"Demoted '{lb.name}' to personal.", "info")
-        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
-
-    # Promotion path. Repo binding is optional (a public LB can exist
-    # without a 1:1 HF repo binding), but if provided, enforce uniqueness.
-    repo = (request.form.get('canonical_for_repo') or '').strip() or None
-    if repo:
-        clash = (Leaderboard.query
-                 .filter(Leaderboard.canonical_for_repo == repo,
-                         Leaderboard.id != lb.id)
-                 .first())
-        if clash is not None:
-            flash(
-                f"Repo '{repo}' is already canonicalized by leaderboard "
-                f"'{clash.name}' (id={clash.id}). Demote that one first.",
-                "warning",
-            )
-            return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
-    lb.canonicality = 'public'
-    lb.canonical_for_repo = repo
+    lb.visibility = 'public' if target == 'public' else 'private'
     db.session.commit()
-    label = f"public canonical for {repo}" if repo else "public"
-    flash(f"Promoted '{lb.name}' to {label}.", "success")
+    flash(f"'{lb.name}' visibility set to {lb.visibility}.", "success")
     return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
 
 
@@ -3087,12 +3086,15 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
     # lm_<id>) by the LB view's metric resolver — slugified GlobalMetric
     # names won't resolve and get auto-pruned, leaving the view with no
     # metric columns. Use the PWC names verbatim so name_to_lmids resolves.
+    # Imports default to visibility='public' so the catalog shows them
+    # immediately. canonical_for_repo stays as informational metadata
+    # (which HF repo backs this LB) — no uniqueness gate, multiple LBs
+    # may share a repo.
     lb = Leaderboard(
         name=lb_name,
         summary_metrics=','.join(m['name'] for m in pwc_metrics),
         owner_user_id=owner_user_id,
         visibility='public',
-        canonicality='public',
         canonical_for_repo=hf_repo,
         category=_pwc_task_to_category(evaluation.get('task')),
     )

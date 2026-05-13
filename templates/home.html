@@ -150,14 +150,13 @@
     {% macro lb_card(lb, idx) %}
     <div class="col home-grid-item" data-name="{{ lb.name|lower }}">
         <div class="card home-card h-100 border-0 shadow-sm">
-            {% if lb.canonicality == 'public' %}
+            {% if lb.visibility == 'public' %}
             <span class="badge text-bg-success visibility-badge"
-                title="Public canonical leaderboard — appears on /explore"
+                title="Public leaderboard — appears on /explore"
                 style="left: 0.5rem; right: auto;">
                 <i class="bi bi-globe me-1"></i>public
             </span>
-            {% endif %}
-            {% if lb.visibility != 'public' %}
+            {% else %}
             <span class="badge text-bg-secondary visibility-badge">
                 <i class="bi bi-{{ 'eye-slash' if lb.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ lb.visibility }}
             </span>
