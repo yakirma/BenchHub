@@ -3119,10 +3119,27 @@ def _create_lb_from_pwc_benchmark(evaluation, *, hf_repo, lb_name,
     # the task name doesn't match a known pattern.
     task_name = (evaluation.get('task') or '').strip()
     priority = _pwc_task_pred_kind_priority(task_name)
+    # Tag each mapping entry with a `role` ('input' or 'gt') derived
+    # from the PWC task. Inputs are conditioning given to the submitter
+    # at inference time; GT is what they must predict and is held
+    # server-side for scoring. Owners can flip these via the LB editor.
+    input_kinds = _pwc_task_input_kinds(task_name)
+    for m in inferred_mapping:
+        k = m.get('target_kind')
+        if k == 'skip':
+            continue
+        m.setdefault('role', 'input' if k in input_kinds else 'gt')
+    # Refresh the persisted mapping so downstream `_lb_submission_pred_fields`
+    # picks up the role flags.
+    db.session.execute(
+        Attachment.__table__.update()
+        .where(Attachment.leaderboard_id == lb.id)
+        .values(hf_mapping_json=json.dumps(inferred_mapping))
+    )
     gt_field = None
     for kind in priority:
         for m in inferred_mapping:
-            if m.get('target_kind') == kind:
+            if m.get('target_kind') == kind and m.get('role', 'gt') == 'gt':
                 gt_field = m.get('target_field') or m.get('column')
                 if gt_field:
                     break
@@ -4808,6 +4825,51 @@ _PWC_AREA_RULES = [
 ]
 
 
+def _pwc_task_input_kinds(task_name):
+    """Given a PWC task name, return the set of `target_kind` values
+    that should be treated as model INPUT (conditioning) rather than
+    GT/target. Used by `_create_lb_from_pwc_benchmark` to assign the
+    `role` field on each mapping entry so the submission contract
+    doesn't ask submitters to predict their own input.
+
+    Generation/segmentation/depth tasks consume an image and produce
+    something else; classification/QA consume something and produce a
+    scalar/text label. Returns an empty set when the task isn't
+    recognised (the legacy "everything is GT" behavior)."""
+    if not task_name:
+        return set()
+    t = task_name.lower()
+    if ('segmentation' in t or 'depth estimation' in t
+            or 'image generation' in t or 'image synthesis' in t
+            or 'super.resolution' in t or 'deblurring' in t
+            or 'denoising' in t or 'inpainting' in t
+            or 'image-to-image' in t):
+        # Image is the conditioning input; the model produces a mask /
+        # depth / different image. For pure image-generation tasks
+        # conditioned on a label (class-conditional), the label is the
+        # input. Both rules apply: any scalar/class label AND any
+        # image-as-input.
+        if 'image generation' in t or 'image synthesis' in t:
+            # class-conditional: label/scalar = input, image = GT
+            return {'scalar'}
+        # image-to-image: input is the image, output is mask/depth/image
+        return {'image'}
+    if 'classification' in t or 'recognition' in t:
+        return {'image', 'audio'}
+    if 'speech recognition' in t or 'asr' in t:
+        return {'audio'}
+    if 'translation' in t or 'summarization' in t:
+        # The source-text column is input; target-text is GT. Without
+        # column-name introspection we can't be sure which is which —
+        # leave both as GT and let the user fix via the editor.
+        return set()
+    if 'question answering' in t:
+        # `question` + `context` are inputs; `answer`/`labels` are GT.
+        # Encoded heuristically below by column name.
+        return set()
+    return set()
+
+
 def _pwc_task_pred_kind_priority(task_name):
     """Given a PWC task name (e.g. 'Image Generation', 'Medical Image
     Segmentation', 'Depth Estimation'), return a tuple of target_kind
@@ -5180,6 +5242,46 @@ def _public_name_in_use(model_cls, name, exclude_id=None):
     if exclude_id is not None:
         q = q.filter(model_cls.id != exclude_id)
     return q.first() is not None
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/field_roles', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def edit_lb_field_roles(leaderboard_id):
+    """Flip per-mapping role between 'input' (given to the submitter at
+    inference time, not predicted) and 'gt' (held server-side, the
+    target of prediction). Form has one `role_<att_id>_<column>` field
+    per mapping entry, value 'input' or 'gt'."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    has_verified = any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (lb.submissions or [])
+    )
+    if has_verified:
+        flash("Can't change field roles — this LB already has verified "
+              "submissions.", "warning")
+        return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+    for att in (lb.attachments or []):
+        if getattr(att, 'kind', None) != 'hf':
+            continue
+        try:
+            mapping = json.loads(att.hf_mapping_json or '[]')
+        except Exception:
+            mapping = []
+        changed = False
+        for m in mapping:
+            col = m.get('column')
+            if not col:
+                continue
+            target = request.form.get(f'role_{att.id}_{col}')
+            if target in ('input', 'gt') and m.get('role', 'gt') != target:
+                m['role'] = target
+                changed = True
+        if changed:
+            att.hf_mapping_json = json.dumps(mapping)
+    db.session.commit()
+    flash("Saved field roles.", "success")
+    return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
 
 @app.route('/leaderboard/<int:leaderboard_id>/pred_fields', methods=['POST'])
@@ -8963,6 +9065,28 @@ def _lb_submission_pred_fields(lb):
             entry['description'] = (
                 f"Per-sample prediction paired against GT `{gt_name}`."
             )
+
+    # Filter out pred fields whose GT column is flagged as `role=input`
+    # in the HF mapping — the submitter doesn't predict their own
+    # inputs. (For class-conditional image generation: `label` is
+    # input, so `label_pred` shouldn't be in the contract.)
+    input_gt_fields = set()
+    for att in (lb.attachments or []):
+        if getattr(att, 'kind', None) != 'hf':
+            continue
+        try:
+            _mapping = json.loads(att.hf_mapping_json or '[]')
+        except (TypeError, ValueError):
+            _mapping = []
+        for _m in _mapping:
+            if (_m.get('role') or 'gt') == 'input':
+                tf = _m.get('target_field') or _m.get('column')
+                if tf:
+                    input_gt_fields.add(tf)
+    if input_gt_fields:
+        for _name in list(seen.keys()):
+            if seen[_name].get('gt_field') in input_gt_fields:
+                seen.pop(_name, None)
 
     # Phase 9: required pred fields declared independently of any
     # metric/viz. Organizer might want raw predictions for human
