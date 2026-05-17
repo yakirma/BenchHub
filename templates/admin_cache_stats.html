@@ -80,9 +80,14 @@
                 via bench_cache. JPEG q70 at {{ '%dx%d'|format(128, 128) }}.
             </p>
             {% if gt_groups %}
-            <div class="table-responsive">
+            {# Bounded scroll: the GT-thumbnail bucket count is unbounded
+               (grows with HF (repo · split · col) groups), unlike the
+               other tables on this page. Cap at ~360px so the rest of
+               the page is reachable without paging. Sticky header keeps
+               column labels visible while scrolling. #}
+            <div class="table-responsive border rounded" style="max-height: 360px; overflow-y: auto;">
                 <table class="table table-sm small mb-0 align-middle">
-                    <thead class="table-light">
+                    <thead class="table-light" style="position: sticky; top: 0; z-index: 1;">
                         <tr>
                             <th>Source</th>
                             <th class="text-end">Count</th>
@@ -103,6 +108,9 @@
                         {% endfor %}
                     </tbody>
                 </table>
+            </div>
+            <div class="small text-body-secondary mt-1">
+                {{ gt_groups|length }} groups · scroll within the box.
             </div>
             {% else %}
             <p class="text-body-secondary small mb-0">No GT thumbnails cached yet.</p>
