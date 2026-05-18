@@ -2615,15 +2615,17 @@ def _write_sota_cache(lb_id, model_id, *, notebook, gist_id=None, gist_owner=Non
         print(f"_write_sota_cache failed for lb={lb_id} model={model_id!r}: {e}")
 
 
-def _push_one_off_gist(notebook_json, *, filename, description):
-    """Create a fresh secret GitHub gist for this notebook and return
-    (gist_url, gist_id, gist_owner). Returns (None, None, None) when
-    BENCHHUB_GITHUB_GIST_TOKEN is missing or GitHub rejects the call.
+def _push_one_off_gist(notebook_json, *, filename, description,
+                       existing_gist_id=None):
+    """Push a notebook to a secret GitHub gist. When `existing_gist_id`
+    is supplied, PATCH that gist so the URL stays stable across regen-
+    erations (mirrors the regular submit-via-colab flow's behaviour).
+    When None, POST a fresh gist.
 
-    Unlike _ensure_colab_gist this never PATCHes an existing gist —
-    the SOTA flow generates one notebook per (LB, model), so each
-    deserves its own gist. We don't cache the id either; admin can
-    regenerate freely."""
+    Returns (gist_url, gist_id, gist_owner). On any failure (missing
+    BENCHHUB_GITHUB_GIST_TOKEN, network error, GitHub 404 on a stale
+    id) falls back to a fresh POST so a deleted-on-GitHub gist doesn't
+    permanently break regeneration."""
     token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN')
     if not token:
         return None, None, None
@@ -2637,21 +2639,41 @@ def _push_one_off_gist(notebook_json, *, filename, description):
         'public': False,
         'files': {filename: {'content': notebook_json}},
     }
-    try:
-        import requests as _r
-        resp = _r.post(
-            'https://api.github.com/gists',
-            headers=headers, json=payload, timeout=30,
-        )
-        resp.raise_for_status()
-        body = resp.json()
+    import requests as _r
+
+    def _unpack(body):
         return (
             body.get('html_url'),
             body.get('id'),
             (body.get('owner') or {}).get('login'),
         )
+
+    if existing_gist_id:
+        try:
+            resp = _r.patch(
+                f'https://api.github.com/gists/{existing_gist_id}',
+                headers=headers, json=payload, timeout=30,
+            )
+            if resp.status_code == 404:
+                # Gist was deleted on GitHub since we cached it; fall
+                # through to fresh POST below.
+                pass
+            else:
+                resp.raise_for_status()
+                return _unpack(resp.json())
+        except Exception as e:
+            print(f"_push_one_off_gist PATCH {existing_gist_id} failed: {e}")
+            # Fall through to fresh POST.
+
+    try:
+        resp = _r.post(
+            'https://api.github.com/gists',
+            headers=headers, json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        return _unpack(resp.json())
     except Exception as e:
-        print(f"_push_one_off_gist failed: {e}")
+        print(f"_push_one_off_gist POST failed: {e}")
         return None, None, None
 
 
@@ -2689,18 +2711,21 @@ def admin_lb_sota_notebook(lb_id):
     )
 
     if cached:
-        # Cache stores the un-personalised template. Always re-personalise
-        # at request time with the current admin's API token + push a
-        # fresh gist so the token in the published notebook is current
-        # (the previous gist becomes orphaned — secret gists scoped to
-        # the admin's GitHub account; acceptable cost for a freshness
-        # guarantee).
+        # Cache stores the un-personalised template. Re-personalise at
+        # request time with the current admin's API token, then PATCH
+        # the existing gist (if any) so the URL stays stable — same
+        # behaviour as the regular submit-via-colab flow's
+        # _ensure_user_colab_gist. Falls back to fresh POST if the
+        # cached gist id was deleted on GitHub.
         nb_template = cached['notebook']
         nb = _personalize_notebook_for_user(nb_template, g.current_user)
+        existing_gist_id = cached.get('gist_id')
         _gist_url, gist_id, gist_owner = _push_one_off_gist(
             nb, filename=filename, description=description,
+            existing_gist_id=existing_gist_id,
         )
-        if gist_id:
+        if gist_id and gist_id != existing_gist_id:
+            # gist id rotated (cached one was 404'd) — update cache.
             _write_sota_cache(lb.id, model_id, notebook=nb_template,
                               gist_id=gist_id, gist_owner=gist_owner)
     else:
