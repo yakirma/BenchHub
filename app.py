@@ -7930,8 +7930,27 @@ def _personalize_notebook_for_user(notebook_json, user, source_colab_url=None):
     LLM chose — empty `''`, `'YOUR_API_TOKEN_HERE'`, `'<paste here>'`,
     etc.), same for `SOURCE_COLAB_URL`. Skips `API_TOKEN == '...'`
     comparison lines via the (?!=) lookahead so we don't replace check
-    expressions like `if API_TOKEN == 'YOUR_API_TOKEN_HERE':`."""
+    expressions like `if API_TOKEN == 'YOUR_API_TOKEN_HERE':`.
+
+    Also rewrites any hard-coded `benchhub.fly.dev` URLs to the
+    current BENCHHUB_BASE_URL. Cached SOTA notebooks generated before
+    the Fly → runbenchhub.com migration carried the Fly hostname in
+    every BenchHub URL string; rewriting at serve time avoids
+    invalidating those caches just to refresh hostnames."""
     out = notebook_json
+    # Hostname substitution — applies even when no user is logged in,
+    # since the URL is wrong in either case.
+    current_host = os.environ.get('BENCHHUB_BASE_URL', '').rstrip('/')
+    if current_host and 'benchhub.fly.dev' in out:
+        # Replace both the canonical scheme+host form and the bare host
+        # in case a string built it from `host = "benchhub.fly.dev"`.
+        out = out.replace('https://benchhub.fly.dev', current_host)
+        out = out.replace('http://benchhub.fly.dev',
+                          current_host.replace('https://', 'http://', 1))
+        # Bare hostname (e.g. inside a string literal). Strip scheme
+        # off current_host for this substitution.
+        bare_host = re.sub(r'^https?://', '', current_host)
+        out = out.replace('benchhub.fly.dev', bare_host)
     # Pattern: `API_TOKEN<spaces>=<not '='><spaces><quote><anything>
     # <same quote>`. The (?!=) keeps it from matching == comparisons.
     if user and getattr(user, 'api_token', None):
