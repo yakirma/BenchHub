@@ -14139,9 +14139,13 @@ def _render_mask_png_with_palette(mask_path):
     import io
     try:
         with Image.open(mask_path) as src:
-            if src.mode in ('P', 'L', 'I', 'I;16', 'I;16B', 'I;16L'):
-                arr = np.asarray(src.convert('L') if src.mode != 'L' else src,
-                                 dtype=np.int32)
+            if src.mode in ('P', 'L'):
+                # P-mode: np.asarray returns the index array directly,
+                # not the RGB-converted view (which would lose class
+                # info). L-mode is already a single-channel index map.
+                arr = np.asarray(src, dtype=np.int32)
+            elif src.mode in ('I', 'I;16', 'I;16B', 'I;16L'):
+                arr = np.asarray(src, dtype=np.int32)
             elif src.mode in ('RGB', 'RGBA'):
                 # Already RGB — probably user-pre-coloured. Just pass it through.
                 return send_file(mask_path)
