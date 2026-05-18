@@ -7925,24 +7925,27 @@ def _get_or_generate_colab_notebook(lb):
 
 
 def _personalize_notebook_for_user(notebook_json, user, source_colab_url=None):
-    """Substitute the empty `API_TOKEN = ''` placeholder with the
-    user's actual BenchHub API token, and optionally the empty
-    `SOURCE_COLAB_URL = ''` placeholder with this notebook's gist URL
-    so the upload back-references itself. Safe to apply to either the
-    static or LLM-generated notebook form."""
+    """Substitute the `API_TOKEN = '...'` placeholder with the user's
+    actual BenchHub API token (regardless of the placeholder string the
+    LLM chose — empty `''`, `'YOUR_API_TOKEN_HERE'`, `'<paste here>'`,
+    etc.), same for `SOURCE_COLAB_URL`. Skips `API_TOKEN == '...'`
+    comparison lines via the (?!=) lookahead so we don't replace check
+    expressions like `if API_TOKEN == 'YOUR_API_TOKEN_HERE':`."""
     out = notebook_json
+    # Pattern: `API_TOKEN<spaces>=<not '='><spaces><quote><anything>
+    # <same quote>`. The (?!=) keeps it from matching == comparisons.
     if user and getattr(user, 'api_token', None):
         safe_token = user.api_token.replace("\\", r"\\").replace("'", r"\'")
         out = re.sub(
-            r"API_TOKEN\s*=\s*(?:''|\\\"\\\"|\"\")",
-            f"API_TOKEN = '{safe_token}'",
+            r"API_TOKEN(\s*)=(?!=)\s*(['\"])(?:(?!\2).)*\2",
+            f"API_TOKEN\\1= '{safe_token}'",
             out, count=1,
         )
     if source_colab_url:
         safe_url = source_colab_url.replace("\\", r"\\").replace("'", r"\'")
         out = re.sub(
-            r"SOURCE_COLAB_URL\s*=\s*(?:''|\\\"\\\"|\"\")",
-            f"SOURCE_COLAB_URL = '{safe_url}'",
+            r"SOURCE_COLAB_URL(\s*)=(?!=)\s*(['\"])(?:(?!\2).)*\2",
+            f"SOURCE_COLAB_URL\\1= '{safe_url}'",
             out, count=1,
         )
     return out
