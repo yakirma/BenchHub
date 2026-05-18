@@ -1191,6 +1191,17 @@ def process_dataset_zip(zip_path, dataset_name, owner_user_id=None, category=Non
                             shutil.copy2(value, dest_path)
                             rel_path = os.path.relpath(dest_path, app.config['UPLOAD_FOLDER'])
                             custom_field = CustomField(name=field_name, field_type='image', value_text=rel_path, sample_id=sample.id)
+                        elif field_type == 'mask':
+                            # Masks ship as PNGs identical to image fields on
+                            # disk; the row's field_type='mask' is what the
+                            # renderer + metric-binding UI key off of (mask
+                            # palette, IoU/Dice-friendly metric defaults).
+                            field_folder = os.path.join(dataset_custom_fields_dir, field_name)
+                            os.makedirs(field_folder, exist_ok=True)
+                            dest_path = os.path.join(field_folder, os.path.basename(value))
+                            shutil.copy2(value, dest_path)
+                            rel_path = os.path.relpath(dest_path, app.config['UPLOAD_FOLDER'])
+                            custom_field = CustomField(name=field_name, field_type='mask', value_text=rel_path, sample_id=sample.id)
                         elif field_type == 'depth':
                             field_folder = os.path.join(dataset_dir, 'depth_maps', field_name)
                             os.makedirs(field_folder, exist_ok=True)
