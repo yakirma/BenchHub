@@ -2689,21 +2689,23 @@ def admin_lb_sota_notebook(lb_id):
     )
 
     if cached:
-        nb = cached['notebook']
-        gist_id = cached.get('gist_id')
-        gist_owner = cached.get('gist_owner')
-        # If we cached a gist URL last time AND it still exists on
-        # GitHub, redirect immediately. Otherwise re-push as a one-off.
-        if not gist_id:
-            _gist_url, gist_id, gist_owner = _push_one_off_gist(
-                nb, filename=filename, description=description,
-            )
-            if gist_id:
-                _write_sota_cache(lb.id, model_id, notebook=nb,
-                                  gist_id=gist_id, gist_owner=gist_owner)
+        # Cache stores the un-personalised template. Always re-personalise
+        # at request time with the current admin's API token + push a
+        # fresh gist so the token in the published notebook is current
+        # (the previous gist becomes orphaned — secret gists scoped to
+        # the admin's GitHub account; acceptable cost for a freshness
+        # guarantee).
+        nb_template = cached['notebook']
+        nb = _personalize_notebook_for_user(nb_template, g.current_user)
+        _gist_url, gist_id, gist_owner = _push_one_off_gist(
+            nb, filename=filename, description=description,
+        )
+        if gist_id:
+            _write_sota_cache(lb.id, model_id, notebook=nb_template,
+                              gist_id=gist_id, gist_owner=gist_owner)
     else:
-        nb = _llm_sota_colab_notebook(lb, model_id)
-        if not nb:
+        nb_template = _llm_sota_colab_notebook(lb, model_id)
+        if not nb_template:
             flash(
                 f"Couldn't generate a SOTA notebook for {model_id} "
                 "(LLM unavailable, model id rejected by Claude, or "
@@ -2712,12 +2714,15 @@ def admin_lb_sota_notebook(lb_id):
                 "danger",
             )
             return redirect(url_for('admin_lb_sota_picker', lb_id=lb.id))
+        # Cache the *template* (un-personalised) — bake the current
+        # admin's token into the pushed gist only.
+        nb = _personalize_notebook_for_user(nb_template, g.current_user)
         _gist_url, gist_id, gist_owner = _push_one_off_gist(
             nb, filename=filename, description=description,
         )
         # Cache regardless of gist outcome so the next click skips
         # the LLM call. Gist push is cheap to retry on read-back.
-        _write_sota_cache(lb.id, model_id, notebook=nb,
+        _write_sota_cache(lb.id, model_id, notebook=nb_template,
                           gist_id=gist_id, gist_owner=gist_owner)
 
     if gist_id:
