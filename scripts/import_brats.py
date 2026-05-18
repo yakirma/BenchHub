@@ -55,25 +55,33 @@ FILE_URL = f'https://huggingface.co/datasets/{SRC_REPO}/resolve/main/'
 DATASET_NAME = 'brats2021-subset'
 CATEGORY = 'Vision/Medical Image Segmentation'
 
-LB_VARIANTS = [
+LB_NAME = 'Image Segmentation on BraTS2021'
+
+# Three sub-tasks of the same LB — each becomes one Dice metric
+# column on the combined leaderboard, sharing one Attachment to the
+# brats2021-subset dataset. Matches how the BraTS challenge reports
+# WT/TC/ET side-by-side rather than as separate boards.
+SUBTASKS = [
     {
-        'name': 'Whole Tumor Segmentation on BraTS2021',
+        'target_name': 'Dice (WT)',
         'gt_field': 'mask_wt',
         'pred_name': 'wt_pred',
-        'desc': 'Binary mask for the whole-tumor region (any tumor label).',
+        'desc': 'Whole-tumor binary mask. Compared against mask_wt '
+                '(any-tumor union of necrotic + edema + enhancing).',
     },
     {
-        'name': 'Tumor Core Segmentation on BraTS2021',
+        'target_name': 'Dice (TC)',
         'gt_field': 'mask_tc',
         'pred_name': 'tc_pred',
-        'desc': 'Binary mask for the tumor-core region (labels 1 and 4 = '
-                'necrotic + enhancing).',
+        'desc': 'Tumor-core binary mask. Compared against mask_tc '
+                '(necrotic + enhancing — what surgeons resect).',
     },
     {
-        'name': 'Enhancing Tumor Segmentation on BraTS2021',
+        'target_name': 'Dice (ET)',
         'gt_field': 'mask_et',
         'pred_name': 'et_pred',
-        'desc': 'Binary mask for the enhancing-tumor region (label 4).',
+        'desc': 'Enhancing-tumor binary mask. Compared against mask_et '
+                '(gadolinium-bright active tumor).',
     },
 ]
 
@@ -185,56 +193,58 @@ def _zip_folder(folder: Path, dest_zip: Path) -> None:
 
 
 def _create_lbs(app_mod, dataset):
+    """Create ONE LB scored on three Dice metric columns (WT/TC/ET).
+    Convention per the [[feedback-one-lb-per-dataset]] preference."""
     dice = app_mod.GlobalMetric.query.filter_by(name='mean_dice').first()
     if dice is None:
         raise RuntimeError('GlobalMetric mean_dice not found — abort.')
 
-    for v in LB_VARIANTS:
-        existing = app_mod.Leaderboard.query.filter_by(name=v['name']).first()
-        if existing:
-            print(f'  LB "{v["name"]}" exists (id={existing.id}) — skip')
-            continue
+    existing = app_mod.Leaderboard.query.filter_by(name=LB_NAME).first()
+    if existing:
+        print(f'  LB "{LB_NAME}" exists (id={existing.id}) — skip')
+        return
 
-        lb = app_mod.Leaderboard(
-            name=v['name'],
-            dataset_id=dataset.id,
-            category=CATEGORY,
-            summary_metrics='',
-            visibility='public',
-            owner_user_id=None,
-        )
-        lb.required_pred_fields_json = json.dumps([
-            {
-                'name': v['pred_name'],
-                'kind': 'mask',
-                'description': v['desc'],
-            },
-        ])
-        app_mod.db.session.add(lb)
-        app_mod.db.session.flush()
+    lb = app_mod.Leaderboard(
+        name=LB_NAME,
+        dataset_id=dataset.id,
+        category=CATEGORY,
+        summary_metrics='',
+        visibility='public',
+        owner_user_id=None,
+    )
+    lb.required_pred_fields_json = json.dumps([
+        {'name': s['pred_name'], 'kind': 'mask', 'description': s['desc']}
+        for s in SUBTASKS
+    ])
+    app_mod.db.session.add(lb)
+    app_mod.db.session.flush()
 
-        app_mod.db.session.add(app_mod.Attachment(
-            leaderboard_id=lb.id, dataset_id=dataset.id, role='primary',
-        ))
-        if dataset not in lb.datasets:
-            lb.datasets.append(dataset)
+    app_mod.db.session.add(app_mod.Attachment(
+        leaderboard_id=lb.id, dataset_id=dataset.id, role='primary',
+    ))
+    if dataset not in lb.datasets:
+        lb.datasets.append(dataset)
 
+    lms = []
+    for s in SUBTASKS:
         lm = app_mod.LeaderboardMetric(
             leaderboard_id=lb.id,
             global_metric_id=dice.id,
             arg_mappings=json.dumps({
-                'gt': f'gt_{v["gt_field"]}',
-                'pred': f'sub_{v["pred_name"]}',
+                'gt': f'gt_{s["gt_field"]}',
+                'pred': f'sub_{s["pred_name"]}',
             }),
-            target_name='Dice',
+            target_name=s['target_name'],
             pooling_type='mean',
             sort_direction='higher_is_better',
         )
         app_mod.db.session.add(lm)
-        app_mod.db.session.flush()
-        lb.summary_metrics = f'lm_{lm.id}'
-        app_mod.db.session.commit()
-        print(f'  -> created LB id={lb.id} ({v["name"]})')
+        lms.append(lm)
+    app_mod.db.session.flush()
+    lb.summary_metrics = ','.join(f'lm_{lm.id}' for lm in lms)
+    app_mod.db.session.commit()
+    print(f'  -> created LB id={lb.id} ({LB_NAME}) with '
+          f'{len(lms)} Dice metric columns')
 
 
 def main() -> int:
