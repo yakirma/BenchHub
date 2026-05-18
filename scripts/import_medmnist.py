@@ -81,7 +81,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'pathmnist': {
         'task': 'multi-class',
         'is_rgb': True,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'adipose', 'background', 'debris', 'lymphocytes',
             'mucus', 'smooth muscle', 'normal colon mucosa',
@@ -93,7 +93,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'chestmnist': {
         'task': 'multi-label',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'atelectasis', 'cardiomegaly', 'effusion', 'infiltration',
             'mass', 'nodule', 'pneumonia', 'pneumothorax',
@@ -106,7 +106,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'dermamnist': {
         'task': 'multi-class',
         'is_rgb': True,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'actinic keratoses', 'basal cell carcinoma',
             'benign keratosis-like lesions', 'dermatofibroma',
@@ -118,7 +118,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'octmnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': ['CNV', 'DME', 'drusen', 'normal'],
         'description': 'Retinal OCT — 4-class classification of '
                        'macular pathologies.',
@@ -126,14 +126,14 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'pneumoniamnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': ['normal', 'pneumonia'],
         'description': 'Chest X-ray — 2-class pneumonia classification.',
     },
     'retinamnist': {
         'task': 'multi-class',
         'is_rgb': True,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': ['no DR', 'mild', 'moderate', 'severe', 'proliferative'],
         'description': 'Fundus camera — ordinal severity classification '
                        'of diabetic retinopathy (5 grades).',
@@ -141,7 +141,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'breastmnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': ['malignant', 'normal or benign'],
         'description': 'Breast ultrasound — 2-class malignancy '
                        'classification.',
@@ -149,7 +149,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'bloodmnist': {
         'task': 'multi-class',
         'is_rgb': True,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'basophil', 'eosinophil', 'erythroblast',
             'immature granulocytes', 'lymphocyte', 'monocyte',
@@ -161,7 +161,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'tissuemnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'collecting duct, connecting tubule',
             'distal convoluted tubule',
@@ -178,7 +178,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'organamnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'bladder', 'femur-left', 'femur-right', 'heart',
             'kidney-left', 'kidney-right', 'liver', 'lung-left',
@@ -190,7 +190,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'organcmnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'bladder', 'femur-left', 'femur-right', 'heart',
             'kidney-left', 'kidney-right', 'liver', 'lung-left',
@@ -202,7 +202,7 @@ MEDMNIST_2D_INFO: dict[str, dict] = {
     'organsmnist': {
         'task': 'multi-class',
         'is_rgb': False,
-        'category': 'Vision/Medical Image Classification',
+        'category': 'Vision/Image Classification',
         'class_names': [
             'bladder', 'femur-left', 'femur-right', 'heart',
             'kidney-left', 'kidney-right', 'liver', 'lung-left',
