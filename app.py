@@ -13284,26 +13284,58 @@ def datasets_list():
             (bucket['category'].split('/', 1)[1] if bucket['category'] and '/' in bucket['category'] else None)
         )
         hf_datasets.append(bucket)
-    hf_datasets.sort(key=lambda b: (
-        b['area'] == 'Uncategorized',
-        b['area'],
-        b['task'] or '',
-        -b['sample_count'],
-        b['hf_repo_id'],
+
+    # Unified entries: BH-uploaded Datasets + cached HF entries grouped
+    # under one Area/Task hierarchy. Each entry carries a `kind`
+    # discriminator so the template can branch on the small handful of
+    # kind-specific fields (visibility badge, owner avatar, HF split,
+    # etc.) while sharing the Area/Task header rendering.
+    entries = []
+    for ds in datasets:
+        cat = ds.category or ''
+        area = cat.split('/', 1)[0] if cat else 'Uncategorized'
+        task = cat.split('/', 1)[1] if '/' in cat else None
+        entries.append({
+            'kind': 'bh',
+            'category': cat or None,
+            'area': area,
+            'task': task,
+            'bh': ds,
+            'thumb_url': dataset_thumbs.get(ds.id),
+            'sample_count': len(ds.samples),
+            'name': ds.name,
+        })
+    for bucket in hf_datasets:
+        entries.append({
+            'kind': 'hf',
+            'category': bucket['category'],
+            'area': bucket['area'],
+            'task': bucket['task'],
+            'hf': bucket,
+            'thumb_url': None,
+            'sample_count': bucket['sample_count'],
+            'name': bucket['hf_repo_id'],
+        })
+    # Uncategorized sinks to the bottom; within a category, BH first
+    # then HF (alphabetical on `kind`), tie-broken by name.
+    entries.sort(key=lambda e: (
+        e['area'] == 'Uncategorized',
+        e['area'].lower(),
+        (e['task'] or '').lower(),
+        e['kind'],
+        e['name'].lower(),
     ))
 
-    # Same tree shape as /explore: { area: [{task, count}, ...] }, with
-    # counts now meaning "HF datasets in this area/task" rather than
-    # leaderboards. Surfaced in the template as a left-rail filter.
-    hf_category_tree = {}
-    for bucket in hf_datasets:
-        area = bucket['area']
-        task = bucket['task'] or ''
-        node = hf_category_tree.setdefault(area, {'count': 0, 'tasks': {}})
+    # Category tree built from the combined entry list.
+    category_tree_dict = {}
+    for e in entries:
+        area = e['area']
+        task = e['task'] or ''
+        node = category_tree_dict.setdefault(area, {'count': 0, 'tasks': {}})
         node['count'] += 1
         if task:
             node['tasks'][task] = node['tasks'].get(task, 0) + 1
-    hf_category_tree = [
+    category_tree = [
         {
             'area': area,
             'count': v['count'],
@@ -13312,18 +13344,15 @@ def datasets_list():
                 key=lambda x: (-x['count'], x['name']),
             ),
         }
-        for area, v in sorted(hf_category_tree.items())
+        for area, v in sorted(category_tree_dict.items())
     ]
 
-    active_hf_category = (request.args.get('category') or '').strip()
-    if active_hf_category:
-        if '/' in active_hf_category:
-            hf_datasets = [d for d in hf_datasets if d['category'] == active_hf_category]
+    active_category = (request.args.get('category') or '').strip()
+    if active_category:
+        if '/' in active_category:
+            entries = [e for e in entries if e['category'] == active_category]
         else:
-            hf_datasets = [
-                d for d in hf_datasets
-                if d['area'] == active_hf_category
-            ]
+            entries = [e for e in entries if e['area'] == active_category]
 
     # Datalist suggestions for the upload form. Categories already in
     # use anywhere on the site (BH dataset OR LB), distinct.
@@ -13337,9 +13366,9 @@ def datasets_list():
     return render_template('datasets.html',
                            datasets=datasets,
                            dataset_thumbs=dataset_thumbs,
-                           hf_datasets=hf_datasets,
-                           hf_category_tree=hf_category_tree,
-                           active_hf_category=active_hf_category,
+                           entries=entries,
+                           category_tree=category_tree,
+                           active_category=active_category,
                            known_categories=known_categories)
 
 @app.route('/author_avatars/<filename>')
