@@ -216,6 +216,8 @@ def _create_lbs(app_mod, dataset):
         app_mod.db.session.add(app_mod.Attachment(
             leaderboard_id=lb.id, dataset_id=dataset.id, role='primary',
         ))
+        if dataset not in lb.datasets:
+            lb.datasets.append(dataset)
 
         lm = app_mod.LeaderboardMetric(
             leaderboard_id=lb.id,
@@ -298,6 +300,10 @@ def main() -> int:
                 return 1
             print(f'  -> Dataset id={ds_id}')
             dataset = app_mod.db.session.get(app_mod.Dataset, ds_id)
+            if dataset is not None and not dataset.source_url:
+                dataset.source_url = (
+                    f'https://huggingface.co/datasets/{SRC_REPO}')
+                app_mod.db.session.commit()
             shutil.rmtree(layout, ignore_errors=True)
             zip_path.unlink(missing_ok=True)
 

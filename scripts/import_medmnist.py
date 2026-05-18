@@ -378,6 +378,12 @@ def _import_one(base: str, info: dict, size: int, split: str,
             print(f'  FAILED: {msg}')
             return
         print(f'  -> Dataset id={ds_id}')
+        # Stamp upstream source URL so the LB / dataset pages can link
+        # back to the canonical Zenodo record.
+        ds_row = app_module.db.session.get(app_module.Dataset, ds_id)
+        if ds_row is not None and not ds_row.source_url:
+            ds_row.source_url = 'https://zenodo.org/records/10519652'
+            app_module.db.session.commit()
 
         # Drop the source NPZ + the materialized folder once the ZIP is
         # accepted; the BH copy under uploads/datasets/<name>/ is canonical.

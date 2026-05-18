@@ -111,7 +111,15 @@ def _materialize_bh_layout(tar_path: Path, npy_path: Path, out_dir: Path) -> int
 
     n = 0
     with tarfile.open(tar_path, 'r') as tar:
-        members = [m for m in tar.getmembers() if m.isfile() and m.name.endswith('.png')]
+        # The tar also bundles KITTI Depth Prediction GT PNGs under
+        # */proj_depth/groundtruth/image_02/*.png alongside the Eigen-
+        # split RGB images. Filter to just the camera frames so the
+        # length lines up with gt_depths.npy (697).
+        members = [
+            m for m in tar.getmembers()
+            if m.isfile() and m.name.endswith('.png')
+            and '/image_02/data/' in m.name
+        ]
         print(f'  tar has {len(members)} image entries; gt has {len(gt)}')
         if len(members) != len(gt):
             print(f'  WARN: image/gt count mismatch — alignment unreliable. '
@@ -194,6 +202,8 @@ def _create_lb(app_mod, dataset):
     app_mod.db.session.add(app_mod.Attachment(
         leaderboard_id=lb.id, dataset_id=dataset.id, role='primary',
     ))
+    if dataset not in lb.datasets:
+        lb.datasets.append(dataset)
 
     lm_rmse = app_mod.LeaderboardMetric(
         leaderboard_id=lb.id,
@@ -271,6 +281,10 @@ def main() -> int:
                 return 1
             print(f'  -> Dataset id={ds_id}')
             dataset = app_mod.db.session.get(app_mod.Dataset, ds_id)
+            if dataset is not None and not dataset.source_url:
+                dataset.source_url = (
+                    'https://huggingface.co/datasets/exander/kitti-depth-gt')
+                app_mod.db.session.commit()
             # Cleanup the heavy intermediates.
             tar_path.unlink(missing_ok=True)
             npy_path.unlink(missing_ok=True)

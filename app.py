@@ -428,6 +428,12 @@ class Dataset(db.Model):
     # dataset settings page. LBs created from this dataset inherit
     # the category if the LB doesn't already have one.
     category = db.Column(db.String(120), nullable=True, index=True)
+    # Upstream-of-truth URL for datasets we materialised from elsewhere
+    # (Zenodo records, EE Zurich, HF mirrors, archive download pages).
+    # Surfaced as a "source" link on the dataset + LB pages so users
+    # know where the bytes originally came from. NULL for datasets that
+    # were uploaded straight as a ZIP without a known external origin.
+    source_url = db.Column(db.Text, nullable=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
@@ -15986,6 +15992,15 @@ def check_and_migrate_db():
                         print("Migration successful: Added 'category' column to dataset.")
                     except Exception as e:
                         print(f"Migration error (dataset.category): {e}")
+
+                if 'source_url' not in dataset_columns:
+                    print("Migrating DB: Adding 'source_url' to 'dataset' table...")
+                    try:
+                        cursor.execute("ALTER TABLE dataset ADD COLUMN source_url TEXT DEFAULT NULL")
+                        conn.commit()
+                        print("Migration successful: Added 'source_url' column to dataset.")
+                    except Exception as e:
+                        print(f"Migration error (dataset.source_url): {e}")
 
                 # --- Relax global UNIQUE on GlobalMetric.name + GlobalVisualization.name ---
                 # Private rows now coexist with the same name across users; only

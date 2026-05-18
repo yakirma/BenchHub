@@ -206,6 +206,11 @@ def _create_lb(app_mod, dataset, scale: int):
         role='primary',
     )
     app_mod.db.session.add(att)
+    # Populate the legacy leaderboard_datasets association too — the LB
+    # detail page's dataset rail iterates `leaderboard.datasets`, so
+    # without this the source rail is empty.
+    if dataset not in lb.datasets:
+        lb.datasets.append(dataset)
 
     # Metrics: PSNR + SSIM, both image×image. The arg_mappings tie the
     # function args to the per-sample context keys:
@@ -283,6 +288,9 @@ def _import_one_scale(scale: int, work_root: Path, hr_zip: Path,
             return
         print(f'  -> Dataset id={ds_id}')
         dataset = app_mod.db.session.get(app_mod.Dataset, ds_id)
+        if dataset is not None and not dataset.source_url:
+            dataset.source_url = 'http://data.vision.ee.ethz.ch/cvl/DIV2K/'
+            app_mod.db.session.commit()
         # Tidy up the per-scale workdir.
         shutil.rmtree(lr_extracted, ignore_errors=True)
         shutil.rmtree(layout_dir, ignore_errors=True)

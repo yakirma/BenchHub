@@ -320,9 +320,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </p>
 
             {# Dataset / HF source rail — same look as the dataset
-               page's "HF source" badge but expanded to multi-source. #}
+               page's "HF source" badge but expanded to multi-source.
+               Show BH datasets via either the legacy leaderboard.datasets
+               relationship OR the modern Attachment.dataset_id (newer
+               LBs created via direct seed scripts don't populate the
+               legacy `leaderboard_datasets` table). De-dupe by id. #}
+            {% set _bh_ds_seen = [] %}
             <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
-                {% for ds in leaderboard.datasets %}
+                {% set _bh_datasets = (leaderboard.datasets or []) +
+                    (leaderboard.attachments or [])|map(attribute='dataset')|reject('none')|list %}
+                {% for ds in _bh_datasets %}
+                {% if ds.id not in _bh_ds_seen %}
                 {% set thumb = dataset_thumbs.get(ds.id) if dataset_thumbs else None %}
                 <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
                     class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
@@ -339,6 +347,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     {% endif %}
                     <span class="fw-semibold small">{{ ds.name }}</span>
                 </a>
+                {% if ds.source_url %}
+                <a href="{{ ds.source_url }}" target="_blank" rel="noopener"
+                   class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center py-1 px-2 small"
+                   title="Original source: {{ ds.source_url }}">
+                    <i class="bi bi-box-arrow-up-right me-1"></i>source
+                </a>
+                {% endif %}
+                {% set _ = _bh_ds_seen.append(ds.id) %}
+                {% endif %}
                 {% endfor %}
                 {% for att in (leaderboard.attachments or []) %}
                 {% if att.kind == 'hf' and att.hf_repo_id %}
