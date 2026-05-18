@@ -14120,7 +14120,49 @@ def serve_custom_field_image(field_id):
     if not os.path.exists(image_path):
         return "Image not found", 404
 
+    if custom_field.field_type == 'mask':
+        # BH masks land on disk as raw class-index PNGs (values like
+        # 0/1 for binary masks, 0/1/2/4 for multi-class). Rendered as
+        # grayscale those are visually black. Apply the deterministic-
+        # hue LUT (same one used for HF GT mask thumbs in
+        # _cache_gt_image_thumb) at serve time so each class index
+        # picks up a distinct colour.
+        return _render_mask_png_with_palette(image_path)
+
     return send_file(image_path)
+
+
+def _render_mask_png_with_palette(mask_path):
+    """Recolour a class-index mask PNG using the deterministic-hue LUT.
+    Returns a Flask response with the recoloured PNG bytes."""
+    from PIL import Image
+    import io
+    try:
+        with Image.open(mask_path) as src:
+            if src.mode in ('P', 'L', 'I', 'I;16', 'I;16B', 'I;16L'):
+                arr = np.asarray(src.convert('L') if src.mode != 'L' else src,
+                                 dtype=np.int32)
+            elif src.mode in ('RGB', 'RGBA'):
+                # Already RGB — probably user-pre-coloured. Just pass it through.
+                return send_file(mask_path)
+            else:
+                return send_file(mask_path)
+    except Exception:
+        abort(404)
+    lut = ((np.arange(256, dtype=np.int32) * 31 + 17) % 256).astype(np.uint8)
+    idx = arr & 0xFF
+    r = lut[idx]
+    g = lut[(idx + 85) & 0xFF]
+    b = lut[(idx + 170) & 0xFF]
+    # Background (class 0) stays black for visual contrast.
+    bg = (arr == 0)
+    rgb = np.stack([r, g, b], axis=-1).astype(np.uint8)
+    rgb[bg] = 0
+    img = Image.fromarray(rgb, mode='RGB')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG', optimize=True)
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png', max_age=300)
 
 @app.route('/api/custom_field_depth_data/<int:field_id>')
 def serve_custom_field_depth_data(field_id):
