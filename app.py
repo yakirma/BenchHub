@@ -12826,7 +12826,7 @@ def comparison_view(leaderboard_id):
         available_display_options[field_name] = {
             'label': field_name, 'type': field_type, 'default_width': default_width,
         }
-        if field_type in ['image', 'depth']: custom_image_fields.append(field_name)
+        if field_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
 
     # Build submission field mapping
     submission_field_map = {}
@@ -12845,7 +12845,7 @@ def comparison_view(leaderboard_id):
             available_display_options[field_name] = {
                 'label': field_name, 'type': field_type, 'default_width': default_width,
             }
-            if field_type in ['image', 'depth']: custom_image_fields.append(field_name)
+            if field_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
 
     # 1. Check GT fields availability (only for samples on current page for UI rendering hint)
     has_gt_hist = any(s.histogram_data for s in samples_on_page)
@@ -13636,6 +13636,8 @@ def dataset_view(dataset_id):
     for field_name, field_type in custom_field_names:
         if field_type == 'image':
             available_display_options[field_name] = {'label': field_name, 'type': 'image', 'default_width': '150px'}
+        elif field_type == 'mask':
+            available_display_options[field_name] = {'label': field_name, 'type': 'mask', 'default_width': '150px'}
         elif field_type == 'depth':
             available_display_options[field_name] = {'label': field_name, 'type': 'depth', 'default_width': '150px'}
         elif field_type == 'json':
@@ -14109,8 +14111,8 @@ def serve_custom_field_image(field_id):
     if custom_field.field_type == 'depth':
         return serve_depth_image(custom_field.value_text)
 
-    if custom_field.field_type != 'image':
-        return "Not an image/depth field", 400
+    if custom_field.field_type not in ('image', 'mask', 'audio'):
+        return "Not an image/mask/depth/audio field", 400
 
     # value_text contains the relative path from uploads folder
     image_path = os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text)
