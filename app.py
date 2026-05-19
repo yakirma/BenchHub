@@ -4175,6 +4175,137 @@ def feature_request_new():
     return redirect(url_for('feature_requests_list'))
 
 
+@app.route('/api/submit/<int:leaderboard_id>', methods=['POST'])
+@require_api_token
+def api_submit_typed(leaderboard_id):
+    """Programmatic submission endpoint for the Phase B typed-client.
+
+    Expects a multipart upload with a single `submission_zip` field
+    holding a ZIP whose root contains a `manifest.json` + one
+    sub-directory per declared prediction (`<field>/<sample>.<ext>`).
+
+    The server validates the manifest against `Leaderboard.required_pred_fields_json`
+    (every required pred name must be present with a matching kind),
+    creates a Submission row + per-prediction CustomField rows, copies
+    file-backed kinds into `uploads/submissions/<id>/`, and enqueues
+    the Celery `process_submission` task. Returns the submission id
+    + a relative view URL.
+    """
+    import tempfile
+    import zipfile
+
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+
+    upload = request.files.get('submission_zip')
+    if upload is None or not upload.filename:
+        return jsonify({'error': 'multipart field "submission_zip" required'}), 400
+    name = (request.form.get('name') or '').strip() or None
+
+    from benchhub.manifest import import_typed_submission
+    with tempfile.TemporaryDirectory(prefix='bh_sub_') as extract_dir:
+        try:
+            with zipfile.ZipFile(upload.stream) as zf:
+                zf.extractall(extract_dir)
+        except zipfile.BadZipFile:
+            return jsonify({'error': 'submission_zip is not a valid ZIP file'}), 400
+
+        # Allow a single top-level folder inside the ZIP (the common
+        # shape — `mymodel/manifest.json` rather than bare).
+        roots = [p for p in os.listdir(extract_dir) if not p.startswith('.')]
+        if (len(roots) == 1
+                and os.path.isdir(os.path.join(extract_dir, roots[0]))
+                and not os.path.exists(os.path.join(extract_dir, 'manifest.json'))):
+            source_root = os.path.join(extract_dir, roots[0])
+        else:
+            source_root = extract_dir
+
+        try:
+            sub_id, summary = import_typed_submission(
+                source_root,
+                leaderboard=lb,
+                submission_name=name,
+                db_session=db.session,
+                Submission=Submission,
+                CustomField=CustomField,
+                upload_folder=app.config['UPLOAD_FOLDER'],
+                owner_user_id=g.current_user.id,
+            )
+            db.session.commit()
+        except FileNotFoundError as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+        except ValueError as e:
+            db.session.rollback()
+            return jsonify({'error': f'submission invalid: {e}'}), 400
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': f'submission ingest failed: {e}'}), 500
+
+    # Enqueue the eval task — lazy import per the circular-import shape
+    # documented in CLAUDE.md.
+    import tasks
+    try:
+        tasks.process_submission.delay(sub_id)
+    except Exception as e:
+        # Don't fail the request — the row is in the DB and the worker
+        # can be reaped manually. Just flag it in the response.
+        summary['enqueue_warning'] = str(e)
+
+    summary['url'] = url_for(
+        'submission_view', submission_id=sub_id, _external=False,
+    ) if 'submission_view' in app.view_functions else f'/submission/{sub_id}'
+    return jsonify(summary), 201
+
+
+@app.route('/admin/import_typed_dataset', methods=['POST'])
+@login_required
+def admin_import_typed_dataset():
+    """Admin-only: materialise a typed dataset from a server-side path.
+
+    Phase B replacement for the deleted ZIP upload flow. The caller
+    (admin running a seed script over SSH, or the on-box CLI) hands
+    over an absolute path to a directory containing a `manifest.json`
+    + per-field sub-directories. The importer writes Dataset + Sample +
+    CustomField rows and copies file-backed kinds under
+    `uploads/datasets/<dataset_id>/`. Inline kinds (scalar, label)
+    are decoded and stashed directly on the CustomField row.
+
+    Request JSON: `{"source_path": "/abs/path/to/dataset_root"}`.
+    Response JSON: the importer's summary dict on success.
+    """
+    if not is_admin(g.current_user):
+        abort(403)
+    body = request.get_json(silent=True) or {}
+    source_path = (body.get('source_path') or '').strip()
+    if not source_path:
+        return jsonify({'error': 'source_path required'}), 400
+    if not os.path.isabs(source_path):
+        return jsonify({'error': 'source_path must be absolute'}), 400
+    if not os.path.isdir(source_path):
+        return jsonify({'error': f'not a directory: {source_path}'}), 400
+
+    from benchhub.manifest import import_typed_dataset
+    try:
+        _, summary = import_typed_dataset(
+            source_path,
+            db_session=db.session,
+            Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+            upload_folder=app.config['UPLOAD_FOLDER'],
+            owner_user_id=g.current_user.id,
+        )
+        db.session.commit()
+    except FileNotFoundError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 400
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'error': f'manifest invalid: {e}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'import failed: {e}'}), 500
+    return jsonify(summary), 201
+
+
 @app.route('/admin/feature_requests', methods=['GET'])
 @login_required
 def admin_feature_requests():
@@ -10316,71 +10447,6 @@ def _cache_gt_image_thumb(repo_id, revision, split, col, sample_idx,
     except Exception as e:
         print(f"DEBUG: cache_put gt thumb for {key}: {e}")
         return None
-
-
-def _persist_pred_scalars_from_disk(submission, leaderboard, submission_folder):
-    """For each `<field>/<sample>.txt` under `submission_folder`, parse
-    the value as float (or keep as text) and write a CustomField row
-    keyed on submission_id + sample_name + field name. Lets the
-    comparison view show the actual predicted value (e.g. `label_pred=4`)
-    in addition to the metric-output value (`lm_4=0.0` for a miss).
-
-    Idempotent: deletes prior `<field>_pred`-named CustomFields for
-    this submission before writing.
-    """
-    if not submission_folder or not os.path.isdir(submission_folder):
-        return
-    pred_field_names = [
-        p['name'] for p in _lb_submission_pred_fields(leaderboard)
-    ]
-    if not pred_field_names:
-        return
-    CustomField.query.filter(
-        CustomField.submission_id == submission.id,
-        CustomField.name.in_(pred_field_names),
-    ).delete(synchronize_session=False)
-
-    sample_pat = re.compile(r'^(s_\d+|.+?)\.txt$')
-    for field in pred_field_names:
-        d = os.path.join(submission_folder, field)
-        if not os.path.isdir(d):
-            continue
-        try:
-            entries = os.listdir(d)
-        except OSError:
-            continue
-        for entry in entries:
-            m = sample_pat.match(entry)
-            if not m:
-                continue
-            sample_name = m.group(1)
-            try:
-                with open(os.path.join(d, entry)) as fh:
-                    raw = fh.read().strip()
-            except OSError:
-                continue
-            value_float = None
-            try:
-                value_float = float(raw)
-            except (TypeError, ValueError):
-                pass
-            if value_float is not None:
-                db.session.add(CustomField(
-                    submission_id=submission.id,
-                    sample_name=sample_name,
-                    name=field,
-                    data_type='scalar',
-                    value_float=value_float,
-                ))
-            elif raw:
-                db.session.add(CustomField(
-                    submission_id=submission.id,
-                    sample_name=sample_name,
-                    name=field,
-                    data_type='text',
-                    value_text=raw,
-                ))
-    db.session.commit()
 
 
 def _generate_submission_viz_assets(submission, leaderboard, pred_source_folder):

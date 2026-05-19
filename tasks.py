@@ -370,15 +370,12 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                     logger.info(
                         f"Wrote {n_viz} viz PNG(s) for submission {submission_id}"
                     )
-                # Pred scalar/text snapshot: copies the on-disk
-                # `<field>/<sample>.txt` values into CustomField rows
-                # so the comparison view can show the raw predicted
-                # value (not just the metric hit/miss output). Cheap
-                # — one DB row per (sample, field) at ~100B each.
-                from app import _persist_pred_scalars_from_disk
-                _persist_pred_scalars_from_disk(
-                    submission, leaderboard, sub_folder,
-                )
+                # Typed-ingest flow (Phase B) writes pred CustomField
+                # rows up-front in `import_typed_submission`, so the
+                # legacy `_persist_pred_scalars_from_disk` step is
+                # gone — it used to delete the pred rows and re-read
+                # them from `.txt` files only, which mangled non-scalar
+                # kinds (depth/image/audio/etc.).
         except Exception as e:
             logger.warning(
                 f"Submission {submission_id} viz-asset generation failed: {e}"

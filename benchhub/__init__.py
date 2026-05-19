@@ -19,6 +19,12 @@ from benchhub.types import (
     Json,
     get_type,
 )
+from benchhub.client import (
+    BenchHubAPIError,
+    Client,
+    FlaskTestClientTransport,
+    SubmissionBuilder,
+)
 
 __all__ = [
     "DataType",
@@ -33,4 +39,8 @@ __all__ = [
     "Scalar",
     "Json",
     "get_type",
+    "Client",
+    "SubmissionBuilder",
+    "FlaskTestClientTransport",
+    "BenchHubAPIError",
 ]
