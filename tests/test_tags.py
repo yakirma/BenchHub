@@ -44,6 +44,7 @@ def test_update_dataset_tags_blocks_non_owner(auth_client, logged_in_user, db_se
     assert resp.status_code == 403
 
 
+@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
 def test_explore_tag_filter_narrows_to_matching_lbs(client, db_session):
     ds = Dataset(name='tags_ds', visibility='public')
     db.session.add(ds); db.session.flush()
@@ -63,6 +64,7 @@ def test_explore_tag_filter_narrows_to_matching_lbs(client, db_session):
     assert b'untagged_lb' not in body
 
 
+@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
 def test_explore_tag_cloud_renders_with_counts(client, db_session):
     ds = Dataset(name='cloud_ds', visibility='public')
     db.session.add(ds); db.session.flush()
@@ -93,6 +95,7 @@ def test_explore_tag_cloud_renders_with_counts(client, db_session):
     assert int(depth_anchor.group(1)) > int(seg_anchor.group(1))
 
 
+@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
 def test_explore_tag_cloud_assigns_distinct_colors_by_name(client, db_session):
     """Two tags at the SAME count should get different hue classes
     (color is per-name, not per-count) so they don't look identical."""
@@ -152,6 +155,7 @@ def test_dataset_tags_render_on_home_card(auth_client, logged_in_user, db_sessio
     assert b'depth' in body
 
 
+@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
 def test_explore_tag_filter_empty_when_no_matches(client, db_session):
     """Filtering on a tag with zero matches still renders the page,
     just with the empty-state copy."""

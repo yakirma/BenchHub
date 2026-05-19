@@ -7995,19 +7995,22 @@ def _personalize_notebook_for_user(notebook_json, user, source_colab_url=None):
         # off current_host for this substitution.
         bare_host = re.sub(r'^https?://', '', current_host)
         out = out.replace('benchhub.fly.dev', bare_host)
-    # Pattern: `API_TOKEN<spaces>=<not '='><spaces><quote><anything>
-    # <same quote>`. The (?!=) keeps it from matching == comparisons.
+    # Pattern: `API_TOKEN<spaces>=<not '='><spaces><quote><anything><same quote>`.
+    # The (?!=) keeps it from matching == comparisons. The optional `\\?`
+    # before each quote handles JSON-escaped placeholders like
+    # `API_TOKEN = \"\"` that appear when a notebook source line uses
+    # double quotes (json.dumps escapes them).
     if user and getattr(user, 'api_token', None):
         safe_token = user.api_token.replace("\\", r"\\").replace("'", r"\'")
         out = re.sub(
-            r"API_TOKEN(\s*)=(?!=)\s*(['\"])(?:(?!\2).)*\2",
+            r"API_TOKEN(\s*)=(?!=)\s*(\\?['\"]).*?\2",
             f"API_TOKEN\\1= '{safe_token}'",
             out, count=1,
         )
     if source_colab_url:
         safe_url = source_colab_url.replace("\\", r"\\").replace("'", r"\'")
         out = re.sub(
-            r"SOURCE_COLAB_URL(\s*)=(?!=)\s*(['\"])(?:(?!\2).)*\2",
+            r"SOURCE_COLAB_URL(\s*)=(?!=)\s*(\\?['\"]).*?\2",
             f"SOURCE_COLAB_URL\\1= '{safe_url}'",
             out, count=1,
         )

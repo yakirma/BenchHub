@@ -358,6 +358,7 @@ def test_populate_lb_samples_route_blocks_non_owner(
     assert '/login' in resp.headers['Location']
 
 
+@pytest.mark.xfail(reason="'Explore samples' button removed when /explore was folded into /leaderboards (commit 21b5222). Phase A delete pile.")
 def test_lb_page_has_explore_samples_button(client, db_session):
     """The LB header carries an `Explore samples` link to /comparison
     with samples_only=1. Visible regardless of submission count."""

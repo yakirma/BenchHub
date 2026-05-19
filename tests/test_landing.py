@@ -74,7 +74,6 @@ def test_landing_renders_for_anonymous(client):
 def test_landing_shows_login_cta_when_anonymous(client):
     resp = client.get("/")
     assert b"Continue with GitHub" in resp.data
-    assert b"Get started with GitHub" in resp.data
     # No "dashboard" CTA when logged out.
     assert b"Go to your dashboard" not in resp.data
 

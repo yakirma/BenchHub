@@ -53,6 +53,7 @@ def _seed_lb(name, *, canonicality='personal', canonical_for_repo=None,
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(reason="/explore is now a back-compat redirect to /leaderboards (commit 21b5222); test asserts old content surface. Phase A delete pile.")
 def test_explore_hides_personal_leaderboards(client, db_session):
     _seed_lb('lb_personal', canonicality='personal')
     _seed_lb('lb_public', canonicality='public')
@@ -98,6 +99,7 @@ def test_promote_endpoint_requires_admin(client, db_session, login_as):
     assert lb.canonicality == 'personal'
 
 
+@pytest.mark.xfail(reason="Leaderboard.canonicality dropped (commit 317dd94); visibility is the only public/private flag now. Phase A delete pile.")
 def test_promote_sets_canonical_for_repo(client, db_session, login_as):
     admin = _mk_admin()
     lb = _seed_lb('lb_to_promote', canonicality='personal')
@@ -114,6 +116,7 @@ def test_promote_sets_canonical_for_repo(client, db_session, login_as):
     assert lb.canonical_for_repo == 'cifar10'
 
 
+@pytest.mark.xfail(reason="Leaderboard.canonicality dropped (commit 317dd94); visibility is the only public/private flag now. Phase A delete pile.")
 def test_promote_demote_clears_canonical_for_repo(client, db_session, login_as):
     admin = _mk_admin()
     lb = _seed_lb(
@@ -130,6 +133,7 @@ def test_promote_demote_clears_canonical_for_repo(client, db_session, login_as):
     assert lb.canonical_for_repo is None
 
 
+@pytest.mark.xfail(reason="Leaderboard.canonicality dropped (commit 317dd94); visibility is the only public/private flag now. Phase A delete pile.")
 def test_promote_rejects_repo_that_already_has_canonical(client, db_session, login_as):
     """Two LBs cannot both claim canonicality for the same HF repo —
     /explore would show duplicates and "submit there instead" loses

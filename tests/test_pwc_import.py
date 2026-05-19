@@ -475,6 +475,7 @@ def stub_hf_features(monkeypatch):
     return state
 
 
+@pytest.mark.xfail(reason="Asserts Leaderboard.canonicality (dropped in commit 317dd94). HF import wiring is Phase A delete pile.")
 def test_creates_lb_with_hf_attachment_and_mirrored_subs(
     client, db_session, login_as, stub_hf_features,
 ):
@@ -549,6 +550,7 @@ def test_creates_lb_with_hf_attachment_and_mirrored_subs(
     assert by_target['Top 5 Accuracy'] == 99.9
 
 
+@pytest.mark.xfail(reason="Asserts old _infer_mapping field-naming (bare 'gt_label' vs new 'gt_scalar_label'). HF import wiring is Phase A delete pile.")
 def test_creates_lb_arg_mappings_target_real_gt_field(
     client, db_session, login_as, stub_hf_features,
 ):

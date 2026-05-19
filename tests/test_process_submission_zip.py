@@ -54,6 +54,7 @@ def upload_path(*parts):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(reason="Test predicates the dropped metric_* prefix→'scalar' behavior; surface is Phase A delete pile (detect_custom_fields rewrite).")
 def test_happy_path_creates_submission_with_custom_fields(
     leaderboard_with_samples, make_zip
 ):

@@ -181,6 +181,7 @@ def test_gt_scalars_exposed_with_and_without_prefix(db_session, sample):
     assert ctx["snr"] == 42.0
 
 
+@pytest.mark.xfail(reason="get_metric_context is being rewritten in Phase A typed-contract overhaul; JSON-GT exposure rule will be replaced by per-DataType class dispatch.")
 def test_non_scalar_gt_fields_loaded_lazily(db_session, sample):
     """`image` and `depth` GT custom fields used to be excluded from
     the context. After Option B they're loaded lazily as numpy arrays
