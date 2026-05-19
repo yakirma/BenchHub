@@ -89,7 +89,6 @@ def lb_with_depth_pred(client, db_session, tmp_path, monkeypatch):
 
     lb = Leaderboard(
         name='depth_lb', summary_metrics='', visibility='public',
-        canonicality='public',
     )
     lb.datasets.append(ds)
     db.session.add(lb); db.session.flush()

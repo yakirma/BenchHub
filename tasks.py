@@ -9,11 +9,6 @@ from metric_engine import (
     sort_metrics_by_dependency,
     _sandbox_enabled,
 )
-# Top-level so the celery main process loads it once at startup; the
-# prefork child inherits the cached module via fork. Lazy import inside
-# the task body fails in the child with ModuleNotFoundError because
-# the prefork worker's sys.path/cwd don't always match the parent's.
-import pwc_client
 import numpy as np
 
 # Configure logging
@@ -86,51 +81,15 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             submission.processing_status = 'Processing: Preparing Context'
             session.commit()
 
-            # Fetch all samples the LB evaluates against. Use
-            # _iter_lb_eval_samples so HF-attached LBs (no BH Dataset
-            # row, just an Attachment(kind='hf')) get streamed
-            # _VirtualSample objects instead of an empty SQL result.
-            # Previously this filtered on Sample.dataset_id, which is
-            # NULL for HF-attached LBs → zero samples → silent
-            # status='Processed' with no MetricResult values.
-            from app import (
-                _iter_lb_eval_samples,
-                _lb_submission_pred_fields,
-                _discover_submission_pred_indices,
-            )
-            hf_token = None
-            try:
-                hf_token = getattr(submission.owner, 'hf_token', None)
-            except Exception:
-                pass
+            # Fetch all samples the LB evaluates against via the
+            # Attachment table (+ the legacy lb.datasets m2m). HF
+            # support is gone — datasets are BH-owned files on disk.
+            from app import _iter_lb_eval_samples
 
-            # Cap HF iteration to the submission's actual prediction
-            # range — a submission with preds for samples 0..187
-            # streams 188 HF rows instead of the 10K default cap,
-            # turning a 10-minute "Preparing Context" stall into seconds.
-            # Falls through (no cap) when the submission has no on-disk
-            # pred folders, which matches prior behavior for BH LBs.
-            pred_field_names = [
-                p['name'] for p in _lb_submission_pred_fields(leaderboard)
-            ]
-            sub_pred_indices = _discover_submission_pred_indices(
-                submission.id, pred_field_names,
-            )
-            hf_cap = (max(sub_pred_indices) + 1) if sub_pred_indices else None
-            if hf_cap:
-                logger.info(
-                    f"Bounding HF iteration to {hf_cap} rows "
-                    f"(submission has preds up to index {max(sub_pred_indices)})"
-                )
+            dataset_samples = [s for s, _att in _iter_lb_eval_samples(leaderboard)]
 
-            dataset_samples = [
-                s for s, _att in _iter_lb_eval_samples(
-                    leaderboard, hf_token=hf_token, hf_cap=hf_cap,
-                )
-            ]
-
-            # Filters: applied in Python now (was SQL) so it works for
-            # both BH Sample rows and HF _VirtualSamples uniformly.
+            # Filters: applied in Python so they work for any sample
+            # source.
             if sample_filters and dataset_samples:
                 def _tags_of(s):
                     raw = (s.tags or '') if isinstance(s.tags, str) else ''
@@ -425,46 +384,6 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                 f"Submission {submission_id} viz-asset generation failed: {e}"
             )
 
-        # HF-attached LBs only: persist GT scalars/text snapshot and
-        # populate the bench_cache GT-thumb cache so the comparison
-        # view can render labels and image previews without re-streaming
-        # huggingface.co. Skipped for BH LBs (those already have GT in
-        # CustomField via the Sample rows).
-        try:
-            from app import (
-                _persist_hf_eval_snapshots, _populate_hf_gt_thumb_cache,
-                _iter_lb_eval_samples,
-            )
-            has_hf_attachment = any(
-                getattr(a, 'kind', None) == 'hf'
-                for a in (leaderboard.attachments or [])
-            )
-            if has_hf_attachment:
-                _persist_hf_eval_snapshots(
-                    leaderboard,
-                    _iter_lb_eval_samples(
-                        leaderboard, hf_token=hf_token, hf_cap=hf_cap,
-                    ),
-                )
-                for att in (leaderboard.attachments or []):
-                    if getattr(att, 'kind', None) != 'hf':
-                        continue
-                    n_thumbs = _populate_hf_gt_thumb_cache(
-                        leaderboard, att,
-                        hf_token=hf_token,
-                        max_thumbs=hf_cap or 10_000,
-                        logger=logger,
-                    )
-                    if n_thumbs:
-                        logger.info(
-                            f"Cached {n_thumbs} GT thumb(s) for "
-                            f"{att.hf_repo_id} (split={att.hf_split})"
-                        )
-        except Exception as e:
-            logger.warning(
-                f"Submission {submission_id} HF GT snapshot failed: {e}"
-            )
-
         submission.processing_status = 'Processed'
         session.commit()
         logger.info(f"Processing submission {submission_id} done.")
@@ -518,43 +437,6 @@ def process_submissions_batch_sequential(self, submission_ids, sample_filters=No
         logger.info(f"Batch processing {idx+1}/{len(submission_ids)}: Submission {sub_id}")
         _process_submission_impl(sub_id, sample_filters, task_instance=None)
     logger.info("Sequential batch calculation complete.")
-
-@celery.task(bind=True, max_retries=0, ignore_result=True,
-             time_limit=4200, soft_time_limit=3600)
-def build_pwc_index(self):
-    """Build the Papers With Code static-archive index. Out-of-band so
-    the web request doesn't time out / OOM. Reports progress to a file
-    the web tier reads via pwc_client.index_progress_message().
-
-    Caller (the route handler) is expected to have already called
-    pwc_client.begin_build_marker() — that's the de-duplication point
-    for "user clicked Build twice in a row." This task just executes;
-    it doesn't decide whether one was already running."""
-    if os.path.exists(pwc_client._index_path()):
-        logger.info("PWC index already exists; skipping build.")
-        pwc_client.clear_build_marker()
-        return
-    try:
-        pwc_client.update_progress("Downloading PWC archive shards from HuggingFace…")
-        snap = pwc_client._ensure_snapshot()
-        logger.info(f"PWC: snapshot at {snap}; building index…")
-        pwc_client.update_progress("Snapshot ready — opening parquet shards…")
-        pwc_client._build_index_into(
-            pwc_client._index_path(), snap,
-            progress_cb=pwc_client.update_progress,
-        )
-        logger.info("PWC: index built.")
-        pwc_client.update_progress("Done.")
-    except Exception as e:
-        logger.exception(f"PWC index build failed: {e}")
-        try:
-            with open(pwc_client._build_error_path(), 'w') as f:
-                f.write(str(e)[:2000])
-        except OSError:
-            pass
-    finally:
-        pwc_client.clear_build_marker()
-
 
 @celery.task(bind=True, max_retries=3, ignore_result=True)
 def reaggregate_submission_metrics(self, submission_id):
@@ -688,68 +570,3 @@ def reaggregate_submission_metrics(self, submission_id):
         session.remove()
 
 
-@celery.task(bind=True, max_retries=0, ignore_result=True, soft_time_limit=300, time_limit=360)
-def populate_lb_samples(self, lb_id, max_samples=200):
-    """Populate the LB-scoped sample cache without needing a submission
-    upload. Triggered from the "Explore samples" empty-state on
-    HF-attached LBs that only have mirrored submissions (or none at
-    all). Streams the HF dataset, writes GT scalar/text CustomField
-    snapshots, and warms the bench_cache thumbnail entries.
-
-    Skipped for BH-attached LBs (their Sample rows already carry GT).
-
-    Wrapped in a 5-minute soft timeout because PWC's auto-suggested HF
-    repos sometimes point at multi-GB monolithic HDF5 files that take
-    forever to download and can OOM the worker (e.g. btherien/imagenet-
-    64x64x3 ships a 100GB .h5 that load_dataset materializes fully
-    before yielding row 0). Soft timeout lets the worker abandon the
-    task and move on instead of taking down the whole machine."""
-    from celery.exceptions import SoftTimeLimitExceeded
-    from app import (
-        Leaderboard, _iter_lb_eval_samples, _persist_hf_eval_snapshots,
-        _populate_hf_gt_thumb_cache,
-    )
-    db.session.remove()
-    session = db.session
-    try:
-        lb = session.query(Leaderboard).get(lb_id)
-        if lb is None:
-            logger.warning(f"populate_lb_samples: LB {lb_id} not found")
-            return
-        hf_attachments = [
-            a for a in (lb.attachments or [])
-            if getattr(a, 'kind', None) == 'hf'
-        ]
-        if not hf_attachments:
-            logger.info(f"populate_lb_samples: LB {lb_id} has no HF attachment — nothing to do")
-            return
-
-        # GT scalar/text snapshot: re-iterate the LB's HF rows and
-        # persist their fields as leaderboard-scoped CustomFields.
-        _persist_hf_eval_snapshots(
-            lb, _iter_lb_eval_samples(lb, hf_cap=max_samples),
-        )
-
-        # GT image/mask/depth thumbnails: warm bench_cache for each HF
-        # attachment up to the same cap.
-        for att in hf_attachments:
-            n_thumbs = _populate_hf_gt_thumb_cache(
-                lb, att, max_thumbs=max_samples, logger=logger,
-            )
-            if n_thumbs:
-                logger.info(
-                    f"populate_lb_samples: cached {n_thumbs} thumbs for "
-                    f"{att.hf_repo_id} (split={att.hf_split})"
-                )
-        logger.info(f"populate_lb_samples: LB {lb_id} sample cache populated")
-    except SoftTimeLimitExceeded:
-        session.rollback()
-        logger.warning(
-            f"populate_lb_samples LB {lb_id} hit soft timeout — likely a "
-            f"large monolithic dataset (HDF5 etc). Skipping."
-        )
-    except Exception as e:
-        session.rollback()
-        logger.exception(f"populate_lb_samples LB {lb_id} failed: {e}")
-    finally:
-        session.remove()

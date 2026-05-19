@@ -238,20 +238,11 @@
         </div>
 
         {# Upload card. Sticky so it stays in view as the user scrolls
-           the list on the left. HF flow lives on /create_lb/from_hf
-           — datasets here are local ZIP uploads only; HF refs become
-           leaderboard attachments without a Dataset row. #}
+           the list on the left. Datasets here are local ZIP uploads. #}
         <div class="col-lg-5">
             <div class="card border-0 shadow-sm sticky-top" style="top: 100px; z-index: 900;">
                 <div class="card-body p-4">
                     <h5 class="fw-bold mb-1">Upload a dataset ZIP</h5>
-                    <p class="text-body-secondary small mb-3">
-                        For HuggingFace datasets, go to
-                        <a href="{{ url_for('create_lb_from_hf') }}" class="text-decoration-none">
-                            <i class="bi bi-cloud-arrow-down me-1"></i>Create leaderboard from HF
-                        </a>
-                        — they don't need a local copy.
-                    </p>
 
                     <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
                         <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">

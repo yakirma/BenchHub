@@ -50,15 +50,10 @@ def _mk_dataset(name, *, owner_user_id=None, visibility='public'):
     return ds
 
 
-def _mk_lb(project, dataset, name, *, owner_user_id=None, visibility='public',
-           canonicality='public'):
-    # Tests in this module assert /explore behavior, so default to
-    # canonicality='public' — /explore filters out personal LBs by
-    # design (see admin_promote_leaderboard).
+def _mk_lb(project, dataset, name, *, owner_user_id=None, visibility='public'):
     lb = Leaderboard(
         name=name, summary_metrics='',
         owner_user_id=owner_user_id, visibility=visibility,
-        canonicality=canonicality,
     )
     lb.datasets.append(dataset)
     db.session.add(lb)
@@ -82,99 +77,6 @@ def _mk_sub(lb, *, owner_user_id=None, days_ago=1, archived=False):
 # ===========================================================================
 # /explore
 # ===========================================================================
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_renders_with_no_leaderboards(client, db_session):
-    resp = client.get("/explore")
-    assert resp.status_code == 200
-    assert b"Explore leaderboards" in resp.data
-    assert b"Nothing matches" in resp.data or b"No public leaderboards" in resp.data
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_lists_public_leaderboards(client, db_session):
-    p = _mk_proj("ep")
-    ds = _mk_dataset("eds")
-    _mk_lb(p, ds, "lb_alpha")
-    _mk_lb(p, ds, "lb_beta")
-    db_session.commit()
-
-    body = client.get("/explore").data
-    assert b"lb_alpha" in body
-    assert b"lb_beta" in body
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_excludes_private_leaderboards(client, db_session, stranger):
-    p = _mk_proj("ep_priv", owner_user_id=stranger.id)
-    ds = _mk_dataset("eds_priv", owner_user_id=stranger.id)
-    _mk_lb(p, ds, "lb_pub")
-    _mk_lb(p, ds, "lb_priv", owner_user_id=stranger.id, visibility='private')
-    _mk_lb(p, ds, "lb_unl", owner_user_id=stranger.id, visibility='unlisted')
-    db_session.commit()
-
-    body = client.get("/explore").data
-    assert b"lb_pub" in body
-    assert b"lb_priv" not in body
-    assert b"lb_unl" not in body
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_q_param_filters_by_name(client, db_session):
-    p = _mk_proj("ep_q")
-    ds = _mk_dataset("eds_q")
-    _mk_lb(p, ds, "image_classification_2024")
-    _mk_lb(p, ds, "depth_estimation_dtof")
-    db_session.commit()
-
-    body = client.get("/explore?q=depth").data
-    assert b"depth_estimation_dtof" in body
-    assert b"image_classification_2024" not in body
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_sort_by_recent(client, db_session):
-    p = _mk_proj("ep_recent")
-    ds = _mk_dataset("eds_recent")
-    # Create LBs in known order so newest is unambiguous.
-    older = _mk_lb(p, ds, "lb_older")
-    newer = _mk_lb(p, ds, "lb_newer")
-    older.upload_date = datetime.utcnow() - timedelta(days=10)
-    newer.upload_date = datetime.utcnow()
-    db_session.commit()
-
-    body = client.get("/explore?sort=recent").data.decode()
-    assert body.index("lb_newer") < body.index("lb_older")
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_sort_by_popular(client, db_session):
-    p = _mk_proj("ep_pop")
-    ds = _mk_dataset("eds_pop")
-    quiet = _mk_lb(p, ds, "lb_quiet")
-    loud = _mk_lb(p, ds, "lb_loud")
-    _mk_sub(quiet)
-    for _ in range(5):
-        _mk_sub(loud)
-    db_session.commit()
-
-    body = client.get("/explore?sort=popular").data.decode()
-    assert body.index("lb_loud") < body.index("lb_quiet")
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_invalid_sort_falls_back_to_default(client, db_session):
-    """Anything not in {activity, recent, popular} reverts to activity —
-    pin so a typo or hostile query string can't break the page."""
-    p = _mk_proj("ep_bad_sort")
-    ds = _mk_dataset("eds_bad_sort")
-    _mk_lb(p, ds, "lb_x")
-    db_session.commit()
-
-    resp = client.get("/explore?sort=DROP+TABLE")
-    assert resp.status_code == 200
-    assert b"lb_x" in resp.data
 
 
 # ===========================================================================
@@ -286,13 +188,6 @@ def test_landing_emits_og_meta(client):
     assert b'<meta name="description"' in body
     # Title content reflects the marketing pitch, not the generic default.
     assert b'Benchmark your model in 60 seconds' in body
-
-
-@pytest.mark.xfail(reason="/explore is back-compat redirect to /leaderboards; surface in Phase A delete pile.")
-def test_explore_emits_og_meta(client, db_session):
-    body = client.get("/explore").data
-    assert b'<meta property="og:title"' in body
-    assert b'Explore leaderboards' in body
 
 
 def test_user_profile_emits_og_meta(client, db_session, stranger):

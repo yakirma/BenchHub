@@ -432,25 +432,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </span>
         </a>
         {% else %}
-        {# No samples cached yet. If the viewer is the owner/admin,
-           let them kick off populate_lb_samples directly from here so
-           they don't have to know the route exists. Non-owners just
-           see the disabled state (they can't trigger the celery task
-           anyway — `populate_lb_samples_route` is owner_required). #}
-        {% if current_user and (current_user_is_admin or (leaderboard.owner_user_id and leaderboard.owner_user_id == current_user.id)) and leaderboard.attachments and (leaderboard.attachments|selectattr('kind', 'equalto', 'hf')|list) %}
-        <form method="post"
-              action="{{ url_for('populate_lb_samples_route', leaderboard_id=leaderboard.id) }}"
-              class="d-inline m-0">
-            <button type="submit" class="btn btn-outline-warning"
-                    title="Stream the HF dataset to cache GT samples — usually finishes in 30–120 seconds.">
-                <i class="bi bi-cloud-download me-1"></i>Populate samples
-                <span class="badge text-bg-warning-subtle text-warning-emphasis border ms-1"
-                      style="font-size: 0.7em;">
-                    <i class="bi bi-hourglass-split"></i>
-                </span>
-            </button>
-        </form>
-        {% else %}
+        {# No samples cached yet. With HF removed, all datasets are
+           BH-uploaded ZIPs — if the LB has no samples something's
+           broken upstream. Render a disabled badge. #}
         <span class="btn btn-outline-secondary disabled"
               tabindex="-1" role="button" aria-disabled="true"
               title="No GT samples cached for this leaderboard yet — the owner can populate them.">
@@ -461,56 +445,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </span>
         </span>
         {% endif %}
+        {# Submit flow placeholder. The Colab notebook scaffold relied
+           on HF-mirrored datasets and is gone with the HF cleanup; the
+           replacement is the `benchhub-client` Python package documented
+           on /supported_types. Until that ships, this is a static link. #}
+        {% if current_user %}
+        <a class="btn btn-success"
+           href="{{ url_for('supported_types') }}"
+           title="See the type system and submission API.">
+            <i class="bi bi-rocket-takeoff me-1"></i>Submit
+        </a>
+        {% else %}
+        <a class="btn btn-success"
+           href="{{ url_for('login', next=request.path) }}"
+           title="Log in to submit predictions to this leaderboard.">
+            <i class="bi bi-box-arrow-in-right me-1"></i>Log in to submit
+        </a>
         {% endif %}
-        {# Submit-scaffold dropdown: Colab (one-click) + direct downloads
-           of the notebook and the local-run bootstrap script. The two
-           downloads are first-class actions next to the Colab button so
-           people who'd rather run locally don't have to open the modal. #}
-        <div class="btn-group">
-            {% if current_user %}
-            <button type="button" class="btn btn-success"
-                data-bs-toggle="modal" data-bs-target="#submit-colab-modal"
-                title="Open a Google Colab notebook prefilled for this leaderboard.">
-                <i class="bi bi-rocket-takeoff me-1"></i>Submit via Colab
-            </button>
-            {% else %}
-            <a class="btn btn-success"
-                href="{{ url_for('login', next=request.path) }}"
-                title="Log in to submit predictions to this leaderboard.">
-                <i class="bi bi-box-arrow-in-right me-1"></i>Log in to submit
-            </a>
-            {% endif %}
-            <button type="button" class="btn btn-success dropdown-toggle dropdown-toggle-split"
-                data-bs-toggle="dropdown" aria-expanded="false"
-                title="More submission options"
-                {{ 'disabled' if not current_user }}>
-                <span class="visually-hidden">Toggle submit dropdown</span>
-            </button>
-            <ul class="dropdown-menu dropdown-menu-end">
-                <li>
-                    <a class="dropdown-item"
-                       href="{{ url_for('leaderboard_colab_notebook', leaderboard_id=leaderboard.id) }}"
-                       download>
-                        <i class="bi bi-journal-code me-2"></i>Download notebook (.ipynb)
-                    </a>
-                </li>
-                <li>
-                    <a class="dropdown-item"
-                       href="{{ url_for('leaderboard_colab_bootstrap', leaderboard_id=leaderboard.id) }}"
-                       download>
-                        <i class="bi bi-terminal me-2"></i>Download submit script (.py)
-                    </a>
-                </li>
-                <li><hr class="dropdown-divider"></li>
-                <li>
-                    <a class="dropdown-item small text-body-secondary"
-                       data-bs-toggle="modal" data-bs-target="#submit-colab-modal"
-                       href="#">
-                        <i class="bi bi-info-circle me-2"></i>Submission instructions
-                    </a>
-                </li>
-            </ul>
-        </div>
         <a href="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}"
             class="btn btn-outline-primary">Settings</a>
     </div>
@@ -539,25 +490,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <i class="bi bi-link-45deg me-1"></i>{{ leaderboard.visibility }}
         </span>
         {% endif %}
-        {% if leaderboard.canonical_for_repo %}
-        <span class="badge text-bg-info-subtle text-info-emphasis border small"
-              title="HF repo this LB tracks (informational — multiple LBs may share a repo).">
-            <i class="bi bi-cloud me-1"></i><span class="font-monospace">{{ leaderboard.canonical_for_repo }}</span>
-        </span>
-        {% endif %}
-        <form method="post" action="{{ url_for('admin_promote_leaderboard', lb_id=leaderboard.id) }}"
-            class="d-inline-flex flex-wrap align-items-center gap-2 ms-auto">
-            <select name="canonicality" class="form-select form-select-sm" style="width: auto;"
-                    onchange="this.form.submit()">
-                <option value="personal" {{ 'selected' if leaderboard.visibility != 'public' }}>private</option>
-                <option value="public"   {{ 'selected' if leaderboard.visibility == 'public' }}>public</option>
-            </select>
-        </form>
-        <a href="{{ url_for('admin_lb_sota_picker', lb_id=leaderboard.id) }}"
-           class="btn btn-sm btn-outline-warning ms-1"
-           title="Pick a SOTA model from HF Hub trending and have Claude write a Colab notebook tailored to this LB.">
-            <i class="bi bi-stars me-1"></i>SOTA notebook
-        </a>
     </div>
 </div>
 {% endif %}
@@ -904,95 +836,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     })();
 </script>
 {% endif %}
-
-{# --- Submit-via-Colab modal --- #}
-{% set _nb_url = url_for('leaderboard_colab_notebook', leaderboard_id=leaderboard.id, _external=True) %}
-<div class="modal fade" id="submit-colab-modal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">
-                    <i class="bi bi-rocket-takeoff me-1"></i>Submit to <strong>{{ leaderboard.name }}</strong> via Colab
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-body-secondary">
-                    A Colab notebook prefilled with this leaderboard's submission
-                    scaffold. You only edit the <code>my_model(...)</code> function
-                    — the rest (download dataset, build submission folder, ZIP,
-                    upload) is wired up.
-                </p>
-
-                <div class="d-grid gap-2 mb-3">
-                    {# Server-side: materializes the notebook as a GitHub
-                       gist (Colab whitelists gist.github.com) and 302s
-                       to colab.research.google.com/gist/<id>. Falls back
-                       to a flash + this page if the GitHub token isn't
-                       configured. The first hit on a fresh LB takes a
-                       few seconds (LLM-authored notebook) — show an
-                       inline spinner so the user knows something's
-                       happening rather than staring at a static modal. #}
-                    <a class="btn btn-success btn-lg colab-open-link"
-                        href="{{ url_for('leaderboard_colab_open', leaderboard_id=leaderboard.id) }}"
-                        target="_blank" rel="noopener">
-                        <span class="colab-open-default">
-                            <i class="bi bi-box-arrow-up-right me-1"></i>
-                            Open in Colab
-                        </span>
-                        <span class="colab-open-busy d-none">
-                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-                            Building notebook…
-                        </span>
-                    </a>
-                    <a class="btn btn-outline-success"
-                        href="{{ _nb_url }}" download>
-                        <i class="bi bi-download me-1"></i>
-                        Download notebook (.ipynb)
-                    </a>
-                </div>
-                <script>
-                // Toggle to "Building notebook…" the moment the user clicks
-                // Open in Colab. The new tab opens immediately but the
-                // server-side gist write + 302 to colab.research.google.com
-                // can take 5-15 s on a cold cache; without feedback users
-                // double-click and end up with two gists.
-                document.querySelectorAll('.colab-open-link').forEach(a => {
-                    a.addEventListener('click', () => {
-                        a.querySelector('.colab-open-default')?.classList.add('d-none');
-                        a.querySelector('.colab-open-busy')?.classList.remove('d-none');
-                        a.classList.add('disabled');
-                        setTimeout(() => {
-                            a.querySelector('.colab-open-default')?.classList.remove('d-none');
-                            a.querySelector('.colab-open-busy')?.classList.add('d-none');
-                            a.classList.remove('disabled');
-                        }, 30000);
-                    });
-                });
-                </script>
-
-                <details class="small text-body-secondary">
-                    <summary class="user-select-none" style="cursor: pointer;">
-                        If "Open in Colab" doesn't work
-                    </summary>
-                    <ol class="mt-2 mb-0">
-                        <li>Click <strong>Download notebook</strong> above.</li>
-                        <li>Open <a href="https://colab.research.google.com/" target="_blank" rel="noopener">colab.research.google.com</a>.</li>
-                        <li>File → Upload notebook → drop the .ipynb you just downloaded.</li>
-                    </ol>
-                </details>
-
-                <hr>
-                <p class="small text-body-secondary mb-0">
-                    <i class="bi bi-info-circle me-1"></i>
-                    The notebook is generated once per leaderboard configuration
-                    (datasets + metrics) and cached. Changing this LB's setup
-                    triggers a fresh generation on next request.
-                </p>
-            </div>
-        </div>
-    </div>
-</div>
 
 {# View options + filters were always-on and crowded the page. Hide them
    behind a toggle by default, but auto-open if any filter is currently
