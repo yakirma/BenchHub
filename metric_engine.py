@@ -538,6 +538,16 @@ def get_metric_context(sample, sub=None, submission_folder=None,
         elif cf.data_type == 'text':
             _stash_typed(context, f"gt_{cf.name}", cf, cf.value_text)
             _stash_typed(context, cf.name, cf, cf.value_text)
+        elif cf.data_type == 'label':
+            # Inline-stored Label value (int or str) lives on value_text
+            # as the JSON-encoded primitive. Parse back so typed metrics
+            # receive a bh.Label(value) and legacy ones see the raw int/str.
+            try:
+                parsed = json.loads(cf.value_text) if cf.value_text else None
+            except Exception:
+                parsed = cf.value_text
+            _stash_typed(context, f"gt_{cf.name}", cf, parsed)
+            _stash_typed(context, cf.name, cf, parsed)
         elif cf.data_type == 'json':
             try:
                 parsed = json.loads(cf.value_text) if cf.value_text else None
@@ -618,6 +628,16 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     # comparison metrics (BLEU/EM/F1 over QA / translation).
                     _stash_typed(context, f"sub_{cf.name}", cf, cf.value_text)
                     _stash_typed(context, cf.name, cf, cf.value_text)
+                elif cf.data_type == 'label':
+                    # Label predictions stored as JSON-encoded primitive
+                    # on value_text. Parse so typed metrics receive a
+                    # bh.Label and legacy ones see the int/str.
+                    try:
+                        parsed = json.loads(cf.value_text) if cf.value_text else None
+                    except Exception:
+                        parsed = cf.value_text
+                    _stash_typed(context, f"sub_{cf.name}", cf, parsed)
+                    _stash_typed(context, cf.name, cf, parsed)
                 elif cf.data_type == 'json':
                     # JSON predictions (bboxes, span offsets, structured
                     # outputs). Deserialise so metric code sees the dict
