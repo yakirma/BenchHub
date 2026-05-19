@@ -478,73 +478,7 @@ class Sample(db.Model):
     # bench_cache. See Dataset.storage_mode.
     source_ref_json = db.Column(db.Text, nullable=True)
 
-    histogram_data = db.relationship('HistogramData', backref='sample', uselist=False, lazy=True, cascade="all, delete-orphan")
-
-    signal_shape = db.relationship('SignalShape', backref='sample', uselist=False, lazy=True, cascade="all, delete-orphan")
-    config_data = db.relationship('ConfigData', backref='sample', uselist=False, lazy=True, cascade="all, delete-orphan")
     custom_fields = db.relationship('CustomField', backref='sample', lazy=True, cascade="all, delete-orphan", foreign_keys='CustomField.sample_id')
-    
-    # Backward compatibility helpers for migrated fields
-    @property
-    def histogram_data(self):
-        """Get histogram data from either old HistogramData model or new CustomField"""
-        # Try old model first (for data not yet migrated)
-        old_hist = HistogramData.query.filter_by(sample_id=self.id).first()
-        if old_hist:
-            return old_hist
-        
-        # Try new CustomField
-        hist_field = CustomField.query.filter_by(sample_id=self.id, name='hist', field_type='histogram').first()
-        if hist_field and hist_field.value_text:
-            # Create a mock HistogramData-like object
-            # Note: value_text contains full JSON, we need to extract bins and counts as JSON strings
-            import json
-            data = json.loads(hist_field.value_text)
-            class MockHistData:
-                def __init__(self, bins_json, counts_json):
-                    self.bins = bins_json  # Store as JSON string
-                    self.counts = counts_json  # Store as JSON string
-            # Re-serialize bins and counts as JSON strings
-            return MockHistData(json.dumps(data['bins']), json.dumps(data['counts']))
-        return None
-    
-    @property
-    def signal_shape(self):
-        """Get signal shape from either old SignalShape model or new CustomField"""
-        # Try old model first
-        old_shape = SignalShape.query.filter_by(id=self.id).first()
-        if old_shape:
-            return old_shape
-        
-        # Try new CustomField
-        shape_field = CustomField.query.filter_by(sample_id=self.id, name='wave_shape', field_type='scalar').first()
-        if shape_field:
-            # Create a mock SignalShape-like object
-            class MockSignalShape:
-                def __init__(self, shape_name):
-                    self.shape_name = shape_name
-            return MockSignalShape(shape_field.value_text or 'gaussian')
-        return None
-
-class HistogramData(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=False)
-    bins = db.Column(db.Text, nullable=False)
-    counts = db.Column(db.Text, nullable=False)
-
-
-
-class SignalShape(db.Model):
-    id = db.Column(db.Integer, db.ForeignKey('sample.id'), primary_key=True)
-    shape_name = db.Column(db.String(50), nullable=False)
-
-class ConfigData(db.Model):
-    id = db.Column(db.Integer, db.ForeignKey('sample.id'), primary_key=True)
-    config_json = db.Column(db.Text, nullable=False)
-
-    @property
-    def parsed_config(self):
-        return json.loads(self.config_json)
 
 class CustomField(db.Model):
     """Store custom fields from datasets and submissions (images, scalars, metrics)"""
@@ -2711,7 +2645,7 @@ def edit_leaderboard(leaderboard_id):
     # 1. Check GT data
     dataset_ids = [d.id for d in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
     samples = Sample.query.filter(Sample.dataset_id.in_(dataset_ids)).all()
-    if any(s.histogram_data for s in samples):
+    if any(None for s in samples):
         fields_set.add('gt_histogram')
     
     # 2. Check Submission data
@@ -3306,9 +3240,9 @@ def extract_viz_arg_value(sample, submission, field_key):
         if cf:
             value = cf.get_value()
         elif field_name == 'histogram':
-            value = sample.histogram_data
+            value = None
         elif field_name == 'config':
-            value = sample.config_data
+            value = None
             
     elif field_key.startswith('sub_'):
         field_name = field_key[4:]
@@ -7723,10 +7657,10 @@ def comparison_view(leaderboard_id):
                 sample_metrics_map[s.id][cf.name] = cf.value_float
 
     for sample in samples_on_page:
-        signal_shape = sample.signal_shape.shape_name if sample.signal_shape else 'gaussian'
-        gt_bins = json.loads(sample.histogram_data.bins) if sample.histogram_data else []
-        gt_counts = json.loads(sample.histogram_data.counts) if sample.histogram_data else []
-        config_json = sample.config_data.parsed_config if sample.config_data else {}
+        signal_shape = None.shape_name if None else 'gaussian'
+        gt_bins = json.loads(None.bins) if None else []
+        gt_counts = json.loads(None.counts) if None else []
+        config_json = None.parsed_config if None else {}
 
         sample_info = {
             'sample_id': sample.id,
@@ -7734,7 +7668,7 @@ def comparison_view(leaderboard_id):
             'display_name': getattr(sample, 'display_name', None) or sample.name,
             'dataset_tags': [t.strip() for t in sample.tags.split(',')] if sample.tags else [],
             'ground_truth': {
-                'config': sample.config_data.parsed_config if sample.config_data else {},
+                'config': None.parsed_config if None else {},
                 'bins': gt_bins,
                 'counts': gt_counts,
                 'custom_fields': {cf.name: cf.value_float for cf in sample.custom_fields if cf.field_type in ['scalar', 'metric'] and cf.submission_id is None}
@@ -8090,8 +8024,8 @@ def comparison_view(leaderboard_id):
             if field_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
 
     # 1. Check GT fields availability (only for samples on current page for UI rendering hint)
-    has_gt_hist = any(s.histogram_data for s in samples_on_page)
-    has_gt_config = any(s.config_data for s in samples_on_page)
+    has_gt_hist = any(None for s in samples_on_page)
+    has_gt_config = any(None for s in samples_on_page)
     has_dataset_tags = any(s.tags for s in samples_on_page)
     
     if not has_gt_hist: available_display_options.pop('gt_histogram', None)
@@ -8798,8 +8732,8 @@ def dataset_view(dataset_id):
 
     # 6. ROW RENDERING DATA PREPARATION (Fix N+1)
     current_sample_ids = [s.id for s in paginated_samples.items]
-    hist_map = {h.sample_id: h for h in HistogramData.query.filter(HistogramData.sample_id.in_(current_sample_ids)).all()}
-    shape_map = {s.id: s for s in SignalShape.query.filter(SignalShape.id.in_(current_sample_ids)).all()}
+    hist_map = {}
+    shape_map = {}
 
     active_metrics = [m for m in dataset.selected_metrics.split(',') if m.strip()]
 
@@ -8896,8 +8830,8 @@ def dataset_view(dataset_id):
     has_tags = bool(all_dataset_tags)
     
     # Efficient existence checks
-    has_hist = any(ft == 'histogram' for fn, ft in custom_field_names) or db.session.query(HistogramData.id).join(Sample).filter(Sample.dataset_id == dataset.id).limit(1).first() is not None
-    has_shape = any(fn == 'wave_shape' for fn, ft in custom_field_names) or db.session.query(SignalShape.id).join(Sample).filter(Sample.dataset_id == dataset.id).limit(1).first() is not None
+    has_hist = any(ft == 'histogram' for fn, ft in custom_field_names)
+    has_shape = any(fn == 'wave_shape' for fn, ft in custom_field_names)
 
     if not has_hist: available_display_options.pop('histogram', None)
     if not has_shape: available_display_options.pop('signal_shape', None)
@@ -9462,17 +9396,17 @@ def download_sample(sample_id):
                 break
             
         # Shape
-        if sample.signal_shape:
-            zf.writestr(f'ground_truth/wave_shape/{sample.name}.txt', sample.signal_shape.shape_name)
+        if None:
+            zf.writestr(f'ground_truth/wave_shape/{sample.name}.txt', None.shape_name)
             
         # Config
-        if sample.config_data:
-            zf.writestr(f'ground_truth/config/{sample.name}.json', sample.config_data.config_json)
+        if None:
+            zf.writestr(f'ground_truth/config/{sample.name}.json', None.config_json)
             
         # Histogram (.npz)
-        if sample.histogram_data:
-            bins = np.array(json.loads(sample.histogram_data.bins))
-            counts = np.array(json.loads(sample.histogram_data.counts))
+        if None:
+            bins = np.array(json.loads(None.bins))
+            counts = np.array(json.loads(None.counts))
             hist_buf = io.BytesIO()
             np.savez_compressed(hist_buf, bins=bins, counts=counts)
             zf.writestr(f'ground_truth/hist/{sample.name}.npz', hist_buf.getvalue())
