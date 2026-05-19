@@ -2,9 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## ⚠️ Phase A typed-contract overhaul (in progress)
+## Typed-contract architecture (Phases A–D shipped)
 
-The codebase is mid-refactor toward strict typed data classes. Big chunks of legacy machinery have already been deleted — read this section before touching code or writing docs that reference deleted concepts.
+The legacy folder-name ZIP path is gone; the strict typed contract is the spine of the system end-to-end. Phases A through D are live in prod — read this section before touching code or writing docs that reference deleted concepts.
+
+**The pipeline now:**
+
+1. **Admin uploads a typed dataset** via `POST /admin/import_typed_dataset` (server-side path) or the `scripts/import_typed_dataset.py` CLI. Format: a directory with `manifest.json` + `<field>/<sample>.<ext>` per field. The importer materialises Dataset + Sample + CustomField rows and copies file-backed kinds under `uploads/datasets/<id>/`. Inline kinds (Scalar, Label) decode into `value_float` / `value_text`.
+2. **A leaderboard declares its contract** via `Leaderboard.required_pred_fields_json` (list of `{name, kind, params, role}` entries; `role ∈ {input, gt, pred}`).
+3. **Submitters use `benchhub-client`** — `bh.Client(token)` → `client.submission(lb_id).predict(sample, **kwargs).submit()`. The client validates each `DataType` instance at stage time, packs them into a ZIP matching the server's on-disk format, and POSTs to `/api/submit/<lb_id>`.
+4. **Server validates** the submission manifest against the LB contract (every required pred name present, kinds match), writes Submission + CustomField pred rows, enqueues `tasks.process_submission`.
+5. **Metric engine** builds the per-sample context with both primitive (`gt_depth_pred`) AND typed (`__typed__gt_depth_pred`) entries. Metrics that declared `GlobalMetric.input_kinds` (non-empty JSON array) receive `bh.Depth` instances; legacy metrics keep the primitive. Five typed reference metrics seeded: `accuracy`, `rmse_depth`, `mae_depth`, `iou_mask`, `exact_match_text`.
+
+**Key files:**
+- `benchhub/types.py` — 9 `DataType` subclasses (`Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`). Source of truth.
+- `benchhub/manifest.py` — manifest spec + `import_typed_dataset` + `import_typed_submission` + `check_submission_matches_contract`.
+- `benchhub/client.py` — `Client`, `SubmissionBuilder`, `FlaskTestClientTransport` (the in-process transport tests use).
+- `scripts/import_typed_dataset.py` — admin CLI.
+- `scripts/seed_reference_metrics.py` — idempotent typed-metric seed.
+- `metric_engine.py:_typed_for_cf` / `_stash_typed` / `_metric_wants_typed` — the typed-instance plumbing.
+
+**End-to-end verification:** `tests/test_phase_b_end_to_end.py` exercises the whole loop (typed import → client → typed submit → typed-instance metric eval → asserted MetricResult). 572 passing tests, 0 failures.
+
+## ⚠️ Pre-existing deletions (Phase A delete pile)
+
+Big chunks of legacy machinery were already removed. Read this before touching code or writing docs that reference deleted concepts.
 
 **Deleted (Phase A delete pile, commits `6707189`, `97f4b6c`, `66ffcc6`)**:
 - HuggingFace import: every `import_from_hf*`, `admin_pwc_*`, `admin_lb_sota*`, `populate_lb_samples_route`, `hf_token_*` route; `_VirtualSample` / `_VirtualCustomField`; `_infer_mapping`; `_resolve_hf_split_and_load` / `_HF_SPLIT_PREFERENCE`; `_persist_hf_eval_snapshots`; `_create_lb_from_pwc_benchmark` and PWC task helpers; `_HF_MASK_TOKENS`; `pwc_client.py` entirely.
