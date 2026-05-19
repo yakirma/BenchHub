@@ -195,12 +195,12 @@ def test_samples_only_view_hides_scalar_metric_columns(client, db_session):
         db.session.add(CustomField(
             leaderboard_id=lb.id, sample_id=None, submission_id=None,
             sample_name=f's_{i:06d}', name='label',
-            field_type='scalar', value_float=float(i),
+            data_type='scalar', value_float=float(i),
         ))
         db.session.add(CustomField(
             leaderboard_id=lb.id, sample_id=None, submission_id=None,
             sample_name=f's_{i:06d}', name='image_image',
-            field_type='image', source_column='image',
+            data_type='image', source_column='image',
         ))
     db.session.commit()
 

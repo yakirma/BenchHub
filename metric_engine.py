@@ -13,6 +13,76 @@ try:
 except ImportError:  # pragma: no cover — dependency-pin guarantees it's there
     _requests = None
 
+# Phase A typed contract: wrap each CustomField value in its `DataType`
+# subclass and stash under a `__typed__<key>` parallel key. Metrics that
+# have declared `GlobalMetric.input_kinds` receive these typed instances;
+# legacy metrics (input_kinds NULL/empty) keep getting the raw primitive
+# at the bare key, so nothing pre-Phase-A breaks.
+from benchhub.types import DTYPES
+
+
+def _typed_for_cf(cf, value):
+    """Wrap a CustomField's primitive value in its DataType class.
+
+    `value` is whatever the existing context-builder already loaded —
+    a numpy array (image/depth/mask/audio), a float (scalar), a str
+    (text), a dict/list (json). Returns the typed instance, or None
+    when the kind isn't in the registry or construction fails."""
+    if value is None:
+        return None
+    kind = cf.data_type
+    if kind not in DTYPES:
+        return None
+    cls = DTYPES[kind]
+    params = cf.get_params() if hasattr(cf, 'get_params') else {}
+    try:
+        if kind == 'audio':
+            # Audio takes sample_rate positionally; rest of the kinds
+            # accept their per-instance params as keyword arguments.
+            return cls(value, params.get('sample_rate', 16000))
+        return cls(value, **params)
+    except Exception as e:
+        print(f"DEBUG: _typed_for_cf({cf.name}, kind={kind}) failed: {e}")
+        return None
+
+
+def _stash_typed(context, key, cf, value):
+    """Mirror `context[key] = value` with `context['__typed__'+key]`
+    holding the DataType instance. Call this everywhere we set a
+    primitive on the context from a CustomField row."""
+    context[key] = value
+    inst = _typed_for_cf(cf, value)
+    if inst is not None:
+        context[f'__typed__{key}'] = inst
+
+def _metric_wants_typed(global_metric) -> bool:
+    """A metric opts into typed-instance kwargs by declaring
+    `GlobalMetric.input_kinds` as a non-empty JSON array. NULL / empty
+    list keeps the legacy primitive shape — that's the back-compat
+    pin for every metric written before Phase A."""
+    raw = getattr(global_metric, 'input_kinds', None)
+    if not raw:
+        return False
+    try:
+        kinds = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return False
+    return bool(kinds)
+
+
+def _resolve_context_value(context, mapping_key, typed):
+    """Look up a mapping key in the per-sample context, optionally
+    swapping in the `__typed__<key>` parallel entry built by
+    `_stash_typed`. Falls back to the primitive when no typed instance
+    was stashed (e.g. an opt-in metric reading a legacy CustomField
+    row that hasn't been re-typed)."""
+    if typed:
+        typed_val = context.get(f'__typed__{mapping_key}')
+        if typed_val is not None:
+            return typed_val
+    return context.get(mapping_key)
+
+
 def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
     """
     Evaluates a GlobalMetric's python_code against the provided context.
@@ -23,6 +93,8 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
             arg_mappings = json.loads(arg_mappings_json)
         except:
             arg_mappings = {}
+
+        wants_typed = _metric_wants_typed(global_metric)
 
         # Prepare arguments
         call_kwargs = {}
@@ -39,14 +111,12 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
                 except ValueError:
                     # Fallback to string if not numeric
                     call_kwargs[arg] = val_str
-            elif mapping_key not in context:
-                 # If usage is optional, maybe None? But for now it's required
-                 # unless we handle defaults. 
-                 # Let's check if the metric function has default values (complex to introspection)
-                 # For now, pass None if missing
+            elif mapping_key not in context and f'__typed__{mapping_key}' not in context:
+                 # Not present in either shape — pass None so the metric
+                 # body can detect "missing GT/pred" via context.get().
                  call_kwargs[arg] = None
             else:
-                 call_kwargs[arg] = context[mapping_key]
+                 call_kwargs[arg] = _resolve_context_value(context, mapping_key, wants_typed)
         
         # Execute code
         local_scope = {'np': np} # Inject common libs
@@ -106,10 +176,14 @@ def _sandbox_enabled():
     return os.environ.get('BENCHHUB_SANDBOX_METRICS') == '1'
 
 
-def _build_kwargs(arg_mappings, context):
+def _build_kwargs(arg_mappings, context, *, typed=False):
     """Turn the leaderboard-metric arg_mappings + a sample context into the
     actual function kwargs. Same logic as the in-process path so behavior
-    matches when callers swap one for the other."""
+    matches when callers swap one for the other.
+
+    When `typed=True`, `__typed__<key>` is preferred over the bare key —
+    callers in evaluate_dynamic_metric set this from the metric's
+    `input_kinds` declaration."""
     call_kwargs = {}
     for arg, mapping_key in arg_mappings.items():
         if mapping_key.startswith('SCALAR:'):
@@ -121,10 +195,10 @@ def _build_kwargs(arg_mappings, context):
                 call_kwargs[arg] = v
             except ValueError:
                 call_kwargs[arg] = val_str
-        elif mapping_key not in context:
+        elif mapping_key not in context and f'__typed__{mapping_key}' not in context:
             call_kwargs[arg] = None
         else:
-            call_kwargs[arg] = context[mapping_key]
+            call_kwargs[arg] = _resolve_context_value(context, mapping_key, typed)
     return call_kwargs
 
 
@@ -136,7 +210,8 @@ def _build_job(global_metric, contexts, arg_mappings_json):
     except (TypeError, json.JSONDecodeError):
         arg_mappings = {}
 
-    kwargs_list = [_build_kwargs(arg_mappings, ctx or {}) for ctx in contexts]
+    typed = _metric_wants_typed(global_metric)
+    kwargs_list = [_build_kwargs(arg_mappings, ctx or {}, typed=typed) for ctx in contexts]
     return {
         'code': global_metric.python_code,
         'kwargs_list': kwargs_list,
@@ -326,7 +401,7 @@ def _load_gt_array(cf, upload_folder):
     if not os.path.exists(full):
         return None
     try:
-        if cf.field_type == 'depth':
+        if cf.data_type == 'depth':
             with np.load(full) as data:
                 # The HF auto-importer stores depth under key 'depth';
                 # legacy uploads may use the first array key.
@@ -334,7 +409,7 @@ def _load_gt_array(cf, upload_folder):
                     return np.asarray(data['depth'])
                 first = next(iter(data.keys()))
                 return np.asarray(data[first])
-        if cf.field_type == 'image':
+        if cf.data_type == 'image':
             from PIL import Image as _PILImage
             return np.asarray(_PILImage.open(full).convert('RGB'))
     except Exception as e:
@@ -457,20 +532,20 @@ def get_metric_context(sample, sub=None, submission_folder=None,
     # the field — the metric will see context.get('gt_<name>') is None
     # and can fall through to None / NaN rather than crash the eval.
     for cf in sample.custom_fields:
-        if cf.field_type == 'scalar':
-             context[f"gt_{cf.name}"] = cf.value_float
-             context[cf.name] = cf.value_float
-        elif cf.field_type == 'text':
-            context[f"gt_{cf.name}"] = cf.value_text
-            context[cf.name] = cf.value_text
-        elif cf.field_type == 'json':
+        if cf.data_type == 'scalar':
+            _stash_typed(context, f"gt_{cf.name}", cf, cf.value_float)
+            _stash_typed(context, cf.name, cf, cf.value_float)
+        elif cf.data_type == 'text':
+            _stash_typed(context, f"gt_{cf.name}", cf, cf.value_text)
+            _stash_typed(context, cf.name, cf, cf.value_text)
+        elif cf.data_type == 'json':
             try:
                 parsed = json.loads(cf.value_text) if cf.value_text else None
             except Exception:
                 parsed = cf.value_text
-            context[f"gt_{cf.name}"] = parsed
-            context[cf.name] = parsed
-        elif cf.field_type in ('image', 'depth'):
+            _stash_typed(context, f"gt_{cf.name}", cf, parsed)
+            _stash_typed(context, cf.name, cf, parsed)
+        elif cf.data_type in ('image', 'depth'):
             arr = _load_gt_array(cf, upload_folder)
             if arr is None and pointer_resolver is not None and getattr(cf, 'source_column', None):
                 # Pointer-mode CustomField: no on-disk file, just a
@@ -482,8 +557,8 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                 except Exception as e:
                     print(f"DEBUG: pointer_resolver raised for {cf.name}: {e}")
                     arr = None
-            context[f"gt_{cf.name}"] = arr
-            context[cf.name] = arr
+            _stash_typed(context, f"gt_{cf.name}", cf, arr)
+            _stash_typed(context, cf.name, cf, arr)
 
     # Paired-dataset GT: fold in CustomFields from any 'gt_source'
     # datasets attached to the LB whose sample name matches.
@@ -496,10 +571,10 @@ def get_metric_context(sample, sub=None, submission_folder=None,
             print(f"DEBUG: paired_gt_provider raised: {e}")
             paired_iter = []
         for partner_cf, partner_sample in paired_iter:
-            if partner_cf.field_type == 'scalar':
-                context[f"gt_{partner_cf.name}"] = partner_cf.value_float
-                context[partner_cf.name] = partner_cf.value_float
-            elif partner_cf.field_type in ('image', 'depth'):
+            if partner_cf.data_type == 'scalar':
+                _stash_typed(context, f"gt_{partner_cf.name}", partner_cf, partner_cf.value_float)
+                _stash_typed(context, partner_cf.name, partner_cf, partner_cf.value_float)
+            elif partner_cf.data_type in ('image', 'depth'):
                 arr = _load_gt_array(partner_cf, upload_folder)
                 if (arr is None and pointer_resolver is not None
                         and getattr(partner_cf, 'source_column', None)):
@@ -508,11 +583,11 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     except Exception as e:
                         print(f"DEBUG: paired pointer_resolver raised for {partner_cf.name}: {e}")
                         arr = None
-                context[f"gt_{partner_cf.name}"] = arr
-                context[partner_cf.name] = arr
-            elif partner_cf.field_type == 'text' and partner_cf.value_text is not None:
-                context[f"gt_{partner_cf.name}"] = partner_cf.value_text
-                context[partner_cf.name] = partner_cf.value_text
+                _stash_typed(context, f"gt_{partner_cf.name}", partner_cf, arr)
+                _stash_typed(context, partner_cf.name, partner_cf, arr)
+            elif partner_cf.data_type == 'text' and partner_cf.value_text is not None:
+                _stash_typed(context, f"gt_{partner_cf.name}", partner_cf, partner_cf.value_text)
+                _stash_typed(context, partner_cf.name, partner_cf, partner_cf.value_text)
 
     if sub:
         # Submission fields (using CustomField)
@@ -523,27 +598,27 @@ def get_metric_context(sample, sub=None, submission_folder=None,
         # Get scalar/metric fields for this sample
         for cf in sub.custom_fields:
             if cf.sample_name == sample.name:
-                if cf.field_type == 'metric' or cf.field_type == 'scalar':
-                     context[f"sub_{cf.name}"] = cf.value_float
-                     context[cf.name] = cf.value_float # Also store without prefix for direct access
+                if cf.data_type == 'metric' or cf.data_type == 'scalar':
+                    _stash_typed(context, f"sub_{cf.name}", cf, cf.value_float)
+                    _stash_typed(context, cf.name, cf, cf.value_float)
 
-                     # [FIX] Fallback for lm_{id} naming: also provide friendly name in context
-                     if cf.name.startswith('lm_'):
-                         try:
-                             lm_id = int(cf.name[3:])
-                             from app import LeaderboardMetric
-                             lm = LeaderboardMetric.query.get(lm_id)
-                             if lm:
-                                 friendly_name = lm.target_name or lm.global_metric.name
-                                 context[friendly_name] = cf.value_float
-                                 context[f"sub_{friendly_name}"] = cf.value_float
-                         except: pass
-                elif cf.field_type == 'text':
+                    # [FIX] Fallback for lm_{id} naming: also provide friendly name in context
+                    if cf.name.startswith('lm_'):
+                        try:
+                            lm_id = int(cf.name[3:])
+                            from app import LeaderboardMetric
+                            lm = LeaderboardMetric.query.get(lm_id)
+                            if lm:
+                                friendly_name = lm.target_name or lm.global_metric.name
+                                _stash_typed(context, friendly_name, cf, cf.value_float)
+                                _stash_typed(context, f"sub_{friendly_name}", cf, cf.value_float)
+                        except: pass
+                elif cf.data_type == 'text':
                     # Text predictions surfaced verbatim for string-
                     # comparison metrics (BLEU/EM/F1 over QA / translation).
-                    context[f"sub_{cf.name}"] = cf.value_text
-                    context[cf.name] = cf.value_text
-                elif cf.field_type == 'json':
+                    _stash_typed(context, f"sub_{cf.name}", cf, cf.value_text)
+                    _stash_typed(context, cf.name, cf, cf.value_text)
+                elif cf.data_type == 'json':
                     # JSON predictions (bboxes, span offsets, structured
                     # outputs). Deserialise so metric code sees the dict
                     # / list shape, not the raw string.
@@ -552,8 +627,8 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                         parsed = json.loads(raw) if raw else None
                     except Exception:
                         parsed = cf.value_text
-                    context[f"sub_{cf.name}"] = parsed
-                    context[cf.name] = parsed
+                    _stash_typed(context, f"sub_{cf.name}", cf, parsed)
+                    _stash_typed(context, cf.name, cf, parsed)
         
         # Add 'sub_peak' convenience if it exists
         # 'detect_custom_fields' creates CustomFields so it should be in there.

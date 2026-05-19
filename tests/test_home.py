@@ -23,7 +23,7 @@ def test_home_renders_when_user_owns_dataset_with_image_field(auth_client, logge
     s = Sample(dataset_id=ds.id, name='s1')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        name='thumb', field_type='image',
+        name='thumb', data_type='image',
         value_text='images/thumb/s1.png',
         sample_id=s.id,
     ))

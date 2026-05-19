@@ -78,7 +78,7 @@ def seeded(client):
                 submission_id=sub.id,
                 sample_name=s_name,
                 name=f"lm_{lm.id}",
-                field_type="scalar",
+                data_type="scalar",
                 value_float=val,
             )
         )

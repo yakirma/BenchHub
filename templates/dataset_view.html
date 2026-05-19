@@ -505,8 +505,8 @@
                     class="form-select form-select-sm" style="width: auto;">
                     <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
                     <!-- Hist entropy removed - use custom fields instead -->
-                    {% for field_name, field_type in custom_field_names %}
-                    {% if field_type == 'scalar' %}
+                    {% for field_name, data_type in custom_field_names %}
+                    {% if data_type == 'scalar' %}
                     <option value="{{ field_name }}" {% if sort_by==field_name %}selected{% endif %}>{{
                         field_name|capitalize }}</option>
                     {% endif %}
@@ -653,7 +653,7 @@
                                 {# GT Metrics - hist_entropy removed #}
                                 {% set gt_metrics_data = [] %}
                                 {% for cf in sample.custom_fields %}
-                                {% if cf.field_type == 'metric' and cf.value_float is not none and cf.submission_id is
+                                {% if cf.data_type == 'metric' and cf.value_float is not none and cf.submission_id is
                                 none %}
                                 {% set _ = gt_metrics_data.append((cf.name, cf.value_float)) %}
                                 {% endif %}
@@ -678,7 +678,7 @@
                                 {# GT Scalars #}
                                 {% set gt_scalars_data = [] %}
                                 {% for cf in sample.custom_fields %}
-                                {% if cf.field_type == 'scalar' and cf.value_float is not none and cf.submission_id is
+                                {% if cf.data_type == 'scalar' and cf.value_float is not none and cf.submission_id is
                                 none %}
                                 {% set _ = gt_scalars_data.append((cf.name, cf.value_float)) %}
                                 {% endif %}

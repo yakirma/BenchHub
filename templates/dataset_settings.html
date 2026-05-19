@@ -80,7 +80,7 @@
                                 <form method="post"
                                     action="{{ url_for('update_dataset_field_type', dataset_id=dataset.id, field_name=f.name) }}"
                                     class="d-flex gap-1">
-                                    <select name="field_type" class="form-select form-select-sm">
+                                    <select name="data_type" class="form-select form-select-sm">
                                         {% for t in valid_field_types %}
                                         <option value="{{ t }}" {{ 'selected' if t == f.current_type }}>{{ t }}</option>
                                         {% endfor %}

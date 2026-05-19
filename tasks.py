@@ -281,7 +281,7 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                                     sample_id=current_sample.id,
                                     sample_name=current_sample.name,
                                     name=metric_out_name,
-                                    field_type='scalar',
+                                    data_type='scalar',
                                     value_float=float(val)
                                 )
                                 session.add(cf)
@@ -493,7 +493,7 @@ def reaggregate_submission_metrics(self, submission_id):
             cfs = session.query(CustomField.value_float).filter_by(
                 submission_id=submission.id,
                 name=metric_out_name,
-                field_type='scalar'
+                data_type='scalar'
             ).all()
             
             sample_values = [r[0] for r in cfs if r[0] is not None]

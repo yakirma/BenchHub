@@ -40,7 +40,7 @@ def _make_dataset(samples_with_gt):
         for k, v in gt_fields.items():
             db.session.add(
                 CustomField(
-                    sample_id=sample.id, name=k, field_type="scalar", value_float=v
+                    sample_id=sample.id, name=k, data_type="scalar", value_float=v
                 )
             )
     db.session.commit()
@@ -67,7 +67,7 @@ def _make_submission(lb, predictions_per_sample):
                     submission_id=sub.id,
                     sample_name=s_name,
                     name=k,
-                    field_type="scalar",
+                    data_type="scalar",
                     value_float=v,
                 )
             )

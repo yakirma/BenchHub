@@ -54,7 +54,7 @@ def submission_with_metric(client):
     for n, v in [("s1", 1.0), ("s2", 2.0), ("s3", 4.0)]:
         db.session.add(CustomField(
             submission_id=sub.id, sample_name=n, name="pred",
-            field_type="scalar", value_float=v,
+            data_type="scalar", value_float=v,
         ))
 
     gm = GlobalMetric(

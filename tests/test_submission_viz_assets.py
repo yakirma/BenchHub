@@ -121,7 +121,7 @@ def lb_with_depth_pred(client, db_session, tmp_path, monkeypatch):
     from app import CustomField
     db.session.add(CustomField(
         sample_id=samples[0].id, name='dense_depth',
-        field_type='depth', value_text='datasets/dummy/dense_depth/s0.npz',
+        data_type='depth', value_text='datasets/dummy/dense_depth/s0.npz',
     ))
     db.session.commit()
 

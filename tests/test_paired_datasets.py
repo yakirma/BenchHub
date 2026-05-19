@@ -38,20 +38,20 @@ def paired_lb(db_session):
     # Noisy side has the input image (would be shipped by submission
     # for evaluation; the metric needs the GT side too).
     db.session.add(CustomField(
-        sample_id=s_noisy.id, name='image_input', field_type='image',
+        sample_id=s_noisy.id, name='image_input', data_type='image',
         value_text='inputs/s00000.png',
     ))
     # Clean side has the GT image and a per-sample text caption.
     db.session.add(CustomField(
-        sample_id=s_clean.id, name='clean', field_type='image',
+        sample_id=s_clean.id, name='clean', data_type='image',
         value_text='clean/s00000.png',
     ))
     db.session.add(CustomField(
-        sample_id=s_clean.id, name='caption', field_type='text',
+        sample_id=s_clean.id, name='caption', data_type='text',
         value_text='document #1',
     ))
     db.session.add(CustomField(
-        sample_id=s_clean.id, name='quality_score', field_type='scalar',
+        sample_id=s_clean.id, name='quality_score', data_type='scalar',
         value_float=0.95,
     ))
 

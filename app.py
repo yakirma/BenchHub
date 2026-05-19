@@ -481,34 +481,50 @@ class Sample(db.Model):
     custom_fields = db.relationship('CustomField', backref='sample', lazy=True, cascade="all, delete-orphan", foreign_keys='CustomField.sample_id')
 
 class CustomField(db.Model):
-    """Store custom fields from datasets and submissions (images, scalars, metrics)"""
+    """One field of typed data attached to a Sample (GT) or Submission (pred).
+
+    The `data_type` string is one of `benchhub.types.DTYPES.kind` — the
+    same name that resolves to a `DataType` subclass (`Image`, `Depth`,
+    `Mask`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`).
+    `data_params` is a JSON-encoded dict carrying per-instance metadata
+    that the type class needs to decode the value back (e.g. Depth's
+    `unit`, BBoxes' `format`, Mask's `num_classes` + `ignore_index`).
+    Empty/NULL = `{}`."""
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)  # Folder name (e.g., 'custom_viz', 'metric_accuracy')
-    field_type = db.Column(db.String(20), nullable=False)  # 'image', 'scalar', 'metric'
-    value_text = db.Column(db.Text, nullable=True)  # For image paths or text values
-    value_float = db.Column(db.Float, nullable=True)  # For scalar/metric values
+    name = db.Column(db.String(100), nullable=False)
+    data_type = db.Column(db.String(20), nullable=False, index=True)  # benchhub.types kind
+    data_params = db.Column(db.Text, nullable=True)  # JSON dict; NULL ⇒ {}
+    value_text = db.Column(db.Text, nullable=True)  # file path OR inline-stored value (text, label, json)
+    value_float = db.Column(db.Float, nullable=True)  # inline-stored scalar
     sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=True)
     submission_id = db.Column(db.Integer, db.ForeignKey('submission.id'), nullable=True)
-    # HF-attached LBs have no Sample rows. The eval task snapshots
-    # streamed GT scalars/text into CustomField rows tagged with
-    # leaderboard_id (sample_id NULL, submission_id NULL) so the
-    # comparison view can render the GT column without re-streaming
-    # from huggingface.co. Indexed for the LB-scoped lookup.
     leaderboard_id = db.Column(db.Integer, db.ForeignKey('leaderboard.id'), nullable=True, index=True)
-    sample_name = db.Column(db.String(100), nullable=True)  # Sample name for submission custom fields
-    # Pointer-mode: name of the column in the upstream HF row that
-    # produces this CustomField when fetched. Populated only when the
-    # parent Sample's source_ref_json is set (i.e. the dataset is
-    # storage_mode='hf-pointer'). value_text stays NULL for image /
-    # depth pointer fields; the engine resolves them via bench_cache
-    # using (sample.source_ref_json, source_column) as the cache key.
+    sample_name = db.Column(db.String(100), nullable=True)
     source_column = db.Column(db.String(120), nullable=True)
 
     def get_value(self):
-        """Helper to get the appropriate value based on type"""
-        if self.field_type in ['scalar', 'metric'] and self.value_float is not None:
+        """Inline value for scalar/metric/label rows; file path for file-backed kinds."""
+        if self.data_type in ('scalar', 'metric') and self.value_float is not None:
             return self.value_float
         return self.value_text
+
+    def get_params(self) -> dict:
+        """Deserialize `data_params` JSON. Returns `{}` when NULL/blank/invalid."""
+        raw = self.data_params
+        if not raw:
+            return {}
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def set_params(self, params: dict | None) -> None:
+        """Write `data_params`. Stores compact JSON; NULL when params is empty."""
+        if not params:
+            self.data_params = None
+        else:
+            self.data_params = json.dumps(params, separators=(',', ':'))
 
 
 def _smart_num(value):
@@ -924,7 +940,7 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
-# Canonical folder-name → field_type prefix convention.
+# Canonical folder-name → data_type prefix convention.
 # Each known kind has a prefix; a folder named `<prefix>_<field_name>`
 def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, active_metrics):
 
@@ -992,10 +1008,10 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
     # Add custom fields to pred_data and metrics
     custom_fields_for_sample = [cf for cf in submission.custom_fields if cf.sample_name == sample.name]
     for cf in custom_fields_for_sample:
-        if cf.field_type == 'image':
+        if cf.data_type == 'image':
             # Store image path
             pred_data[cf.name] = cf.value_text
-        elif cf.field_type in ['scalar', 'metric']:
+        elif cf.data_type in ['scalar', 'metric']:
             # Store scalar/metric value
             pred_data[cf.name] = cf.value_float
             metrics[cf.name] = cf.value_float
@@ -1858,13 +1874,13 @@ def admin_cache_stats():
     snapshot_rows = (
         db.session.query(
             CustomField.leaderboard_id,
-            CustomField.field_type,
+            CustomField.data_type,
             func.count(CustomField.id),
         )
         .filter(CustomField.leaderboard_id.isnot(None))
         .filter(CustomField.submission_id.is_(None))
         .filter(CustomField.sample_id.is_(None))
-        .group_by(CustomField.leaderboard_id, CustomField.field_type)
+        .group_by(CustomField.leaderboard_id, CustomField.data_type)
         .all()
     )
     snap_by_lb = defaultdict(lambda: {'count': 0, 'by_kind': defaultdict(int)})
@@ -2176,8 +2192,8 @@ def _dataset_thumb_url(ds):
     cf = (
         CustomField.query
         .filter(CustomField.sample_id.in_(sample_ids),
-                CustomField.field_type.in_(('image', 'depth')))
-        .order_by(CustomField.field_type.desc())  # 'image' before 'depth'
+                CustomField.data_type.in_(('image', 'depth')))
+        .order_by(CustomField.data_type.desc())  # 'image' before 'depth'
         .first()
     )
     if cf is None:
@@ -2660,14 +2676,14 @@ def edit_leaderboard(leaderboard_id):
     # GT Custom Fields
     dataset_custom_fields = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples])).all()
     for cf in dataset_custom_fields:
-        if cf.field_type in ['metric', 'scalar', 'image']:
+        if cf.data_type in ['metric', 'scalar', 'image']:
             dataset_fields_set.add(cf.name)
             
     # Submission Custom Fields
     if sub_ids:
         submission_custom_fields = CustomField.query.filter(CustomField.submission_id.in_(sub_ids)).all()
         for cf in submission_custom_fields:
-            if cf.field_type in ['metric', 'scalar', 'image']:
+            if cf.data_type in ['metric', 'scalar', 'image']:
                 submission_fields_set.add(cf.name)
                 
     # 4. Include already defined Leaderboard Metrics (to allow chaining/dependencies)
@@ -2719,7 +2735,7 @@ def edit_leaderboard(leaderboard_id):
         all_known_metrics.add(f"lm_{lm.id}")
     # Custom metrics from database (linked to this dataset/submissions)
     # Similar logic to leaderboard_view discovery
-    dataset_custom_metrics = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples]), CustomField.field_type == 'metric').all()
+    dataset_custom_metrics = CustomField.query.filter(CustomField.sample_id.in_([s.id for s in samples]), CustomField.data_type == 'metric').all()
     for cf in dataset_custom_metrics:
         all_known_metrics.add(f'gt_{cf.name}') # Although leaderboard usually aggregates sub metrics? 
         # Actually leaderboard.html only shows standard, dynamic, and sub-custom metrics. Not GT custom metrics usually (unless dynamic uses them).
@@ -2729,7 +2745,7 @@ def edit_leaderboard(leaderboard_id):
     if sub_ids:
         submission_custom_metrics = CustomField.query.filter(
             CustomField.submission_id.in_(sub_ids), 
-            CustomField.field_type.in_(['metric', 'scalar'])
+            CustomField.data_type.in_(['metric', 'scalar'])
         ).all()
         for cf in submission_custom_metrics:
             if not cf.name.startswith('lm_'):
@@ -4607,7 +4623,7 @@ def leaderboard_view(leaderboard_id):
     custom_metrics = set()
     for sub in processed_submissions:
         for cf in sub.custom_fields:
-            if cf.field_type in ['metric', 'scalar'] and not cf.name.startswith('lm_'):
+            if cf.data_type in ['metric', 'scalar'] and not cf.name.startswith('lm_'):
                 custom_metrics.add(cf.name)
     
     # Map internal IDs to labels
@@ -4759,7 +4775,7 @@ def leaderboard_view(leaderboard_id):
                     ).filter(
                         CustomField.submission_id == sub.id,
                         CustomField.name == metric,
-                        CustomField.field_type.in_(['metric', 'scalar'])
+                        CustomField.data_type.in_(['metric', 'scalar'])
                     )
                     
                     # Apply sample filters by sample_name (not via Sample join)
@@ -5225,7 +5241,7 @@ def _lb_structure_signature(lb):
         sample_ids = [s.id for s in lb.datasets[0].samples[:1]]
         if sample_ids:
             parts['fields'] = sorted({
-                (cf.name, cf.field_type)
+                (cf.name, cf.data_type)
                 for cf in CustomField.query.filter(
                     CustomField.sample_id.in_(sample_ids)
                 ).all()
@@ -5255,22 +5271,22 @@ def _gt_columns(ds):
     if not ds or not ds.samples:
         return
     first = ds.samples[0]
-    field_types = {cf.name: cf.field_type for cf in (first.custom_fields or [])}
+    field_types = {cf.name: cf.data_type for cf in (first.custom_fields or [])}
     for cf in (first.custom_fields or []):
         if cf.name.endswith('_class'):
             continue
-        if cf.field_type == 'scalar':
+        if cf.data_type == 'scalar':
             is_classlabel = f"{cf.name}_class" in field_types
             yield cf.name, 'scalar', {'is_classlabel': is_classlabel}
-        elif cf.field_type == 'depth':
+        elif cf.data_type == 'depth':
             yield cf.name, 'depth', {}
-        elif cf.field_type == 'image':
+        elif cf.data_type == 'image':
             name_lc = cf.name.lower()
             if any(h in name_lc for h in _MASK_NAME_HINTS):
                 yield cf.name, 'mask', {}
             else:
                 yield cf.name, 'image', {}
-        elif cf.field_type == 'text':
+        elif cf.data_type == 'text':
             # Treat short text fields as classlabel-style GT (e.g.
             # 'neg' / 'pos' for sentiment, 'cat' / 'dog' / ... for
             # animals). Long captions get skipped — `len > 80` is a
@@ -6112,7 +6128,7 @@ def _lb_submission_pred_fields(lb):
             continue
         first = ds.samples[0]
         for cf in (first.custom_fields or []):
-            gt_field_meta.setdefault(cf.name, cf.field_type)
+            gt_field_meta.setdefault(cf.name, cf.data_type)
         # Walk one dataset's worth of fields; that's enough to infer.
         break
     if not gt_field_meta:
@@ -6616,7 +6632,7 @@ def _make_paired_gt_provider(lb):
             if partner is None:
                 continue
             for cf in (partner.custom_fields or []):
-                if cf.field_type in ('scalar', 'image', 'depth', 'text'):
+                if cf.data_type in ('scalar', 'image', 'depth', 'text'):
                     yield cf, partner
 
     return _provider
@@ -6689,7 +6705,7 @@ def _pointer_gt_resolver(sample, cf):
         # bench_cache's hashed (extension-less) filename. Stage to a
         # BytesIO and dump the buffer to the exact path we were given.
         import io as _io
-        if cf.field_type == 'image':
+        if cf.data_type == 'image':
             from PIL import Image as _PILImage
             buf = _io.BytesIO()
             if hasattr(value, 'mode') and hasattr(value, 'save'):
@@ -6701,7 +6717,7 @@ def _pointer_gt_resolver(sample, cf):
                 _PILImage.fromarray(arr.astype(np.uint8)).save(buf, 'PNG')
             with open(path, 'wb') as f:
                 f.write(buf.getvalue())
-        elif cf.field_type == 'depth':
+        elif cf.data_type == 'depth':
             arr = np.asarray(value)
             if arr.ndim == 3 and arr.shape[2] == 1:
                 arr = arr.squeeze(-1)
@@ -6730,10 +6746,10 @@ def _pointer_gt_resolver(sample, cf):
     # filename is sha256 of the key (no extension); both PIL and
     # np.load handle that fine.
     try:
-        if cf.field_type == 'image':
+        if cf.data_type == 'image':
             from PIL import Image as _PILImage
             return np.asarray(_PILImage.open(cached_path).convert('RGB'))
-        if cf.field_type == 'depth':
+        if cf.data_type == 'depth':
             with np.load(cached_path) as data:
                 if 'depth' in data:
                     return np.asarray(data['depth'])
@@ -7426,14 +7442,14 @@ def comparison_view(leaderboard_id):
     # column populates with the streamed HF values.
     if hf_stub_mode:
         dataset_custom_fields_query = db.session.query(
-            CustomField.name, CustomField.field_type,
+            CustomField.name, CustomField.data_type,
         ).filter(
             CustomField.leaderboard_id == leaderboard.id,
             CustomField.submission_id.is_(None),
             CustomField.sample_id.is_(None),
         ).distinct().all()
     else:
-        dataset_custom_fields_query = db.session.query(CustomField.name, CustomField.field_type).join(Sample).filter(
+        dataset_custom_fields_query = db.session.query(CustomField.name, CustomField.data_type).join(Sample).filter(
             Sample.dataset_id.in_(dataset_ids),
             CustomField.submission_id == None
         ).distinct().all()
@@ -7443,7 +7459,7 @@ def comparison_view(leaderboard_id):
     
     # Submission fields
     sub_ids = [s.id for s in submissions]
-    submission_custom_fields_query = db.session.query(CustomField.submission_id, CustomField.name, CustomField.field_type).filter(
+    submission_custom_fields_query = db.session.query(CustomField.submission_id, CustomField.name, CustomField.data_type).filter(
         CustomField.submission_id.in_(sub_ids)
     ).distinct().all()
     
@@ -7574,7 +7590,7 @@ def comparison_view(leaderboard_id):
                 precalc_results = {res.sample_name: res.value_float for res in db.session.query(CustomField.sample_name, CustomField.value_float).filter(
                     CustomField.submission_id == sub_id,
                     CustomField.name == metric_key,
-                    CustomField.field_type.in_(['scalar', 'metric'])
+                    CustomField.data_type.in_(['scalar', 'metric'])
                 ).all()}
 
                 def get_sort_val(s):
@@ -7653,7 +7669,7 @@ def comparison_view(leaderboard_id):
     for s in samples_on_page:
         sample_metrics_map[s.id] = {'name': s.name}
         for cf in s.custom_fields:
-            if cf.field_type in ['scalar', 'metric'] and cf.submission_id is None:
+            if cf.data_type in ['scalar', 'metric'] and cf.submission_id is None:
                 sample_metrics_map[s.id][cf.name] = cf.value_float
 
     for sample in samples_on_page:
@@ -7671,7 +7687,7 @@ def comparison_view(leaderboard_id):
                 'config': None.parsed_config if None else {},
                 'bins': gt_bins,
                 'counts': gt_counts,
-                'custom_fields': {cf.name: cf.value_float for cf in sample.custom_fields if cf.field_type in ['scalar', 'metric'] and cf.submission_id is None}
+                'custom_fields': {cf.name: cf.value_float for cf in sample.custom_fields if cf.data_type in ['scalar', 'metric'] and cf.submission_id is None}
             },
             'predictions': [],
             'custom_fields': {},
@@ -7682,12 +7698,12 @@ def comparison_view(leaderboard_id):
         # json, scalar) get their value surfaced alongside the field_id;
         # the template branches on whichever attribute is non-null.
         for cf in sample.custom_fields:
-            if cf.field_type in ['image', 'depth', 'mask', 'audio', 'scalar', 'text', 'json']:
+            if cf.data_type in ['image', 'depth', 'mask', 'audio', 'scalar', 'text', 'json']:
                 sample_info['custom_fields'][cf.name] = {
-                    'gt_field_id': cf.id if cf.field_type in ['image', 'depth', 'mask', 'audio'] else None,
-                    'gt_scalar_value': cf.value_float if cf.field_type == 'scalar' else None,
-                    'gt_text_value': cf.value_text if cf.field_type in ('text', 'json') else None,
-                    'gt_field_type': cf.field_type,
+                    'gt_field_id': cf.id if cf.data_type in ['image', 'depth', 'mask', 'audio'] else None,
+                    'gt_scalar_value': cf.value_float if cf.data_type == 'scalar' else None,
+                    'gt_text_value': cf.value_text if cf.data_type in ('text', 'json') else None,
+                    'gt_field_type': cf.data_type,
                     'submissions': {},
                     'sub_scalars': {}
                 }
@@ -7708,7 +7724,7 @@ def comparison_view(leaderboard_id):
             
             # Add submission custom fields for this sample
             for cf in sub.custom_fields:
-                if cf.field_type in ['image', 'depth', 'scalar'] and cf.sample_name == sample.name:
+                if cf.data_type in ['image', 'depth', 'scalar'] and cf.sample_name == sample.name:
                     if cf.name not in sample_info['custom_fields']:
                         sample_info['custom_fields'][cf.name] = {
                             'gt_field_id': None,
@@ -7716,13 +7732,13 @@ def comparison_view(leaderboard_id):
                             'submissions': {},
                             'sub_scalars': {}
                         }
-                    if cf.field_type in ['image', 'depth']:
+                    if cf.data_type in ['image', 'depth']:
                         sample_info['custom_fields'][cf.name]['submissions'][sub.id] = cf.id
-                    elif cf.field_type == 'scalar':
+                    elif cf.data_type == 'scalar':
                         sample_info['custom_fields'][cf.name]['sub_scalars'][sub.id] = cf.value_float
                 
                 # Add submission custom metric fields for this sample
-                if cf.field_type == 'metric' and cf.sample_name == sample.name:
+                if cf.data_type == 'metric' and cf.sample_name == sample.name:
                     if cf.name not in sample_info['custom_metrics']:
                         sample_info['custom_metrics'][cf.name] = {
                             'submissions': {}
@@ -7800,7 +7816,7 @@ def comparison_view(leaderboard_id):
     custom_metrics = set()
     for sub in submissions:
         for cf in sub.custom_fields:
-            if cf.field_type == 'metric':
+            if cf.data_type == 'metric':
                 custom_metrics.add(cf.name)
     
     # Deduplicate: Remove names that are already represented as leaderboard metrics
@@ -7882,7 +7898,7 @@ def comparison_view(leaderboard_id):
             avg_val = db.session.query(func.avg(CustomField.value_float)).filter(
                 CustomField.submission_id == sub.id,
                 CustomField.name == m,
-                CustomField.field_type == 'metric'
+                CustomField.data_type == 'metric'
             ).scalar()
             calculated_dynamic_values[sub.id][m] = avg_val
 
@@ -7983,26 +7999,26 @@ def comparison_view(leaderboard_id):
     submission_fields_dict = {}
     
     for field_name in all_custom_fields:
-        field_type = all_field_types.get(field_name, 'image')
+        data_type = all_field_types.get(field_name, 'image')
         if field_name in dataset_custom_fields:
-            dataset_fields_dict[field_name] = field_type
+            dataset_fields_dict[field_name] = data_type
         else:
-            submission_fields_dict[field_name] = field_type
+            submission_fields_dict[field_name] = data_type
     
     # Add dataset fields first. Only skip `metric` — those go through
     # the per_sample_metrics chart panel. Scalar GT (e.g. WN18RR's
     # `head`/`tail` entity IDs, ImageNet's `label`) IS the ground truth
     # for many LBs and needs to be togglable as a column.
     for field_name in sorted(dataset_fields_dict.keys()):
-        field_type = dataset_fields_dict[field_name]
-        if field_type == 'metric': continue
+        data_type = dataset_fields_dict[field_name]
+        if data_type == 'metric': continue
         # Narrower column for scalars since they render as a single
         # numeric/text value, not a 300px-wide image preview.
-        default_width = '120px' if field_type == 'scalar' else '300px'
+        default_width = '120px' if data_type == 'scalar' else '300px'
         available_display_options[field_name] = {
-            'label': field_name, 'type': field_type, 'default_width': default_width,
+            'label': field_name, 'type': data_type, 'default_width': default_width,
         }
-        if field_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
+        if data_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
 
     # Build submission field mapping
     submission_field_map = {}
@@ -8015,13 +8031,13 @@ def comparison_view(leaderboard_id):
     for base_name in sorted(submission_field_map.keys()):
         sorted_entries = sorted(submission_field_map[base_name], key=lambda x: x[0])
         for sub_id, field_name in sorted_entries:
-            field_type = all_field_types.get(field_name, 'image')
-            if field_type == 'metric': continue
-            default_width = '120px' if field_type == 'scalar' else '300px'
+            data_type = all_field_types.get(field_name, 'image')
+            if data_type == 'metric': continue
+            default_width = '120px' if data_type == 'scalar' else '300px'
             available_display_options[field_name] = {
-                'label': field_name, 'type': field_type, 'default_width': default_width,
+                'label': field_name, 'type': data_type, 'default_width': default_width,
             }
-            if field_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
+            if data_type in ['image', 'mask', 'depth']: custom_image_fields.append(field_name)
 
     # 1. Check GT fields availability (only for samples on current page for UI rendering hint)
     has_gt_hist = any(None for s in samples_on_page)
@@ -8581,11 +8597,11 @@ def _dataset_field_types(dataset):
     rows = (
         db.session.query(
             CustomField.name,
-            CustomField.field_type,
+            CustomField.data_type,
             func.count(CustomField.id),
         )
         .filter(CustomField.sample_id.in_(sample_ids))
-        .group_by(CustomField.name, CustomField.field_type)
+        .group_by(CustomField.name, CustomField.data_type)
         .all()
     )
     # Collapse: a field name with mixed types (rare, mid-edit state) shows
@@ -8632,9 +8648,9 @@ def dataset_settings(dataset_id):
 @owner_required(Dataset, 'dataset_id')
 def update_dataset_field_type(dataset_id, field_name):
     """Reclassify every CustomField row with this name on this dataset
-    to a new field_type. Useful when auto-detection picked the wrong
+    to a new data_type. Useful when auto-detection picked the wrong
     type (e.g. a `metric_*` column that landed as 'scalar')."""
-    new_type = (request.form.get('field_type') or '').strip()
+    new_type = (request.form.get('data_type') or '').strip()
     if new_type not in _VALID_FIELD_TYPES:
         flash(f"Invalid field type '{new_type}'.", "danger")
         return redirect(url_for('dataset_settings', dataset_id=dataset_id))
@@ -8648,7 +8664,7 @@ def update_dataset_field_type(dataset_id, field_name):
     updated = (
         CustomField.query
         .filter(CustomField.sample_id.in_(sample_ids), CustomField.name == field_name)
-        .update({'field_type': new_type}, synchronize_session=False)
+        .update({'data_type': new_type}, synchronize_session=False)
     )
     db.session.commit()
     flash(f"Reclassified {updated} '{field_name}' rows to '{new_type}'.", "success")
@@ -8692,7 +8708,7 @@ def dataset_view(dataset_id):
 
     # Collect unique custom field names from the dataset early for sorting/display
     # Use a distinct query instead of iterating through all samples
-    custom_field_query = db.session.query(CustomField.name, CustomField.field_type).join(Sample).filter(
+    custom_field_query = db.session.query(CustomField.name, CustomField.data_type).join(Sample).filter(
         Sample.dataset_id == dataset.id,
         CustomField.submission_id == None
     ).distinct().all()
@@ -8749,7 +8765,7 @@ def dataset_view(dataset_id):
         # Resolve histogram data using our bulk-fetched map + eager loaded custom_fields
         sample_hist = hist_map.get(sample.id)
         if not sample_hist:
-            hist_cf = next((cf for cf in sample.custom_fields if cf.name == 'hist' and cf.field_type == 'histogram'), None)
+            hist_cf = next((cf for cf in sample.custom_fields if cf.name == 'hist' and cf.data_type == 'histogram'), None)
             if hist_cf and hist_cf.value_text:
                 try:
                     data = json.loads(hist_cf.value_text)
@@ -8762,7 +8778,7 @@ def dataset_view(dataset_id):
         # Resolve signal shape
         sample_shape = shape_map.get(sample.id)
         if not sample_shape:
-            shape_cf = next((cf for cf in sample.custom_fields if cf.name == 'wave_shape' and cf.field_type == 'scalar'), None)
+            shape_cf = next((cf for cf in sample.custom_fields if cf.name == 'wave_shape' and cf.data_type == 'scalar'), None)
             if shape_cf:
                 class MockShape: pass
                 sample_shape = MockShape()
@@ -8780,11 +8796,11 @@ def dataset_view(dataset_id):
         for cf in sample.custom_fields:
             if cf.submission_id is not None: continue
             
-            if cf.field_type in ('scalar', 'metric'):
+            if cf.data_type in ('scalar', 'metric'):
                 metrics[cf.name] = cf.value_float
-                cf_vals[cf.name] = {'type': cf.field_type, 'value': cf.value_float, 'field_id': cf.id}
+                cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_float, 'field_id': cf.id}
             else:
-                cf_vals[cf.name] = {'type': cf.field_type, 'value': cf.value_text, 'field_id': cf.id}
+                cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_text, 'field_id': cf.id}
 
         dataset_metrics_data.append({
             'sample_id': sample.id,
@@ -8809,16 +8825,16 @@ def dataset_view(dataset_id):
     available_display_options = DATASET_DISPLAY_OPTIONS.copy()
     
     # Inject detected custom fields (excluding scalars - they appear in GT Stats)
-    for field_name, field_type in custom_field_names:
-        if field_type == 'image':
+    for field_name, data_type in custom_field_names:
+        if data_type == 'image':
             available_display_options[field_name] = {'label': field_name, 'type': 'image', 'default_width': '150px'}
-        elif field_type == 'mask':
+        elif data_type == 'mask':
             available_display_options[field_name] = {'label': field_name, 'type': 'mask', 'default_width': '150px'}
-        elif field_type == 'depth':
+        elif data_type == 'depth':
             available_display_options[field_name] = {'label': field_name, 'type': 'depth', 'default_width': '150px'}
-        elif field_type == 'json':
+        elif data_type == 'json':
             available_display_options[field_name] = {'label': field_name, 'type': 'json', 'default_width': '150px'}
-        elif field_type == 'text' and field_name != 'tags':
+        elif data_type == 'text' and field_name != 'tags':
             # Text columns (AG News `text`, NLI `premise`/`hypothesis`,
             # captions, etc.) need their own column too. Skip the
             # reserved `tags` field — that one is already surfaced via
@@ -8846,7 +8862,7 @@ def dataset_view(dataset_id):
     sample_metric_options_dynamic = SAMPLE_METRIC_OPTIONS.copy()
     
     # Extract custom scalar metric names for auto-inclusion in charts
-    custom_scalar_metrics = [field_name for field_name, field_type in custom_field_names if field_type == 'scalar']
+    custom_scalar_metrics = [field_name for field_name, data_type in custom_field_names if data_type == 'scalar']
     
     # Create a set of all custom field names for priority sorting
     # In dataset view, all custom fields belong to the dataset (no submissions)
@@ -9284,10 +9300,10 @@ def serve_custom_field_image(field_id):
             url_kwargs['cmap'] = request.args['cmap']
         return redirect(url_for('serve_gt_viz', **url_kwargs))
 
-    if custom_field.field_type == 'depth':
+    if custom_field.data_type == 'depth':
         return serve_depth_image(custom_field.value_text)
 
-    if custom_field.field_type not in ('image', 'mask', 'audio'):
+    if custom_field.data_type not in ('image', 'mask', 'audio'):
         return "Not an image/mask/depth/audio field", 400
 
     # value_text contains the relative path from uploads folder
@@ -9296,7 +9312,7 @@ def serve_custom_field_image(field_id):
     if not os.path.exists(image_path):
         return "Image not found", 404
 
-    if custom_field.field_type == 'mask':
+    if custom_field.data_type == 'mask':
         # BH masks land on disk as raw class-index PNGs (values like
         # 0/1 for binary masks, 0/1/2/4 for multi-class). Rendered as
         # grayscale those are visually black. Apply the deterministic-
@@ -9349,7 +9365,7 @@ def serve_custom_field_depth_data(field_id):
     """Serve raw depth data for a custom field as JSON."""
     custom_field = CustomField.query.get_or_404(field_id)
     
-    if custom_field.field_type != 'depth':
+    if custom_field.data_type != 'depth':
         return abort(400, description="Not a depth field")
         
     return serve_depth_data(custom_field.value_text)
@@ -9359,7 +9375,7 @@ def serve_custom_field_json(field_id):
     """Serve JSON data for a custom field."""
     custom_field = CustomField.query.get_or_404(field_id)
     
-    if custom_field.field_type != 'json':
+    if custom_field.data_type != 'json':
         return abort(400, description="Not a JSON field")
     
     # value_text contains the relative path from uploads folder
@@ -9391,7 +9407,7 @@ def download_sample(sample_id):
         
         # Peak
         for cf in sample.custom_fields:
-            if cf.name == 'pick' and cf.field_type == 'scalar':
+            if cf.name == 'pick' and cf.data_type == 'scalar':
                 zf.writestr(f'ground_truth/pick/{sample.name}.txt', str(cf.value_float))
                 break
             
@@ -9415,10 +9431,10 @@ def download_sample(sample_id):
         # scalar+image were included, so depth maps and json/text fields
         # silently dropped from the bundle).
         for cf in sample.custom_fields:
-            if cf.field_type == 'scalar':
+            if cf.data_type == 'scalar':
                 zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', str(cf.value_float))
 
-            elif cf.field_type in ('image', 'depth', 'json'):
+            elif cf.data_type in ('image', 'depth', 'json'):
                 # All three store a relative path under UPLOAD_FOLDER.
                 # Preserve the original filename (depth files carry a
                 # `_<W>x<H>` suffix that the importer expects on round-trip).
@@ -9427,7 +9443,7 @@ def download_sample(sample_id):
                     arc_filename = os.path.basename(cf.value_text)
                     zf.write(src_path, f'ground_truth/{cf.name}/{arc_filename}')
 
-            elif cf.field_type == 'histogram':
+            elif cf.data_type == 'histogram':
                 # value_text is the JSON {bins, counts}; round-trip to .npz
                 # so the bundle matches the original ZIP convention.
                 try:
@@ -9438,7 +9454,7 @@ def download_sample(sample_id):
                 except Exception:
                     pass
 
-            elif cf.field_type == 'text':
+            elif cf.data_type == 'text':
                 zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', cf.value_text or '')
 
 
@@ -10353,7 +10369,7 @@ def _persist_pred_scalars_from_disk(submission, leaderboard, submission_folder):
                     submission_id=submission.id,
                     sample_name=sample_name,
                     name=field,
-                    field_type='scalar',
+                    data_type='scalar',
                     value_float=value_float,
                 ))
             elif raw:
@@ -10361,7 +10377,7 @@ def _persist_pred_scalars_from_disk(submission, leaderboard, submission_folder):
                     submission_id=submission.id,
                     sample_name=sample_name,
                     name=field,
-                    field_type='text',
+                    data_type='text',
                     value_text=raw,
                 ))
     db.session.commit()
@@ -10730,7 +10746,7 @@ def leaderboard_metrics_status(leaderboard_id):
                 CustomField.value_float
             ).join(Sample).filter(
                 CustomField.submission_id == sub.id,
-                CustomField.field_type == 'metric'
+                CustomField.data_type == 'metric'
             )
             
             # Apply Filters (Same logic as tasks.py)
@@ -10824,7 +10840,7 @@ def leaderboard_metrics_status(leaderboard_id):
                         CustomField.value_float
                     ).filter(
                         CustomField.submission_id == sub.id,
-                        CustomField.field_type == 'metric',
+                        CustomField.data_type == 'metric',
                         CustomField.sample_id.in_(sample_ids)
                     ).all()
                     for sid, name, val in sm_query:
@@ -10846,7 +10862,7 @@ def leaderboard_metrics_status(leaderboard_id):
     custom_metrics = set()
     for sub in processed_submissions:
         for cf in sub.custom_fields:
-            if cf.field_type == 'metric':
+            if cf.data_type == 'metric':
                 custom_metrics.add(cf.name)
     
     leaderboard_metrics_map = { (lm.target_name if lm.target_name else lm.global_metric.name): lm for lm in leaderboard.leaderboard_metrics }
@@ -11273,7 +11289,35 @@ def check_and_migrate_db():
                     print(f"Migration error (author_profile.merged_into_username): {e}")
                             
                 conn.close()
-                
+
+                # --- 3c. Backfill custom_field.data_type from field_type ---
+                # Pre-Phase-A installs name the typed-contract column
+                # `field_type`. The ALTER above adds `data_type`; copy
+                # the per-row value across so existing GT/pred rows
+                # remain readable through the model's `data_type`
+                # attribute. Idempotent: skipped when the legacy column
+                # is absent (fresh DBs) or when every row has already
+                # been backfilled.
+                try:
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA table_info(custom_field)")
+                    cf_cols = {row[1] for row in cursor.fetchall()}
+                    if 'field_type' in cf_cols and 'data_type' in cf_cols:
+                        cursor.execute(
+                            "UPDATE custom_field SET data_type = field_type "
+                            "WHERE data_type IS NULL AND field_type IS NOT NULL"
+                        )
+                        if cursor.rowcount:
+                            print(
+                                f"Migrating DB: backfilled data_type on "
+                                f"{cursor.rowcount} custom_field rows."
+                            )
+                        conn.commit()
+                    conn.close()
+                except Exception as e:
+                    print(f"custom_field data_type backfill failed (non-fatal): {e}")
+
                 # --- 4. LeaderboardMetric Aggregation Columns ---
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
@@ -11502,6 +11546,16 @@ def check_and_migrate_db():
                     # this field pulls from when its parent Sample is
                     # pointer-backed. NULL otherwise.
                     ("custom_field",         "source_column",                    "VARCHAR(120)"),
+                    # Phase A typed contract: per-instance metadata for the
+                    # DataType subclass that decodes this field's value
+                    # (e.g. {"unit": "meters"} for Depth, {"format": "xyxy"}
+                    # for BBoxes). JSON-encoded string; NULL ⇒ {}.
+                    ("custom_field",         "data_params",                      "TEXT"),
+                    # Phase A typed contract: renamed from `field_type`.
+                    # On pre-rename installs the old column remains; this
+                    # ALTER adds `data_type` and the backfill below copies
+                    # the value across.
+                    ("custom_field",         "data_type",                        "VARCHAR(20)"),
                     # Remote submissions (NEW 2026-05-08).
                     ("submission",           "storage_mode",                     "VARCHAR(20) NOT NULL DEFAULT 'local'"),
                     ("submission",           "remote_url",                       "VARCHAR(500)"),
@@ -11689,7 +11743,7 @@ def download_sample_metrics_csv(submission_id):
         cfs = CustomField.query.filter(
             CustomField.submission_id == submission_id,
             CustomField.name.in_([m_id_name, friendly_name, f"metric_{friendly_name}"]),
-            CustomField.field_type.in_(['scalar', 'metric'])
+            CustomField.data_type.in_(['scalar', 'metric'])
         ).all()
         
         # Check if ANY lm_{id} fields exist for this metric/submission
@@ -11813,7 +11867,7 @@ def download_submissions_sample_metrics_bulk(leaderboard_id):
                     cfs = CustomField.query.filter(
                         CustomField.submission_id == sub.id,
                         CustomField.name.in_([m_id_name, friendly_name, f"metric_{friendly_name}"]),
-                        CustomField.field_type.in_(['scalar', 'metric'])
+                        CustomField.data_type.in_(['scalar', 'metric'])
                     ).all()
                     
                     # Check if ANY lm_{id} fields exist for this metric/submission
@@ -12065,7 +12119,7 @@ def download_submissions_full_bulk(leaderboard_id):
                     if not lm: continue
                     m_id_name = f"lm_{lm.id}"
                     row = [m_display, lm.arg_mappings, lm.tag_filter or '']
-                    cfs = CustomField.query.filter_by(submission_id=sub.id, name=m_id_name, field_type='scalar').all()
+                    cfs = CustomField.query.filter_by(submission_id=sub.id, name=m_id_name, data_type='scalar').all()
                     cf_map = {cf.sample_id: cf.value_float for cf in cfs}
                     for s_id in sample_ids:
                         val = cf_map.get(s_id)

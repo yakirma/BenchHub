@@ -33,7 +33,7 @@ def test_load_gt_array_image_returns_rgb_numpy(tmp_path):
     img.save(tmp_path / 'frame.png')
 
     cf = type('CF', (), {
-        'name': 'frame', 'field_type': 'image',
+        'name': 'frame', 'data_type': 'image',
         'value_text': 'frame.png',
     })()
     arr = _load_gt_array(cf, str(tmp_path))
@@ -46,7 +46,7 @@ def test_load_gt_array_depth_reads_depth_key(tmp_path):
     depth = np.arange(16, dtype=np.float32).reshape(4, 4)
     np.savez(tmp_path / 'depth.npz', depth=depth)
     cf = type('CF', (), {
-        'name': 'depth', 'field_type': 'depth', 'value_text': 'depth.npz',
+        'name': 'depth', 'data_type': 'depth', 'value_text': 'depth.npz',
     })()
     arr = _load_gt_array(cf, str(tmp_path))
     assert arr is not None
@@ -59,7 +59,7 @@ def test_load_gt_array_depth_falls_back_to_first_key_when_no_depth(tmp_path):
     arr_in = np.eye(5, dtype=np.float32)
     np.savez(tmp_path / 'd.npz', distance=arr_in)
     cf = type('CF', (), {
-        'name': 'd', 'field_type': 'depth', 'value_text': 'd.npz',
+        'name': 'd', 'data_type': 'depth', 'value_text': 'd.npz',
     })()
     arr = _load_gt_array(cf, str(tmp_path))
     np.testing.assert_array_equal(arr, arr_in)
@@ -67,7 +67,7 @@ def test_load_gt_array_depth_falls_back_to_first_key_when_no_depth(tmp_path):
 
 def test_load_gt_array_returns_none_for_missing_file(tmp_path):
     cf = type('CF', (), {
-        'name': 'gone', 'field_type': 'image', 'value_text': 'no/such.png',
+        'name': 'gone', 'data_type': 'image', 'value_text': 'no/such.png',
     })()
     assert _load_gt_array(cf, str(tmp_path)) is None
 
@@ -151,7 +151,7 @@ def test_full_context_loads_depth_gt_and_depth_pred(
     sample = SampleModel(dataset_id=ds.id, name='s00000')
     db.session.add(sample); db.session.flush()
     db.session.add(CustomField(
-        sample_id=sample.id, name='depth_map', field_type='depth',
+        sample_id=sample.id, name='depth_map', data_type='depth',
         value_text=rel_gt_path,
     ))
     db.session.commit()
@@ -195,7 +195,7 @@ def test_full_context_loads_image_gt_and_image_pred(
     sample = SampleModel(dataset_id=ds.id, name='s0')
     db.session.add(sample); db.session.flush()
     db.session.add(CustomField(
-        sample_id=sample.id, name='rgb', field_type='image', value_text=rel,
+        sample_id=sample.id, name='rgb', data_type='image', value_text=rel,
     ))
     db.session.commit()
 

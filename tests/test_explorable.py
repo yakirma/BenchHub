@@ -59,7 +59,7 @@ def hf_lb_with_marker(db_session, logged_in_user):
         leaderboard_id=lb.id,
         sample_name='s_000000',
         name='label',
-        field_type='scalar',
+        data_type='scalar',
         value_float=1.0,
     ))
     db.session.commit()
@@ -108,7 +108,7 @@ def test_sample_scoped_cf_does_not_count_as_marker(db_session, logged_in_user):
         leaderboard_id=lb.id,
         sample_id=999,  # NON-NULL → not a stub-mode marker
         name='label',
-        field_type='scalar',
+        data_type='scalar',
         value_float=1.0,
     ))
     db.session.commit()
@@ -128,7 +128,7 @@ def test_submission_scoped_cf_does_not_count_as_marker(db_session, logged_in_use
         submission_id=999,  # NON-NULL → prediction, not GT
         sample_name='s_000000',
         name='label_pred',
-        field_type='scalar',
+        data_type='scalar',
         value_float=1.0,
     ))
     db.session.commit()

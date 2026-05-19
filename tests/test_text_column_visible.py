@@ -11,11 +11,11 @@ def test_text_field_renders_on_dataset_page(client, db_session):
     s = Sample(dataset_id=ds.id, name='s00000')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        sample_id=s.id, name='text', field_type='text',
+        sample_id=s.id, name='text', data_type='text',
         value_text='Wall St. Bears Claw Back Into the Black (Reuters)',
     ))
     db.session.add(CustomField(
-        sample_id=s.id, name='label', field_type='scalar',
+        sample_id=s.id, name='label', data_type='scalar',
         value_float=2.0,
     ))
     db.session.commit()
@@ -37,11 +37,11 @@ def test_text_field_does_not_collide_with_reserved_tags_column(client, db_sessio
     s = Sample(dataset_id=ds.id, name='s0')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        sample_id=s.id, name='tags', field_type='text',
+        sample_id=s.id, name='tags', data_type='text',
         value_text='depth,indoor',
     ))
     db.session.add(CustomField(
-        sample_id=s.id, name='caption', field_type='text',
+        sample_id=s.id, name='caption', data_type='text',
         value_text='A red cat on a green couch.',
     ))
     db.session.commit()
@@ -61,15 +61,15 @@ def test_nli_dataset_shape_renders_premise_and_hypothesis(client, db_session):
     s = Sample(dataset_id=ds.id, name='s0')
     db.session.add(s); db.session.flush()
     db.session.add(CustomField(
-        sample_id=s.id, name='premise', field_type='text',
+        sample_id=s.id, name='premise', data_type='text',
         value_text='A man inspects the uniform of a figure.',
     ))
     db.session.add(CustomField(
-        sample_id=s.id, name='hypothesis', field_type='text',
+        sample_id=s.id, name='hypothesis', data_type='text',
         value_text='The man is sleeping.',
     ))
     db.session.add(CustomField(
-        sample_id=s.id, name='label', field_type='scalar', value_float=2.0,
+        sample_id=s.id, name='label', data_type='scalar', value_float=2.0,
     ))
     db.session.commit()
     resp = client.get(f'/dataset/{ds.id}')

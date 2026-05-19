@@ -12,7 +12,7 @@ def owned_dataset_with_field(db_session, logged_in_user):
     db.session.add(ds); db.session.flush()
     sample = Sample(dataset_id=ds.id, name='s1')
     db.session.add(sample); db.session.flush()
-    cf = CustomField(name='accuracy', field_type='scalar',
+    cf = CustomField(name='accuracy', data_type='scalar',
                      value_float=0.9, sample_id=sample.id)
     db.session.add(cf); db.session.commit()
     return ds
@@ -26,7 +26,7 @@ def test_settings_page_lists_field_types(auth_client, owned_dataset_with_field):
     assert b'accuracy' in body
     assert b'scalar' in body
     # Selector is present.
-    assert b'name="field_type"' in body
+    assert b'name="data_type"' in body
 
 
 def test_update_field_type_reclassifies_all_rows(
@@ -35,26 +35,26 @@ def test_update_field_type_reclassifies_all_rows(
     # Add a second sample with another row of the same field name.
     sample2 = Sample(dataset_id=owned_dataset_with_field.id, name='s2')
     db.session.add(sample2); db.session.flush()
-    cf2 = CustomField(name='accuracy', field_type='scalar',
+    cf2 = CustomField(name='accuracy', data_type='scalar',
                       value_float=0.7, sample_id=sample2.id)
     db.session.add(cf2); db.session.commit()
 
     resp = auth_client.post(
         f'/dataset/{owned_dataset_with_field.id}/field/accuracy/type',
-        data={'field_type': 'metric'},
+        data={'data_type': 'metric'},
         follow_redirects=False,
     )
     assert resp.status_code == 302
 
     # Both rows updated.
     rows = CustomField.query.filter_by(name='accuracy').all()
-    assert all(r.field_type == 'metric' for r in rows)
+    assert all(r.data_type == 'metric' for r in rows)
 
 
 def test_update_field_type_rejects_bogus(auth_client, owned_dataset_with_field):
     resp = auth_client.post(
         f'/dataset/{owned_dataset_with_field.id}/field/accuracy/type',
-        data={'field_type': 'DROP TABLE'},
+        data={'data_type': 'DROP TABLE'},
         follow_redirects=True,
     )
     assert resp.status_code == 200
@@ -73,12 +73,12 @@ def test_update_field_type_blocks_non_owner(
     db.session.add(ds); db.session.flush()
     s = Sample(dataset_id=ds.id, name='s1')
     db.session.add(s); db.session.flush()
-    cf = CustomField(name='foo', field_type='scalar', value_float=1.0,
+    cf = CustomField(name='foo', data_type='scalar', value_float=1.0,
                      sample_id=s.id)
     db.session.add(cf); db.session.commit()
 
     resp = auth_client.post(
-        f'/dataset/{ds.id}/field/foo/type', data={'field_type': 'metric'},
+        f'/dataset/{ds.id}/field/foo/type', data={'data_type': 'metric'},
     )
     assert resp.status_code == 403
 
