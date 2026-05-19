@@ -4805,11 +4805,55 @@ def create_error_image(error_text):
 
 @app.route('/supported_types')
 def supported_types():
-    """Standalone top-level page documenting every BenchHub field type
-    and its storage convention. Sits in the primary nav next to
-    Datasets / Leaderboards / Metrics / Visualizations — same
-    discoverability as those, not buried inside /docs."""
-    return render_template('supported_types.html')
+    """Documents every BenchHub data type. Rows are driven from the live
+    `benchhub.types.DTYPES` registry, so the page can't drift from code."""
+    import inspect
+
+    from benchhub.types import DTYPES
+
+    descriptions = {
+        'image':  'RGB / RGBA photograph or grayscale image.',
+        'mask':   'Integer label map for segmentation. Values are class IDs.',
+        'depth':  'Float depth map with a declared unit. NaN values are treated as invalid.',
+        'audio':  'Waveform (mono or multi-channel) + sample rate.',
+        'text':   'UTF-8 string.',
+        'bboxes': 'List of bounding boxes, optional labels and scores, with declared coordinate format.',
+        'label':  'Single class as an int or string. Vocab is declared at the leaderboard level.',
+        'scalar': 'A single float.',
+        'json':   "Arbitrary JSON-serialisable structure — escape hatch for shapes that don't fit a typed class yet.",
+    }
+    examples = {
+        'image':  'bh.Image(arr)                                      # arr: (H,W,3) | (H,W,4) | (H,W) uint8',
+        'mask':   'bh.Mask(arr, num_classes=21, ignore_index=255)     # arr: (H,W) int',
+        'depth':  'bh.Depth(arr, unit="meters")                       # arr: (H,W) float32',
+        'audio':  'bh.Audio(waveform, sample_rate=16000)              # waveform: (T,) | (T,C) float32',
+        'text':   'bh.Text("a quick brown fox")',
+        'bboxes': 'bh.BBoxes([[x1,y1,x2,y2], ...], labels=["cat"], scores=[0.9], format="xyxy")',
+        'label':  'bh.Label("cat")                                    # or bh.Label(3)',
+        'scalar': 'bh.Scalar(0.91)',
+        'json':   'bh.Json({"relations": [...]})',
+    }
+
+    types_info = []
+    for kind, cls in DTYPES.items():
+        sig = str(inspect.signature(cls.__init__))
+        # Strip the leading "(self, " / "(self)" so the displayed signature
+        # reads as a call site: `Depth(array, *, unit="meters")`.
+        if sig.startswith('(self, '):
+            sig = '(' + sig[len('(self, '):]
+        elif sig.startswith('(self)'):
+            sig = '()'
+        types_info.append({
+            'kind': kind,
+            'name': cls.__name__,
+            'file_ext': cls.file_ext,
+            'storage': cls.file_ext if cls.file_ext else 'inline (SQLite)',
+            'signature': cls.__name__ + sig,
+            'description': descriptions.get(kind, ''),
+            'example': examples.get(kind, ''),
+        })
+
+    return render_template('supported_types.html', types_info=types_info)
 
 
 # Heuristic-only metric → domain bucket. Inspect the lowercased

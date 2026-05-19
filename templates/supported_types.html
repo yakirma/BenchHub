@@ -6,177 +6,108 @@
 <div class="container py-4" style="max-width: 1100px;">
     <h1 class="fw-bold mb-1">Supported types</h1>
     <p class="lead text-body-secondary mb-4">
-        How BenchHub recognizes, stores, and serves the fields in
-        your datasets and submissions.
+        Strict, typed contracts for every input, ground-truth value, and
+        prediction. Driven by the <code>benchhub.types</code> registry —
+        this page is regenerated from code on every request.
     </p>
 
     <p>
-        BenchHub recognises a field's type from its <strong>folder
-        name</strong> in your ZIP. The canonical convention is
-        <code>&lt;type&gt;_&lt;field_name&gt;</code> — e.g.
-        <code>image_rgb</code>, <code>mask_annotation</code>,
-        <code>depth_gt</code>, <code>scalar_score</code>,
-        <code>text_caption</code>. The prefix is authoritative; everything
-        after the underscore is the field name BenchHub will use to refer
-        to that field on the LB, in the comparison view, and inside
-        metric/visualisation code. The same rules apply on the
-        ground-truth side (a Dataset uploaded as a ZIP, or a HuggingFace
-        dataset attachment — column names follow the same convention) and
-        on the prediction side (a Submission uploaded via the API).
+        BenchHub uses a small set of Python classes to represent the data
+        flowing through a leaderboard. Submitters construct values via
+        <code>benchhub-client</code> (<code>bh.Depth(...)</code>,
+        <code>bh.Image(...)</code>) and the server validates them against
+        the leaderboard's declared contract before any metric runs. Each
+        class knows how to encode itself to bytes for storage and decode
+        bytes back into a typed instance — no folder-name heuristics, no
+        guessing from file extensions.
     </p>
-    <div class="alert alert-secondary small">
-        <strong>Back-compat:</strong> folders without a known prefix
-        still get inferred from file extension + content (PIL mode +
-        unique-value count for image-vs-mask, <code>.npz</code> keys
-        for histogram-vs-depth, etc.). Mixing styles in a single ZIP
-        works, but the explicit <code>&lt;type&gt;_</code> prefix is
-        always preferred — clearer to readers and avoids edge cases
-        where an unusual photograph reads as a mask (or vice versa).
-    </div>
 
-    <h2 class="h4 fw-semibold mt-4">Reference table</h2>
-    <div class="table-responsive">
+    <h2 class="h4 fw-semibold mt-4">Type reference</h2>
+    <div class="table-responsive mb-4">
         <table class="table align-middle">
             <thead class="table-light">
                 <tr>
-                    <th style="width: 10%;">Type</th>
-                    <th style="width: 18%;">Folder name</th>
-                    <th style="width: 12%;">File ext.</th>
-                    <th style="width: 18%;">Per-sample naming</th>
-                    <th>How it's stored / read</th>
+                    <th style="width: 13%;">Class</th>
+                    <th style="width: 11%;">Wire kind</th>
+                    <th style="width: 14%;">Storage</th>
+                    <th>What it represents</th>
                 </tr>
             </thead>
             <tbody>
+                {% for t in types_info %}
                 <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">scalar</span></td>
-                    <td class="font-monospace small">scalar_&lt;name&gt;</td>
-                    <td class="font-monospace small">.txt</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
-                    <td class="small">
-                        UTF-8 text containing a single number — float
-                        or integer class index. Parsed to
-                        <code>float</code> for metric code.
-                    </td>
+                    <td class="font-monospace">bh.{{ t.name }}</td>
+                    <td><span class="badge text-bg-secondary-subtle text-secondary border">{{ t.kind }}</span></td>
+                    <td class="font-monospace small">{{ t.storage }}</td>
+                    <td class="small">{{ t.description }}</td>
                 </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">text</span></td>
-                    <td class="font-monospace small">text_&lt;name&gt;</td>
-                    <td class="font-monospace small">.txt</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
-                    <td class="small">
-                        UTF-8 string. Free-form — captions, sentiment
-                        labels, short classifier outputs. Passed to
-                        metric code as a Python <code>str</code>.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">image</span></td>
-                    <td class="font-monospace small">image_&lt;name&gt;</td>
-                    <td class="font-monospace small">.png / .jpg / .jpeg / .bmp / .tiff</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.<ext>' }}</td>
-                    <td class="small">
-                        RGB or grayscale photograph. Read as a
-                        <code>PIL.Image</code> when a metric or viz
-                        asks for it. Auto-detected as mask instead
-                        when the bytes look paletted / low-color.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">mask</span></td>
-                    <td class="font-monospace small">mask_&lt;name&gt;</td>
-                    <td class="font-monospace small">.png</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.png' }}</td>
-                    <td class="small">
-                        Segmentation mask — single-channel HxW class IDs
-                        OR low-color RGB. Renders with the
-                        deterministic-hue palette; pairs naturally with
-                        IoU / Dice metrics.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">depth</span></td>
-                    <td class="font-monospace small">depth_&lt;name&gt;</td>
-                    <td class="font-monospace small">.npz</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.npz' }}</td>
-                    <td class="small">
-                        numpy <code>.npz</code> archive carrying the
-                        HxW float depth map (key <code>depth</code>).
-                        Cached as 8-bit grayscale PNG; the comparison
-                        view applies a colormap (turbo / viridis /
-                        normal-map) at render time via
-                        <code>?cmap=</code>.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">audio</span></td>
-                    <td class="font-monospace small">audio_&lt;name&gt;</td>
-                    <td class="font-monospace small">.wav / .mp3 / .flac</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.<ext>' }}</td>
-                    <td class="small">
-                        Decoded via <code>soundfile</code>. Cached as a
-                        small waveform PNG.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">histogram</span></td>
-                    <td class="font-monospace small">histogram_&lt;name&gt;</td>
-                    <td class="font-monospace small">.npz</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.npz' }}</td>
-                    <td class="small">
-                        numpy <code>.npz</code> with two arrays:
-                        <code>bins</code> + <code>counts</code>. Exposes
-                        a <code>sub_entropy_&lt;field&gt;</code>
-                        convenience value to metric code.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">json</span></td>
-                    <td class="font-monospace small">json_&lt;name&gt;</td>
-                    <td class="font-monospace small">.json</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.json' }}</td>
-                    <td class="small">
-                        Arbitrary structured data, parsed to a Python
-                        <code>dict</code>. Bboxes, span offsets, per-
-                        sample config, etc.
-                    </td>
-                </tr>
-                <tr>
-                    <td><span class="badge text-bg-secondary-subtle text-secondary border">metric</span></td>
-                    <td class="font-monospace small">metric_&lt;name&gt;</td>
-                    <td class="font-monospace small">.txt</td>
-                    <td class="font-monospace small text-body-secondary">{{ '<sample>.txt' }}</td>
-                    <td class="small">
-                        Pre-computed per-sample metric value (single
-                        float). Surfaces in the per-sample metrics
-                        chart instead of as a normal column.
-                    </td>
-                </tr>
+                {% endfor %}
             </tbody>
         </table>
     </div>
 
-    <h2 class="h4 fw-semibold mt-5">Using data in metrics</h2>
-    <p>
-        Detected fields become arguments you map onto a metric function
-        in the Leaderboard Settings. The dispatch table:
+    <h2 class="h4 fw-semibold mt-5 mb-3">Constructors</h2>
+    <p class="small text-body-secondary">
+        Per-instance params (<code>unit</code>, <code>format</code>,
+        <code>num_classes</code>, ...) travel alongside the data through
+        encode/decode, so a metric body can read them as attributes on
+        the deserialised instance.
     </p>
-    <ul>
-        <li><strong>scalar / text</strong> → Python <code>float</code>
-            / <code>str</code> passed by value.</li>
-        <li><strong>image / mask</strong> → file path; load with
-            <code>PIL.Image.open(path)</code>.</li>
-        <li><strong>depth</strong> → file path; load with
-            <code>np.load(path)['depth']</code>.</li>
-        <li><strong>histogram</strong> → pre-loaded <code>dict</code>
-            with <code>'bins'</code> + <code>'counts'</code> arrays.</li>
-        <li><strong>json</strong> → pre-loaded Python <code>dict</code>.</li>
-    </ul>
+    {% for t in types_info %}
+    <div class="card mb-2" style="background:#f5efe2;border:1px solid #e8dfc8;">
+        <div class="card-body py-2 px-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="fw-semibold">{{ t.name }}</span>
+                <span class="badge text-bg-secondary-subtle text-secondary border">{{ t.kind }}</span>
+                <span class="text-body-secondary small ms-auto font-monospace">{{ t.storage }}</span>
+            </div>
+            <div class="font-monospace small mb-1">{{ t.signature }}</div>
+            <pre class="font-monospace small mb-0 mt-1 p-2 rounded" style="background:#fcf9f4;border:1px solid #e8dfc8;"><code>{{ t.example }}</code></pre>
+        </div>
+    </div>
+    {% endfor %}
 
-    <p class="small text-body-secondary mt-4 mb-0">
-        Every leaderboard page has a <em>Submission contract</em>
-        widget that lists exactly which folders <em>that</em> LB requires
-        — same rules as above, scoped to the metrics and visualizations
-        attached to that LB.
+    <h2 class="h4 fw-semibold mt-5">How a leaderboard declares its contract</h2>
+    <p>
+        Each leaderboard publishes a typed <em>contract</em> — the inputs
+        the submitter receives, the predictions they must emit, and the
+        ground-truth columns the server holds back for metric evaluation.
+        The same JSON schema drives client-side construction, server-side
+        validation, and the submission-contract widget on the leaderboard
+        page.
+    </p>
+    <pre class="font-monospace small mb-3 p-3 rounded" style="background:#f5efe2;border:1px solid #e8dfc8;"><code>{
+  "inputs": [
+    {"name": "image", "kind": "image", "params": {}}
+  ],
+  "predictions": [
+    {"name": "depth_pred", "kind": "depth", "params": {"unit": "meters"}}
+  ],
+  "ground_truth": [
+    {"name": "depth_gt", "kind": "depth", "params": {"unit": "meters"}}
+  ]
+}</code></pre>
+
+    <h2 class="h4 fw-semibold mt-5">Submitting predictions</h2>
+    <pre class="font-monospace small mb-3 p-3 rounded" style="background:#f5efe2;border:1px solid #e8dfc8;"><code>import benchhub as bh, numpy as np
+
+client = bh.Client()                       # reads BENCHHUB_API_TOKEN
+lb = client.leaderboard("nyu-depth-v2")
+
+for sample in lb.samples():
+    image = sample.inputs.image.array      # decoded uint8 (H,W,3)
+    pred  = model.predict(image)           # your code
+    sample.predict(depth=bh.Depth(pred, unit="meters"))
+
+submission = lb.finish_submission(name="my-resnet50-v1")
+print(submission.metrics)                  # {"rmse": 0.412, ...}</code></pre>
+
+    <p class="small text-body-secondary mb-0">
+        The <code>benchhub-client</code> package is in development; this
+        page documents the type system it will use. Once it ships,
+        <code>pip install benchhub-client</code> gives you the classes
+        above plus the <code>Client</code> / <code>Leaderboard</code>
+        wrappers.
     </p>
 </div>
 {% endblock %}
