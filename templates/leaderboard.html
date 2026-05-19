@@ -1616,25 +1616,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 <div class="card mt-4">
     <div class="card-body">
         <h5 class="card-title">Upload New Submission</h5>
-        <form action="{{ url_for('upload_submission', leaderboard_id=leaderboard.id) }}" method="post"
-            enctype="multipart/form-data">
-            <div class="mb-3">
-                <label for="submission_name" class="form-label">Submission Name(s)</label>
-                <input type="text" class="form-control" id="submission_name" name="submission_name"
-                    placeholder="Auto-filled or comma-separated for multiple">
-                <div class="form-text">
-                    You can upload multiple .zip files at once. <br>
-                    <strong>New:</strong> You can also upload a single "bulk" .zip file containing multiple submission
-                    .zip files inside.
-                </div>
-            </div>
-            <div class="mb-3">
-                <label for="submission_zip" class="form-label">Submission ZIP file(s)</label>
-                <input type="file" class="form-control" id="submission_zip" name="submission_zip" accept=".zip" multiple
-                    required>
-            </div>
-            <button type="submit" class="btn btn-primary">Upload Submission</button>
-        </form>
+        <p class="small text-body-secondary mb-0">
+            ZIP upload is paused while we migrate to strict typed contracts.
+            See <a href="{{ url_for('supported_types') }}">/supported_types</a>
+            for the new submission API.
+        </p>
     </div>
 </div>
 

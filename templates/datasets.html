@@ -237,35 +237,21 @@
             {% endif %}
         </div>
 
-        {# Upload card. Sticky so it stays in view as the user scrolls
-           the list on the left. Datasets here are local ZIP uploads. #}
+        {# Upload card. ZIP upload is offline during the Phase A typed-
+           contract overhaul — datasets land via the admin-only typed
+           manifest path that ships in Phase B. #}
         <div class="col-lg-5">
             <div class="card border-0 shadow-sm sticky-top" style="top: 100px; z-index: 900;">
                 <div class="card-body p-4">
-                    <h5 class="fw-bold mb-1">Upload a dataset ZIP</h5>
-
-                    <form action="{{ url_for('upload_dataset') }}" method="post" enctype="multipart/form-data">
-                        <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
-                            <i class="bi bi-cloud-arrow-up display-5 text-body-secondary d-block mb-2"></i>
-                            <span class="fw-semibold">Drop ZIP here or click to choose</span>
-                            <div class="small text-body-secondary mt-1">One or more .zip files</div>
-                            <div id="zip-filenames" class="small text-primary mt-2 d-none"></div>
-                        </label>
-                        <input type="file" id="dataset_zip" name="dataset_zip" accept=".zip" multiple required class="d-none">
-
-                        <input type="text" class="form-control mb-3" id="dataset_name" name="dataset_name"
-                            placeholder="Name (auto from filename)" autocomplete="off">
-
-                        <input type="text" class="form-control mb-3" id="dataset_category" name="category"
-                               list="upload-known-categories"
-                               placeholder="Category (e.g. Vision/Image Segmentation)"
-                               autocomplete="off">
-                        <datalist id="upload-known-categories">
-                            {% for c in known_categories or [] %}<option value="{{ c }}"></option>{% endfor %}
-                        </datalist>
-
-                        <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
-                    </form>
+                    <h5 class="fw-bold mb-1">Upload a dataset</h5>
+                    <p class="small text-body-secondary mb-0">
+                        ZIP upload is paused while we migrate to strict
+                        typed contracts. See
+                        <a href="{{ url_for('supported_types') }}">/supported_types</a>
+                        for the new shape; Phase B will reintroduce an
+                        admin-only upload flow that materialises datasets
+                        directly into the typed layout.
+                    </p>
                 </div>
             </div>
         </div>

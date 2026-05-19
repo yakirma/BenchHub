@@ -62,26 +62,6 @@ def test_dataset_upload_api_rejects_bad_token(client, db_session):
     assert b'Invalid API token' in resp.data
 
 
-def test_dataset_upload_api_accepts_valid_token(client, db_session, token_user, make_zip):
-    """Smoke: valid token gets past the auth gate. We don't assert
-    success on the upload itself (process_dataset_zip needs structured
-    content) — only that we *don't* hit the 401."""
-    zip_path = make_zip("api_ok.zip", {
-        "metric_score/s1.txt": "0.5",
-    }, root_folder="api_ok")
-    with open(zip_path, 'rb') as fh:
-        resp = client.post('/api/dataset/upload',
-                           headers={'Authorization': f'Bearer {token_user.api_token}'},
-                           data={'dataset_zip': (fh, 'api_ok.zip'),
-                                 'dataset_name': 'api_ok'},
-                           content_type='multipart/form-data')
-    assert resp.status_code != 401
-    # Owner attribution: the dataset row carries the token user as owner.
-    ds = Dataset.query.filter_by(name='api_ok').first()
-    if ds is not None:
-        assert ds.owner_user_id == token_user.id
-
-
 def test_dataset_upload_api_quota_returns_429(client, db_session, token_user, make_zip):
     """Authenticated path now respects quotas — over-cap returns 429."""
     token_user.quota_max_datasets = 0

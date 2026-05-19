@@ -59,41 +59,6 @@ def submissions(db_session, leaderboard_with_samples):
 # ---------------------------------------------------------------------------
 
 
-def test_upload_single_submission_via_web_form(
-    auth_client, project, leaderboard_with_samples, make_zip, logged_in_user
-):
-    proj_name, lb_id = project.name, leaderboard_with_samples.id
-    layout = {"metric_acc/s1.txt": "0.95"}
-    zip_path = make_zip("upload.zip", layout, root_folder="up")
-
-    with open(zip_path, "rb") as f:
-        resp = auth_client.post(
-            f"/leaderboard/{lb_id}/upload_submission",
-            data={"submission_name": "via_form", "submission_zip": (f, "upload.zip")},
-            content_type="multipart/form-data",
-        )
-    assert resp.status_code == 302
-
-    sub = Submission.query.filter_by(leaderboard_id=lb_id).first()
-    assert sub is not None
-    # Inner-folder name overrides the form name (existing behavior).
-    assert sub.name == "up"
-    assert sub.owner_user_id == logged_in_user.id
-
-
-def test_upload_with_no_files_redirects_back(
-    auth_client, project, leaderboard_with_samples
-):
-    proj_name, lb_id = project.name, leaderboard_with_samples.id
-    resp = auth_client.post(
-        f"/leaderboard/{lb_id}/upload_submission",
-        data={"submission_name": "x"},
-        content_type="multipart/form-data",
-    )
-    assert resp.status_code == 302
-    assert Submission.query.count() == 0
-
-
 # ---------------------------------------------------------------------------
 # Single recalculate
 # ---------------------------------------------------------------------------
