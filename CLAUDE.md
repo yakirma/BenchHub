@@ -33,6 +33,62 @@ No lint or build commands are wired up.
 
 Dependencies: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery, redis, numpy, scipy, matplotlib, Pillow, h5py, soundfile, …). `pytest` isn't pinned in requirements.txt — install separately for the test suite.
 
+## Deployment
+
+Production is **self-hosted** on a home Ubuntu 24.04 box at
+`runbenchhub.com`. gunicorn + celery + redis run directly under systemd
+(no Docker), nginx + certbot in front, Cloudflare DNS in DNS-only mode,
+`ddclient` for DDNS. The operational runbook — code-push flow, `.env`
+keys, log tailing, rollback, breakages — is **`docs/SELFHOST_RUNBOOK.md`**;
+read it before suggesting deploy/operations commands.
+
+**Claude Code runs on the box itself**, not on a laptop. There are two
+checkouts on disk and you need to keep them straight:
+
+| Path | Role |
+|---|---|
+| `~/Git/BenchHub` (current working dir) | **Dev checkout** — edits + commits land here. Hot edits do NOT touch the live app. |
+| `~/benchhub` | **Production checkout** — what gunicorn/celery actually serve. Updated only via `git pull`. |
+
+The runbook's "ssh -p 2222 ymatri@runbenchhub.com" step is skippable —
+you're already on the box. The deploy reduces to: commit + push from
+`~/Git/BenchHub`, then `cd ~/benchhub && git pull && sudo systemctl
+reload benchhub-web` from anywhere. **Never edit `~/benchhub` directly**;
+it's the equivalent of editing prod on a server, and the next `git pull`
+will clobber it (or worse, conflict).
+
+**Fly.io is dead.** The artifacts (`fly.toml`, `Dockerfile`,
+`.dockerignore`, `start.sh`, `entrypoint.sh`, `DEPLOY.md`,
+`runner/fly.toml`) were moved to `archive/fly/` so a future Fly redeploy
+can rebuild from there — they are NOT used by anything live. Don't
+suggest `fly deploy`, `fly logs`, `fly secrets set`, or anything
+Fly-specific; use the systemd / `git pull` flow from the runbook.
+`runner/Dockerfile`, `runner/harness.py`, `runner/server.py` stayed in
+place — local sandbox tests (`tests/test_sandbox_*`) still reference
+them. Quick reference:
+
+```bash
+# From the dev checkout (~/Git/BenchHub):
+git push origin main
+
+# Then from anywhere on the box — we're already in:
+cd ~/benchhub && git pull
+sudo systemctl reload benchhub-web        # graceful HUP, no dropped requests
+sudo systemctl restart benchhub-celery    # celery has no SIGHUP code-reload
+
+# .env change or new schema column → full restart (HUP doesn't re-read env or rerun migrations)
+sudo systemctl restart benchhub-web benchhub-celery
+
+# Tail logs
+journalctl -u benchhub-web -f
+journalctl -u benchhub-celery -f
+```
+
+`BENCHHUB_AUTO_MIGRATE=1` is set in `.env`, so `check_and_migrate_db()`
+runs on every process boot — that's what makes a model-column ALTER apply
+on `restart`. Secrets live only in `~/benchhub/.env` on the box; there's
+no `fly secrets list` to recover them from.
+
 ## Data and config locations
 
 - **DB + uploads live OUTSIDE the repo**, at `~/.dtofbenchmarking/` (`database.db` and `uploads/`). The empty `database.db` and `uploads/` in the repo are vestigial — do not assume they are the live ones.
@@ -114,7 +170,7 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 ## Frontend conventions (theme, layout)
 - **Theme is light-only by design.** `<html data-bs-theme="light">` is hardcoded in `base.html`. The CSS override block sets identical values for `[data-bs-theme="light"]` and `[data-bs-theme="dark"]`, but Bootstrap's own navbar CSS vars (`--bs-navbar-color`, `--bs-tertiary-bg-rgb`) aren't covered, so any dark-mode rendering leaks white-on-white. `global_settings.theme_mode` still defaults to `'dark'` in SQLite but the template no longer reads it. Don't reintroduce a real dark mode without overriding *every* `--bs-navbar-*` and `-rgb` variant.
 - **Navbar text is pinned manually** (`.navbar .nav-link { color: #281950 }` etc.) as belt-and-suspenders.
-- **`stretched-link` inside a sticky sidebar needs `position: relative` on the parent.** Without it the first card's anchor covers the entire scroll container and intercepts every later click. Bit us in `/explore` category tree.
+- **`stretched-link` inside a sticky sidebar needs `position: relative` on the parent.** Without it the first card's anchor covers the entire scroll container and intercepts every later click. Bit us in the `/leaderboards` category tree (then called `/explore`).
 - **Mobile pattern for long lists** (metrics, visualizations): render a `<select>` with `d-md-none`, hide the sidebar with `d-none d-md-block`. Keeps the detail pane on-screen without a Bootstrap collapse dance.
 
 ## HF dataset attachment patterns
@@ -165,7 +221,7 @@ Both upload paths now route segmentation masks to `target_kind='mask'` (rendered
 - **The template gates header+cell on `all_field_types.get(col_key) != 'metric'`** (used to be `not in ['scalar', 'metric']`). If you add a new field type, make sure it isn't accidentally excluded.
 
 ## "Explorable" status
-- `_compute_explorable_lb_ids(lb_ids)` returns the LB IDs whose GT is actually cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — the HF-stub marker rows). Drives the green/yellow pill on `/explore`, `/home`, `/landing`, and the "Explore samples" button label on the LB detail page.
+- `_compute_explorable_lb_ids(lb_ids)` returns the LB IDs whose GT is actually cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — the HF-stub marker rows). Drives the green/yellow pill on `/leaderboards`, `/home`, `/landing`, and the "Explore samples" button label on the LB detail page. (`/explore` is a back-compat redirect to `/leaderboards` since commit `21b5222`; all in-app links use `url_for('leaderboards', ...)`.)
 - **An LB with `canonical_for_repo IS NOT NULL` and zero GT CFs is effectively broken** — surface the owner-only "Populate samples" button instead of silently rendering an empty Explore page.
 - **`/datasets` lists two sections**: the regular `Dataset` rows (BH ZIP uploads) and a "Cached HuggingFace datasets" section built from distinct `Attachment.hf_repo_id` rows whose owning LB is in `_compute_explorable_lb_ids`. Each HF row links to the first LB's Explore-samples view. Filter is intentional: a non-explorable HF row would link to an empty page.
 

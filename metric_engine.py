@@ -264,9 +264,9 @@ def evaluate_in_sandbox(
     Backends, in priority order:
 
     1. **HTTP** — when ``url`` is passed or ``BENCHHUB_SANDBOX_URL`` is set,
-       POST the job to a runner-as-separate-Fly-app instance. This is the
-       production path once the runner has been deployed (see
-       runner/fly.toml + DEPLOY.md § 9).
+       POST the job to a long-running runner service (originally a separate
+       Fly app; archived under archive/fly/ since the migration to the home
+       box — see archive/fly/DEPLOY.md § 9 if you ever revive that path).
 
     2. **Docker subprocess** — fall back to spawning a one-shot container
        locally. Useful for development, the integration test suite, and

@@ -1,5 +1,16 @@
 # Deploying BenchHub to Fly.io
 
+> **⚠️ DEPRECATED — historical reference only.**
+> Production no longer runs on Fly.io. The app was migrated to a
+> self-hosted Ubuntu box (`runbenchhub.com`) and the Fly app was
+> destroyed post-cutover. The live operational runbook is
+> **[`docs/SELFHOST_RUNBOOK.md`](../../docs/SELFHOST_RUNBOOK.md)**.
+> The Fly artifacts (`fly.toml`, `Dockerfile`, `.dockerignore`,
+> `start.sh`, `entrypoint.sh`, `runner/fly.toml`) live in this directory
+> alongside this doc, so a future Fly deploy can be rebooted from here.
+> Do not follow the steps below unless you're standing up a fresh Fly
+> deploy from scratch.
+
 End-to-end runbook for putting BenchHub behind a Cloudflare Access policy on
 Fly.io. The repo already contains the `Dockerfile`, `fly.toml`, and
 `.dockerignore` — your job is to provision the cloud resources and wire them

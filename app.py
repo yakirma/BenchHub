@@ -17282,12 +17282,12 @@ def run_migrations():
             print(f"prune_incomplete_datasets failed (non-fatal): {e}")
 
 
-# Auto-run migrations at module import time when the env var is set. This is
-# how the schema gets onto Fly's persistent volume: Fly's `release_command`
-# runs in a temp VM that doesn't mount our volume, so we can't rely on it for
-# SQLite-on-volume setups. Setting BENCHHUB_AUTO_MIGRATE=1 in fly.toml means
-# every gunicorn / celery process boots through run_migrations() against the
-# real volume-backed DB.
+# Auto-run migrations at module import time when the env var is set. On the
+# home-box deploy this is what makes a schema ALTER apply on `systemctl
+# restart` (the systemd unit's EnvironmentFile sets BENCHHUB_AUTO_MIGRATE=1).
+# Historical reason it exists: the old Fly deploy's `release_command` ran in
+# a temp VM that didn't mount the persistent volume, so it couldn't migrate
+# the live SQLite DB by itself.
 #
 # Tests deliberately don't set this env var — the pytest conftest manages
 # the schema itself via db.create_all() per test.

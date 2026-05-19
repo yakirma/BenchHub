@@ -2,7 +2,7 @@
 
 BenchHub is an open-source benchmarking platform: pick a dataset, define
 metrics in Python, upload predictions, and see how your model ranks. Live
-at **https://benchhub.fly.dev**.
+at **https://runbenchhub.com**.
 
 Originally built as a private dTOF SPAD pipeline benchmarking tool, then
 generalized into a public, multi-tenant web app.
@@ -24,7 +24,7 @@ generalized into a public, multi-tenant web app.
   by default. Free-tier safe to expose to the open internet.
 - **API tokens** for programmatic uploads (`/settings/api_tokens`).
 - **Account deletion** (GDPR right-to-be-forgotten) with cascading cleanup.
-- **Public landing page** at `/`, `/explore` for browsing leaderboards,
+- **Public landing page** at `/`, `/leaderboards` for browsing the catalog,
   `/u/<id>` for public profile pages.
 
 ## Prerequisites
@@ -93,17 +93,20 @@ as `BASE64:<...>` client-side; the server decodes. Standalone helpers:
 
 ## Deployment
 
-The production app runs on [Fly.io](https://fly.io) — see `fly.toml` and
-`Dockerfile`. Configuration (Redis URL, GitHub OAuth, admin allow-list)
-lives in Fly secrets:
+The production app is self-hosted on a home Ubuntu 24.04 box (RTX 5090,
+128 GB RAM, 8 TB) reachable at https://runbenchhub.com. gunicorn + celery
++ redis run directly under systemd; nginx + certbot terminate TLS; the
+domain is on Cloudflare in DNS-only mode (no proxy) with `ddclient`
+keeping the A record pointed at the home WAN IP.
 
-- `SECRET_KEY`
-- `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
-- `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`
-- `BENCHHUB_ADMIN_EMAILS` — comma-separated list for `/api/admin/*` access
-- `BENCHHUB_AUTO_MIGRATE=1` — runs `check_and_migrate_db()` at module load
-  (Fly's release_command can't see the persistent volume, so migrations
-  bootstrap themselves on each gunicorn/celery process boot)
+**Operational runbook: [`docs/SELFHOST_RUNBOOK.md`](docs/SELFHOST_RUNBOOK.md)**
+— code-push procedure, `.env` keys, log tailing, DDNS, TLS renewal,
+rollback, and the breakages we've already hit.
+
+Fly.io is deprecated: the app was destroyed after the cutover to the home
+box. The Fly artifacts (`fly.toml`, `Dockerfile`, `DEPLOY.md`, …) are
+archived under [`archive/fly/`](archive/fly/) for the case where a future
+Fly redeploy needs to be reconstructed.
 
 ## License
 
