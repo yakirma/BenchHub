@@ -114,41 +114,40 @@ def exact_match(gt, pred):
 """
 
 
+# NOTE: `sort_direction` lives on the per-LB binding (LeaderboardMetric),
+# not on the global metric definition — each LB chooses what "better"
+# means in its context. The hints below are just documentation for the
+# admin wiring up a binding.
 _SEED = [
     {
         "name": "accuracy",
-        "description": "Per-sample classification accuracy. Pool with mean.",
+        "description": "Per-sample classification accuracy (higher is better). Pool with mean.",
         "input_kinds": ["label", "label"],
         "python_code": _ACCURACY,
-        "sort_direction": "higher_is_better",
     },
     {
         "name": "rmse_depth",
-        "description": "Root-mean-squared error for Depth predictions (in meters).",
+        "description": "Root-mean-squared error for Depth predictions in meters (lower is better).",
         "input_kinds": ["depth", "depth"],
         "python_code": _RMSE_DEPTH,
-        "sort_direction": "lower_is_better",
     },
     {
         "name": "mae_depth",
-        "description": "Mean absolute error for Depth predictions (in meters).",
+        "description": "Mean absolute error for Depth predictions in meters (lower is better).",
         "input_kinds": ["depth", "depth"],
         "python_code": _MAE_DEPTH,
-        "sort_direction": "lower_is_better",
     },
     {
         "name": "iou_mask",
-        "description": "Per-sample mean IoU across class IDs for segmentation Masks.",
+        "description": "Per-sample mean IoU across class IDs for segmentation Masks (higher is better).",
         "input_kinds": ["mask", "mask"],
         "python_code": _IOU_MASK,
-        "sort_direction": "higher_is_better",
     },
     {
         "name": "exact_match_text",
-        "description": "Per-sample exact-match for Text predictions (whitespace + case insensitive).",
+        "description": "Per-sample exact-match for Text predictions, whitespace + case insensitive (higher is better).",
         "input_kinds": ["text", "text"],
         "python_code": _TEXT_EM,
-        "sort_direction": "higher_is_better",
     },
 ]
 
