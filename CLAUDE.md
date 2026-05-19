@@ -2,9 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Phase A typed-contract overhaul (in progress)
+
+The codebase is mid-refactor toward strict typed data classes. Big chunks of legacy machinery have already been deleted — read this section before touching code or writing docs that reference deleted concepts.
+
+**Deleted (Phase A delete pile, commits `6707189`, `97f4b6c`, `66ffcc6`)**:
+- HuggingFace import: every `import_from_hf*`, `admin_pwc_*`, `admin_lb_sota*`, `populate_lb_samples_route`, `hf_token_*` route; `_VirtualSample` / `_VirtualCustomField`; `_infer_mapping`; `_resolve_hf_split_and_load` / `_HF_SPLIT_PREFERENCE`; `_persist_hf_eval_snapshots`; `_create_lb_from_pwc_benchmark` and PWC task helpers; `_HF_MASK_TOKENS`; `pwc_client.py` entirely.
+- SOTA / Colab notebook generation: `_static_colab_notebook`, `_personalize_notebook_for_user`, `_ensure_user_colab_gist`, `_ensure_colab_gist`, `_push_one_off_gist`, `_llm_generate_metric_code`, `_llm_generate_visualization_code`, `_llm_propose_text_evaluation_suite`, `_llm_infer_mapping`, `_llm_colab_notebook`, `_llm_sota_colab_notebook`, `leaderboard_colab_*`.
+- `canonicality` concept: `admin_promote_leaderboard` route + UI form. Column stays in DB for back-compat but no code reads it. `canonical_for_repo` column also dead (HF-only metadata).
+- Folder-prefix ZIP ingest: `detect_custom_fields`, `_classify_image_path`, `_folder_name_prefix_kind`, `_FIELD_TYPE_PREFIXES`, `process_dataset_zip`, `process_submission_zip`, `upload_dataset` route, `upload_submission` route. Upload UI replaced with a "paused" placeholder pointing at `/supported_types`.
+- Legacy per-sample tables: `HistogramData`, `SignalShape`, `ConfigData` model classes. The SQLite tables themselves stay for existing DBs. `Sample.histogram_data` / `.signal_shape` / `.config_data` accesses now resolve to `None`.
+- Tests: 26 entire test files removed (HF, PWC, colab, sota, llm proposer, smart-num-classlabel, auto-lb-metrics, lb-preview-extras, detect-custom-fields, process-dataset-zip, process-submission-zip, prune-incomplete-datasets, routes-dataset, remote-submissions, quotas-curated, canonicality, account-delete-hf, attachment-iter, get-metric-context, sota-picker, submission-colab-link, text-gt, create-lb-chooser, hf-* full suite).
+- `/explore` is now a back-compat 302 → `/leaderboards`. The `Explore samples` button on LB pages is gone; the catalog is at `/leaderboards` only.
+
+**Live state**: 500 passing tests, 1 xfailed (`test_non_scalar_gt_fields_loaded_lazily` — placeholder for the upcoming get_metric_context rewrite). Empty DB (wiped earlier). Site serves cleanly at `runbenchhub.com`.
+
+**What's NEW**:
+- `benchhub/` package: `benchhub.types` defines the 9 MVP `DataType` subclasses (`Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`) with `encode()`/`decode()`/`validate()` + `DTYPES` registry. Imported by `app.py` and (eventually) by the future `benchhub-client` PyPI package.
+- `/supported_types` page is driven from `DTYPES` at request time so it can't drift from code.
+
+**Still TODO in Phase A** (not yet done):
+- Migrate `CustomField.field_type` → `data_type` (string, same as `DataType.kind`) + add `data_params` JSON column for per-instance metadata (`unit`, `format`, etc.). Requires migration block in `check_and_migrate_db`.
+- Update `metric_engine.get_metric_context` and `evaluate_dynamic_metric` to construct + pass typed instances (`Depth(arr, unit="meters")`) instead of dict-of-arrays. The single xfailed test guards this work.
+
+**Phase B (next)**: admin-only typed-manifest dataset upload that materializes datasets fully on disk in the typed shape, plus the `benchhub-client` package for submissions.
+
 ## Project overview
 
-BenchHub (a.k.a. dTOF Benchmarking) is a Flask + Celery + SQLite web app for benchmarking pipeline submissions (originally dTOF SPAD histograms) against ground-truth datasets. Users upload ZIPs, define Python metrics/visualizations dynamically, and view leaderboards/comparisons. The app runs on `http://localhost:6060`.
+BenchHub is a Flask + Celery + SQLite web app for benchmarking model predictions against curated datasets. The original folder-name ZIP-ingest path is gone; the new typed contract (defined in `benchhub.types`) is the spine of the system. The app runs on `http://localhost:6060`.
 
 ## Running the app
 
