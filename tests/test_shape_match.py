@@ -270,6 +270,147 @@ def test_builder_set_input_shape_rejects_bad_shape_arg():
         sub.set_input_shape("s0", image="thirty-two")
 
 
+# ===========================================================================
+# Fixed-shape constraint (params.shape = [H, W])
+# ===========================================================================
+
+def test_builder_fixed_shape_accepts_matching_pred():
+    sub = _local_client().submission(leaderboard_id=1)
+    sub.set_contract([{
+        "name": "depth_pred", "kind": "depth", "role": "pred",
+        "params": {"shape": [480, 640]},
+    }])
+    sub.predict("s0", depth_pred=bh.Depth(
+        np.zeros((480, 640), dtype=np.float32), unit="meters"))
+    sub.build_zip()  # no raise
+
+
+def test_builder_fixed_shape_rejects_mismatched_pred():
+    sub = _local_client().submission(leaderboard_id=1)
+    sub.set_contract([{
+        "name": "depth_pred", "kind": "depth", "role": "pred",
+        "params": {"shape": [480, 640]},
+    }])
+    sub.predict("s0", depth_pred=bh.Depth(
+        np.zeros((240, 320), dtype=np.float32), unit="meters"))
+    with pytest.raises(ValueError, match="shape"):
+        sub.build_zip()
+
+
+def test_builder_fixed_shape_does_not_need_input_shape_registration():
+    """Unlike shape_match, the fixed-shape path doesn't need
+    `set_input_shape` to enforce locally — the constraint travels
+    with the contract."""
+    sub = _local_client().submission(leaderboard_id=1)
+    sub.set_contract([{
+        "name": "img_pred", "kind": "image", "role": "pred",
+        "params": {"shape": [32, 32]},
+    }])
+    # Two samples, neither has input_shape registered. The fixed
+    # constraint still gates each one.
+    sub.predict("s0", img_pred=bh.Image(np.zeros((32, 32, 3), dtype=np.uint8)))
+    sub.predict("s1", img_pred=bh.Image(np.zeros((64, 64, 3), dtype=np.uint8)))
+    with pytest.raises(ValueError, match="s1"):
+        sub.build_zip()
+
+
+def test_builder_rejects_contract_with_both_shape_and_shape_match():
+    sub = _local_client().submission(leaderboard_id=1)
+    sub.set_contract([{
+        "name": "img_pred", "kind": "image", "role": "pred",
+        "params": {"shape": [32, 32], "shape_match": "image"},
+    }])
+    sub.predict("s0", img_pred=bh.Image(np.zeros((32, 32, 3), dtype=np.uint8)))
+    with pytest.raises(ValueError, match="can't be set together"):
+        sub.build_zip()
+
+
+def test_builder_rejects_malformed_fixed_shape():
+    sub = _local_client().submission(leaderboard_id=1)
+    sub.set_contract([{
+        "name": "img_pred", "kind": "image", "role": "pred",
+        "params": {"shape": "480x640"},  # not a 2-tuple
+    }])
+    sub.predict("s0", img_pred=bh.Image(np.zeros((4, 4, 3), dtype=np.uint8)))
+    with pytest.raises(ValueError, match="2-element"):
+        sub.build_zip()
+
+
+def test_server_fixed_shape_rejects_mismatched_pred(client, db_session, tmp_path, monkeypatch):
+    """End-to-end: dataset declares pred with params.shape=[16,24]
+    and the submission ships a 8×8 pred → server bounces 400."""
+    from app import app as flask_app
+    uploads = tmp_path / "uploads"; uploads.mkdir()
+    monkeypatch.setitem(flask_app.config, "UPLOAD_FOLDER", str(uploads))
+
+    ds = Dataset(name="fixed_shape_ds", visibility="public")
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(dataset_id=ds.id, name="s0"))
+    pred = DatasetField(dataset_id=ds.id, name="depth_pred",
+                        kind="depth", role="pred")
+    pred.set_params({"shape": [16, 24]})
+    db.session.add(pred)
+    lb = Leaderboard(name="fixed_shape_lb", summary_metrics="",
+                     visibility="public")
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    u = User(email="fs@bench.local", display_name="fs",
+             oauth_provider="github", oauth_sub="fs-1",
+             api_token=generate_api_token())
+    db.session.add(u); db.session.commit()
+
+    body = _build_submission_zip(
+        [{"name": "depth_pred", "kind": "depth", "params": {"shape": [16, 24]}}],
+        ["s0"],
+        {"depth_pred": {"s0": bh.Depth(
+            np.zeros((8, 8), dtype=np.float32), unit="meters")}},
+    )
+    r = client.post(
+        f"/api/submit/{lb.id}",
+        data={"submission_zip": (io.BytesIO(body), "sub.zip")},
+        headers={"Authorization": f"Bearer {u.api_token}"},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+    assert b"contract shape" in r.data
+    assert b"(16, 24)" in r.data
+
+
+def test_server_fixed_shape_accepts_matching_pred(client, db_session, tmp_path, monkeypatch):
+    from app import app as flask_app
+    uploads = tmp_path / "uploads"; uploads.mkdir()
+    monkeypatch.setitem(flask_app.config, "UPLOAD_FOLDER", str(uploads))
+
+    ds = Dataset(name="fixed_shape_ok_ds", visibility="public")
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(dataset_id=ds.id, name="s0"))
+    pred = DatasetField(dataset_id=ds.id, name="img_pred",
+                        kind="image", role="pred")
+    pred.set_params({"shape": [16, 16]})
+    db.session.add(pred)
+    lb = Leaderboard(name="fixed_shape_ok_lb", summary_metrics="",
+                     visibility="public")
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    u = User(email="fs-ok@bench.local", display_name="fsok",
+             oauth_provider="github", oauth_sub="fs-ok-1",
+             api_token=generate_api_token())
+    db.session.add(u); db.session.commit()
+
+    body = _build_submission_zip(
+        [{"name": "img_pred", "kind": "image", "params": {"shape": [16, 16]}}],
+        ["s0"],
+        {"img_pred": {"s0": bh.Image(np.zeros((16, 16, 3), dtype=np.uint8))}},
+    )
+    r = client.post(
+        f"/api/submit/{lb.id}",
+        data={"submission_zip": (io.BytesIO(body), "sub.zip")},
+        headers={"Authorization": f"Bearer {u.api_token}"},
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 201, r.data
+
+
 def test_builder_fetch_contract_round_trip(
     client, lb_with_shape_constrained_pred, api_user,
 ):

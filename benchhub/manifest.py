@@ -336,7 +336,30 @@ def _spatial_shape(inst) -> tuple[int, int] | None:
     return tuple(arr.shape[:2])
 
 
-def _enforce_shape_match(
+def _coerce_fixed_shape(raw) -> tuple[int, int] | None:
+    """Validate that `params.shape` is a 2-element `[H, W]` of
+    positive ints. Returns the tuple on success, None when absent.
+    Raises ValueError on a malformed value so the admin gets a
+    clear error at contract-author time instead of a silent skip.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise ValueError(
+            f"params.shape must be a 2-element [H, W] list; got {raw!r}"
+        )
+    try:
+        h, w = int(raw[0]), int(raw[1])
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"params.shape entries must be ints; got {raw!r}"
+        ) from e
+    if h <= 0 or w <= 0:
+        raise ValueError(f"params.shape must be positive; got {(h, w)}")
+    return (h, w)
+
+
+def _enforce_shape_constraint(
     *,
     source_root: Path,
     manifest: dict,
@@ -345,47 +368,74 @@ def _enforce_shape_match(
 ) -> None:
     """Per-(sample, pred) shape check.
 
-    For each pred entry in `contract` whose `params.shape_match` is
-    set to an input field name, decode the pred file from the
-    submission ZIP, then look up the corresponding input's spatial
-    shape via `get_input_shape(sample_name, input_field_name)` and
-    raise ValueError on a mismatch.
+    Two mutually-exclusive constraint forms in a pred field's
+    ``params``:
 
-    No-op when `get_input_shape` is None (the caller didn't supply a
-    resolver) or when no contract entry has `shape_match` set —
-    keeps the call free for everyone except the shape-constrained
-    contracts.
+      * ``shape_match: "<input_field_name>"`` — pred's spatial
+        ``(H, W)`` must match that input field's shape per-sample.
+        Needs a `get_input_shape(sample, field)` resolver from the
+        caller (the on-box submit route wires this).
+      * ``shape: [H, W]`` — pred's spatial ``(H, W)`` must equal
+        this fixed value for every sample. Doesn't need the
+        resolver — the constraint travels with the contract.
+
+    Setting both on the same pred field raises ValueError. No-op
+    when neither is set. Inline kinds (scalar/label/...) skip the
+    check cleanly since they don't carry a spatial shape.
     """
-    if get_input_shape is None:
-        return
     by_name = {c["name"]: c for c in contract if isinstance(c, dict)}
     for p in manifest["predictions"]:
         spec = by_name.get(p["name"])
         if not spec:
             continue
-        shape_match = (spec.get("params") or {}).get("shape_match")
-        if not isinstance(shape_match, str) or not shape_match:
+        params = spec.get("params") or {}
+        shape_match = params.get("shape_match")
+        fixed_shape = _coerce_fixed_shape(params.get("shape"))
+        # Enforce the "pick one" contract.
+        if shape_match and fixed_shape is not None:
+            raise ValueError(
+                f"pred {p['name']!r}: params.shape and params.shape_match "
+                f"can't be set together; pick one."
+            )
+        if not (shape_match or fixed_shape):
             continue
+        if shape_match and not isinstance(shape_match, str):
+            raise ValueError(
+                f"pred {p['name']!r}: params.shape_match must be the "
+                f"input field name as a string; got {shape_match!r}"
+            )
         cls = DTYPES.get(p["kind"])
         if cls is None or cls.file_ext is None:
             # Inline kinds (scalar/label) don't have a spatial shape;
-            # ignoring shape_match on those is the friendly default.
+            # ignore shape constraints on those.
             continue
-        params = p.get("params") or {}
+        pred_params = p.get("params") or {}
         for s_name in manifest["samples"]:
             path = expected_file_path(source_root, p, s_name)
             try:
-                pred_inst = cls.decode(path.read_bytes(), params)
+                pred_inst = cls.decode(path.read_bytes(), pred_params)
             except Exception as e:
                 raise ValueError(
                     f"sample {s_name!r} pred {p['name']!r}: failed to "
                     f"decode for shape check ({e})"
                 ) from e
             pred_shape = _spatial_shape(pred_inst)
+            if pred_shape is None:
+                continue
+            if fixed_shape is not None:
+                if tuple(pred_shape) != fixed_shape:
+                    raise ValueError(
+                        f"sample {s_name!r} pred {p['name']!r}: shape "
+                        f"{tuple(pred_shape)} != contract shape "
+                        f"{tuple(fixed_shape)}"
+                    )
+                continue
+            # shape_match path.
+            if get_input_shape is None:
+                # No resolver supplied — can't verify, fall through.
+                continue
             expected = get_input_shape(s_name, shape_match)
-            if pred_shape is None or expected is None:
-                # Either side missing a usable shape → can't enforce;
-                # let the metric layer surface the mismatch later.
+            if expected is None:
                 continue
             if tuple(pred_shape) != tuple(expected):
                 raise ValueError(
@@ -393,6 +443,10 @@ def _enforce_shape_match(
                     f"{tuple(pred_shape)} != input {shape_match!r} shape "
                     f"{tuple(expected)} (contract requires shape_match)"
                 )
+
+
+# Back-compat alias — earlier code/tests call _enforce_shape_match.
+_enforce_shape_match = _enforce_shape_constraint
 
 
 def import_typed_submission(
@@ -442,7 +496,7 @@ def import_typed_submission(
     # whose spatial (H, W) matches that input. Runs only when the
     # caller hands in a resolver — the on-box import path does, the
     # unit tests stub it.
-    _enforce_shape_match(
+    _enforce_shape_constraint(
         source_root=Path(source_root),
         manifest=manifest,
         contract=contract,

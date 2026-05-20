@@ -315,12 +315,18 @@ class SubmissionBuilder:
             "samples": self.samples,
         }
 
-    def _validate_shape_match(self, manifest: dict) -> None:
-        """Pre-upload check: when the contract declares a pred field
-        with `params.shape_match=<input_field>` AND we know the
-        per-sample shape of that input, the pred's spatial (H, W)
-        must match. No-op when either side is missing — those cases
-        fall through to the server's authoritative check."""
+    def _validate_shape_constraint(self, manifest: dict) -> None:
+        """Pre-upload shape check.
+
+        Two contract forms (mutually exclusive per pred field):
+          * ``params.shape_match=<input_field>`` — needs a matching
+            entry in `set_input_shape(...)` to enforce. Otherwise
+            falls through to the server's check.
+          * ``params.shape=[H, W]`` — fixed shape; enforced for
+            every staged sample without needing any input-shape
+            registration.
+        Both set on the same field → ValueError (raised here too so
+        the user catches the contract author's mistake locally)."""
         if not self._contract:
             return
         by_name = {c["name"]: c for c in self._contract if isinstance(c, dict)}
@@ -328,8 +334,30 @@ class SubmissionBuilder:
             spec = by_name.get(p["name"])
             if not spec:
                 continue
-            shape_match = (spec.get("params") or {}).get("shape_match")
-            if not isinstance(shape_match, str) or not shape_match:
+            params = spec.get("params") or {}
+            shape_match = params.get("shape_match")
+            raw_fixed = params.get("shape")
+            fixed_shape = None
+            if raw_fixed is not None:
+                if (not isinstance(raw_fixed, (list, tuple))
+                        or len(raw_fixed) != 2):
+                    raise ValueError(
+                        f"contract pred {p['name']!r}: params.shape must "
+                        f"be a 2-element [H, W]; got {raw_fixed!r}"
+                    )
+                try:
+                    fixed_shape = (int(raw_fixed[0]), int(raw_fixed[1]))
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"contract pred {p['name']!r}: params.shape "
+                        f"entries must be ints; got {raw_fixed!r}"
+                    ) from e
+            if shape_match and fixed_shape is not None:
+                raise ValueError(
+                    f"contract pred {p['name']!r}: params.shape and "
+                    f"params.shape_match can't be set together; pick one."
+                )
+            if not (shape_match or fixed_shape):
                 continue
             for sample_name in manifest["samples"]:
                 inst = self._preds[sample_name].get(p["name"])
@@ -339,6 +367,14 @@ class SubmissionBuilder:
                 if arr is None or getattr(arr, "ndim", 0) < 2:
                     continue
                 pred_shape = tuple(arr.shape[:2])
+                if fixed_shape is not None:
+                    if pred_shape != fixed_shape:
+                        raise ValueError(
+                            f"sample {sample_name!r} pred {p['name']!r}: "
+                            f"shape {pred_shape} != contract shape "
+                            f"{fixed_shape}"
+                        )
+                    continue
                 expected = (
                     self._input_shapes.get(sample_name, {}).get(shape_match)
                 )
@@ -351,10 +387,13 @@ class SubmissionBuilder:
                         f"{tuple(expected)} (contract requires shape_match)"
                     )
 
+    # Earlier code/tests call the old name; keep it working.
+    _validate_shape_match = _validate_shape_constraint
+
     def build_zip(self) -> bytes:
         """Produce the submission ZIP bytes the server consumes."""
         manifest = self.build_manifest()
-        self._validate_shape_match(manifest)
+        self._validate_shape_constraint(manifest)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest))
