@@ -11497,6 +11497,33 @@ def check_and_migrate_db():
                     except Exception as e:
                         print(f"Migration error ({_tbl}.input_kinds): {e}")
 
+                # --- DatasetField table (Phase B+: dataset-level schema) ---
+                # `db.create_all()` runs in every gunicorn worker on boot;
+                # without an explicit IF NOT EXISTS guarded migration here,
+                # the workers race each other and the loser gets
+                # `OperationalError: table dataset_field already exists`,
+                # killing the boot. Doing it here under the same try/except
+                # as the other tables keeps the prod restart safe.
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS dataset_field ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  dataset_id INTEGER NOT NULL REFERENCES dataset(id),"
+                        "  name VARCHAR(100) NOT NULL,"
+                        "  kind VARCHAR(20) NOT NULL,"
+                        "  params TEXT,"
+                        "  role VARCHAR(10) NOT NULL,"
+                        "  UNIQUE (dataset_id, name)"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_field_dataset_id "
+                        "ON dataset_field (dataset_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (dataset_field): {e}")
+
                 # --- FeatureRequest table ---
                 try:
                     cursor.execute(
