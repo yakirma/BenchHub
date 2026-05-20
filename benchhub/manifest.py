@@ -118,6 +118,7 @@ def import_typed_dataset(
     upload_folder: str | os.PathLike,
     owner_user_id: int | None = None,
     visibility: str = "public",
+    DatasetField=None,
 ) -> tuple[int, dict]:
     """Materialise a typed dataset into the DB + uploads volume.
 
@@ -157,6 +158,22 @@ def import_typed_dataset(
 
     dataset_dir = Path(upload_folder) / "datasets" / str(dataset.id)
     dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Schema rows — single source of truth for kind / params / role.
+    # The matching per-sample CustomField rows still carry the same
+    # values (lookup cost), but DatasetField is what defines the
+    # leaderboard's pred contract.
+    if DatasetField is not None:
+        for f in manifest["fields"]:
+            params = f.get("params") or {}
+            df = DatasetField(
+                dataset_id=dataset.id,
+                name=f["name"],
+                kind=f["kind"],
+                role=f.get("role", "gt"),
+            )
+            df.set_params(params)
+            db_session.add(df)
 
     samples_by_name: dict[str, Any] = {}
     for s_name in manifest["samples"]:
@@ -295,6 +312,7 @@ def import_typed_submission(
     CustomField,
     upload_folder: str | os.PathLike,
     owner_user_id: int | None = None,
+    contract: list[dict] | None = None,
 ) -> tuple[int, dict]:
     """Materialise a typed submission: validate against the LB's
     contract, create a Submission row + per-prediction CustomField
@@ -311,13 +329,18 @@ def import_typed_submission(
         manifest = json.load(f)
     validate_submission_manifest(manifest)
 
-    contract_raw = leaderboard.required_pred_fields_json or "[]"
-    try:
-        contract = json.loads(contract_raw)
-        if not isinstance(contract, list):
+    # Caller-supplied contract wins. Falls back to the LB's legacy
+    # `required_pred_fields_json` column for back-compat with older
+    # LBs that haven't been re-derived from their datasets'
+    # `DatasetField` schema.
+    if contract is None:
+        contract_raw = leaderboard.required_pred_fields_json or "[]"
+        try:
+            contract = json.loads(contract_raw)
+            if not isinstance(contract, list):
+                contract = []
+        except (TypeError, ValueError):
             contract = []
-    except (TypeError, ValueError):
-        contract = []
     check_submission_matches_contract(manifest, contract)
 
     # Pre-flight: every (pred_field, sample) file must exist.

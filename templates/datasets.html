@@ -237,22 +237,35 @@
             {% endif %}
         </div>
 
-        {# Upload card. ZIP upload is offline during the Phase A typed-
-           contract overhaul — datasets land via the admin-only typed
-           manifest path that ships in Phase B. #}
         <div class="col-lg-5">
-            <div class="card border-0 shadow-sm sticky-top" style="top: 100px; z-index: 900;">
+            <div class="card border-0 shadow-sm sticky-top mb-3" style="top: 100px; z-index: 900;">
+                {% if current_user_is_admin %}
                 <div class="card-body p-4">
-                    <h5 class="fw-bold mb-1">Upload a dataset</h5>
+                    <h5 class="fw-bold mb-1">
+                        <i class="bi bi-cloud-arrow-down me-1 text-primary"></i>
+                        Import from HuggingFace
+                    </h5>
+                    <p class="small text-body-secondary mb-3">
+                        Reads the repo's Croissant metadata, infers
+                        field kinds deterministically, and lets you
+                        complete roles + per-instance params before
+                        materialising the dataset locally.
+                    </p>
+                    <a href="{{ url_for('admin_import_from_hf') }}" class="btn btn-primary w-100">
+                        Import a HuggingFace dataset
+                    </a>
+                </div>
+                {% else %}
+                <div class="card-body p-4">
+                    <h5 class="fw-bold mb-1">Add a dataset</h5>
                     <p class="small text-body-secondary mb-0">
-                        ZIP upload is paused while we migrate to strict
-                        typed contracts. See
+                        Dataset upload is admin-only during the typed-
+                        contract migration. See
                         <a href="{{ url_for('supported_types') }}">/supported_types</a>
-                        for the new shape; Phase B will reintroduce an
-                        admin-only upload flow that materialises datasets
-                        directly into the typed layout.
+                        for the new shape.
                     </p>
                 </div>
+                {% endif %}
             </div>
         </div>
     </div>

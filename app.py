@@ -466,6 +466,58 @@ class Dataset(db.Model):
         except Exception:
             return {}
 
+    @property
+    def fields(self):
+        """All DatasetField schema rows for this dataset, in their
+        original insertion order (FK relationship below). Template
+        shortcut so we don't have to expose the model class to Jinja."""
+        return list(self.dataset_fields or [])
+
+
+class DatasetField(db.Model):
+    """One row of typed schema per (dataset, field name).
+
+    This is the source of truth for what data each sample carries —
+    `CustomField` rows hold the per-sample VALUES, but the kind +
+    params + role come from here. A leaderboard's prediction contract
+    is then derivable by mirroring every attached dataset's `role='gt'`
+    field as a pred field of the same kind.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    dataset_id = db.Column(
+        db.Integer, db.ForeignKey('dataset.id'),
+        nullable=False, index=True,
+    )
+    name = db.Column(db.String(100), nullable=False)
+    kind = db.Column(db.String(20), nullable=False)  # benchhub.types.DTYPES key
+    params = db.Column(db.Text, nullable=True)        # JSON dict; NULL ⇒ {}
+    role = db.Column(db.String(10), nullable=False)   # 'input' | 'gt'
+
+    __table_args__ = (
+        db.UniqueConstraint('dataset_id', 'name', name='uq_dataset_field_name'),
+    )
+
+    dataset = db.relationship('Dataset', backref=db.backref(
+        'dataset_fields', lazy=True, cascade='all, delete-orphan',
+        order_by='DatasetField.id',
+    ))
+
+    def get_params(self) -> dict:
+        if not self.params:
+            return {}
+        try:
+            v = json.loads(self.params)
+            return v if isinstance(v, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def set_params(self, params: dict | None) -> None:
+        if not params:
+            self.params = None
+        else:
+            self.params = json.dumps(params, separators=(',', ':'))
+
+
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=False)
@@ -4202,6 +4254,10 @@ def api_submit_typed(leaderboard_id):
     name = (request.form.get('name') or '').strip() or None
 
     from benchhub.manifest import import_typed_submission
+    # Prefer the dataset-derived contract over the legacy
+    # `required_pred_fields_json` column. The helper falls back to
+    # the override when set.
+    contract = _lb_pred_contract_from_dataset_fields(lb)
     with tempfile.TemporaryDirectory(prefix='bh_sub_') as extract_dir:
         try:
             with zipfile.ZipFile(upload.stream) as zf:
@@ -4229,6 +4285,7 @@ def api_submit_typed(leaderboard_id):
                 CustomField=CustomField,
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 owner_user_id=g.current_user.id,
+                contract=contract,
             )
             db.session.commit()
         except FileNotFoundError as e:
@@ -4346,6 +4403,7 @@ def admin_import_from_hf_commit():
                 staging,
                 db_session=db.session,
                 Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                DatasetField=DatasetField,
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 owner_user_id=g.current_user.id,
             )
@@ -4438,6 +4496,7 @@ def admin_import_typed_dataset():
             source_path,
             db_session=db.session,
             Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+            DatasetField=DatasetField,
             upload_folder=app.config['UPLOAD_FOLDER'],
             owner_user_id=g.current_user.id,
         )
@@ -6335,6 +6394,53 @@ def _propose_visualizations_for_dataset(ds):
             }],
         })
     return proposals
+
+
+def _lb_pred_contract_from_dataset_fields(lb):
+    """Derive the LB's prediction wire-contract from the
+    `DatasetField` rows of every attached dataset.
+
+    For each `role='gt'` field on an attached dataset, emit a pred-
+    field entry `<name>_pred` of the same kind + params. This is the
+    new canonical contract — schema is owned at the dataset level,
+    leaderboards just inherit from their attachments.
+
+    Returns a list of `{name, kind, params, role}` entries
+    (`role='pred'`) in the shape `import_typed_submission` consumes.
+    Empty list if no attached dataset has a typed schema.
+
+    `Leaderboard.required_pred_fields_json` still wins when set —
+    that's the override hatch for LBs that need a custom contract
+    (rename a pred field, restrict kinds, etc.).
+    """
+    # Explicit override path.
+    raw = lb.required_pred_fields_json or ''
+    if raw:
+        try:
+            forced = json.loads(raw)
+            if isinstance(forced, list) and forced:
+                return [
+                    {**e, 'role': e.get('role', 'pred')}
+                    for e in forced if isinstance(e, dict)
+                ]
+        except (TypeError, ValueError):
+            pass
+
+    seen: dict[str, dict] = {}
+    for ds in (lb.datasets or []):
+        for f in (ds.dataset_fields or []):
+            if f.role != 'gt':
+                continue
+            name = f"{f.name}_pred"
+            if name in seen:
+                continue
+            seen[name] = {
+                'name': name,
+                'kind': f.kind,
+                'params': f.get_params(),
+                'role': 'pred',
+            }
+    return list(seen.values())
 
 
 def _lb_submission_pred_fields(lb):

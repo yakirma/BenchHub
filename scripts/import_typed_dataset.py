@@ -13,7 +13,7 @@ transaction.
 import argparse
 import sys
 
-from app import CustomField, Dataset, Sample, User, app, db
+from app import CustomField, Dataset, DatasetField, Sample, User, app, db
 from benchhub.manifest import import_typed_dataset
 
 
@@ -43,6 +43,7 @@ def main() -> int:
             args.source,
             db_session=db.session,
             Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+            DatasetField=DatasetField,
             upload_folder=app.config["UPLOAD_FOLDER"],
             owner_user_id=owner.id if owner else None,
             visibility=args.visibility,
