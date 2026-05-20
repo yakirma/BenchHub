@@ -38,7 +38,14 @@ from benchhub.types import DTYPES
 
 
 _INLINE_EXT = ".txt"
+# Roles a dataset field can take. `input` and `gt` carry per-sample
+# data on disk; `pred` is schema-only — it declares the wire shape
+# the LB accepts from submissions but stores no values at the dataset
+# level (those land per-Submission via /api/submit/<lb>).
 _VALID_ROLES = {"input", "gt", "pred"}
+# Roles whose per-sample files MUST exist on disk + write CustomField
+# rows during import. `pred` is intentionally absent here.
+_DATA_BEARING_ROLES = {"input", "gt"}
 
 
 def _field_ext(kind: str) -> str:
@@ -135,9 +142,12 @@ def import_typed_dataset(
     source_root = Path(source_root)
     manifest = load_manifest(source_root / "manifest.json")
 
-    # Pre-flight: every declared (field, sample) file must exist.
+    # Pre-flight: every data-bearing (field, sample) file must exist.
+    # `role='pred'` is schema-only — no per-sample files expected.
     missing: list[str] = []
     for f in manifest["fields"]:
+        if f.get("role", "gt") not in _DATA_BEARING_ROLES:
+            continue
         for s in manifest["samples"]:
             p = expected_file_path(source_root, f, s)
             if not p.exists():
@@ -189,6 +199,12 @@ def import_typed_dataset(
         cls = DTYPES[kind]
         params = f.get("params") or {}
         is_inline = cls.file_ext is None
+        # Pred fields are declared but carry no data at the dataset
+        # level — skip the per-sample CustomField writes for them.
+        # The DatasetField row above is still created so the LB can
+        # discover the pred contract.
+        if f.get("role", "gt") not in _DATA_BEARING_ROLES:
+            continue
 
         field_dir = dataset_dir / f["name"]
         if not is_inline:

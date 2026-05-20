@@ -4505,7 +4505,10 @@ def admin_import_from_hf_preview():
         schema=schema,
         split_counts=split_counts,
         all_kinds=sorted(DTYPES),
-        all_roles=['input', 'gt', 'skip'],
+        # `pred` is schema-only — declaring it on a dataset commits the
+        # LB to expecting that pred field from submissions, with no
+        # per-sample data carried by the dataset itself.
+        all_roles=['input', 'gt', 'pred', 'skip'],
     )
 
 
@@ -6569,20 +6572,22 @@ def _lb_pred_contract_from_dataset_fields(lb):
     """Derive the LB's prediction wire-contract from the
     `DatasetField` rows of every attached dataset.
 
-    For each `role='gt'` field on an attached dataset, emit a pred-
-    field entry `<name>_pred` of the same kind + params. This is the
-    new canonical contract — schema is owned at the dataset level,
-    leaderboards just inherit from their attachments.
+    Priority order:
+
+      1. `Leaderboard.required_pred_fields_json` — set by an admin
+         to fully override the contract (rename pred fields,
+         restrict kinds, etc.). Used as-is when non-empty.
+      2. Explicit `role='pred'` DatasetField rows. When ANY attached
+         dataset declares pred fields, those are the contract — GT
+         mirroring is skipped to avoid double-listing.
+      3. GT-mirrored fallback: one `<name>_pred` entry per
+         `role='gt'` field, same kind + params. The default for
+         datasets that just declare inputs + ground truth.
 
     Returns a list of `{name, kind, params, role}` entries
     (`role='pred'`) in the shape `import_typed_submission` consumes.
-    Empty list if no attached dataset has a typed schema.
-
-    `Leaderboard.required_pred_fields_json` still wins when set —
-    that's the override hatch for LBs that need a custom contract
-    (rename a pred field, restrict kinds, etc.).
     """
-    # Explicit override path.
+    # 1. Explicit LB-level override path.
     raw = lb.required_pred_fields_json or ''
     if raw:
         try:
@@ -6595,6 +6600,22 @@ def _lb_pred_contract_from_dataset_fields(lb):
         except (TypeError, ValueError):
             pass
 
+    # 2. Explicit `role='pred'` on the dataset wins over derivation.
+    explicit: dict[str, dict] = {}
+    for ds in (lb.datasets or []):
+        for f in (ds.dataset_fields or []):
+            if f.role != 'pred' or f.name in explicit:
+                continue
+            explicit[f.name] = {
+                'name': f.name,
+                'kind': f.kind,
+                'params': f.get_params(),
+                'role': 'pred',
+            }
+    if explicit:
+        return list(explicit.values())
+
+    # 3. Default: mirror GT fields one-to-one.
     seen: dict[str, dict] = {}
     for ds in (lb.datasets or []):
         for f in (ds.dataset_fields or []):

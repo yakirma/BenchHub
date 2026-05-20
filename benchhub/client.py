@@ -274,7 +274,9 @@ class SubmissionBuilder:
 # BHDatasetCreator — client-side dataset builder
 # ---------------------------------------------------------------------------
 
-_VALID_ROLES = {"input", "gt"}
+_VALID_ROLES = {"input", "gt", "pred"}
+# Roles that carry per-sample values; `pred` is schema-only.
+_DATA_BEARING_ROLES = {"input", "gt"}
 
 
 class BHDatasetCreator:
@@ -366,6 +368,10 @@ class BHDatasetCreator:
         `field_name=DataType_instance`. Each instance is validated
         on the spot — bad shapes / dtypes raise immediately so you
         catch problems while you still have the surrounding context.
+
+        Pred fields (declared via `add_field(..., role="pred")`) are
+        schema-only — passing a value for one raises ValueError, since
+        prediction data comes from submissions, not the dataset.
         """
         if not sample_name or not isinstance(sample_name, str):
             raise ValueError("sample_name must be a non-empty string")
@@ -387,6 +393,13 @@ class BHDatasetCreator:
                     "params": dict(inst.params),
                 }
             else:
+                if declared["role"] not in _DATA_BEARING_ROLES:
+                    raise ValueError(
+                        f"sample {sample_name!r} field {field_name!r}: "
+                        f"role={declared['role']!r} is schema-only — "
+                        f"prediction values come from submissions, not "
+                        f"dataset uploads."
+                    )
                 if declared["kind"] is None:
                     declared["kind"] = inst.kind
                 elif declared["kind"] != inst.kind:
@@ -410,11 +423,17 @@ class BHDatasetCreator:
         """Mirror the on-disk typed-manifest format the server expects."""
         if not self._samples:
             raise ValueError("no samples staged; call .add_sample(...) first")
-        # Every sample must supply every declared field — same rule as
-        # the SubmissionBuilder.
+        # Every sample must supply every DATA-BEARING declared field
+        # (input + gt). Pred fields are schema-only — they declare
+        # the wire contract for submissions but carry no per-sample
+        # values at the dataset level.
+        data_fields = {
+            n for n, s in self._schema.items()
+            if s["role"] in _DATA_BEARING_ROLES
+        }
         for name in self.samples:
             present = set(self._samples[name])
-            missing = sorted(set(self._schema) - present)
+            missing = sorted(data_fields - present)
             if missing:
                 raise ValueError(
                     f"sample {name!r} missing field values for: {missing}"
@@ -441,6 +460,9 @@ class BHDatasetCreator:
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest))
             for f in manifest["fields"]:
+                # Pred fields are schema-only — no per-sample files.
+                if f["role"] not in _DATA_BEARING_ROLES:
+                    continue
                 cls = DTYPES[f["kind"]]
                 ext = cls.file_ext or ".txt"
                 for sample_name in manifest["samples"]:

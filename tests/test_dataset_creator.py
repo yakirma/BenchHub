@@ -55,7 +55,7 @@ def test_add_field_accepts_datatype_class():
 def test_add_field_rejects_bad_role():
     creator = _local_client().create_dataset("d")
     with pytest.raises(ValueError, match="role"):
-        creator.add_field("x", bh.Scalar, role="pred")  # only input/gt allowed
+        creator.add_field("x", bh.Scalar, role="weird")  # not input/gt/pred
 
 
 def test_add_field_rejects_kind_redeclaration():

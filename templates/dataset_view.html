@@ -156,6 +156,11 @@
                                 <span class="badge text-bg-info-subtle text-info-emphasis border">input</span>
                             {% elif f.role == 'gt' %}
                                 <span class="badge text-bg-warning-subtle text-warning-emphasis border">gt</span>
+                            {% elif f.role == 'pred' %}
+                                <span class="badge text-bg-success-subtle text-success-emphasis border"
+                                      title="Schema-only: declares the wire contract for submissions; no per-sample data at the dataset level.">
+                                    pred
+                                </span>
                             {% else %}
                                 <span class="badge text-bg-light text-body border">{{ f.role }}</span>
                             {% endif %}
