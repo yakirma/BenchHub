@@ -12129,6 +12129,32 @@ def check_and_migrate_db():
                 except Exception as e:
                     print(f"custom_field data_type backfill failed (non-fatal): {e}")
 
+                # --- 3d. Drop legacy custom_field.field_type column ---
+                # The data has been backfilled into `data_type` for
+                # ages. The legacy column was NOT NULL, so once the
+                # ORM started inserting only `data_type` rows, every
+                # CustomField INSERT (HF import, /api/submit,
+                # /api/datasets, …) blew up with `NOT NULL constraint
+                # failed: custom_field.field_type`. Drop the column.
+                # SQLite 3.35+ supports `ALTER TABLE DROP COLUMN`.
+                try:
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA table_info(custom_field)")
+                    cf_cols = {row[1] for row in cursor.fetchall()}
+                    if 'field_type' in cf_cols:
+                        cursor.execute(
+                            "ALTER TABLE custom_field DROP COLUMN field_type"
+                        )
+                        conn.commit()
+                        print(
+                            "Migrating DB: dropped legacy "
+                            "custom_field.field_type column."
+                        )
+                    conn.close()
+                except Exception as e:
+                    print(f"Migration error dropping custom_field.field_type: {e}")
+
                 # --- 4. LeaderboardMetric Aggregation Columns ---
                 conn = sqlite3.connect(db_path)
                 cursor = conn.cursor()
