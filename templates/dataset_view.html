@@ -802,6 +802,17 @@
                         style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; font-size: 0.9em;">
                         {{ field_data.value }}
                     </div>
+                    {% elif field_data.type == 'label' %}
+                    <div class="text-center fw-bold">
+                        {{ field_data.value if field_data.value is not none else 'N/A' }}
+                    </div>
+                    {% elif field_data.type == 'bboxes' %}
+                    <div class="text-center">
+                        <img src="{{ url_for('api_viz', cf_id=field_data.field_id) }}"
+                            class="border rounded shadow-sm"
+                            style="max-width: 150px; max-height: 150px; object-fit: contain;"
+                            alt="{{ col_key }}">
+                    </div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">N/A</span>

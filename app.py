@@ -8171,7 +8171,14 @@ def comparison_view(leaderboard_id):
             CustomField.submission_id == None
         ).distinct().all()
 
-    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in ['image', 'depth', 'mask', 'audio', 'scalar', 'metric', 'text', 'json']}
+    # Kinds that show up as renderable columns on the dataset detail
+    # page. Built from `benchhub.types.DTYPES` so new types (label,
+    # bboxes, …) appear automatically — the hand-rolled allow-list
+    # used to silently drop label columns, which is why CIFAR-10's
+    # `label` GT was invisible after import.
+    from benchhub.types import DTYPES as _DTYPES
+    _RENDERABLE_KINDS = set(_DTYPES) | {'metric'}  # 'metric' is a legacy precomputed-scalar marker
+    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in _RENDERABLE_KINDS}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
     
     # Submission fields
@@ -9525,6 +9532,18 @@ def dataset_view(dataset_id):
             if cf.data_type in ('scalar', 'metric'):
                 metrics[cf.name] = cf.value_float
                 cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_float, 'field_id': cf.id}
+            elif cf.data_type == 'label':
+                # Label values land in value_text as JSON-encoded primitives
+                # ("cat" or 3). Strip the JSON wrap so the template shows
+                # the bare value instead of a quoted string.
+                raw = cf.value_text
+                display = raw
+                if raw:
+                    try:
+                        display = json.loads(raw)
+                    except (TypeError, ValueError):
+                        display = raw
+                cf_vals[cf.name] = {'type': 'label', 'value': display, 'field_id': cf.id}
             else:
                 cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_text, 'field_id': cf.id}
 
@@ -9550,7 +9569,10 @@ def dataset_view(dataset_id):
     # Determine available columns based on data existence
     available_display_options = DATASET_DISPLAY_OPTIONS.copy()
     
-    # Inject detected custom fields (excluding scalars - they appear in GT Stats)
+    # Inject detected custom fields. Scalars stay out of this list —
+    # they surface in the per-source-stats panel — but every other
+    # typed kind (image/mask/depth/json/text/label/audio/bboxes)
+    # gets its own column.
     for field_name, data_type in custom_field_names:
         if data_type == 'image':
             available_display_options[field_name] = {'label': field_name, 'type': 'image', 'default_width': '150px'}
@@ -9558,8 +9580,15 @@ def dataset_view(dataset_id):
             available_display_options[field_name] = {'label': field_name, 'type': 'mask', 'default_width': '150px'}
         elif data_type == 'depth':
             available_display_options[field_name] = {'label': field_name, 'type': 'depth', 'default_width': '150px'}
+        elif data_type == 'audio':
+            available_display_options[field_name] = {'label': field_name, 'type': 'audio', 'default_width': '200px'}
         elif data_type == 'json':
             available_display_options[field_name] = {'label': field_name, 'type': 'json', 'default_width': '150px'}
+        elif data_type == 'bboxes':
+            available_display_options[field_name] = {'label': field_name, 'type': 'bboxes', 'default_width': '150px'}
+        elif data_type == 'label':
+            # Classification GT, vocab-keyed. Narrow text-style column.
+            available_display_options[field_name] = {'label': field_name, 'type': 'label', 'default_width': '100px'}
         elif data_type == 'text' and field_name != 'tags':
             # Text columns (AG News `text`, NLI `premise`/`hypothesis`,
             # captions, etc.) need their own column too. Skip the
