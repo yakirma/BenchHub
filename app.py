@@ -6891,12 +6891,25 @@ def _pointer_gt_resolver(sample, cf):
     return None
 
 
+@app.route('/favicon.ico')
+def favicon():
+    """Browsers fetch /favicon.ico unconditionally regardless of the
+    <link rel="icon"> in base.html; without an explicit route every
+    page load shows a 404 in the console. Serves the static file
+    directly so we don't bounce through 302→/static/favicon.ico."""
+    return send_from_directory(
+        os.path.join(app.root_path, 'static'),
+        'favicon.ico',
+        mimetype='image/vnd.microsoft.icon',
+    )
+
+
 @app.route('/create_lb', methods=['GET'])
 @login_required
 def create_lb_chooser():
     """Back-compat redirect: leaderboards are now created from a BH
     dataset's detail page (the /datasets list shows your uploads)."""
-    return redirect(url_for('datasets'))
+    return redirect(url_for('datasets_list'))
 
 
 # --- HuggingFace dataset listing (Round C) -------------------------------
