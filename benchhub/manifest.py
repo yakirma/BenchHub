@@ -326,6 +326,75 @@ def check_submission_matches_contract(
             )
 
 
+def _spatial_shape(inst) -> tuple[int, int] | None:
+    """Spatial (H, W) shape of an image/mask/depth-typed instance.
+    Returns None when the instance has no array attribute or it's
+    sub-2D — used purely as the cross-check key for `shape_match`."""
+    arr = getattr(inst, "array", None)
+    if arr is None or getattr(arr, "ndim", 0) < 2:
+        return None
+    return tuple(arr.shape[:2])
+
+
+def _enforce_shape_match(
+    *,
+    source_root: Path,
+    manifest: dict,
+    contract: list[dict],
+    get_input_shape,
+) -> None:
+    """Per-(sample, pred) shape check.
+
+    For each pred entry in `contract` whose `params.shape_match` is
+    set to an input field name, decode the pred file from the
+    submission ZIP, then look up the corresponding input's spatial
+    shape via `get_input_shape(sample_name, input_field_name)` and
+    raise ValueError on a mismatch.
+
+    No-op when `get_input_shape` is None (the caller didn't supply a
+    resolver) or when no contract entry has `shape_match` set —
+    keeps the call free for everyone except the shape-constrained
+    contracts.
+    """
+    if get_input_shape is None:
+        return
+    by_name = {c["name"]: c for c in contract if isinstance(c, dict)}
+    for p in manifest["predictions"]:
+        spec = by_name.get(p["name"])
+        if not spec:
+            continue
+        shape_match = (spec.get("params") or {}).get("shape_match")
+        if not isinstance(shape_match, str) or not shape_match:
+            continue
+        cls = DTYPES.get(p["kind"])
+        if cls is None or cls.file_ext is None:
+            # Inline kinds (scalar/label) don't have a spatial shape;
+            # ignoring shape_match on those is the friendly default.
+            continue
+        params = p.get("params") or {}
+        for s_name in manifest["samples"]:
+            path = expected_file_path(source_root, p, s_name)
+            try:
+                pred_inst = cls.decode(path.read_bytes(), params)
+            except Exception as e:
+                raise ValueError(
+                    f"sample {s_name!r} pred {p['name']!r}: failed to "
+                    f"decode for shape check ({e})"
+                ) from e
+            pred_shape = _spatial_shape(pred_inst)
+            expected = get_input_shape(s_name, shape_match)
+            if pred_shape is None or expected is None:
+                # Either side missing a usable shape → can't enforce;
+                # let the metric layer surface the mismatch later.
+                continue
+            if tuple(pred_shape) != tuple(expected):
+                raise ValueError(
+                    f"sample {s_name!r} pred {p['name']!r}: shape "
+                    f"{tuple(pred_shape)} != input {shape_match!r} shape "
+                    f"{tuple(expected)} (contract requires shape_match)"
+                )
+
+
 def import_typed_submission(
     source_root: str | os.PathLike,
     *,
@@ -337,6 +406,7 @@ def import_typed_submission(
     upload_folder: str | os.PathLike,
     owner_user_id: int | None = None,
     contract: list[dict] | None = None,
+    get_input_shape=None,
 ) -> tuple[int, dict]:
     """Materialise a typed submission: validate against the LB's
     contract, create a Submission row + per-prediction CustomField
@@ -366,6 +436,18 @@ def import_typed_submission(
         except (TypeError, ValueError):
             contract = []
     check_submission_matches_contract(manifest, contract)
+
+    # Shape-match: pred fields declared with
+    # `params.shape_match=<input_field>` must produce per-sample arrays
+    # whose spatial (H, W) matches that input. Runs only when the
+    # caller hands in a resolver — the on-box import path does, the
+    # unit tests stub it.
+    _enforce_shape_match(
+        source_root=Path(source_root),
+        manifest=manifest,
+        contract=contract,
+        get_input_shape=get_input_shape,
+    )
 
     # Pre-flight: every (pred_field, sample) file must exist.
     missing: list[str] = []

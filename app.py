@@ -4227,6 +4227,22 @@ def feature_request_new():
     return redirect(url_for('feature_requests_list'))
 
 
+@app.route('/api/leaderboard/<int:leaderboard_id>/contract', methods=['GET'])
+def api_leaderboard_contract(leaderboard_id):
+    """Live pred contract for an LB.
+
+    Returns the same shape `import_typed_submission` consumes server-
+    side: a JSON array of `{name, kind, params, role}` entries. Used
+    by `bh.Client.leaderboard_contract(lb_id)` to pre-validate
+    predictions locally before any upload, including shape_match
+    cross-checks. Visibility-gated through the LB's own visibility
+    rules (private LBs 404 to non-owners)."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    if not _can_view_parent(g.current_user, lb):
+        abort(404)
+    return jsonify(_lb_pred_contract_from_dataset_fields(lb))
+
+
 @app.route('/api/submit/<int:leaderboard_id>', methods=['POST'])
 @require_api_token
 def api_submit_typed(leaderboard_id):
@@ -4258,6 +4274,39 @@ def api_submit_typed(leaderboard_id):
     # `required_pred_fields_json` column. The helper falls back to
     # the override when set.
     contract = _lb_pred_contract_from_dataset_fields(lb)
+
+    # Shape-match resolver: for the manifest's shape-constrained pred
+    # fields, look up each sample's input field shape so the
+    # importer can cross-check. Indexed by (sample_name, field) on
+    # first miss; misses degrade to "couldn't check" (the importer
+    # is permissive when either side has no spatial shape).
+    upload_folder = app.config['UPLOAD_FOLDER']
+
+    def _get_input_shape(sample_name, input_field_name):
+        for ds in (lb.datasets or []):
+            sample = next(
+                (s for s in (ds.samples or []) if s.name == sample_name),
+                None,
+            )
+            if sample is None:
+                continue
+            cf = next(
+                (c for c in (sample.custom_fields or [])
+                 if c.name == input_field_name),
+                None,
+            )
+            if cf is None:
+                continue
+            try:
+                inst = _cf_to_typed_instance(cf, upload_folder)
+            except Exception:
+                return None
+            arr = getattr(inst, 'array', None)
+            if arr is None or getattr(arr, 'ndim', 0) < 2:
+                return None
+            return tuple(arr.shape[:2])
+        return None
+
     with tempfile.TemporaryDirectory(prefix='bh_sub_') as extract_dir:
         try:
             with zipfile.ZipFile(upload.stream) as zf:
@@ -4286,6 +4335,7 @@ def api_submit_typed(leaderboard_id):
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 owner_user_id=g.current_user.id,
                 contract=contract,
+                get_input_shape=_get_input_shape,
             )
             db.session.commit()
         except FileNotFoundError as e:

@@ -75,6 +75,24 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
+    def get_leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+        """Fetch the LB's pred wire-contract. Token optional — the
+        server-side route is visibility-gated, but public LBs respond
+        to anonymous requests too."""
+        import requests
+        resp = requests.get(
+            f"{self.base_url}/api/leaderboard/{leaderboard_id}/contract",
+            headers=({"Authorization": f"Bearer {self.token}"}
+                     if self.token else {}),  # type: ignore[attr-defined]
+        )
+        if resp.status_code >= 400:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, payload)
+        return resp.json()
+
 
 class BenchHubAPIError(Exception):
     """Raised when the server returns a non-2xx response."""
@@ -114,6 +132,13 @@ class Client:
         """Open a new in-memory builder. Call `.predict()` per sample,
         then `.submit()` to send the whole package."""
         return SubmissionBuilder(self, leaderboard_id, name)
+
+    def leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+        """Fetch the LB's pred wire-contract (kinds + params, including
+        any `shape_match` constraints). Hand the result to
+        `SubmissionBuilder.set_contract()` so client-side validation
+        catches shape mismatches before any ZIP upload."""
+        return self.transport.get_leaderboard_contract(leaderboard_id)
 
     def create_dataset(
         self,
@@ -181,6 +206,13 @@ class SubmissionBuilder:
         self.name = name
         # sample_name -> field_name -> DataType instance
         self._preds: dict[str, dict[str, DataType]] = {}
+        # Optional LB contract (set via `set_contract` or
+        # `fetch_contract`). When present + paired with per-sample
+        # input shapes, build_zip enforces shape_match locally before
+        # any upload.
+        self._contract: list[dict] | None = None
+        # sample_name -> input_field_name -> (H, W)
+        self._input_shapes: dict[str, dict[str, tuple[int, int]]] = {}
 
     def predict(self, sample_name: str, **typed_predictions: DataType) -> None:
         """Stage one or more typed prediction values for a sample."""
@@ -195,6 +227,43 @@ class SubmissionBuilder:
             inst.validate()
         bucket = self._preds.setdefault(sample_name, {})
         bucket.update(typed_predictions)
+
+    def set_contract(self, contract: list[dict]) -> None:
+        """Tell the builder what pred shapes the LB expects. Pair with
+        `set_input_shape(...)` calls to get client-side `shape_match`
+        cross-checks before the upload. Usually obtained via
+        `bh.Client(...).leaderboard_contract(lb_id)`."""
+        if not isinstance(contract, list):
+            raise TypeError("contract must be a list of {name,kind,params,role} dicts")
+        self._contract = contract
+
+    def fetch_contract(self) -> list[dict]:
+        """Pull the LB's contract from the server + remember it on
+        this builder. Returns the contract so the caller can also
+        inspect it (e.g. to size predictions to the right kind)."""
+        contract = self.client.leaderboard_contract(self.leaderboard_id)
+        self.set_contract(contract)
+        return contract
+
+    def set_input_shape(self, sample_name: str, **shapes_by_field: tuple[int, int]) -> None:
+        """Record per-sample spatial (H, W) shapes for input fields.
+
+        Used together with `set_contract(...)` to enforce a pred
+        field's `params.shape_match=<input_field_name>` locally —
+        when the user iterates over a dataset they already know the
+        input's shape, so handing it in here costs nothing and saves
+        a round-trip to discover a shape mismatch."""
+        if not isinstance(sample_name, str) or not sample_name:
+            raise ValueError("sample_name must be a non-empty string")
+        bucket = self._input_shapes.setdefault(sample_name, {})
+        for field, shape in shapes_by_field.items():
+            try:
+                bucket[field] = (int(shape[0]), int(shape[1]))
+            except (TypeError, ValueError, IndexError) as e:
+                raise ValueError(
+                    f"sample {sample_name!r} input {field!r}: shape "
+                    f"must be a 2-tuple (H, W); got {shape!r}"
+                ) from e
 
     @property
     def samples(self) -> list[str]:
@@ -246,9 +315,46 @@ class SubmissionBuilder:
             "samples": self.samples,
         }
 
+    def _validate_shape_match(self, manifest: dict) -> None:
+        """Pre-upload check: when the contract declares a pred field
+        with `params.shape_match=<input_field>` AND we know the
+        per-sample shape of that input, the pred's spatial (H, W)
+        must match. No-op when either side is missing — those cases
+        fall through to the server's authoritative check."""
+        if not self._contract:
+            return
+        by_name = {c["name"]: c for c in self._contract if isinstance(c, dict)}
+        for p in manifest["predictions"]:
+            spec = by_name.get(p["name"])
+            if not spec:
+                continue
+            shape_match = (spec.get("params") or {}).get("shape_match")
+            if not isinstance(shape_match, str) or not shape_match:
+                continue
+            for sample_name in manifest["samples"]:
+                inst = self._preds[sample_name].get(p["name"])
+                if inst is None:
+                    continue
+                arr = getattr(inst, "array", None)
+                if arr is None or getattr(arr, "ndim", 0) < 2:
+                    continue
+                pred_shape = tuple(arr.shape[:2])
+                expected = (
+                    self._input_shapes.get(sample_name, {}).get(shape_match)
+                )
+                if expected is None:
+                    continue
+                if pred_shape != tuple(expected):
+                    raise ValueError(
+                        f"sample {sample_name!r} pred {p['name']!r}: "
+                        f"shape {pred_shape} != input {shape_match!r} shape "
+                        f"{tuple(expected)} (contract requires shape_match)"
+                    )
+
     def build_zip(self) -> bytes:
         """Produce the submission ZIP bytes the server consumes."""
         manifest = self.build_manifest()
+        self._validate_shape_match(manifest)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest))
@@ -495,6 +601,16 @@ class FlaskTestClientTransport:
 
     def __init__(self, test_client):
         self.test_client = test_client
+
+    def get_leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+        resp = self.test_client.get(f"/api/leaderboard/{leaderboard_id}/contract")
+        try:
+            payload = resp.get_json()
+        except Exception:
+            payload = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, payload or {})
+        return payload if isinstance(payload, list) else []
 
     def post_submission_zip(self, leaderboard_id: int, name: str | None,
                             zip_bytes: bytes, token: str) -> dict:
