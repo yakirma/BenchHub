@@ -4,7 +4,7 @@ import urllib.parse
 from urllib.parse import quote
 import sys
 import re
-from flask import Flask, render_template, request, redirect, url_for, jsonify, session, send_file, flash, abort, after_this_request, g, make_response, send_from_directory
+from flask import Flask, Response, render_template, request, redirect, url_for, jsonify, session, send_file, flash, abort, after_this_request, g, make_response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 import os
@@ -9816,6 +9816,109 @@ def serve_gt_viz(lb_id, col, sample_name):
     return send_file(
         path, mimetype='image/jpeg', max_age=60,
     )
+
+
+def _cf_to_typed_instance(cf, upload_folder):
+    """Reconstruct a `benchhub.types.DataType` instance from a
+    CustomField row.
+
+    File-backed kinds (image/mask/depth/audio/text/bboxes/json) read
+    bytes off the volume at `<upload_folder>/<cf.value_text>`; inline
+    kinds (scalar, label) pull the primitive value directly off the
+    column and feed it to the type's constructor.
+    """
+    from benchhub.types import DTYPES
+    kind = cf.data_type
+    if kind not in DTYPES:
+        raise ValueError(f"unknown data_type {kind!r}")
+    cls = DTYPES[kind]
+    params = cf.get_params()
+
+    # Inline kinds: synthesize directly from the column values.
+    if cls.file_ext is None:
+        if kind == "scalar":
+            if cf.value_float is None:
+                raise ValueError(f"scalar CustomField {cf.id} has NULL value_float")
+            return cls(float(cf.value_float))
+        if kind == "label":
+            raw = cf.value_text or ""
+            try:
+                v = json.loads(raw)
+            except (TypeError, ValueError):
+                v = raw
+            return cls(v)
+        # Other inline kinds (none yet) — decode via class.
+        return cls.decode((cf.value_text or "").encode("utf-8"), params)
+
+    # File-backed kinds: read bytes off the volume.
+    rel = cf.value_text or ""
+    if not rel:
+        raise FileNotFoundError(f"CustomField {cf.id} has empty value_text")
+    abs_path = os.path.join(upload_folder, rel)
+    if not os.path.isfile(abs_path):
+        raise FileNotFoundError(f"CustomField {cf.id} file missing: {rel}")
+    with open(abs_path, "rb") as f:
+        blob = f.read()
+    return cls.decode(blob, params)
+
+
+def _can_view_parent(user, parent):
+    """Visibility gate shared by the typed-viz dispatch route. Mirrors
+    the existing @visibility_required decorator's policy: anonymous +
+    non-owner can see public/unlisted; private requires owner or
+    admin."""
+    if parent is None:
+        return False
+    vis = getattr(parent, "visibility", "public") or "public"
+    if vis in ("public", "unlisted"):
+        return True
+    if vis == "private":
+        if user is None:
+            return False
+        owner_id = getattr(parent, "owner_user_id", None)
+        return (owner_id is not None and owner_id == user.id) or is_admin(user)
+    return False
+
+
+@app.route('/api/viz/<int:cf_id>')
+def api_viz(cf_id):
+    """Unified renderer: load the CustomField, reconstruct the typed
+    DataType instance via DTYPES[cf.data_type].decode(...), call
+    `.visualize(**query_params)`, and return a Response with the
+    type's `viz_mime`. Visibility-gated via the parent dataset /
+    submission / leaderboard.
+    """
+    cf = CustomField.query.get_or_404(cf_id)
+
+    # Resolve the parent row for the visibility check.
+    parent = None
+    if cf.sample_id:
+        sample = Sample.query.get(cf.sample_id)
+        parent = sample.dataset if sample else None
+    elif cf.submission_id:
+        sub = Submission.query.get(cf.submission_id)
+        parent = sub.leaderboard if sub else None
+    elif cf.leaderboard_id:
+        parent = Leaderboard.query.get(cf.leaderboard_id)
+    if not _can_view_parent(g.current_user, parent):
+        abort(404)
+
+    try:
+        inst = _cf_to_typed_instance(cf, app.config['UPLOAD_FOLDER'])
+    except FileNotFoundError:
+        abort(404)
+    except ValueError:
+        abort(400)
+
+    # Pass query-string args as renderer opts. Subclasses that don't
+    # know a given opt just ignore it via **_; we don't want a stray
+    # ?foo=bar to 500 the response, so swallow TypeError as a fallback.
+    opts = {k: v for k, v in request.args.items()}
+    try:
+        body, mime = inst.visualize(**opts)
+    except TypeError:
+        body, mime = inst.visualize()
+    return Response(body, content_type=mime)
 
 
 @app.route('/custom_field_image/<int:field_id>')
