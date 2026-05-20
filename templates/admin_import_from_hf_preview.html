@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Review HF import — BenchHub admin{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1080px;">
+    <div class="d-flex align-items-baseline mb-1">
+        <h1 class="fw-bold mb-0">Review &amp; complete the import</h1>
+        <a href="{{ url_for('admin_import_from_hf') }}" class="ms-auto small">
+            ← change repo
+        </a>
+    </div>
+    <p class="lead text-body-secondary mb-1">
+        <span class="font-monospace">{{ repo_id }}</span>
+    </p>
+    {% if schema.description %}
+    <p class="text-body-secondary small mb-4">{{ schema.description | truncate(280) }}</p>
+    {% else %}
+    <p class="mb-4"></p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('admin_import_from_hf_commit') }}"
+          class="card border-0 shadow-sm">
+        <input type="hidden" name="repo_id" value="{{ repo_id }}">
+        <div class="card-body p-4">
+
+            <div class="row g-3 mb-4">
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold mb-1" for="dataset-name">Dataset name in BH</label>
+                    <input type="text" id="dataset-name" name="dataset_name"
+                           class="form-control" value="{{ schema.name or repo_id }}" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold mb-1" for="split">Split</label>
+                    <select id="split" name="split" class="form-select">
+                        {% if schema.splits %}
+                            {% for s in schema.splits %}
+                            <option value="{{ s }}" {{ 'selected' if s in ('test', 'validation', 'val') }}>{{ s }}</option>
+                            {% endfor %}
+                        {% else %}
+                            <option value="">(unspecified — uses the only split)</option>
+                        {% endif %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold mb-1" for="sample-cap">Max samples</label>
+                    <input type="number" id="sample-cap" name="sample_cap"
+                           class="form-control" value="500" min="1">
+                </div>
+            </div>
+
+            <h2 class="h5 fw-semibold mb-2">Fields</h2>
+            <p class="form-text small mb-3">
+                <strong>Kind</strong> is filled from Croissant's
+                <code>dataType</code> — change it when the column
+                semantically differs (e.g. an
+                <code>sc:ImageObject</code> column that's actually a
+                segmentation mask → set kind to <code>mask</code>).
+                Pick a <strong>role</strong> for every field you want
+                to import: <code>input</code> (given to submitters at
+                inference time) or <code>gt</code> (held server-side,
+                target of prediction). Set <strong>skip</strong> to
+                drop the field from the import entirely.
+            </p>
+
+            <div class="table-responsive mb-3">
+                <table class="table align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 20%;">Field</th>
+                            <th style="width: 18%;">Croissant type</th>
+                            <th style="width: 18%;">Kind</th>
+                            <th style="width: 16%;">Role</th>
+                            <th>Params (JSON)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for f in schema.fields %}
+                        <tr>
+                            <td>
+                                <div class="font-monospace small">{{ f.name }}</div>
+                                <input type="hidden" name="field_name" value="{{ f.name }}">
+                                <input type="hidden" name="field_source_column" value="{{ f.source_column or f.name }}">
+                                {% if f.source_column and f.source_column != f.name %}
+                                <div class="small text-body-secondary">↳ column: <code>{{ f.source_column }}</code></div>
+                                {% endif %}
+                                {% if f.references %}
+                                <div class="small text-body-secondary">↳ refs: <code>{{ f.references }}</code></div>
+                                {% endif %}
+                            </td>
+                            <td><span class="font-monospace small">{{ f.croissant_type or '?' }}</span></td>
+                            <td>
+                                <select name="field_kind" class="form-select form-select-sm">
+                                    {% for k in all_kinds %}
+                                    <option value="{{ k }}" {{ 'selected' if k == f.kind }}>{{ k }}</option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                            <td>
+                                <select name="field_role" class="form-select form-select-sm">
+                                    {% for r in all_roles %}
+                                    <option value="{{ r }}" {{ 'selected' if r == 'skip' }}>{{ r }}</option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" name="field_params" class="form-control form-control-sm font-monospace"
+                                       placeholder='{}  (e.g. {"unit":"meters"})'
+                                       value="">
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-download me-1"></i>Download &amp; import
+                </button>
+                <a href="{{ url_for('admin_import_from_hf') }}" class="btn btn-outline-secondary">
+                    Cancel
+                </a>
+            </div>
+            <p class="form-text small mt-2 mb-0">
+                The commit step pulls the data via
+                <code>datasets.load_dataset()</code>, materialises it
+                into the BH typed-manifest layout under
+                <code>uploads/datasets/&lt;id&gt;/</code>, and creates
+                the Dataset + Sample + CustomField rows.
+            </p>
+        </div>
+    </form>
+</div>
+{% endblock %}

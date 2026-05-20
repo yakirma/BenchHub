@@ -4257,6 +4257,154 @@ def api_submit_typed(leaderboard_id):
     return jsonify(summary), 201
 
 
+@app.route('/admin/import_from_hf', methods=['GET'])
+@login_required
+def admin_import_from_hf():
+    """Single-input form: HF repo ID. POST → preview with the parsed
+    Croissant schema partially filled in (kinds inferred from
+    Croissant's typed schema; roles + params left empty for the
+    admin to fill)."""
+    if not is_admin(g.current_user):
+        abort(403)
+    return render_template('admin_import_from_hf.html')
+
+
+@app.route('/admin/import_from_hf/commit', methods=['POST'])
+@login_required
+def admin_import_from_hf_commit():
+    """Read the admin's preview-form selections, download the HF split,
+    materialise rows into a typed-manifest staging dir, then call the
+    standard `import_typed_dataset` to write Dataset + Sample +
+    CustomField rows. Heavy lift — can take minutes for large
+    datasets; consider running this in a background task once
+    request size grows."""
+    if not is_admin(g.current_user):
+        abort(403)
+
+    repo_id = (request.form.get('repo_id') or '').strip()
+    dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
+    split = (request.form.get('split') or '').strip() or None
+    try:
+        sample_cap = max(1, int(request.form.get('sample_cap') or 500))
+    except ValueError:
+        sample_cap = 500
+
+    names = request.form.getlist('field_name')
+    kinds = request.form.getlist('field_kind')
+    roles = request.form.getlist('field_role')
+    params_raw = request.form.getlist('field_params')
+    source_columns = request.form.getlist('field_source_column')
+
+    if not (len(names) == len(kinds) == len(roles) == len(params_raw)):
+        flash('Field rows malformed — please retry from the preview page.', 'danger')
+        return redirect(url_for('admin_import_from_hf'))
+
+    selected: list[dict] = []
+    for i, name in enumerate(names):
+        role = roles[i] if i < len(roles) else 'skip'
+        if role == 'skip':
+            continue
+        kind = kinds[i] if i < len(kinds) else 'json'
+        params_str = (params_raw[i] if i < len(params_raw) else '').strip()
+        try:
+            params = json.loads(params_str) if params_str else {}
+            if not isinstance(params, dict):
+                params = {}
+        except (TypeError, ValueError):
+            params = {}
+        selected.append({
+            'name': name,
+            'source_column': (source_columns[i] if i < len(source_columns) else name) or name,
+            'kind': kind,
+            'role': role,
+            'params': params,
+        })
+    if not selected:
+        flash('Every field was set to "skip" — nothing to import.', 'warning')
+        return redirect(url_for('admin_import_from_hf'))
+
+    import tempfile
+    from benchhub.manifest import import_typed_dataset
+    try:
+        from benchhub.hf_materialize import materialize_hf_to_typed_dir
+    except Exception as e:
+        flash(f"HF library unavailable: {e}", 'danger')
+        return redirect(url_for('admin_import_from_hf'))
+
+    with tempfile.TemporaryDirectory(prefix='bh_hf_import_') as staging:
+        try:
+            mat_summary = materialize_hf_to_typed_dir(
+                repo_id=repo_id,
+                split=split,
+                sample_cap=sample_cap,
+                staging_dir=staging,
+                dataset_name=dataset_name,
+                fields=selected,
+                hf_token=getattr(g.current_user, 'hf_token', None),
+            )
+            _, summary = import_typed_dataset(
+                staging,
+                db_session=db.session,
+                Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                upload_folder=app.config['UPLOAD_FOLDER'],
+                owner_user_id=g.current_user.id,
+            )
+            db.session.commit()
+        except FileNotFoundError as e:
+            db.session.rollback()
+            flash(f"Materialisation produced incomplete files: {e}", 'danger')
+            return redirect(url_for('admin_import_from_hf'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"HF import failed: {e}", 'danger')
+            return redirect(url_for('admin_import_from_hf'))
+
+    msg = (f"Imported {summary['samples']} sample(s) × {summary['fields']} field(s) "
+           f"from {repo_id} (split={split or 'default'}, rows_written={mat_summary['rows_written']}, "
+           f"rows_skipped={mat_summary['rows_skipped']}).")
+    flash(msg, 'success')
+    if 'dataset_view' in app.view_functions:
+        return redirect(url_for('dataset_view', dataset_id=summary['dataset_id']))
+    return redirect(url_for('datasets_list'))
+
+
+@app.route('/admin/import_from_hf/preview', methods=['POST'])
+@login_required
+def admin_import_from_hf_preview():
+    """Fetch Croissant, parse it, render the preview form.
+
+    Each detected field becomes a row in a table — the kind is
+    pre-filled from the deterministic Croissant type map (admin can
+    override e.g. image → mask for segmentation columns). Role
+    (input / gt / skip) and per-instance params are empty for the
+    admin to fill in before the commit step."""
+    if not is_admin(g.current_user):
+        abort(403)
+    from benchhub.hf_croissant import (
+        CroissantFetchError, fetch_croissant, parse_croissant,
+    )
+    from benchhub.types import DTYPES
+
+    repo_id = (request.form.get('repo_id') or '').strip()
+    if not repo_id:
+        flash("Enter an HF dataset repo ID first.", "warning")
+        return redirect(url_for('admin_import_from_hf'))
+    try:
+        doc = fetch_croissant(repo_id)
+        schema = parse_croissant(doc)
+    except (CroissantFetchError, ValueError) as e:
+        flash(f"Couldn't read Croissant for {repo_id!r}: {e}", "danger")
+        return redirect(url_for('admin_import_from_hf'))
+
+    return render_template(
+        'admin_import_from_hf_preview.html',
+        repo_id=repo_id,
+        schema=schema,
+        all_kinds=sorted(DTYPES),
+        all_roles=['input', 'gt', 'skip'],
+    )
+
+
 @app.route('/admin/import_typed_dataset', methods=['POST'])
 @login_required
 def admin_import_typed_dataset():

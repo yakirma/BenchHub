@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Import from HuggingFace — BenchHub admin{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+    <h1 class="fw-bold mb-1">Import from HuggingFace</h1>
+    <p class="lead text-body-secondary mb-4">
+        Reads the dataset's
+        <a href="https://docs.mlcommons.org/croissant/" target="_blank" rel="noopener">Croissant</a>
+        metadata (HF auto-generates one per repo) and fills in the
+        per-field <strong>kind</strong> deterministically. You'll
+        complete the rest — roles, per-instance params, included
+        split — on the next page.
+    </p>
+
+    <form method="post" action="{{ url_for('admin_import_from_hf_preview') }}"
+          class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <label class="form-label fw-semibold mb-1" for="repo-id">HF repo ID</label>
+            <input type="text" id="repo-id" name="repo_id" required autofocus
+                   class="form-control font-monospace mb-3"
+                   placeholder="user/repo (e.g. uoft-cs/cifar10, ylecun/mnist)">
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-search me-1"></i>Fetch &amp; preview
+            </button>
+        </div>
+    </form>
+
+    <p class="text-body-secondary small mt-3 mb-0">
+        Datasets without a Croissant export (gated, private, or
+        non-conformant) can't go through this path. Use the
+        server-side typed-manifest importer
+        (<code>scripts/import_typed_dataset.py</code>) for those.
+    </p>
+</div>
+{% endblock %}
