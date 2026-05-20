@@ -118,3 +118,48 @@ def _clear_cache() -> None:
     """Test-only: drop the trending cache so monkeypatched fetches
     produce fresh results."""
     _TRENDING_CACHE.clear()
+
+
+_HF_DATASETS_SERVER = "https://datasets-server.huggingface.co/size"
+
+
+def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]:
+    """Per-split row count for an HF dataset.
+
+    Hits HF's `datasets-server` `/size` endpoint, which returns one
+    entry per (config, split) with a `num_rows` field. We collapse
+    that to `{split_name: num_rows}` — for multi-config datasets the
+    first config's count wins, since the import flow downloads from
+    one config at a time anyway.
+
+    Returns `{}` on network failure / non-JSON / unknown shape so
+    the preview UI degrades to "no count available" rather than 500.
+    """
+    if not repo_id:
+        return {}
+    params = urllib.parse.urlencode({"dataset": repo_id})
+    req = urllib.request.Request(
+        f"{_HF_DATASETS_SERVER}?{params}",
+        headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return {}
+    try:
+        doc = json.loads(body)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    splits = ((doc.get("size") or {}).get("splits")) or []
+    out: dict[str, int] = {}
+    for s in splits:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("split")
+        n = s.get("num_rows")
+        if isinstance(name, str) and isinstance(n, int):
+            out.setdefault(name, n)
+    return out

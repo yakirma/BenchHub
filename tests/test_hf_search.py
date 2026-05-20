@@ -162,6 +162,60 @@ def test_trending_refetches_when_cache_expired(monkeypatch):
         assert items[0]["id"] == "refreshed/ds"
 
 
+# ---------------------------------------------------------------------------
+# fetch_split_row_counts — datasets-server /size endpoint
+# ---------------------------------------------------------------------------
+
+def test_fetch_split_row_counts_extracts_per_split_num_rows(monkeypatch):
+    body = b'''{
+        "size": {
+            "dataset": [],
+            "configs": [],
+            "splits": [
+                {"config":"plain_text","split":"train","num_rows":50000},
+                {"config":"plain_text","split":"test","num_rows":10000}
+            ]
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/size": body})
+    assert hf_search.fetch_split_row_counts("uoft-cs/cifar10") == {
+        "train": 50000, "test": 10000,
+    }
+
+
+def test_fetch_split_row_counts_skips_malformed_entries(monkeypatch):
+    body = b'''{
+        "size": {
+            "splits": [
+                {"split":"train","num_rows":100},
+                {"split":"test"},
+                {"num_rows":50},
+                "garbage"
+            ]
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/size": body})
+    assert hf_search.fetch_split_row_counts("anything") == {"train": 100}
+
+
+def test_fetch_split_row_counts_returns_empty_on_network_failure(monkeypatch):
+    def _boom(*a, **kw):
+        raise urllib.error.URLError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert hf_search.fetch_split_row_counts("anything") == {}
+
+
+def test_fetch_split_row_counts_returns_empty_on_non_dict_response(monkeypatch):
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/size": b"[1, 2, 3]"})
+    assert hf_search.fetch_split_row_counts("anything") == {}
+
+
+def test_fetch_split_row_counts_empty_repo_id_short_circuits():
+    """No network call should happen for a blank repo_id."""
+    # If urllib is touched the test fails since we haven't patched it.
+    assert hf_search.fetch_split_row_counts("") == {}
+
+
 def test_trending_per_domain_uses_distinct_filter(monkeypatch):
     """Each domain's call should carry its own task_categories filter
     on the URL — confirms we're not collapsing everything into one

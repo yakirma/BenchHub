@@ -35,10 +35,14 @@
                     <select id="split" name="split" class="form-select">
                         {% if schema.splits %}
                             {% for s in schema.splits %}
-                            <option value="{{ s }}" {{ 'selected' if s in ('test', 'validation', 'val') }}>{{ s }}</option>
+                            <option value="{{ s }}"
+                                    data-row-count="{{ split_counts.get(s, 0) }}"
+                                    {{ 'selected' if s in ('test', 'validation', 'val') }}>
+                                {{ s }}{% if split_counts.get(s) %} ({{ '{:,}'.format(split_counts[s]) }}){% endif %}
+                            </option>
                             {% endfor %}
                         {% else %}
-                            <option value="">(unspecified — uses the only split)</option>
+                            <option value="" data-row-count="0">(unspecified — uses the only split)</option>
                         {% endif %}
                     </select>
                 </div>
@@ -46,6 +50,7 @@
                     <label class="form-label fw-semibold mb-1" for="sample-cap">Max samples</label>
                     <input type="number" id="sample-cap" name="sample_cap"
                            class="form-control" value="500" min="1">
+                    <div id="sample-cap-hint" class="form-text small mt-1"></div>
                 </div>
             </div>
 
@@ -132,4 +137,43 @@
         </div>
     </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    // Keep the "out of N" hint next to max-samples in sync with the
+    // selected split's data-row-count. Empty / missing count → no
+    // hint (the datasets-server endpoint may not have indexed the
+    // repo yet, in which case we don't want to mislead the admin).
+    const splitSel = document.getElementById('split');
+    const capInput = document.getElementById('sample-cap');
+    const capHint = document.getElementById('sample-cap-hint');
+    if (!splitSel || !capInput || !capHint) return;
+
+    const fmt = (n) => n.toLocaleString();
+
+    function refreshHint() {
+        const opt = splitSel.options[splitSel.selectedIndex];
+        const total = parseInt(opt && opt.dataset.rowCount || '0', 10) || 0;
+        if (!total) {
+            capHint.textContent = '';
+            capInput.removeAttribute('max');
+            return;
+        }
+        // Cap the input at the split's actual size so the admin can't
+        // ask for more samples than the dataset has.
+        capInput.setAttribute('max', String(total));
+        const requested = parseInt(capInput.value || '0', 10) || 0;
+        capHint.textContent = `out of ${fmt(total)} rows in this split`;
+        if (requested > total) {
+            capInput.value = String(total);
+        }
+    }
+
+    splitSel.addEventListener('change', refreshHint);
+    capInput.addEventListener('input', refreshHint);
+    refreshHint();
+})();
+</script>
 {% endblock %}

@@ -4484,10 +4484,17 @@ def admin_import_from_hf_preview():
         flash(f"Couldn't read Croissant for {repo_id!r}: {e}", "danger")
         return redirect(url_for('admin_import_from_hf'))
 
+    # Per-split row counts so the form can show "500 out of 10,000"
+    # next to the max-samples input. Best-effort: an empty dict
+    # degrades the UI cleanly to "no count available".
+    from benchhub.hf_search import fetch_split_row_counts
+    split_counts = fetch_split_row_counts(repo_id)
+
     return render_template(
         'admin_import_from_hf_preview.html',
         repo_id=repo_id,
         schema=schema,
+        split_counts=split_counts,
         all_kinds=sorted(DTYPES),
         all_roles=['input', 'gt', 'skip'],
     )

@@ -58,9 +58,13 @@ def test_preview_renders_partial_form_from_fixture(admin_client, monkeypatch):
     preview template renders every field as an editable row with the
     parsed kind pre-selected."""
     from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
 
     fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
     monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    # Stub the split-count fetch too so the test doesn't touch the network.
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts',
+                        lambda repo_id, **kw: {"train": 50000, "test": 10000})
 
     r = admin_client.post(
         '/admin/import_from_hf/preview',
@@ -80,6 +84,11 @@ def test_preview_renders_partial_form_from_fixture(admin_client, monkeypatch):
     assert 'name="field_source_column"' in body
     # Splits dropdown — at least one option present.
     assert 'name="split"' in body
+    # Per-split row counts render in the option labels + as data-row-count.
+    assert 'data-row-count="10000"' in body
+    assert '(10,000)' in body
+    assert 'data-row-count="50000"' in body
+    assert '(50,000)' in body
 
 
 def test_preview_404_when_croissant_fetch_fails(admin_client, monkeypatch):
