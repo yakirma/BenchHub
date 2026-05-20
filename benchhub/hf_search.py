@@ -1,0 +1,120 @@
+"""Thin wrappers around HuggingFace's public /api/datasets endpoint.
+
+Two access patterns:
+
+  - `search_datasets(query, limit=10)` — prefix / full-text search used
+    by the import page's autocomplete dropdown. Live, no caching.
+  - `trending_by_domain(limit_per_domain=5)` — top-downloaded datasets
+    grouped by ML domain (Vision / NLP / Audio / Tabular). Memoised
+    with a 1-hour TTL so we don't hammer HF on every page load.
+
+No auth required — both endpoints hit the unauthenticated HF Hub API.
+Gated / private repos won't show up; the admin can still paste a
+gated repo's id by hand and proceed through the existing per-user
+`hf_token` flow.
+"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+_HF_API_BASE = "https://huggingface.co/api/datasets"
+_REQUEST_TIMEOUT = 10
+
+
+def _fetch_json(url: str) -> list[dict]:
+    """GET a JSON-array endpoint; return [] on any failure so callers
+    don't have to wrap with try/except. The HF Hub API is best-effort
+    here — slow or down means an empty dropdown, not a 5xx."""
+    req = urllib.request.Request(url, headers={"User-Agent": "benchhub/0.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return []
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _normalize(d: dict) -> dict:
+    """Project the HF API's verbose dataset record down to the fields
+    the suggestion dropdown actually shows."""
+    return {
+        "id": d.get("id") or "",
+        "downloads": int(d.get("downloads") or 0),
+        "likes": int(d.get("likes") or 0),
+        # HF descriptions are sometimes a multi-line dataset-card dump
+        # — truncate so the dropdown doesn't blow up on JSON.
+        "description": ((d.get("description") or "")
+                        .strip().replace("\n", " "))[:200],
+        "gated": bool(d.get("gated") or False),
+    }
+
+
+def search_datasets(query: str, *, limit: int = 10) -> list[dict]:
+    """Free-text dataset search. Returns a list (possibly empty) of
+    normalised `{id, downloads, likes, description, gated}` dicts.
+
+    Empty / whitespace-only queries short-circuit to `[]` so the
+    dropdown can stay quiet until the user starts typing."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    params = urllib.parse.urlencode({"search": q, "limit": int(limit)})
+    return [_normalize(d) for d in _fetch_json(f"{_HF_API_BASE}?{params}")
+            if isinstance(d, dict)]
+
+
+# Map BH-side domain labels → the HF `task_categories:*` filter the
+# Hub uses on the public search. Picked to cover the most common
+# benchmark families a new admin would want at a glance.
+_DOMAIN_FILTERS = {
+    "Vision": "task_categories:image-classification",
+    "NLP":    "task_categories:text-classification",
+    "Audio":  "task_categories:automatic-speech-recognition",
+    "Tabular": "task_categories:tabular-classification",
+}
+
+# In-memory TTL cache; one entry per domain.
+_TRENDING_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_TRENDING_TTL_SECONDS = 60 * 60  # 1h is plenty — trending barely shifts hour-to-hour
+
+
+def trending_by_domain(*, limit_per_domain: int = 5) -> dict[str, list[dict]]:
+    """Return top-downloaded HF datasets per ML domain, cached.
+
+    Cache key is the domain name; TTL is one hour. Misses fan out one
+    HF API call per domain (4 today). Returns `{domain_name: [items]}`
+    in `_DOMAIN_FILTERS` insertion order.
+    """
+    out: dict[str, list[dict]] = {}
+    now = time.time()
+    for domain, hf_filter in _DOMAIN_FILTERS.items():
+        cached = _TRENDING_CACHE.get(domain)
+        if cached and (now - cached[0]) < _TRENDING_TTL_SECONDS:
+            out[domain] = cached[1]
+            continue
+        params = urllib.parse.urlencode({
+            "filter": hf_filter,
+            "sort": "downloads",
+            "direction": "-1",
+            "limit": int(limit_per_domain),
+        })
+        items = [_normalize(d) for d in _fetch_json(f"{_HF_API_BASE}?{params}")
+                 if isinstance(d, dict)]
+        _TRENDING_CACHE[domain] = (now, items)
+        out[domain] = items
+    return out
+
+
+def _clear_cache() -> None:
+    """Test-only: drop the trending cache so monkeypatched fetches
+    produce fresh results."""
+    _TRENDING_CACHE.clear()

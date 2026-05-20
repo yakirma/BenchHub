@@ -4320,10 +4320,40 @@ def admin_import_from_hf():
     """Single-input form: HF repo ID. POST → preview with the parsed
     Croissant schema partially filled in (kinds inferred from
     Croissant's typed schema; roles + params left empty for the
-    admin to fill)."""
+    admin to fill).
+
+    The form's `repo_id` input is wired to two helper endpoints —
+    `admin_import_from_hf_search` for type-ahead suggestions and
+    `admin_import_from_hf_trending` for the curated by-domain
+    grid — so the admin doesn't need to memorise repo IDs."""
     if not is_admin(g.current_user):
         abort(403)
     return render_template('admin_import_from_hf.html')
+
+
+@app.route('/admin/import_from_hf/search')
+@login_required
+def admin_import_from_hf_search():
+    """JSON proxy over HF Hub's /api/datasets?search=... endpoint.
+    Behind an admin gate just so we don't spend our shared IP's
+    quota on anonymous traffic — the data itself is public."""
+    if not is_admin(g.current_user):
+        abort(403)
+    from benchhub.hf_search import search_datasets
+    q = (request.args.get('q') or '').strip()
+    return jsonify(search_datasets(q, limit=10))
+
+
+@app.route('/admin/import_from_hf/trending')
+@login_required
+def admin_import_from_hf_trending():
+    """JSON: top-downloaded HF datasets per ML domain (Vision / NLP /
+    Audio / Tabular). One-hour TTL cache lives in the helper so the
+    grid isn't a fresh HF round-trip on every page reload."""
+    if not is_admin(g.current_user):
+        abort(403)
+    from benchhub.hf_search import trending_by_domain
+    return jsonify(trending_by_domain(limit_per_domain=5))
 
 
 @app.route('/admin/import_from_hf/commit', methods=['POST'])
