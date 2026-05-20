@@ -4463,33 +4463,18 @@ def admin_import_from_hf_preview():
     )
 
 
-@app.route('/api/datasets', methods=['POST'])
-@require_api_token
-def api_create_dataset():
-    """Programmatic dataset creation for the typed-client (`BHDatasetCreator`).
+def _ingest_typed_dataset_zip(upload, *, owner_user, visibility):
+    """Common ZIP → typed-import pipeline used by both the bearer-
+    token API route and the cookie-auth browser-upload route.
 
-    Expects a multipart upload with a single `dataset_zip` field
-    whose ZIP root contains a `manifest.json` declaring `fields[]`
-    (with role=input|gt) and `samples[]`, plus one sub-directory
-    per declared field holding `<sample>.<ext>` for each sample.
-    The wire-shape is identical to what `import_typed_dataset` reads
-    off disk — this route just extracts to a tempdir and hands off.
-
-    Admin-only by token: dataset creation can fill the volume, so
-    `is_admin(g.current_user)` is checked before any I/O. Returns
-    the importer's summary dict (`dataset_id`, `samples`, `fields`,
-    …) on success.
+    Returns `(summary_dict, http_status, error_message)`. On success
+    `summary_dict` is non-None and `error_message` is None.
     """
-    if not is_admin(g.current_user):
-        return jsonify({'error': 'admin only'}), 403
-
     import tempfile
     import zipfile
 
-    upload = request.files.get('dataset_zip')
-    if upload is None or not upload.filename:
-        return jsonify({'error': 'multipart field "dataset_zip" required'}), 400
-    visibility = (request.form.get('visibility') or 'public').strip()
+    if upload is None or not getattr(upload, 'filename', None):
+        return None, 400, 'multipart "dataset_zip" field required'
     if visibility not in ('public', 'private', 'unlisted'):
         visibility = 'public'
 
@@ -4499,10 +4484,8 @@ def api_create_dataset():
             with zipfile.ZipFile(upload.stream) as zf:
                 zf.extractall(extract_dir)
         except zipfile.BadZipFile:
-            return jsonify({'error': 'dataset_zip is not a valid ZIP file'}), 400
+            return None, 400, 'dataset_zip is not a valid ZIP file'
 
-        # Allow the convention where the manifest lives one directory deep
-        # — matches the SubmissionBuilder ZIP layout.
         roots = [p for p in os.listdir(extract_dir) if not p.startswith('.')]
         if (len(roots) == 1
                 and os.path.isdir(os.path.join(extract_dir, roots[0]))
@@ -4511,6 +4494,23 @@ def api_create_dataset():
         else:
             source_root = extract_dir
 
+        # Quota check (per-user storage cap): the import_typed_dataset
+        # pass below copies every file into uploads/datasets/<id>/, so
+        # the about-to-be-written bytes are exactly the sum of file
+        # sizes under `source_root` after extraction. Reject early
+        # with 413 if it would push the user over the cap.
+        incoming_bytes = 0
+        for dirpath, _, filenames in os.walk(source_root):
+            for fn in filenames:
+                try:
+                    incoming_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                except OSError:
+                    continue
+        ok, msg = check_quota(owner_user, kind='dataset_create',
+                              incoming_bytes=incoming_bytes)
+        if not ok:
+            return None, 413, msg
+
         try:
             _, summary = import_typed_dataset(
                 source_root,
@@ -4518,21 +4518,72 @@ def api_create_dataset():
                 Dataset=Dataset, Sample=Sample, CustomField=CustomField,
                 DatasetField=DatasetField,
                 upload_folder=app.config['UPLOAD_FOLDER'],
-                owner_user_id=g.current_user.id,
+                owner_user_id=owner_user.id,
                 visibility=visibility,
             )
             db.session.commit()
         except FileNotFoundError as e:
             db.session.rollback()
-            return jsonify({'error': str(e)}), 400
+            return None, 400, str(e)
         except ValueError as e:
             db.session.rollback()
-            return jsonify({'error': f'manifest invalid: {e}'}), 400
+            return None, 400, f'manifest invalid: {e}'
         except Exception as e:
             db.session.rollback()
-            return jsonify({'error': f'import failed: {e}'}), 500
+            return None, 500, f'import failed: {e}'
 
-    return jsonify(summary), 201
+    return summary, 201, None
+
+
+@app.route('/api/datasets', methods=['POST'])
+@require_api_token
+def api_create_dataset():
+    """Programmatic dataset creation for the typed-client (`BHDatasetCreator`).
+
+    Expects a multipart upload with a single `dataset_zip` field
+    whose ZIP root contains a `manifest.json` declaring `fields[]`
+    (with role=input|gt) and `samples[]`, plus one sub-directory
+    per declared field holding `<sample>.<ext>` for each sample.
+
+    Open to any authenticated user — the per-user storage quota
+    (`User.quota_max_storage_bytes`, default 200 MB) is what gates
+    abuse, not an admin allow-list.
+    """
+    upload = request.files.get('dataset_zip')
+    visibility = (request.form.get('visibility') or 'public').strip()
+    summary, status, err = _ingest_typed_dataset_zip(
+        upload, owner_user=g.current_user, visibility=visibility,
+    )
+    if err:
+        return jsonify({'error': err}), status
+    return jsonify(summary), status
+
+
+@app.route('/datasets/upload', methods=['POST'])
+@login_required
+def upload_typed_dataset_zip():
+    """Browser-facing companion to /api/datasets — same ZIP shape,
+    same per-user quota gate, cookie-authenticated. The /datasets
+    page posts to this so non-API users can drop a typed-manifest
+    ZIP without juggling tokens.
+    """
+    upload = request.files.get('dataset_zip')
+    visibility = (request.form.get('visibility') or 'public').strip()
+    summary, status, err = _ingest_typed_dataset_zip(
+        upload, owner_user=g.current_user, visibility=visibility,
+    )
+    if err:
+        flash(err, 'danger')
+        return redirect(url_for('datasets_list'))
+    flash(
+        f"Uploaded dataset \"{summary['name']}\" "
+        f"({summary['samples']} samples × {summary['fields']} fields, "
+        f"{summary['bytes_on_disk']} bytes).",
+        'success',
+    )
+    if 'dataset_view' in app.view_functions:
+        return redirect(url_for('dataset_view', dataset_id=summary['dataset_id']))
+    return redirect(url_for('datasets_list'))
 
 
 @app.route('/admin/import_typed_dataset', methods=['POST'])
@@ -9057,13 +9108,22 @@ def datasets_list():
         )).all() if c
     })
 
+    # Storage gauge for the upload card. NULL user (anon) and 0-cap
+    # users render the gauge in a "logged-out" state.
+    _viewer = g.current_user
+    storage_used = storage_used_bytes(_viewer) if _viewer else 0
+    storage_cap = int(_viewer.quota_max_storage_bytes) if _viewer else 0
+
     return render_template('datasets.html',
                            datasets=datasets,
                            dataset_thumbs=dataset_thumbs,
                            entries=entries,
                            category_tree=category_tree,
                            active_category=active_category,
-                           known_categories=known_categories)
+                           known_categories=known_categories,
+                           storage_used=storage_used,
+                           storage_cap=storage_cap,
+                           format_bytes=_format_bytes)
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):

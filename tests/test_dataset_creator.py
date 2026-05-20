@@ -216,14 +216,39 @@ def test_end_to_end_create_dataset_happy_path(client, admin_user):
     assert n_cf == 3 * 2  # samples × fields
 
 
-def test_end_to_end_non_admin_token_gets_403(client, non_admin_user):
+def test_end_to_end_non_admin_token_accepted_within_quota(client, non_admin_user):
+    """Dataset upload is open to any authenticated user — the per-user
+    storage quota is the only gate. A tiny upload from a non-admin
+    sails through."""
     bh_client = _client_with_transport(client, non_admin_user)
-    creator = bh_client.create_dataset("nope")
+    creator = bh_client.create_dataset("regular-user-upload")
     creator.add_field("x", bh.Scalar)
     creator.add_sample("s0", x=bh.Scalar(0.5))
+    result = creator.create()
+    assert result["samples"] == 1
+    ds = Dataset.query.get(result["dataset_id"])
+    assert ds.owner_user_id == non_admin_user.id
+
+
+def test_end_to_end_over_quota_returns_413(client, db_session):
+    """A user already at their storage cap can't upload another byte."""
+    u = User(
+        email='maxed@bench.local', display_name='maxed',
+        oauth_provider='github', oauth_sub='maxed-1',
+        api_token=generate_api_token(),
+        quota_max_storage_bytes=10,  # tiny cap for the test
+    )
+    db.session.add(u); db.session.commit()
+    bh_client = _client_with_transport(client, u)
+    creator = bh_client.create_dataset("too-big")
+    # A 32×32 RGB image is ~3KB encoded; well over the 10-byte cap.
+    creator.add_field("img", bh.Image, role="input")
+    creator.add_sample("s0", img=bh.Image(np.zeros((32, 32, 3), dtype=np.uint8)))
+
     with pytest.raises(bh.BenchHubAPIError) as excinfo:
         creator.create()
-    assert excinfo.value.status_code == 403
+    assert excinfo.value.status_code == 413
+    assert "Storage limit" in excinfo.value.payload["error"]
 
 
 def test_end_to_end_missing_api_token_gets_401(client, db_session):
@@ -234,6 +259,30 @@ def test_end_to_end_missing_api_token_gets_401(client, db_session):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 401
+
+
+def test_browser_upload_route_accepts_cookie_auth(client, admin_user, db_session):
+    """The /datasets/upload route is the browser companion to
+    /api/datasets — same ZIP, cookie auth, same quota gate."""
+    creator = bh.Client(token="t", base_url="http://x").create_dataset("browser-up")
+    creator.add_field("x", bh.Scalar)
+    creator.add_sample("s0", x=bh.Scalar(0.5))
+    zip_bytes = creator.build_zip()
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = admin_user.id
+
+    resp = client.post(
+        '/datasets/upload',
+        data={'dataset_zip': (io.BytesIO(zip_bytes), 'browser.zip'), 'visibility': 'public'},
+        content_type='multipart/form-data',
+        follow_redirects=False,
+    )
+    # Successful upload → 302 to /dataset/<id> (or /datasets if the
+    # endpoint isn't around). Either way: redirect, not 4xx.
+    assert resp.status_code == 302
+    ds = Dataset.query.filter_by(name='browser-up').one()
+    assert ds.owner_user_id == admin_user.id
 
 
 def test_create_propagates_bad_zip_as_api_error(client, admin_user):

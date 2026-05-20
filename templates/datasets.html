@@ -238,8 +238,121 @@
         </div>
 
         <div class="col-lg-5">
-            <div class="card border-0 shadow-sm sticky-top mb-3" style="top: 100px; z-index: 900;">
-                {% if current_user_is_admin %}
+            <div class="sticky-top" style="top: 100px; z-index: 900;">
+
+            {# Storage gauge (logged-in users only) #}
+            {% if current_user and storage_cap %}
+            {% set pct = (storage_used * 100 // storage_cap) if storage_cap else 0 %}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-3">
+                    <div class="d-flex justify-content-between align-items-baseline small mb-1">
+                        <span class="fw-semibold">Your dataset storage</span>
+                        <span class="text-body-secondary">
+                            {{ format_bytes(storage_used) }} / {{ format_bytes(storage_cap) }}
+                        </span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar {{ 'bg-danger' if pct >= 90 else 'bg-warning' if pct >= 75 else 'bg-primary' }}"
+                             role="progressbar" style="width: {{ pct }}%;"
+                             aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Typed ZIP upload — any logged-in user, quota-gated #}
+            {% if current_user %}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-4">
+                    <h5 class="fw-bold mb-1">
+                        <i class="bi bi-cloud-arrow-up me-1 text-primary"></i>
+                        Upload a typed dataset ZIP
+                    </h5>
+                    <p class="small text-body-secondary mb-3">
+                        The ZIP root needs a <code>manifest.json</code>
+                        (typed contract: name, fields[], samples[]) plus
+                        one sub-folder per field holding
+                        <code>&lt;sample&gt;.&lt;ext&gt;</code>.
+                        See <a href="{{ url_for('supported_types') }}">/supported_types</a>.
+                    </p>
+                    <form method="post" action="{{ url_for('upload_typed_dataset_zip') }}"
+                          enctype="multipart/form-data">
+                        <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
+                            <i class="bi bi-cloud-arrow-up display-6 text-body-secondary d-block mb-1"></i>
+                            <span class="fw-semibold small">Drop a typed ZIP here or click</span>
+                            <div id="zip-name" class="small text-primary mt-1 d-none"></div>
+                        </label>
+                        <input type="file" id="dataset_zip" name="dataset_zip"
+                               accept=".zip" required class="d-none">
+                        <div class="mb-2">
+                            <label for="ds-visibility" class="form-label small fw-semibold mb-1">Visibility</label>
+                            <select id="ds-visibility" name="visibility" class="form-select form-select-sm">
+                                <option value="public" selected>public</option>
+                                <option value="unlisted">unlisted</option>
+                                <option value="private">private</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 py-2">Upload</button>
+                    </form>
+                </div>
+            </div>
+
+            {# Python BHDatasetCreator example — copy-button enabled #}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-4">
+                    <div class="d-flex align-items-baseline mb-1 gap-2">
+                        <h5 class="fw-bold mb-0">
+                            <i class="bi bi-code-slash me-1 text-primary"></i>
+                            Or build it from Python
+                        </h5>
+                        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto"
+                                onclick="navigator.clipboard.writeText(document.getElementById('creator-snippet').innerText); this.textContent = 'copied';">
+                            copy
+                        </button>
+                    </div>
+                    <p class="small text-body-secondary mb-2">
+                        Stage typed values in memory, validate locally,
+                        upload as one ZIP. Reads
+                        <code>BENCHHUB_API_TOKEN</code> from
+                        <a href="{{ url_for('api_tokens') }}">your token page</a>.
+                    </p>
+                    <pre id="creator-snippet" class="small mb-0 p-3 rounded font-monospace"
+                         style="background:#f5efe2;border:1px solid #e8dfc8;overflow-x:auto;"><code>import benchhub as bh
+import numpy as np
+
+client  = bh.Client()                  # env: BENCHHUB_API_TOKEN + BENCHHUB_BASE_URL
+creator = client.create_dataset(&quot;my-tiny-dataset&quot;)
+
+creator.add_field(&quot;image&quot;,    bh.Image, role=&quot;input&quot;)
+creator.add_field(&quot;label&quot;,    bh.Label, role=&quot;gt&quot;,
+                  params={&quot;vocab&quot;: [&quot;cat&quot;, &quot;dog&quot;]})
+
+for sid, img, lbl in iter_my_data():   # your generator
+    creator.add_sample(
+        sid,
+        image = bh.Image(img),         # uint8 (H,W,3)
+        label = bh.Label(lbl),
+    )
+
+result = creator.create()              # POSTs the ZIP, returns the summary
+print(result[&quot;dataset_id&quot;])</code></pre>
+                </div>
+            </div>
+            {% else %}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-4">
+                    <h5 class="fw-bold mb-1">Add a dataset</h5>
+                    <p class="small text-body-secondary mb-0">
+                        <a href="{{ url_for('login') }}">Log in</a> to upload
+                        a typed dataset ZIP (200&nbsp;MB total per user).
+                    </p>
+                </div>
+            </div>
+            {% endif %}
+
+            {# Admin-only Croissant HF import — same place as before, just lower in the column #}
+            {% if current_user_is_admin %}
+            <div class="card border-0 shadow-sm mb-3">
                 <div class="card-body p-4">
                     <h5 class="fw-bold mb-1">
                         <i class="bi bi-cloud-arrow-down me-1 text-primary"></i>
@@ -247,25 +360,16 @@
                     </h5>
                     <p class="small text-body-secondary mb-3">
                         Reads the repo's Croissant metadata, infers
-                        field kinds deterministically, and lets you
-                        complete roles + per-instance params before
-                        materialising the dataset locally.
+                        field kinds, lets you complete roles + params
+                        before materialising the data locally.
                     </p>
-                    <a href="{{ url_for('admin_import_from_hf') }}" class="btn btn-primary w-100">
+                    <a href="{{ url_for('admin_import_from_hf') }}" class="btn btn-outline-primary w-100">
                         Import a HuggingFace dataset
                     </a>
                 </div>
-                {% else %}
-                <div class="card-body p-4">
-                    <h5 class="fw-bold mb-1">Add a dataset</h5>
-                    <p class="small text-body-secondary mb-0">
-                        Dataset upload is admin-only during the typed-
-                        contract migration. See
-                        <a href="{{ url_for('supported_types') }}">/supported_types</a>
-                        for the new shape.
-                    </p>
-                </div>
-                {% endif %}
+            </div>
+            {% endif %}
+
             </div>
         </div>
     </div>
@@ -288,24 +392,23 @@
 </style>
 <script>
     (function () {
-        // ---- ZIP drop zone ----
+        // ---- ZIP drop zone (typed-manifest upload) ----
         const dropzone = document.querySelector('.upload-dropzone');
         const fileInput = document.getElementById('dataset_zip');
-        const filenamesDisplay = document.getElementById('zip-filenames');
-        const datasetNameInput = document.getElementById('dataset_name');
+        const nameDisplay = document.getElementById('zip-name');
+        if (!dropzone || !fileInput) return;
 
-        function reflectFiles(files) {
-            if (!files || !files.length) return;
-            const names = Array.from(files).map(f => f.name);
-            filenamesDisplay.textContent = names.join(', ');
-            filenamesDisplay.classList.remove('d-none');
-            // Preserve the auto-name behavior the page had before.
-            if (datasetNameInput.value === '') {
-                datasetNameInput.value = names.map(n => n.replace(/\.zip$/, '')).join(', ');
+        function reflectFile(file) {
+            if (!file) return;
+            if (nameDisplay) {
+                nameDisplay.textContent = file.name;
+                nameDisplay.classList.remove('d-none');
             }
         }
 
-        fileInput.addEventListener('change', (e) => reflectFiles(e.target.files));
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length) reflectFile(e.target.files[0]);
+        });
 
         ['dragenter', 'dragover'].forEach(ev =>
             dropzone.addEventListener(ev, (e) => {
@@ -318,7 +421,7 @@
             e.preventDefault();
             if (e.dataTransfer && e.dataTransfer.files.length) {
                 fileInput.files = e.dataTransfer.files;
-                reflectFiles(e.dataTransfer.files);
+                reflectFile(e.dataTransfer.files[0]);
             }
         });
     })();

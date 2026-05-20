@@ -223,6 +223,13 @@ def import_typed_dataset(
             db_session.add(cf)
             n_field_rows += 1
 
+    # Refresh the cached storage_bytes counter so quota math + the
+    # /home dashboard stay accurate without a separate `du` pass.
+    bytes_on_disk = sum(
+        p.stat().st_size for p in dataset_dir.rglob("*") if p.is_file()
+    )
+    dataset.storage_bytes = bytes_on_disk
+
     summary = {
         "dataset_id": dataset.id,
         "name": dataset.name,
@@ -230,6 +237,7 @@ def import_typed_dataset(
         "fields": len(manifest["fields"]),
         "custom_field_rows": n_field_rows,
         "files_copied": n_files_copied,
+        "bytes_on_disk": bytes_on_disk,
     }
     return dataset.id, summary
 
