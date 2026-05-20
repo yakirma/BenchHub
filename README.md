@@ -20,7 +20,7 @@ generalized into a public, multi-tenant web app.
   metric engine resolves dependencies and runs them per-sample or
   aggregated. Sandbox-isolated when `BENCHHUB_SANDBOX_METRICS=1`.
 - **Asynchronous processing** with Celery (Redis broker).
-- **Per-user quotas**: 200 MB storage, 5 datasets, 50 submissions / 24h
+- **Per-user quotas**: 50 MB storage, 5 datasets, 50 submissions / 24h
   by default. Free-tier safe to expose to the open internet.
 - **API tokens** for programmatic uploads (`/settings/api_tokens`).
 - **Account deletion** (GDPR right-to-be-forgotten) with cascading cleanup.

@@ -852,9 +852,9 @@ class User(db.Model):
     # free-tier values; bump per-user when you launch a paid tier. NULL caps
     # are allowed → "unlimited" (used for the `system` curated-content user).
     quota_max_storage_bytes = db.Column(
-        db.BigInteger, nullable=False, default=200 * 1024 * 1024,
-        server_default=str(200 * 1024 * 1024),
-    )  # 200 MB
+        db.BigInteger, nullable=False, default=50 * 1024 * 1024,
+        server_default=str(50 * 1024 * 1024),
+    )  # 50 MB
     quota_max_datasets = db.Column(
         db.Integer, nullable=False, default=5, server_default='5',
     )
@@ -1468,7 +1468,7 @@ def _format_bytes(n):
 @login_required
 def user_usage():
     """Per-user storage breakdown + quota. Shows total used vs the
-    user's `quota_max_storage_bytes` cap (default 200MB), per-dataset
+    user's `quota_max_storage_bytes` cap (default 50MB), per-dataset
     rows ordered by size, and submission-rate state."""
     user = g.current_user
     ds_rows = (
@@ -4546,7 +4546,7 @@ def api_create_dataset():
     per declared field holding `<sample>.<ext>` for each sample.
 
     Open to any authenticated user — the per-user storage quota
-    (`User.quota_max_storage_bytes`, default 200 MB) is what gates
+    (`User.quota_max_storage_bytes`, default 50 MB) is what gates
     abuse, not an admin allow-list.
     """
     upload = request.files.get('dataset_zip')
@@ -11628,6 +11628,26 @@ def check_and_migrate_db():
                             print(f"Migration: added {_tbl}.input_kinds")
                     except Exception as e:
                         print(f"Migration error ({_tbl}.input_kinds): {e}")
+
+                # --- Lower per-user storage quota 200 MB → 50 MB ---
+                # Existing users were created with the old 200 MB default;
+                # the new default is 50 MB. Only touch rows that still
+                # carry the old default value — preserves any admin-set
+                # custom caps and the NULL ("unlimited") system user.
+                try:
+                    cursor.execute(
+                        "UPDATE user SET quota_max_storage_bytes = ? "
+                        "WHERE quota_max_storage_bytes = ?",
+                        (50 * 1024 * 1024, 200 * 1024 * 1024),
+                    )
+                    if cursor.rowcount:
+                        print(
+                            f"Migrating DB: lowered storage cap to 50 MB "
+                            f"on {cursor.rowcount} user(s)."
+                        )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (user storage cap 50 MB): {e}")
 
                 # --- DatasetField table (Phase B+: dataset-level schema) ---
                 # `db.create_all()` runs in every gunicorn worker on boot;
