@@ -4463,6 +4463,78 @@ def admin_import_from_hf_preview():
     )
 
 
+@app.route('/api/datasets', methods=['POST'])
+@require_api_token
+def api_create_dataset():
+    """Programmatic dataset creation for the typed-client (`BHDatasetCreator`).
+
+    Expects a multipart upload with a single `dataset_zip` field
+    whose ZIP root contains a `manifest.json` declaring `fields[]`
+    (with role=input|gt) and `samples[]`, plus one sub-directory
+    per declared field holding `<sample>.<ext>` for each sample.
+    The wire-shape is identical to what `import_typed_dataset` reads
+    off disk — this route just extracts to a tempdir and hands off.
+
+    Admin-only by token: dataset creation can fill the volume, so
+    `is_admin(g.current_user)` is checked before any I/O. Returns
+    the importer's summary dict (`dataset_id`, `samples`, `fields`,
+    …) on success.
+    """
+    if not is_admin(g.current_user):
+        return jsonify({'error': 'admin only'}), 403
+
+    import tempfile
+    import zipfile
+
+    upload = request.files.get('dataset_zip')
+    if upload is None or not upload.filename:
+        return jsonify({'error': 'multipart field "dataset_zip" required'}), 400
+    visibility = (request.form.get('visibility') or 'public').strip()
+    if visibility not in ('public', 'private', 'unlisted'):
+        visibility = 'public'
+
+    from benchhub.manifest import import_typed_dataset
+    with tempfile.TemporaryDirectory(prefix='bh_ds_') as extract_dir:
+        try:
+            with zipfile.ZipFile(upload.stream) as zf:
+                zf.extractall(extract_dir)
+        except zipfile.BadZipFile:
+            return jsonify({'error': 'dataset_zip is not a valid ZIP file'}), 400
+
+        # Allow the convention where the manifest lives one directory deep
+        # — matches the SubmissionBuilder ZIP layout.
+        roots = [p for p in os.listdir(extract_dir) if not p.startswith('.')]
+        if (len(roots) == 1
+                and os.path.isdir(os.path.join(extract_dir, roots[0]))
+                and not os.path.exists(os.path.join(extract_dir, 'manifest.json'))):
+            source_root = os.path.join(extract_dir, roots[0])
+        else:
+            source_root = extract_dir
+
+        try:
+            _, summary = import_typed_dataset(
+                source_root,
+                db_session=db.session,
+                Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                DatasetField=DatasetField,
+                upload_folder=app.config['UPLOAD_FOLDER'],
+                owner_user_id=g.current_user.id,
+                visibility=visibility,
+            )
+            db.session.commit()
+        except FileNotFoundError as e:
+            db.session.rollback()
+            return jsonify({'error': str(e)}), 400
+        except ValueError as e:
+            db.session.rollback()
+            return jsonify({'error': f'manifest invalid: {e}'}), 400
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': f'import failed: {e}'}), 500
+
+    return jsonify(summary), 201
+
+
 @app.route('/admin/import_typed_dataset', methods=['POST'])
 @login_required
 def admin_import_typed_dataset():

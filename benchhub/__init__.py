@@ -21,6 +21,7 @@ from benchhub.types import (
 )
 from benchhub.client import (
     BenchHubAPIError,
+    BHDatasetCreator,
     Client,
     FlaskTestClientTransport,
     SubmissionBuilder,
@@ -41,6 +42,7 @@ __all__ = [
     "get_type",
     "Client",
     "SubmissionBuilder",
+    "BHDatasetCreator",
     "FlaskTestClientTransport",
     "BenchHubAPIError",
 ]

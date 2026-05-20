@@ -56,6 +56,25 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
+    def post_dataset_zip(self, zip_bytes: bytes, token: str,
+                         *, visibility: str = "public") -> dict:
+        """Upload a typed dataset ZIP. Returns the server's import
+        summary (`dataset_id`, `samples`, `fields`, …)."""
+        import requests
+        resp = requests.post(
+            f"{self.base_url}/api/datasets",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"dataset_zip": ("dataset.zip", zip_bytes, "application/zip")},
+            data={"visibility": visibility},
+        )
+        if resp.status_code >= 400:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, payload)
+        return resp.json()
+
 
 class BenchHubAPIError(Exception):
     """Raised when the server returns a non-2xx response."""
@@ -96,6 +115,18 @@ class Client:
         then `.submit()` to send the whole package."""
         return SubmissionBuilder(self, leaderboard_id, name)
 
+    def create_dataset(
+        self,
+        name: str,
+        *,
+        visibility: str = "public",
+    ) -> "BHDatasetCreator":
+        """Open an in-memory dataset builder. Declare fields with
+        `.add_field()` (optional — schema can also be inferred from
+        the first `.add_sample()` call), then stage typed values per
+        sample, then `.create()` to send the whole package up."""
+        return BHDatasetCreator(self, name, visibility=visibility)
+
     def submit_directory(
         self,
         leaderboard_id: int,
@@ -121,6 +152,16 @@ class Client:
             )
         return self.transport.post_submission_zip(
             leaderboard_id, name, zip_bytes, self.token,
+        )
+
+    def _post_dataset_zip(self, zip_bytes: bytes, *, visibility: str) -> dict:
+        if not self.token:
+            raise ValueError(
+                "BenchHub Client has no API token — pass `token=...` or "
+                "set BENCHHUB_API_TOKEN."
+            )
+        return self.transport.post_dataset_zip(
+            zip_bytes, self.token, visibility=visibility,
         )
 
 
@@ -230,6 +271,189 @@ class SubmissionBuilder:
 
 
 # ---------------------------------------------------------------------------
+# BHDatasetCreator — client-side dataset builder
+# ---------------------------------------------------------------------------
+
+_VALID_ROLES = {"input", "gt"}
+
+
+class BHDatasetCreator:
+    """Stage a typed dataset locally, then upload it as one ZIP.
+
+    Mirrors `SubmissionBuilder` for the dataset side. The builder
+    accumulates schema (`add_field`) + per-sample values (`add_sample`)
+    in memory, validates every `DataType` instance + checks that
+    every sample has every declared field, packs everything into the
+    typed-manifest layout the server already knows how to ingest, and
+    POSTs it as a multipart upload.
+
+    Example:
+
+        creator = client.create_dataset("nyu-tiny")
+        creator.add_field("image",    bh.Image, role="input")
+        creator.add_field("depth_gt", bh.Depth, role="gt",
+                          params={"unit": "meters"})
+
+        for sample_id, img_arr, depth_arr in iter_samples():
+            creator.add_sample(
+                sample_id,
+                image=bh.Image(img_arr),
+                depth_gt=bh.Depth(depth_arr, unit="meters"),
+            )
+
+        result = creator.create()
+        print(result["dataset_id"], result["samples"])
+    """
+
+    def __init__(self, client: Client, name: str, *, visibility: str = "public"):
+        if not name or not name.strip():
+            raise ValueError("dataset name must be a non-empty string")
+        self.client = client
+        self.name = name.strip()
+        self.visibility = visibility
+        # Schema: field_name → {kind, role, params}
+        self._schema: dict[str, dict] = {}
+        # Data: sample_name → field_name → DataType instance
+        self._samples: dict[str, dict[str, DataType]] = {}
+
+    def add_field(
+        self,
+        name: str,
+        kind: str | type[DataType] | None = None,
+        *,
+        role: str = "gt",
+        params: dict | None = None,
+    ) -> None:
+        """Declare one field of the dataset's schema.
+
+        `kind` accepts either the wire-kind string (`"depth"`) or the
+        `DataType` subclass (`bh.Depth`). If omitted, the kind is
+        inferred from the first `add_sample()` instance for this name.
+        `role` is `"input"` or `"gt"`. `params` is the per-instance
+        metadata the type needs at decode time (e.g.
+        `{"unit": "meters"}` for `Depth`).
+        """
+        if not name or not isinstance(name, str):
+            raise ValueError("field name must be a non-empty string")
+        if role not in _VALID_ROLES:
+            raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}; got {role!r}")
+        kind_str: str | None = None
+        if kind is not None:
+            if isinstance(kind, type) and issubclass(kind, DataType):
+                kind_str = kind.kind
+            elif isinstance(kind, str):
+                if kind not in DTYPES:
+                    raise ValueError(f"unknown kind {kind!r}; known: {sorted(DTYPES)}")
+                kind_str = kind
+            else:
+                raise TypeError(
+                    f"`kind` must be a benchhub.DataType subclass, a wire-kind "
+                    f"string, or None; got {type(kind).__name__}"
+                )
+        if name in self._schema and kind_str and self._schema[name]["kind"] != kind_str:
+            raise ValueError(
+                f"field {name!r} already declared with kind "
+                f"{self._schema[name]['kind']!r}; can't redeclare as {kind_str!r}"
+            )
+        self._schema[name] = {
+            "kind": kind_str,
+            "role": role,
+            "params": dict(params or {}),
+        }
+
+    def add_sample(self, sample_name: str, **typed_values: DataType) -> None:
+        """Stage typed values for one sample. Each kwarg is
+        `field_name=DataType_instance`. Each instance is validated
+        on the spot — bad shapes / dtypes raise immediately so you
+        catch problems while you still have the surrounding context.
+        """
+        if not sample_name or not isinstance(sample_name, str):
+            raise ValueError("sample_name must be a non-empty string")
+        if not typed_values:
+            raise ValueError("add_sample() needs at least one field=instance kwarg")
+        for field_name, inst in typed_values.items():
+            if not isinstance(inst, DataType):
+                raise TypeError(
+                    f"sample {sample_name!r} field {field_name!r}: expected a "
+                    f"benchhub.DataType instance; got {type(inst).__name__}"
+                )
+            inst.validate()
+            # Infer / cross-check schema.
+            declared = self._schema.get(field_name)
+            if declared is None:
+                self._schema[field_name] = {
+                    "kind": inst.kind,
+                    "role": "gt",
+                    "params": dict(inst.params),
+                }
+            else:
+                if declared["kind"] is None:
+                    declared["kind"] = inst.kind
+                elif declared["kind"] != inst.kind:
+                    raise ValueError(
+                        f"sample {sample_name!r} field {field_name!r}: "
+                        f"declared kind {declared['kind']!r} != instance kind {inst.kind!r}"
+                    )
+        bucket = self._samples.setdefault(sample_name, {})
+        bucket.update(typed_values)
+
+    @property
+    def fields(self) -> list[str]:
+        # Sorted so the manifest order is deterministic across runs.
+        return sorted(self._schema)
+
+    @property
+    def samples(self) -> list[str]:
+        return sorted(self._samples)
+
+    def build_manifest(self) -> dict:
+        """Mirror the on-disk typed-manifest format the server expects."""
+        if not self._samples:
+            raise ValueError("no samples staged; call .add_sample(...) first")
+        # Every sample must supply every declared field — same rule as
+        # the SubmissionBuilder.
+        for name in self.samples:
+            present = set(self._samples[name])
+            missing = sorted(set(self._schema) - present)
+            if missing:
+                raise ValueError(
+                    f"sample {name!r} missing field values for: {missing}"
+                )
+        return {
+            "name": self.name,
+            "version": "1.0",
+            "fields": [
+                {
+                    "name": fname,
+                    "kind": self._schema[fname]["kind"],
+                    "role": self._schema[fname]["role"],
+                    "params": self._schema[fname]["params"],
+                }
+                for fname in self.fields
+            ],
+            "samples": self.samples,
+        }
+
+    def build_zip(self) -> bytes:
+        """Produce the dataset ZIP bytes the server consumes."""
+        manifest = self.build_manifest()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps(manifest))
+            for f in manifest["fields"]:
+                cls = DTYPES[f["kind"]]
+                ext = cls.file_ext or ".txt"
+                for sample_name in manifest["samples"]:
+                    inst = self._samples[sample_name][f["name"]]
+                    zf.writestr(f"{f['name']}/{sample_name}{ext}", inst.encode())
+        return buf.getvalue()
+
+    def create(self) -> dict:
+        """Build the ZIP and POST it. Returns the server's import summary."""
+        return self.client._post_dataset_zip(self.build_zip(), visibility=self.visibility)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -258,6 +482,26 @@ class FlaskTestClientTransport:
             data={
                 "submission_zip": (BytesIO(zip_bytes), "submission.zip"),
                 **({"name": name} if name else {}),
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            content_type="multipart/form-data",
+        )
+        try:
+            payload = resp.get_json() or {}
+        except Exception:
+            payload = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, payload)
+        return payload
+
+    def post_dataset_zip(self, zip_bytes: bytes, token: str,
+                         *, visibility: str = "public") -> dict:
+        from io import BytesIO
+        resp = self.test_client.post(
+            "/api/datasets",
+            data={
+                "dataset_zip": (BytesIO(zip_bytes), "dataset.zip"),
+                "visibility": visibility,
             },
             headers={"Authorization": f"Bearer {token}"},
             content_type="multipart/form-data",
