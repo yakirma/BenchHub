@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}New leaderboard — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 880px;">
+    <h1 class="fw-bold mb-1">New leaderboard</h1>
+    <p class="lead text-body-secondary mb-4">
+        Pick one or more datasets to score submissions against. The
+        prediction contract (which fields are required, in which typed
+        kinds) inherits from the datasets' GT fields and can be tuned
+        on the leaderboard's settings page after creation.
+    </p>
+
+    {% if not bh_datasets %}
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4 text-center">
+            <h2 class="h5 fw-semibold mb-2">
+                <i class="bi bi-database me-1 text-primary"></i>
+                You don't have any datasets yet
+            </h2>
+            <p class="text-body-secondary mb-3">
+                Leaderboards score submissions against a dataset, so
+                you'll need at least one. Dataset upload is paused while
+                we migrate to strict typed contracts — see
+                <a href="{{ url_for('supported_types') }}">supported types</a>
+                for the new contract shape.
+            </p>
+            <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-primary">
+                <i class="bi bi-arrow-left me-1"></i>Back to datasets
+            </a>
+        </div>
+    </div>
+    {% else %}
+    <form method="post" action="{{ url_for('create_leaderboard') }}" class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+
+            <label class="form-label fw-semibold mb-1" for="lb-name">Leaderboard name</label>
+            <input type="text" class="form-control mb-3" id="lb-name"
+                   name="leaderboard_name" required autocomplete="off"
+                   placeholder="e.g. nyu-depth-v2-test">
+
+            <label class="form-label fw-semibold mb-1">Attached datasets</label>
+            <p class="form-text small mt-0 mb-2">
+                Select one (typical) or several (paired-dataset setups
+                — e.g. dirty/clean splits across two datasets).
+            </p>
+            <div class="list-group mb-3"
+                 style="max-height: 360px; overflow-y: auto;">
+                {% for ds in bh_datasets %}
+                <label class="list-group-item d-flex align-items-center gap-2">
+                    <input class="form-check-input me-1" type="checkbox"
+                           name="dataset_ids" value="{{ ds.id }}"
+                           {{ 'checked' if loop.first }}>
+                    <div class="flex-grow-1">
+                        <div class="fw-semibold">{{ ds.name }}</div>
+                        <div class="small text-body-secondary">
+                            {% if ds.category %}{{ ds.category }} &middot; {% endif %}
+                            uploaded {{ ds.upload_date.strftime('%Y-%m-%d') if ds.upload_date }}
+                        </div>
+                    </div>
+                    <span class="badge text-bg-secondary-subtle text-secondary border small">
+                        {{ ds.visibility }}
+                    </span>
+                </label>
+                {% endfor %}
+            </div>
+
+            <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox"
+                       id="auto-assign" name="auto_assign_metrics" value="1">
+                <label class="form-check-label small" for="auto-assign">
+                    <strong>Auto-assign metrics</strong> — inspect the
+                    dataset's GT fields and propose typed metric bindings
+                    (you'll review + confirm before any GlobalMetric row
+                    is written).
+                </label>
+            </div>
+
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox"
+                       id="lb-overwrite" name="overwrite" value="1">
+                <label class="form-check-label small" for="lb-overwrite">
+                    <strong>Overwrite</strong> any existing leaderboard
+                    with the same name (deletes the old one + its
+                    submissions; only do this if you're sure).
+                </label>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-plus-lg me-1"></i>Create leaderboard
+                </button>
+                <a href="{{ url_for('leaderboards') }}" class="btn btn-outline-secondary">
+                    Cancel
+                </a>
+            </div>
+        </div>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

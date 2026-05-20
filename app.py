@@ -6907,9 +6907,24 @@ def favicon():
 @app.route('/create_lb', methods=['GET'])
 @login_required
 def create_lb_chooser():
-    """Back-compat redirect: leaderboards are now created from a BH
-    dataset's detail page (the /datasets list shows your uploads)."""
-    return redirect(url_for('datasets_list'))
+    """Pick a BenchHub dataset → configure name → POST to /create_leaderboard.
+
+    Used to also have an HF-import half; that's gone with Phase A.
+    The form supports attaching one or many datasets (Attachment table)
+    and an optional auto-assign-metrics flow that prompts the user
+    to confirm individual metric proposals before any LB row is
+    actually written."""
+    user = g.current_user
+    bh_datasets = (
+        Dataset.query
+        .filter(visible_in_list(Dataset, user))
+        .order_by(Dataset.upload_date.desc())
+        .all()
+    )
+    return render_template(
+        'create_lb_chooser.html',
+        bh_datasets=bh_datasets,
+    )
 
 
 # --- HuggingFace dataset listing (Round C) -------------------------------
