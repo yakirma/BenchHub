@@ -156,6 +156,65 @@
                 </table>
             </div>
 
+            {# ---- Prediction fields ----------------------------------- #}
+            <h2 class="h5 fw-semibold mt-4 mb-2">Prediction fields</h2>
+            <p class="form-text small mb-2">
+                Add the fields submissions must include — these are
+                schema-only (no data lives in the HF dataset), they
+                define the wire contract for the leaderboard.
+                <code>params</code> is the type's per-instance metadata as JSON;
+                for image/mask/depth preds it can carry
+                <code>{"shape_match": "&lt;input field name&gt;"}</code>
+                (per-sample, must match an input column above) or
+                <code>{"shape": [H, W]}</code> (fixed resolution).
+                Leave the list empty if you want the leaderboard to
+                derive its contract from the GT columns above
+                (one <code>&lt;name&gt;_pred</code> per GT field).
+            </p>
+            <div class="table-responsive mb-2">
+                <table class="table align-middle mb-0" id="pred-fields-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 30%;">Name</th>
+                            <th style="width: 18%;">Kind</th>
+                            <th>Params (JSON)</th>
+                            <th style="width: 1%;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pred-fields-body">
+                        {# Initial state: empty. The JS below clones the
+                           hidden <template> row when the admin clicks Add. #}
+                    </tbody>
+                </table>
+            </div>
+            <button type="button" id="pred-add-row" class="btn btn-sm btn-outline-primary mb-4">
+                <i class="bi bi-plus-lg me-1"></i>Add prediction field
+            </button>
+            <template id="pred-row-template">
+                <tr>
+                    <td>
+                        <input type="text" name="pred_field_name" class="form-control form-control-sm font-monospace"
+                               placeholder="e.g. depth_pred" autocomplete="off">
+                    </td>
+                    <td>
+                        <select name="pred_field_kind" class="form-select form-select-sm">
+                            {% for k in all_kinds %}
+                            <option value="{{ k }}">{{ k }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td>
+                        <input type="text" name="pred_field_params" class="form-control form-control-sm font-monospace"
+                               placeholder='{}  (e.g. {"shape_match":"image"})'>
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-link text-danger pred-remove">
+                            remove
+                        </button>
+                    </td>
+                </tr>
+            </template>
+
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-download me-1"></i>Download &amp; import
@@ -211,6 +270,24 @@
     splitSel.addEventListener('change', refreshHint);
     capInput.addEventListener('input', refreshHint);
     refreshHint();
+
+    // Prediction-fields section: clone the hidden <template> row on
+    // "Add", remove via the in-row link. Empty rows are filtered out
+    // server-side so the admin can leave dangling blanks.
+    const predBody = document.getElementById('pred-fields-body');
+    const predTpl = document.getElementById('pred-row-template');
+    const predAddBtn = document.getElementById('pred-add-row');
+    if (predBody && predTpl && predAddBtn) {
+        predAddBtn.addEventListener('click', () => {
+            const frag = predTpl.content.cloneNode(true);
+            predBody.appendChild(frag);
+        });
+        predBody.addEventListener('click', (e) => {
+            if (e.target.classList.contains('pred-remove')) {
+                e.target.closest('tr')?.remove();
+            }
+        });
+    }
 
     // Show only the hint that matches the picked sampling strategy.
     const samplingSel = document.getElementById('sampling');

@@ -4479,7 +4479,54 @@ def admin_import_from_hf_commit():
             'params': params,
         })
     if not selected:
-        flash('Every field was set to "skip" — nothing to import.', 'warning')
+        flash('Every column was set to "skip" — nothing to import.', 'warning')
+        return redirect(url_for('admin_import_from_hf'))
+
+    # Prediction fields are declared separately on the preview form
+    # — they're schema-only declarations the LB will require from
+    # submissions, NOT mappings of HF columns. Blank rows (admin
+    # added a row then left it empty) are dropped.
+    from benchhub.types import DTYPES as _DTYPES
+    pred_names = request.form.getlist('pred_field_name')
+    pred_kinds = request.form.getlist('pred_field_kind')
+    pred_params_raw = request.form.getlist('pred_field_params')
+    existing_names = {f['name'] for f in selected}
+    pred_errors: list[str] = []
+    for i, pname in enumerate(pred_names):
+        pname = (pname or '').strip()
+        if not pname:
+            continue
+        if pname in existing_names:
+            pred_errors.append(
+                f"pred field {pname!r} collides with a column name above"
+            )
+            continue
+        pkind = (pred_kinds[i] if i < len(pred_kinds) else '').strip()
+        if pkind not in _DTYPES:
+            pred_errors.append(
+                f"pred field {pname!r}: unknown kind {pkind!r}"
+            )
+            continue
+        params_str = (pred_params_raw[i] if i < len(pred_params_raw) else '').strip()
+        try:
+            params = json.loads(params_str) if params_str else {}
+            if not isinstance(params, dict):
+                params = {}
+        except (TypeError, ValueError):
+            pred_errors.append(
+                f"pred field {pname!r}: params must be JSON; got {params_str!r}"
+            )
+            continue
+        selected.append({
+            'name': pname,
+            'source_column': pname,
+            'kind': pkind,
+            'role': 'pred',
+            'params': params,
+        })
+        existing_names.add(pname)
+    if pred_errors:
+        flash("Prediction fields invalid: " + "; ".join(pred_errors), 'warning')
         return redirect(url_for('admin_import_from_hf'))
 
     import tempfile
@@ -4570,10 +4617,12 @@ def admin_import_from_hf_preview():
         schema=schema,
         split_counts=split_counts,
         all_kinds=sorted(DTYPES),
-        # `pred` is schema-only — declaring it on a dataset commits the
-        # LB to expecting that pred field from submissions, with no
-        # per-sample data carried by the dataset itself.
-        all_roles=['input', 'gt', 'pred', 'skip'],
+        # Each HF column carries actual data — the role choices here
+        # are only "where does the data live in the BH contract":
+        # `input` (given to submitters), `gt` (held server-side as
+        # the target), or `skip` (not imported). `pred` declarations
+        # are schema-only and live in a separate section of the form.
+        all_roles=['input', 'gt', 'skip'],
     )
 
 

@@ -237,6 +237,12 @@ def materialize_hf_to_typed_dir(
     # index, so the on-disk layout stays compact (`s000000..s00000N`)
     # regardless of which rows we picked from the source.
     sample_names = [f"s{i:06d}" for i in range(n)]
+    # Pred fields are schema-only declarations — the HF source has
+    # no column for them. They go into the manifest so the
+    # downstream `import_typed_dataset` writes a DatasetField row,
+    # but we don't try to materialise per-sample files for them.
+    data_bearing = [f for f in fields if f.get("role") != "pred"]
+
     manifest = {
         "name": dataset_name,
         "version": "1.0",
@@ -261,7 +267,7 @@ def materialize_hf_to_typed_dir(
         },
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    for f in fields:
+    for f in data_bearing:
         (root / f["name"]).mkdir(parents=True, exist_ok=True)
 
     written = 0
@@ -269,7 +275,7 @@ def materialize_hf_to_typed_dir(
     for sample_idx, source_idx in enumerate(indices):
         row = ds[source_idx]
         sample_name = sample_names[sample_idx]
-        for f in fields:
+        for f in data_bearing:
             col = f.get("source_column") or f["name"]
             value = row.get(col) if isinstance(row, dict) else None
             inst = _row_value_to_typed(value, f["kind"], f.get("params") or {})
