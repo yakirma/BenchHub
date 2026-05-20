@@ -135,9 +135,13 @@
                                 </select>
                             </td>
                             <td>
-                                <select name="field_role" class="form-select form-select-sm">
+                                <select name="field_role" class="form-select form-select-sm" required>
+                                    {# Disabled placeholder so the browser refuses
+                                       to submit unless the admin picks something
+                                       — no "skip everything by default" trap. #}
+                                    <option value="" selected disabled hidden>— pick —</option>
                                     {% for r in all_roles %}
-                                    <option value="{{ r }}" {{ 'selected' if r == 'skip' }}>{{ r }}</option>
+                                    <option value="{{ r }}">{{ r }}</option>
                                     {% endfor %}
                                 </select>
                             </td>

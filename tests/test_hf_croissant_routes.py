@@ -91,6 +91,70 @@ def test_preview_renders_partial_form_from_fixture(admin_client, monkeypatch):
     assert '(50,000)' in body
 
 
+def test_preview_role_dropdowns_default_to_disabled_placeholder(
+    admin_client, monkeypatch,
+):
+    """The preview form must force an explicit role pick — every
+    `name="field_role"` <select> renders a disabled placeholder as
+    the default option, no role-name is selected, and the select is
+    HTML5-required so the browser refuses to submit until the admin
+    chooses one."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+
+    fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts',
+                        lambda repo_id, **kw: {"train": 50000, "test": 10000})
+
+    r = admin_client.post(
+        '/admin/import_from_hf/preview',
+        data={'repo_id': 'uoft-cs/cifar10'},
+    )
+    assert r.status_code == 200
+    body = r.data.decode()
+    # The role select is `required` and carries a disabled+selected
+    # placeholder so unmodified submits get blocked.
+    assert 'name="field_role" class="form-select form-select-sm" required' in body
+    assert 'value="" selected disabled hidden' in body
+    # No existing role value has the `selected` flag — the placeholder
+    # owns it.
+    for role in ('input', 'gt', 'pred', 'skip'):
+        assert f'<option value="{role}" selected>' not in body
+        assert f'<option value="{role}">' in body
+
+
+def test_commit_route_rejects_blank_roles(client, db_session):
+    """JS-disabled browser or bookmarked POST can still submit with
+    an empty role string. Server-side check bounces with a clear
+    flash listing the affected field names."""
+    admin = User(email='blank-role@bench.local', display_name='br',
+                 oauth_provider='github', oauth_sub='br-1', is_admin=True)
+    db.session.add(admin); db.session.commit()
+    with client.session_transaction() as sess:
+        sess['user_id'] = admin.id
+
+    r = client.post(
+        '/admin/import_from_hf/commit',
+        data={
+            'repo_id': 'uoft-cs/cifar10',
+            'dataset_name': 'unused',
+            'split': 'test',
+            'sample_cap': '5',
+            'sampling': 'head',
+            'field_name': ['img', 'label'],
+            'field_source_column': ['img', 'label'],
+            'field_kind': ['image', 'scalar'],
+            'field_role': ['gt', ''],       # one missing
+            'field_params': ['', ''],
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    # Redirects back to the form (not the preview).
+    assert '/admin/import_from_hf' in r.headers['Location']
+
+
 def test_preview_404_when_croissant_fetch_fails(admin_client, monkeypatch):
     from benchhub import hf_croissant as hfc
 

@@ -4443,6 +4443,21 @@ def admin_import_from_hf_commit():
         flash('Field rows malformed — please retry from the preview page.', 'danger')
         return redirect(url_for('admin_import_from_hf'))
 
+    # The preview form forces an explicit role pick via a disabled
+    # placeholder + `required`; if any role still arrives blank
+    # (e.g. JS-disabled browser, bookmarked POST), bounce with a
+    # clear message so the field isn't silently dropped.
+    missing_roles = [
+        names[i] for i, role in enumerate(roles) if not (role or '').strip()
+    ]
+    if missing_roles:
+        flash(
+            f"Pick a role for every field — these are blank: "
+            f"{', '.join(repr(n) for n in missing_roles)}",
+            'warning',
+        )
+        return redirect(url_for('admin_import_from_hf'))
+
     selected: list[dict] = []
     for i, name in enumerate(names):
         role = roles[i] if i < len(roles) else 'skip'
