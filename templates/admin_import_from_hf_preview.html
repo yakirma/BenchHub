@@ -54,6 +54,39 @@
                 </div>
             </div>
 
+            <div class="row g-3 mb-4">
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold mb-1" for="sampling">How to pick those samples</label>
+                    <select id="sampling" name="sampling" class="form-select">
+                        <option value="head">Take the first N (deterministic, fastest)</option>
+                        <option value="uniform" selected>Uniform random across the split</option>
+                        <option value="stratified">Stratified — balanced per label class</option>
+                    </select>
+                    <div class="form-text small mt-1">
+                        <span class="d-none" id="hint-head">
+                            Fastest path; useful for smoke tests but sensitive to row
+                            order — sorted-by-class HF datasets give a single class.
+                        </span>
+                        <span class="d-none" id="hint-uniform">
+                            Seeded <code>random.sample</code> across the split. Same
+                            byte-for-byte subset across runs given the same seed.
+                        </span>
+                        <span class="d-none" id="hint-stratified">
+                            Groups rows by the first <code>role=gt</code> + <code>kind=label</code>
+                            field; allocates <code>N / n_classes</code> per class with the
+                            remainder spread across the first few. Falls back to uniform
+                            if no eligible label field is declared above.
+                        </span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold mb-1" for="sampling-seed">Seed</label>
+                    <input type="number" id="sampling-seed" name="sampling_seed"
+                           class="form-control" value="42">
+                    <div class="form-text small mt-1">Change to reshuffle.</div>
+                </div>
+            </div>
+
             <h2 class="h5 fw-semibold mb-2">Fields</h2>
             <p class="form-text small mb-3">
                 <strong>Kind</strong> is filled from Croissant's
@@ -174,6 +207,22 @@
     splitSel.addEventListener('change', refreshHint);
     capInput.addEventListener('input', refreshHint);
     refreshHint();
+
+    // Show only the hint that matches the picked sampling strategy.
+    const samplingSel = document.getElementById('sampling');
+    const hintIds = {head: 'hint-head', uniform: 'hint-uniform', stratified: 'hint-stratified'};
+    function refreshSamplingHint() {
+        for (const id of Object.values(hintIds)) {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('d-none');
+        }
+        const active = document.getElementById(hintIds[samplingSel.value]);
+        if (active) active.classList.remove('d-none');
+    }
+    if (samplingSel) {
+        samplingSel.addEventListener('change', refreshSamplingHint);
+        refreshSamplingHint();
+    }
 })();
 </script>
 {% endblock %}

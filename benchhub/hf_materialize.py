@@ -13,6 +13,7 @@ imported on machines that don't have the HF library installed.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,102 @@ import numpy as np
 
 import benchhub as bh
 from benchhub.types import DTYPES
+
+
+_VALID_STRATEGIES = {"head", "uniform", "stratified"}
+
+
+def _pick_indices(
+    ds,
+    n: int,
+    fields: list[dict],
+    *,
+    strategy: str,
+    seed: int,
+) -> list[int]:
+    """Return `n` row indices into `ds` per the requested sampling strategy.
+
+    - ``head``       — `[0, 1, …, n-1]`. Fastest, deterministic, but
+                       sensitive to row order (sorted-by-class datasets
+                       end up with one class dominating).
+    - ``uniform``    — seeded `random.sample(range(len(ds)), n)`,
+                       sorted ascending. Same byte-for-byte output
+                       across runs given the same seed.
+    - ``stratified`` — group rows by the first field whose role is
+                       ``gt`` and kind is ``label``; allocate
+                       ``n // num_classes`` per class with the
+                       remainder spread across the first few classes;
+                       random.sample inside each bucket. Falls back to
+                       uniform when no eligible label field is
+                       declared.
+    """
+    if strategy not in _VALID_STRATEGIES:
+        raise ValueError(
+            f"unknown sampling strategy {strategy!r}; expected one of "
+            f"{sorted(_VALID_STRATEGIES)}"
+        )
+    total = len(ds)
+    if n >= total:
+        return list(range(total))
+
+    if strategy == "head":
+        return list(range(n))
+
+    rng = random.Random(int(seed))
+
+    if strategy == "uniform":
+        return sorted(rng.sample(range(total), n))
+
+    # stratified --------------------------------------------------------
+    label_field = next(
+        (f for f in fields
+         if f.get("role") == "gt" and f.get("kind") == "label"),
+        None,
+    )
+    if label_field is None:
+        # No label to stratify on — silently fall back to uniform.
+        return sorted(rng.sample(range(total), n))
+
+    col = label_field.get("source_column") or label_field["name"]
+    buckets: dict[Any, list[int]] = {}
+    for i in range(total):
+        row = ds[i]
+        v = row.get(col) if isinstance(row, dict) else None
+        if v is None:
+            continue
+        # Class values must be hashable; cast tuples/lists to str so
+        # they can be dict keys without raising.
+        try:
+            hash(v)
+            key = v
+        except TypeError:
+            key = str(v)
+        buckets.setdefault(key, []).append(i)
+    if not buckets:
+        return sorted(rng.sample(range(total), n))
+
+    sorted_buckets = sorted(buckets.items(), key=lambda kv: str(kv[0]))
+    n_classes = len(sorted_buckets)
+    per_class = n // n_classes
+    extra = n - per_class * n_classes
+
+    out: list[int] = []
+    for i, (_label, idxs) in enumerate(sorted_buckets):
+        quota = per_class + (1 if i < extra else 0)
+        if len(idxs) <= quota:
+            out.extend(idxs)
+        else:
+            out.extend(rng.sample(idxs, quota))
+
+    # If short (a class had fewer rows than its quota), top up
+    # uniformly from the unused indices.
+    if len(out) < n:
+        taken = set(out)
+        remaining = [i for i in range(total) if i not in taken]
+        shortfall = n - len(out)
+        if remaining:
+            out.extend(rng.sample(remaining, min(shortfall, len(remaining))))
+    return sorted(out)
 
 
 def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | None:
@@ -84,6 +181,8 @@ def materialize_hf_to_typed_dir(
     fields: list[dict],
     revision: str | None = None,
     hf_token: str | None = None,
+    sampling: str = "head",
+    seed: int = 42,
 ) -> dict:
     """Download up to `sample_cap` rows of `repo_id[:split]` and lay
     them out under `staging_dir` in the typed-manifest format.
@@ -128,10 +227,16 @@ def materialize_hf_to_typed_dir(
 
     total = len(ds)
     n = min(sample_cap, total)
+    indices = _pick_indices(ds, n, fields, strategy=sampling, seed=seed)
+    n = len(indices)  # may have been clamped by _pick_indices
 
     root = Path(staging_dir)
     root.mkdir(parents=True, exist_ok=True)
 
+    # Sample names are based on enumeration position, not source row
+    # index, so the on-disk layout stays compact (`s000000..s00000N`)
+    # regardless of which rows we picked from the source.
+    sample_names = [f"s{i:06d}" for i in range(n)]
     manifest = {
         "name": dataset_name,
         "version": "1.0",
@@ -144,7 +249,16 @@ def materialize_hf_to_typed_dir(
             }
             for f in fields
         ],
-        "samples": [f"s{i:06d}" for i in range(n)],
+        "samples": sample_names,
+        # Track the source-row mapping for traceability — useful when
+        # debugging a stratified subset later.
+        "source": {
+            "repo_id": repo_id,
+            "split": split,
+            "sampling": sampling,
+            "seed": int(seed),
+            "row_indices": indices,
+        },
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for f in fields:
@@ -152,9 +266,9 @@ def materialize_hf_to_typed_dir(
 
     written = 0
     skipped: list[str] = []
-    for i in range(n):
-        row = ds[i]
-        sample_name = f"s{i:06d}"
+    for sample_idx, source_idx in enumerate(indices):
+        row = ds[source_idx]
+        sample_name = sample_names[sample_idx]
         for f in fields:
             col = f.get("source_column") or f["name"]
             value = row.get(col) if isinstance(row, dict) else None
@@ -173,4 +287,5 @@ def materialize_hf_to_typed_dir(
         "rows_written": written,
         "rows_skipped": len(skipped),
         "skipped_sample_field_pairs": skipped[:20],  # cap noise in flash
+        "sampling": sampling,
     }

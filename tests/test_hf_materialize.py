@@ -171,6 +171,151 @@ def test_materialize_respects_sample_cap(tmp_path, monkeypatch):
     assert len(list((tmp_path / "x").iterdir())) == 5
 
 
+# ---------------------------------------------------------------------------
+# _pick_indices — sampling strategies
+# ---------------------------------------------------------------------------
+
+from benchhub.hf_materialize import _pick_indices
+
+
+def test_pick_indices_head_returns_prefix():
+    ds = _FakeDataset([{"label": i % 3} for i in range(20)])
+    out = _pick_indices(ds, 5, fields=[], strategy="head", seed=0)
+    assert out == [0, 1, 2, 3, 4]
+
+
+def test_pick_indices_uniform_is_seeded_and_sorted():
+    """Same seed → same indices, deterministically; ascending order."""
+    ds = _FakeDataset([{"x": i} for i in range(100)])
+    a = _pick_indices(ds, 10, fields=[], strategy="uniform", seed=7)
+    b = _pick_indices(ds, 10, fields=[], strategy="uniform", seed=7)
+    c = _pick_indices(ds, 10, fields=[], strategy="uniform", seed=8)
+    assert a == b
+    assert a != c          # different seeds reshuffle
+    assert a == sorted(a)  # ascending
+    assert len(set(a)) == 10  # no dupes
+
+
+def test_pick_indices_returns_full_range_when_n_exceeds_dataset():
+    ds = _FakeDataset([{"x": i} for i in range(5)])
+    assert _pick_indices(ds, 100, fields=[], strategy="uniform", seed=0) \
+        == list(range(5))
+
+
+def test_pick_indices_stratified_balances_classes():
+    """All rows of class A come first, then class B. Stratified should
+    pick equal counts of each, not just the head."""
+    rows = (
+        [{"label": "a"}] * 60
+        + [{"label": "b"}] * 40
+    )
+    ds = _FakeDataset(rows)
+    fields = [{"name": "label", "kind": "label", "role": "gt"}]
+    out = _pick_indices(ds, 20, fields=fields, strategy="stratified", seed=0)
+    labels_picked = [rows[i]["label"] for i in out]
+    # Two classes, n=20 → 10 each.
+    assert labels_picked.count("a") == 10
+    assert labels_picked.count("b") == 10
+
+
+def test_pick_indices_stratified_handles_remainder():
+    """n=21 over 4 classes → 5+5+5+6 (extra goes to first-sorted class)."""
+    rows = (
+        [{"label": "a"}] * 10
+        + [{"label": "b"}] * 10
+        + [{"label": "c"}] * 10
+        + [{"label": "d"}] * 10
+    )
+    ds = _FakeDataset(rows)
+    fields = [{"name": "label", "kind": "label", "role": "gt"}]
+    out = _pick_indices(ds, 21, fields=fields, strategy="stratified", seed=0)
+    labels = [rows[i]["label"] for i in out]
+    counts = {c: labels.count(c) for c in "abcd"}
+    assert sum(counts.values()) == 21
+    # The earliest label (sorted by str) gets the extra.
+    assert counts["a"] == 6
+    assert counts["b"] == counts["c"] == counts["d"] == 5
+
+
+def test_pick_indices_stratified_falls_back_when_a_class_is_too_small():
+    """One tiny class shouldn't break the request — we use what's
+    available and top up the shortfall with uniform random."""
+    rows = (
+        [{"label": "rare"}] * 2
+        + [{"label": "common"}] * 100
+    )
+    ds = _FakeDataset(rows)
+    fields = [{"name": "label", "kind": "label", "role": "gt"}]
+    out = _pick_indices(ds, 20, fields=fields, strategy="stratified", seed=0)
+    labels = [rows[i]["label"] for i in out]
+    # Took both rare samples + topped up with commons.
+    assert labels.count("rare") == 2
+    assert labels.count("common") == 18
+    assert len(out) == 20
+
+
+def test_pick_indices_stratified_falls_back_to_uniform_without_label_field():
+    """No role=gt + kind=label among the fields → fall through to
+    uniform without raising."""
+    rows = [{"x": i} for i in range(50)]
+    ds = _FakeDataset(rows)
+    fields = [{"name": "x", "kind": "scalar", "role": "gt"}]
+    out = _pick_indices(ds, 10, fields=fields, strategy="stratified", seed=0)
+    expected = _pick_indices(ds, 10, fields=[], strategy="uniform", seed=0)
+    assert out == expected
+
+
+def test_pick_indices_rejects_unknown_strategy():
+    with pytest.raises(ValueError, match="unknown sampling strategy"):
+        _pick_indices(_FakeDataset([{"x": 1}]), 1, fields=[],
+                      strategy="WAT", seed=0)
+
+
+# ---------------------------------------------------------------------------
+# materialize_hf_to_typed_dir × sampling — uses _pick_indices internally
+# ---------------------------------------------------------------------------
+
+def test_materialize_uniform_writes_seeded_subset(tmp_path, monkeypatch):
+    rows = [{"v": i} for i in range(100)]
+    _install_fake_datasets(monkeypatch, rows)
+    summary = materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=8,
+        staging_dir=str(tmp_path), dataset_name="ufm",
+        fields=[{"name": "v", "source_column": "v", "kind": "scalar",
+                 "role": "gt", "params": {}}],
+        sampling="uniform", seed=123,
+    )
+    assert summary["samples"] == 8
+    assert summary["sampling"] == "uniform"
+    # The manifest carries the chosen source rows for traceability.
+    import json
+    mf = json.loads((tmp_path / "manifest.json").read_text())
+    indices = mf["source"]["row_indices"]
+    assert len(indices) == 8
+    assert sorted(indices) == indices
+    assert max(indices) <= 99
+
+
+def test_materialize_stratified_balances_classes(tmp_path, monkeypatch):
+    rows = [{"label": "cat", "v": i} for i in range(50)] \
+        + [{"label": "dog", "v": i} for i in range(50)]
+    _install_fake_datasets(monkeypatch, rows)
+    materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="bal",
+        fields=[
+            {"name": "label", "source_column": "label", "kind": "label",
+             "role": "gt", "params": {}},
+        ],
+        sampling="stratified", seed=0,
+    )
+    # Inspect what landed on disk — 5 cats + 5 dogs.
+    label_files = sorted((tmp_path / "label").iterdir())
+    classes = [p.read_text().strip('"') for p in label_files]
+    assert classes.count("cat") == 5
+    assert classes.count("dog") == 5
+
+
 def test_materialize_skips_when_value_is_none(tmp_path, monkeypatch):
     rows = [
         {"img": np.zeros((4, 4, 3), dtype=np.uint8), "tag": "first"},

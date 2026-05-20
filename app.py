@@ -4375,6 +4375,13 @@ def admin_import_from_hf_commit():
         sample_cap = max(1, int(request.form.get('sample_cap') or 500))
     except ValueError:
         sample_cap = 500
+    sampling = (request.form.get('sampling') or 'head').strip().lower()
+    if sampling not in ('head', 'uniform', 'stratified'):
+        sampling = 'head'
+    try:
+        sampling_seed = int(request.form.get('sampling_seed') or 42)
+    except ValueError:
+        sampling_seed = 42
 
     names = request.form.getlist('field_name')
     kinds = request.form.getlist('field_kind')
@@ -4428,6 +4435,8 @@ def admin_import_from_hf_commit():
                 dataset_name=dataset_name,
                 fields=selected,
                 hf_token=getattr(g.current_user, 'hf_token', None),
+                sampling=sampling,
+                seed=sampling_seed,
             )
             _, summary = import_typed_dataset(
                 staging,
