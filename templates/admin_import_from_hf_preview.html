@@ -57,10 +57,14 @@
             <div class="row g-3 mb-4">
                 <div class="col-md-6">
                     <label class="form-label fw-semibold mb-1" for="sampling">How to pick those samples</label>
+                    {# `has_label_field` is True when any Croissant-suggested
+                       kind is `label`. Drives the default sampling strategy:
+                       stratified gives balanced classes on classification
+                       datasets without the admin having to flip it. #}
                     <select id="sampling" name="sampling" class="form-select">
                         <option value="head">Take the first N (deterministic, fastest)</option>
-                        <option value="uniform" selected>Uniform random across the split</option>
-                        <option value="stratified">Stratified — balanced per label class</option>
+                        <option value="uniform" {{ '' if has_label_field else 'selected' }}>Uniform random across the split</option>
+                        <option value="stratified" {{ 'selected' if has_label_field else '' }}>Stratified — balanced per label class</option>
                     </select>
                     <div class="form-text small mt-1">
                         <span class="d-none" id="hint-head">

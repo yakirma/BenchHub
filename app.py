@@ -4557,6 +4557,23 @@ def admin_import_from_hf_commit():
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 owner_user_id=g.current_user.id,
             )
+            # Record provenance so the dataset page can link back to
+            # the HF source and explain how this BH copy was sampled.
+            ds_row = Dataset.query.get(summary['dataset_id'])
+            if ds_row is not None:
+                ds_row.source_kind = 'hf'
+                ds_row.source_url = f'https://huggingface.co/datasets/{repo_id}'
+                ds_row.source_metadata = json.dumps({
+                    'repo_id': repo_id,
+                    'split': mat_summary.get('split'),
+                    'sample_cap': sample_cap,
+                    'sampling': mat_summary.get('sampling'),
+                    'sampling_seed': mat_summary.get('seed'),
+                    'total_rows_in_split': mat_summary.get('total_rows_in_split'),
+                    'samples_imported': mat_summary.get('samples'),
+                    'rows_written': mat_summary.get('rows_written'),
+                    'rows_skipped': mat_summary.get('rows_skipped'),
+                })
             db.session.commit()
         except FileNotFoundError as e:
             db.session.rollback()
@@ -4610,6 +4627,12 @@ def admin_import_from_hf_preview():
     from benchhub.hf_search import fetch_split_row_counts
     split_counts = fetch_split_row_counts(repo_id)
 
+    # Classification datasets get stratified sampling by default —
+    # `kind=label` is the Croissant parser's signal that this looks
+    # like a labelled dataset. The admin can still flip back to
+    # uniform / head on the form.
+    has_label_field = any(f.kind == 'label' for f in schema.fields)
+
     return render_template(
         'admin_import_from_hf_preview.html',
         repo_id=repo_id,
@@ -4622,6 +4645,7 @@ def admin_import_from_hf_preview():
         # the target), or `skip` (not imported). `pred` declarations
         # are schema-only and live in a separate section of the form.
         all_roles=['input', 'gt', 'skip'],
+        has_label_field=has_label_field,
     )
 
 

@@ -152,6 +152,56 @@ def test_preview_renders_separate_pred_fields_section(admin_client, monkeypatch)
     assert 'name="pred_field_params"' in body
 
 
+def test_preview_defaults_to_stratified_when_label_field_detected(admin_client, monkeypatch):
+    """Classification datasets (any field's kind suggested as label)
+    default the sampling strategy to `stratified` so the admin
+    doesn't get a class-imbalanced subset by accident."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+
+    # cifar10's `label` column triggers the name-based label upgrade.
+    fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda repo_id, **kw: {})
+
+    body = admin_client.post(
+        '/admin/import_from_hf/preview',
+        data={'repo_id': 'uoft-cs/cifar10'},
+    ).data.decode()
+    assert '<option value="stratified" selected>' in body
+    # And uniform is NOT selected on classification preview.
+    assert '<option value="uniform" selected>' not in body
+
+
+def test_preview_keeps_uniform_default_when_no_label_field(admin_client, monkeypatch):
+    """A non-classification Croissant doc (e.g. a depth-only dataset)
+    leaves the default at uniform."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+
+    fixture = {
+        "@type": "sc:Dataset",
+        "name": "depth_only",
+        "recordSet": [{
+            "@id": "rs",
+            "@type": "cr:RecordSet",
+            "field": [
+                {"@id": "rs/depth", "@type": "cr:Field", "dataType": "sc:ImageObject",
+                 "source": {"extract": {"column": "depth"}}},
+            ],
+        }],
+    }
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda repo_id, **kw: {})
+
+    body = admin_client.post(
+        '/admin/import_from_hf/preview',
+        data={'repo_id': 'fake/depth'},
+    ).data.decode()
+    assert '<option value="uniform" selected>' in body
+    assert '<option value="stratified" selected>' not in body
+
+
 def test_commit_route_collects_pred_fields_into_selected(client, db_session, tmp_path, monkeypatch):
     """The commit handler merges the pred_field_* arrays into the
     list it hands to materialize_hf_to_typed_dir, tagged role='pred'.

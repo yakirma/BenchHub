@@ -312,4 +312,7 @@ def materialize_hf_to_typed_dir(
         "rows_skipped": len(skipped),
         "skipped_sample_field_pairs": skipped[:20],  # cap noise in flash
         "sampling": sampling,
+        "seed": int(seed),
+        "split": split,
+        "total_rows_in_split": total,
     }

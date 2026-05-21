@@ -118,6 +118,40 @@
 <p class="text-body-secondary small mb-2">No leaderboards yet — be the first.</p>
 {% endif %}
 
+{# --- Source provenance (HF imports) ----------------------------- #}
+{% if dataset.source_kind == 'hf' and dataset.source_metadata_parsed %}
+{% set src = dataset.source_metadata_parsed %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body py-3">
+        <div class="d-flex align-items-center gap-2 mb-2">
+            <h2 class="h6 fw-semibold mb-0">
+                <i class="bi bi-cloud-download text-primary me-1"></i>Source
+            </h2>
+            <a href="{{ dataset.source_url }}" target="_blank" rel="noopener"
+               class="font-monospace small text-decoration-none">
+                {{ src.repo_id }}
+                <i class="bi bi-box-arrow-up-right small"></i>
+            </a>
+        </div>
+        <p class="small text-body-secondary mb-0">
+            Imported
+            <strong>{{ '{:,}'.format(src.samples_imported or 0) }}</strong>
+            of
+            <strong>{{ '{:,}'.format(src.total_rows_in_split or 0) }}</strong>
+            rows from the
+            <code>{{ src.split or 'default' }}</code> split
+            via <code>{{ src.sampling or 'head' }}</code> sampling
+            (seed&nbsp;<code>{{ src.sampling_seed }}</code>).
+            {% if src.rows_skipped %}
+            <span class="text-warning-emphasis">
+                {{ src.rows_skipped }} field-value(s) skipped during materialisation.
+            </span>
+            {% endif %}
+        </p>
+    </div>
+</div>
+{% endif %}
+
 {# --- Typed-field schema (Phase B) -------------------------------- #}
 {% if dataset.dataset_fields %}
 <div class="card border-0 shadow-sm mb-3">
