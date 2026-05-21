@@ -225,6 +225,24 @@ def materialize_hf_to_typed_dir(
         first_split = next(iter(ds.keys()))
         ds = ds[first_split]
 
+    # For label fields, lift the class-name vocab off the HF
+    # `ClassLabel` feature (e.g. ['airplane', 'automobile', ...] for
+    # cifar10) into the field's params so it lands in DatasetField /
+    # CustomField.data_params downstream. The dataset view uses it to
+    # render the legend + map integer values to class names.
+    feats = getattr(ds, "features", None) or {}
+    for f in fields:
+        if f.get("kind") != "label":
+            continue
+        col = f.get("source_column") or f["name"]
+        feat = feats.get(col) if isinstance(feats, dict) else feats.get(col, None) if feats else None
+        names = getattr(feat, "names", None)
+        if not names:
+            continue
+        params = dict(f.get("params") or {})
+        params.setdefault("names", list(names))
+        f["params"] = params
+
     total = len(ds)
     n = min(sample_cap, total)
     indices = _pick_indices(ds, n, fields, strategy=sampling, seed=seed)

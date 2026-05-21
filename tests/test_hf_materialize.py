@@ -157,6 +157,41 @@ def test_materialize_writes_manifest_and_files(tmp_path, monkeypatch):
     assert (tmp_path / "label" / "s000001.txt").read_text() == "1"
 
 
+def test_materialize_lifts_classlabel_names_into_params(tmp_path, monkeypatch):
+    """For label fields, the HF `ClassLabel.names` vocab must land in
+    the manifest's per-field params so the downstream import writes
+    it to DatasetField.data_params. Drives the legend + int→name
+    rendering on the dataset-view page."""
+    rows = [{"label": 0}, {"label": 1}]
+
+    class _FakeClassLabel:
+        def __init__(self, names):
+            self.names = names
+
+    class _FakeDatasetWithFeatures(_FakeDataset):
+        def __init__(self, rows, features):
+            super().__init__(rows)
+            self.features = features
+
+    fake = types.ModuleType("datasets")
+    ds = _FakeDatasetWithFeatures(
+        rows,
+        features={"label": _FakeClassLabel(["airplane", "automobile", "bird"])},
+    )
+    fake.load_dataset = lambda repo_id, **kw: ds
+    monkeypatch.setitem(sys.modules, "datasets", fake)
+
+    materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="d",
+        fields=[{"name": "label", "source_column": "label", "kind": "label",
+                 "role": "gt", "params": {}}],
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    label_field = next(f for f in manifest["fields"] if f["name"] == "label")
+    assert label_field["params"]["names"] == ["airplane", "automobile", "bird"]
+
+
 def test_materialize_respects_sample_cap(tmp_path, monkeypatch):
     rows = [{"x": i} for i in range(50)]
     _install_fake_datasets(monkeypatch, rows)

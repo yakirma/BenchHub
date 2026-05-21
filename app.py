@@ -9488,6 +9488,18 @@ def dataset_view(dataset_id):
     dataset_metrics_data = [] # For per_sample_metrics chart
     samples_data_for_charts = []
     
+    # Class-name vocabularies for label fields, keyed by field name.
+    # Sourced from DatasetField.data_params.names (populated at HF
+    # import time from ClassLabel.names). Drives both the inline
+    # legend panel and per-cell int→name translation below.
+    label_vocabs = {}
+    for df in dataset.fields:
+        if df.kind != 'label':
+            continue
+        names = (df.get_params() or {}).get('names')
+        if isinstance(names, list) and names:
+            label_vocabs[df.name] = list(names)
+
     # Create a map of sample_id -> {field_name: value}
     # Only for samples on current page
     custom_fields_map = {}
@@ -9534,7 +9546,10 @@ def dataset_view(dataset_id):
             elif cf.data_type == 'label':
                 # Label values land in value_text as JSON-encoded primitives
                 # ("cat" or 3). Strip the JSON wrap so the template shows
-                # the bare value instead of a quoted string.
+                # the bare value instead of a quoted string. If the field
+                # carries a class-name vocab (DatasetField.data_params.names,
+                # populated from HF ClassLabel.names), map the int index
+                # to the human-readable class name.
                 raw = cf.value_text
                 display = raw
                 if raw:
@@ -9542,6 +9557,9 @@ def dataset_view(dataset_id):
                         display = json.loads(raw)
                     except (TypeError, ValueError):
                         display = raw
+                names = label_vocabs.get(cf.name)
+                if names and isinstance(display, int) and 0 <= display < len(names):
+                    display = names[display]
                 cf_vals[cf.name] = {'type': 'label', 'value': display, 'field_id': cf.id}
             else:
                 cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_text, 'field_id': cf.id}
@@ -9662,6 +9680,7 @@ def dataset_view(dataset_id):
                            active_metrics=active_metrics,
                            custom_field_names=sorted(list(custom_field_names)),
                            custom_fields_map=custom_fields_map,
+                           label_vocabs=label_vocabs,
                            custom_scalar_metrics=custom_scalar_metrics,
                            sample_search_query=sample_search_query)
 

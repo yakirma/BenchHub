@@ -172,6 +172,34 @@
 </div>
 {% endif %}
 
+{% if label_vocabs %}
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body py-3">
+        <div class="d-flex align-items-center gap-2 mb-2">
+            <h2 class="h6 fw-semibold mb-0">
+                <i class="bi bi-tag-fill text-primary me-1"></i>Class labels
+            </h2>
+            <span class="text-body-secondary small">
+                Vocab for label fields — integer indices map to these names.
+            </span>
+        </div>
+        {% for field_name, names in label_vocabs.items() %}
+        <div class="mb-2">
+            <code class="small">{{ field_name }}</code>
+            <span class="text-body-secondary small">({{ names|length }} classes)</span>
+            <div class="d-flex flex-wrap gap-1 mt-1">
+                {% for nm in names %}
+                <span class="badge text-bg-light border font-monospace">
+                    <span class="text-body-secondary">{{ loop.index0 }}</span>&nbsp;{{ nm }}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 {% if current_user %}
 <div class="collapse mb-3" id="new-lb-form">
     <div class="card border-0 shadow-sm">
