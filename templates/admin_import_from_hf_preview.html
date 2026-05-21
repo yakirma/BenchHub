@@ -357,12 +357,25 @@
         }
     }
 
-    document.querySelectorAll('tr.field-row').forEach((row) => {
-        row.querySelector('select.field-role')?.addEventListener('change', () => syncAutoPredForRow(row));
-        row.querySelector('select.field-kind')?.addEventListener('change', () => {
-            syncAutoPredForRow(row);
-            syncKindOnExistingAutoRow(row);
-        });
+    // Event delegation on `document` so we don't depend on row-level
+    // listener attachment having succeeded at script-eval time. If the
+    // delegated listener doesn't fire when you change a role
+    // dropdown, the script either didn't load or threw before this
+    // line — check DevTools console.
+    console.log('[bh-pred-suggest] wired delegated change listener');
+    document.addEventListener('change', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLSelectElement)) return;
+        const isRole = t.classList.contains('field-role');
+        const isKind = t.classList.contains('field-kind');
+        if (!isRole && !isKind) return;
+        const row = t.closest('tr.field-row');
+        if (!row) return;
+        console.log('[bh-pred-suggest] change on', row.dataset.fieldName,
+                    'role=', row.querySelector('select.field-role')?.value,
+                    'kind=', row.querySelector('select.field-kind')?.value);
+        syncAutoPredForRow(row);
+        if (isKind) syncKindOnExistingAutoRow(row);
     });
 
     if (predAddBtn) {
