@@ -116,7 +116,7 @@ def test_preview_role_dropdowns_default_to_disabled_placeholder(
     body = r.data.decode()
     # The role select is `required` and carries a disabled+selected
     # placeholder so unmodified submits get blocked.
-    assert 'name="field_role" class="form-select form-select-sm" required' in body
+    assert 'name="field_role" class="form-select form-select-sm field-role" required' in body
     assert 'value="" selected disabled hidden' in body
     # Only input / gt / skip in the per-column dropdown; pred lives
     # in its own section below.

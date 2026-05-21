@@ -114,7 +114,7 @@
                     </thead>
                     <tbody>
                         {% for f in schema.fields %}
-                        <tr>
+                        <tr class="field-row" data-field-name="{{ f.name }}">
                             <td>
                                 <div class="font-monospace small">{{ f.name }}</div>
                                 <input type="hidden" name="field_name" value="{{ f.name }}">
@@ -128,14 +128,14 @@
                             </td>
                             <td><span class="font-monospace small">{{ f.croissant_type or '?' }}</span></td>
                             <td>
-                                <select name="field_kind" class="form-select form-select-sm">
+                                <select name="field_kind" class="form-select form-select-sm field-kind">
                                     {% for k in all_kinds %}
                                     <option value="{{ k }}" {{ 'selected' if k == f.kind }}>{{ k }}</option>
                                     {% endfor %}
                                 </select>
                             </td>
                             <td>
-                                <select name="field_role" class="form-select form-select-sm" required>
+                                <select name="field_role" class="form-select form-select-sm field-role" required>
                                     {# Disabled placeholder so the browser refuses
                                        to submit unless the admin picks something
                                        — no "skip everything by default" trap. #}
@@ -277,6 +277,107 @@
     const predBody = document.getElementById('pred-fields-body');
     const predTpl = document.getElementById('pred-row-template');
     const predAddBtn = document.getElementById('pred-add-row');
+
+    // Image-bearing kinds whose pred needs a spatial-shape contract
+    // (so the metric eval doesn't compare a 32x32 pred to a 64x64
+    // GT). For these we pre-fill `params={"shape_match":"<input>"}`,
+    // where `<input>` is the first role=input field with the same
+    // kind — falls back to the first input field of any image-like
+    // kind, which is usually what the admin wants.
+    const SHAPE_BEARING = new Set(['image', 'mask', 'depth']);
+    const IMAGE_LIKE = new Set(['image', 'mask', 'depth']);
+
+    function firstInputFieldOfKind(kind) {
+        for (const row of document.querySelectorAll('tr.field-row')) {
+            const role = row.querySelector('select.field-role')?.value;
+            const k = row.querySelector('select.field-kind')?.value;
+            if (role === 'input' && k === kind) {
+                return row.dataset.fieldName;
+            }
+        }
+        return null;
+    }
+    function firstInputImageLike() {
+        for (const row of document.querySelectorAll('tr.field-row')) {
+            const role = row.querySelector('select.field-role')?.value;
+            const k = row.querySelector('select.field-kind')?.value;
+            if (role === 'input' && IMAGE_LIKE.has(k)) {
+                return row.dataset.fieldName;
+            }
+        }
+        return null;
+    }
+    function suggestedPredParams(predKind) {
+        if (!SHAPE_BEARING.has(predKind)) return '';
+        const shapeRef = firstInputFieldOfKind(predKind) || firstInputImageLike();
+        if (!shapeRef) return '';
+        return JSON.stringify({shape_match: shapeRef});
+    }
+
+    function addAutoPredRow(fieldName, kind) {
+        if (!predBody || !predTpl) return;
+        // Don't double-add.
+        if (predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`)) return;
+        const frag = predTpl.content.cloneNode(true);
+        const tr = frag.querySelector('tr');
+        tr.setAttribute('data-auto-for', fieldName);
+        tr.querySelector('input[name="pred_field_name"]').value = `${fieldName}_pred`;
+        const kindSel = tr.querySelector('select[name="pred_field_kind"]');
+        if (kindSel) kindSel.value = kind;
+        const params = suggestedPredParams(kind);
+        if (params) {
+            tr.querySelector('input[name="pred_field_params"]').value = params;
+        }
+        predBody.appendChild(tr);
+    }
+    function removeAutoPredRow(fieldName) {
+        const row = predBody?.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
+        if (!row) return;
+        // Admin may have hand-edited the suggestion; only sweep it if
+        // the name is still the auto-generated `<field>_pred`.
+        const expected = `${fieldName}_pred`;
+        const current = row.querySelector('input[name="pred_field_name"]')?.value || '';
+        if (current === expected) row.remove();
+    }
+    function syncAutoPredForRow(row) {
+        const fieldName = row.dataset.fieldName;
+        const role = row.querySelector('select.field-role')?.value;
+        const kind = row.querySelector('select.field-kind')?.value;
+        if (role === 'gt') {
+            addAutoPredRow(fieldName, kind);
+        } else {
+            removeAutoPredRow(fieldName);
+        }
+    }
+    function syncKindOnExistingAutoRow(row) {
+        const fieldName = row.dataset.fieldName;
+        const predRow = predBody?.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
+        if (!predRow) return;
+        const newKind = row.querySelector('select.field-kind')?.value;
+        const kindSel = predRow.querySelector('select[name="pred_field_kind"]');
+        if (kindSel) kindSel.value = newKind;
+        // Refresh suggested params iff the params input is empty or
+        // still equal to the previously suggested value (i.e. admin
+        // hasn't customised it).
+        const paramsInput = predRow.querySelector('input[name="pred_field_params"]');
+        if (paramsInput) {
+            const newParams = suggestedPredParams(newKind);
+            if (!paramsInput.value || paramsInput.dataset.suggested === paramsInput.value) {
+                paramsInput.value = newParams;
+                paramsInput.dataset.suggested = newParams;
+            }
+        }
+    }
+
+    // Wire role/kind change listeners on each column row.
+    document.querySelectorAll('tr.field-row').forEach((row) => {
+        row.querySelector('select.field-role')?.addEventListener('change', () => syncAutoPredForRow(row));
+        row.querySelector('select.field-kind')?.addEventListener('change', () => {
+            syncAutoPredForRow(row);   // role might still be gt
+            syncKindOnExistingAutoRow(row);
+        });
+    });
+
     if (predBody && predTpl && predAddBtn) {
         predAddBtn.addEventListener('click', () => {
             const frag = predTpl.content.cloneNode(true);

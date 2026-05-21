@@ -56,6 +56,21 @@ _TYPE_MAP: dict[str, str] = {
 }
 
 
+# Column names that strongly imply a classification-label field
+# rather than an arbitrary integer. Used to bump sc:Integer columns
+# from `scalar` to `label` in the suggested kind on the preview form.
+# HF's Croissant export doesn't expose ClassLabel.names — that only
+# shows up at materialize time — so we lean on the column name here.
+_LABEL_NAME_TOKENS: set[str] = {
+    "label", "labels",
+    "class", "classes",
+    "category", "categories",
+    "target", "target_class",
+    "class_id", "class_label", "classlabel",
+    "coarse_label", "fine_label",
+}
+
+
 @dataclass
 class CroissantField:
     """One column in the dataset."""
@@ -265,6 +280,14 @@ def parse_croissant(doc: dict) -> CroissantSchema:
             f.get("name") or f.get("@id"),
             prefix=rs_id,
         )
+        # Name-based upgrade for classification labels: HF's Croissant
+        # export types ClassLabel columns as `sc:Integer`, which we
+        # otherwise map to `scalar`. If the column name strongly
+        # implies a class label (`label`, `class`, `target`, ...),
+        # suggest `label` instead so the admin doesn't have to flip
+        # the dropdown by hand. They can still override on the form.
+        if kind == "scalar" and local and local.lower() in _LABEL_NAME_TOKENS:
+            kind = "label"
         # When the field references a splits/labels enum AND its raw
         # type is text/integer, treat it as a label by default — the
         # admin can override to scalar if the reference is just a split

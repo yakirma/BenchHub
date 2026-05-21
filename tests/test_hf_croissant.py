@@ -79,7 +79,12 @@ def test_parse_cifar10_extracts_image_and_label_fields():
     assert by_name["img"].croissant_type == "sc:ImageObject"
     assert by_name["img"].source_column == "img"
     assert "label" in by_name
-    assert by_name["label"].kind == "scalar"
+    # `sc:Integer` would normally map to `scalar`, but the column name
+    # is `label` — the parser upgrades that to `label` so the admin
+    # doesn't have to flip the dropdown by hand for every classification
+    # dataset. They can still override on the preview form.
+    assert by_name["label"].kind == "label"
+    assert by_name["label"].croissant_type == "sc:Integer"
     assert by_name["label"].source_column == "label"
 
 
@@ -92,9 +97,10 @@ def test_parse_mnist_extracts_fields_with_id_only():
     # field is dropped because it references the splits enum.
     assert "split" not in names
     assert "split_name" not in names
-    # Two real fields: image + label.
+    # Two real fields: image + label. The label is sc:Integer named
+    # `label` → upgraded to kind=label by the name heuristic.
     kinds = sorted(f.kind for f in schema.fields)
-    assert kinds == ["image", "scalar"]
+    assert kinds == ["image", "label"]
 
 
 def test_parse_extracts_splits_from_splits_record_set():
@@ -136,6 +142,44 @@ def test_field_without_source_column_still_parsed():
     schema = parse_croissant(doc)
     assert schema.fields[0].name == "derived"
     assert schema.fields[0].source_column is None
+
+
+@pytest.mark.parametrize("colname", [
+    "label", "labels", "class", "classes", "category",
+    "target", "class_id", "fine_label", "coarse_label",
+])
+def test_integer_column_with_label_like_name_suggests_label_kind(colname):
+    """`sc:Integer` named with a label-y token is suggested as
+    kind=label, not scalar — so classification datasets don't force
+    the admin to flip the dropdown by hand."""
+    doc = _ds([
+        {"@id": f"rs/{colname}", "@type": "cr:Field", "dataType": "sc:Integer",
+         "source": {"extract": {"column": colname}}},
+    ])
+    schema = parse_croissant(doc)
+    assert schema.fields[0].kind == "label"
+
+
+def test_integer_column_with_arbitrary_name_stays_scalar():
+    """The heuristic is name-gated: a numeric column with no label-y
+    name (e.g. `pixel_count`) is left as scalar."""
+    doc = _ds([
+        {"@id": "rs/pixel_count", "@type": "cr:Field", "dataType": "sc:Integer",
+         "source": {"extract": {"column": "pixel_count"}}},
+    ])
+    schema = parse_croissant(doc)
+    assert schema.fields[0].kind == "scalar"
+
+
+def test_label_name_heuristic_doesnt_override_non_integer_kinds():
+    """If the raw type is already a structured kind (cr:Image, etc.),
+    the name heuristic must NOT downgrade it to label."""
+    doc = _ds([
+        {"@id": "rs/label", "@type": "cr:Field", "dataType": "sc:ImageObject",
+         "source": {"extract": {"column": "label"}}},
+    ])
+    schema = parse_croissant(doc)
+    assert schema.fields[0].kind == "image"
 
 
 def test_references_captured():
