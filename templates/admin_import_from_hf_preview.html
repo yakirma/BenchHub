@@ -241,18 +241,18 @@
 
 {% block scripts %}
 <script>
+// Each concern is its own IIFE so a bail in one doesn't kill the others.
+// (Previous single-IIFE structure silently aborted the pred-suggestion
+// wiring whenever any earlier element lookup failed.)
+
+// ---- 1. "out of N rows" hint next to max-samples -----------------
 (function () {
-    // Keep the "out of N" hint next to max-samples in sync with the
-    // selected split's data-row-count. Empty / missing count → no
-    // hint (the datasets-server endpoint may not have indexed the
-    // repo yet, in which case we don't want to mislead the admin).
     const splitSel = document.getElementById('split');
     const capInput = document.getElementById('sample-cap');
     const capHint = document.getElementById('sample-cap-hint');
     if (!splitSel || !capInput || !capHint) return;
 
     const fmt = (n) => n.toLocaleString();
-
     function refreshHint() {
         const opt = splitSel.options[splitSel.selectedIndex];
         const total = parseInt(opt && opt.dataset.rowCount || '0', 10) || 0;
@@ -261,33 +261,29 @@
             capInput.removeAttribute('max');
             return;
         }
-        // Cap the input at the split's actual size so the admin can't
-        // ask for more samples than the dataset has.
         capInput.setAttribute('max', String(total));
         const requested = parseInt(capInput.value || '0', 10) || 0;
         capHint.textContent = `out of ${fmt(total)} rows in this split`;
-        if (requested > total) {
-            capInput.value = String(total);
-        }
+        if (requested > total) capInput.value = String(total);
     }
-
     splitSel.addEventListener('change', refreshHint);
     capInput.addEventListener('input', refreshHint);
     refreshHint();
+})();
 
-    // Prediction-fields section: clone the hidden <template> row on
-    // "Add", remove via the in-row link. Empty rows are filtered out
-    // server-side so the admin can leave dangling blanks.
+// ---- 2. Auto-pred-row suggestion ---------------------------------
+// When the admin sets a column's role to `gt`, mirror it into the
+// Prediction-fields section as `<name>_pred` of the same kind. For
+// image-like preds the params field is pre-filled with
+// {"shape_match":"<input>"}. Auto-rows are removed when the role
+// flips off gt, UNLESS the admin renamed the row (don't blow away
+// manual work).
+(function () {
     const predBody = document.getElementById('pred-fields-body');
     const predTpl = document.getElementById('pred-row-template');
     const predAddBtn = document.getElementById('pred-add-row');
+    if (!predBody || !predTpl) return;
 
-    // Image-bearing kinds whose pred needs a spatial-shape contract
-    // (so the metric eval doesn't compare a 32x32 pred to a 64x64
-    // GT). For these we pre-fill `params={"shape_match":"<input>"}`,
-    // where `<input>` is the first role=input field with the same
-    // kind — falls back to the first input field of any image-like
-    // kind, which is usually what the admin wants.
     const SHAPE_BEARING = new Set(['image', 'mask', 'depth']);
     const IMAGE_LIKE = new Set(['image', 'mask', 'depth']);
 
@@ -295,9 +291,7 @@
         for (const row of document.querySelectorAll('tr.field-row')) {
             const role = row.querySelector('select.field-role')?.value;
             const k = row.querySelector('select.field-kind')?.value;
-            if (role === 'input' && k === kind) {
-                return row.dataset.fieldName;
-            }
+            if (role === 'input' && k === kind) return row.dataset.fieldName;
         }
         return null;
     }
@@ -305,9 +299,7 @@
         for (const row of document.querySelectorAll('tr.field-row')) {
             const role = row.querySelector('select.field-role')?.value;
             const k = row.querySelector('select.field-kind')?.value;
-            if (role === 'input' && IMAGE_LIKE.has(k)) {
-                return row.dataset.fieldName;
-            }
+            if (role === 'input' && IMAGE_LIKE.has(k)) return row.dataset.fieldName;
         }
         return null;
     }
@@ -319,8 +311,6 @@
     }
 
     function addAutoPredRow(fieldName, kind) {
-        if (!predBody || !predTpl) return;
-        // Don't double-add.
         if (predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`)) return;
         const frag = predTpl.content.cloneNode(true);
         const tr = frag.querySelector('tr');
@@ -329,16 +319,16 @@
         const kindSel = tr.querySelector('select[name="pred_field_kind"]');
         if (kindSel) kindSel.value = kind;
         const params = suggestedPredParams(kind);
-        if (params) {
-            tr.querySelector('input[name="pred_field_params"]').value = params;
+        const paramsInput = tr.querySelector('input[name="pred_field_params"]');
+        if (params && paramsInput) {
+            paramsInput.value = params;
+            paramsInput.dataset.suggested = params;
         }
         predBody.appendChild(tr);
     }
     function removeAutoPredRow(fieldName) {
-        const row = predBody?.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
+        const row = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
         if (!row) return;
-        // Admin may have hand-edited the suggestion; only sweep it if
-        // the name is still the auto-generated `<field>_pred`.
         const expected = `${fieldName}_pred`;
         const current = row.querySelector('input[name="pred_field_name"]')?.value || '';
         if (current === expected) row.remove();
@@ -347,22 +337,16 @@
         const fieldName = row.dataset.fieldName;
         const role = row.querySelector('select.field-role')?.value;
         const kind = row.querySelector('select.field-kind')?.value;
-        if (role === 'gt') {
-            addAutoPredRow(fieldName, kind);
-        } else {
-            removeAutoPredRow(fieldName);
-        }
+        if (role === 'gt') addAutoPredRow(fieldName, kind);
+        else removeAutoPredRow(fieldName);
     }
     function syncKindOnExistingAutoRow(row) {
         const fieldName = row.dataset.fieldName;
-        const predRow = predBody?.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
+        const predRow = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
         if (!predRow) return;
         const newKind = row.querySelector('select.field-kind')?.value;
         const kindSel = predRow.querySelector('select[name="pred_field_kind"]');
         if (kindSel) kindSel.value = newKind;
-        // Refresh suggested params iff the params input is empty or
-        // still equal to the previously suggested value (i.e. admin
-        // hasn't customised it).
         const paramsInput = predRow.querySelector('input[name="pred_field_params"]');
         if (paramsInput) {
             const newParams = suggestedPredParams(newKind);
@@ -373,42 +357,40 @@
         }
     }
 
-    // Wire role/kind change listeners on each column row.
     document.querySelectorAll('tr.field-row').forEach((row) => {
         row.querySelector('select.field-role')?.addEventListener('change', () => syncAutoPredForRow(row));
         row.querySelector('select.field-kind')?.addEventListener('change', () => {
-            syncAutoPredForRow(row);   // role might still be gt
+            syncAutoPredForRow(row);
             syncKindOnExistingAutoRow(row);
         });
     });
 
-    if (predBody && predTpl && predAddBtn) {
+    if (predAddBtn) {
         predAddBtn.addEventListener('click', () => {
             const frag = predTpl.content.cloneNode(true);
             predBody.appendChild(frag);
         });
-        predBody.addEventListener('click', (e) => {
-            if (e.target.classList.contains('pred-remove')) {
-                e.target.closest('tr')?.remove();
-            }
-        });
     }
+    predBody.addEventListener('click', (e) => {
+        if (e.target.classList.contains('pred-remove')) {
+            e.target.closest('tr')?.remove();
+        }
+    });
+})();
 
-    // Show only the hint that matches the picked sampling strategy.
+// ---- 3. Sampling-strategy hint visibility ------------------------
+(function () {
     const samplingSel = document.getElementById('sampling');
+    if (!samplingSel) return;
     const hintIds = {head: 'hint-head', uniform: 'hint-uniform', stratified: 'hint-stratified'};
     function refreshSamplingHint() {
         for (const id of Object.values(hintIds)) {
-            const el = document.getElementById(id);
-            if (el) el.classList.add('d-none');
+            document.getElementById(id)?.classList.add('d-none');
         }
-        const active = document.getElementById(hintIds[samplingSel.value]);
-        if (active) active.classList.remove('d-none');
+        document.getElementById(hintIds[samplingSel.value])?.classList.remove('d-none');
     }
-    if (samplingSel) {
-        samplingSel.addEventListener('change', refreshSamplingHint);
-        refreshSamplingHint();
-    }
+    samplingSel.addEventListener('change', refreshSamplingHint);
+    refreshSamplingHint();
 })();
 </script>
 {% endblock %}
