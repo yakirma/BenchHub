@@ -82,9 +82,6 @@
         </div>
     </div>
     <div class="d-flex align-items-center gap-2">
-        <a href="/api/dataset/{{ dataset.id }}/download" class="btn btn-outline-success">
-            <i class="bi bi-download me-1"></i> Download ZIP
-        </a>
         {% if current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
         <a href="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
             class="btn btn-outline-secondary">

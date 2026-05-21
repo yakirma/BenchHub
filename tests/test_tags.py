@@ -56,7 +56,7 @@ def test_dataset_tags_render_on_dataset_list(client, db_session):
     # Need a folder so the inline prune doesn't sweep it.
     import os
     from app import app as flask_app
-    folder = os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', 'listed_with_tags')
+    folder = os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id))
     os.makedirs(folder, exist_ok=True)
 
     body = client.get('/datasets').data

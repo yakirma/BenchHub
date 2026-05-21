@@ -1,11 +1,12 @@
 """Regression tests for prune_incomplete_datasets.
 
 The typed-dataset importer writes per-dataset bytes under
-`uploads/datasets/<id>/` (id-based), but for a long time the prune
-helper was still looking for `uploads/datasets/<secure_filename(name)>/`.
-That made every reboot delete any HF-imported dataset because the
-"folder is missing" signal kept firing on a folder that just lived
-under a different name. Cover both layouts here.
+`uploads/datasets/<id>/`. The prune helper had been looking at the
+legacy `uploads/datasets/<secure_filename(name)>/` layout for so
+long that every reboot decided HF-imported datasets were incomplete
+and cascade-deleted them. The layout is now id-only; nothing in the
+codebase still writes the name-based layout, so the prune treats it
+as absent.
 """
 import os
 
@@ -42,16 +43,19 @@ def test_prune_keeps_dataset_with_id_based_folder(db_session):
     assert Dataset.query.get(ds.id) is not None
 
 
-def test_prune_keeps_dataset_with_legacy_name_based_folder(db_session):
-    """Legacy ZIP-uploaded datasets used uploads/datasets/<safe-name>/.
-    Still tolerated as a fallback so we don't false-positive on old rows."""
+def test_prune_removes_dataset_with_only_legacy_name_based_folder(db_session):
+    """The legacy uploads/datasets/<safe-name>/ layout is no longer
+    produced by anything in the codebase, so a row whose only bytes
+    live there is treated as incomplete (and the prune removes the
+    orphan)."""
     ds = _make_dataset("legacy_named", samples=2)
+    ds_id = ds.id
     folder = os.path.join(flask_app.config["UPLOAD_FOLDER"], "datasets", "legacy_named")
     os.makedirs(folder, exist_ok=True)
 
     removed = prune_incomplete_datasets()
-    assert removed == 0
-    assert Dataset.query.get(ds.id) is not None
+    assert removed == 1
+    assert Dataset.query.get(ds_id) is None
 
 
 def test_prune_removes_dataset_with_no_folder_at_all(db_session):

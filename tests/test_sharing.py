@@ -98,7 +98,7 @@ def test_visible_in_list_includes_shared_dataset(client, db_session, logged_in_u
     db.session.add(ds); db.session.flush()
     db.session.add(Sample(dataset_id=ds.id, name='s1'))
     db.session.commit()
-    folder = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', 'shows_in_list')
+    folder = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id))
     os.makedirs(folder, exist_ok=True)
 
     with client.session_transaction() as sess:

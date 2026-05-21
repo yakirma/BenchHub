@@ -2105,8 +2105,7 @@ def account_delete():
     # 4) Owned datasets (cascades samples + custom fields). Also nuke
     # the on-disk dataset folder so we're not paying for orphaned bytes.
     for ds in Dataset.query.filter_by(owner_user_id=user_id).all():
-        folder_name = secure_filename(ds.name)
-        ds_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', folder_name)
+        ds_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id))
         if os.path.isdir(ds_dir):
             shutil.rmtree(ds_dir, ignore_errors=True)
         db.session.delete(ds)
@@ -9916,8 +9915,7 @@ def download_submissions_bulk(leaderboard_id):
 @owner_required(Dataset, 'dataset_id')
 def delete_dataset(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
-    dataset_folder_name = secure_filename(dataset.name)
-    shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', dataset_folder_name), ignore_errors=True)
+    shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', str(dataset.id)), ignore_errors=True)
     db.session.delete(dataset)
     db.session.commit()
     return redirect(url_for('datasets_list'))
@@ -10568,66 +10566,6 @@ def suggest_leaderboard_name():
         if counter > 1000:
             return jsonify({'error': 'Could not find available name'}), 500
 
-
-@app.route('/dataset/<int:dataset_id>/download')
-def download_dataset(dataset_id):
-    """Download dataset ZIP file"""
-    dataset = Dataset.query.get_or_404(dataset_id)
-    dataset_folder_name = secure_filename(dataset.name)
-    dataset_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', dataset_folder_name)
-    zip_file = f"{dataset_folder_name}.zip"
-    zip_path = os.path.join(dataset_dir, zip_file)
-    
-    if not os.path.exists(zip_path):
-        return "Dataset file not found", 404
-    
-    return send_file(zip_path, as_attachment=True, download_name=zip_file)
-
-
-
-@app.route('/api/dataset/<dataset_id>/download', methods=['GET'], endpoint='api_download_dataset')
-def api_download_dataset(dataset_id):
-    """Download stored dataset ZIP"""
-    import sys
-    import traceback
-    
-    # Force convert to int here to handle relaxed typing
-    try:
-        dataset_id = int(dataset_id)
-    except ValueError:
-        return jsonify({'error': 'Invalid dataset ID'}), 400
-
-    try:
-        # Check if dataset exists using a simpler query first
-        exists = db.session.query(Dataset.id).filter_by(id=dataset_id).scalar()
-        sys.stderr.write(f"DEBUG DOWNLOAD: Dataset ID {dataset_id} exists in DB: {exists}\n")
-        
-        if not exists:
-             sys.stderr.write(f"DEBUG DOWNLOAD: Dataset {dataset_id} NOT FOUND in DB\n")
-             return jsonify({'error': f'Dataset {dataset_id} not found in database'}), 404
-
-        dataset = Dataset.query.get(dataset_id)
-        
-        # Path to stored ZIP
-        dataset_folder_name = secure_filename(dataset.name)
-        dataset_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', dataset_folder_name)
-        original_zip_name = f"{dataset_folder_name}.zip"
-        original_zip_path = os.path.join(dataset_dir, original_zip_name)
-        
-        sys.stderr.write(f"DEBUG DOWNLOAD: name={dataset.name}\n")
-        sys.stderr.write(f"DEBUG DOWNLOAD: path={original_zip_path}\n")
-        sys.stderr.write(f"DEBUG DOWNLOAD: exists={str(os.path.exists(original_zip_path))}\n")
-        sys.stderr.flush()
-
-        if not os.path.exists(original_zip_path):
-            return jsonify({'error': f'Dataset source file not found at {original_zip_path}'}), 404
-            
-        return send_file(original_zip_path, as_attachment=True, download_name=original_zip_name)
-    except Exception as e:
-        sys.stderr.write(f"DEBUG DOWNLOAD: EXCEPTION: {str(e)}\n")
-        traceback.print_exc(file=sys.stderr)
-        sys.stderr.flush()
-        return jsonify({'error': str(e)}), 500
 
 def _fetch_remote_submission_zip(remote_url, *, hf_token=None,
                                  sub_id=None):
@@ -13050,11 +12988,6 @@ def prune_incomplete_datasets():
     bookkeeping. Cascade-delete it (and any leftover folder bytes)
     so the datasets list is honest about what's actually available.
 
-    The typed importer writes to uploads/datasets/<id>/; the legacy
-    folder-name path (uploads/datasets/<safe-name>/) is still
-    tolerated as a fallback for any installation that hasn't fully
-    migrated, so we don't false-positive on old rows.
-
     Runs at boot from run_migrations(); also exposed for tests.
 
     Returns the number of datasets removed.
@@ -13070,9 +13003,8 @@ def prune_incomplete_datasets():
         # of completion.
         is_pointer = (ds.storage_mode == 'hf-pointer')
         sample_count = Sample.query.filter_by(dataset_id=ds.id).count()
-        id_path = os.path.join(datasets_root, str(ds.id))
-        name_path = os.path.join(datasets_root, secure_filename(ds.name))
-        folder_ok = os.path.isdir(id_path) or os.path.isdir(name_path)
+        folder_path = os.path.join(datasets_root, str(ds.id))
+        folder_ok = os.path.isdir(folder_path)
 
         if is_pointer:
             incomplete = sample_count == 0
@@ -13085,9 +13017,8 @@ def prune_incomplete_datasets():
                 f"'{ds.name}' (storage={ds.storage_mode}, "
                 f"samples={sample_count}, folder_present={folder_ok})"
             )
-            for p in (id_path, name_path):
-                if os.path.isdir(p):
-                    shutil.rmtree(p, ignore_errors=True)
+            if os.path.isdir(folder_path):
+                shutil.rmtree(folder_path, ignore_errors=True)
             db.session.delete(ds)
             removed += 1
 
