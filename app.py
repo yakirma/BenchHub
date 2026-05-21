@@ -13044,12 +13044,16 @@ def prune_incomplete_datasets():
     """Remove datasets that landed in the DB but never finished uploading.
 
     A "fully uploaded" dataset has at least one Sample row AND its
-    on-disk folder under uploads/datasets/<safe-name>/ exists. If either
-    is missing — typical signature of a process_dataset_zip() crash, an
-    interrupted ZIP extraction, or a deleted volume snapshot — the row
-    is just orphaned bookkeeping. Cascade-delete it (and any leftover
-    folder bytes) so the datasets list is honest about what's actually
-    available.
+    on-disk folder under uploads/datasets/<id>/ exists. If either is
+    missing — typical signature of an interrupted typed-manifest
+    import or a deleted volume snapshot — the row is just orphaned
+    bookkeeping. Cascade-delete it (and any leftover folder bytes)
+    so the datasets list is honest about what's actually available.
+
+    The typed importer writes to uploads/datasets/<id>/; the legacy
+    folder-name path (uploads/datasets/<safe-name>/) is still
+    tolerated as a fallback for any installation that hasn't fully
+    migrated, so we don't false-positive on old rows.
 
     Runs at boot from run_migrations(); also exposed for tests.
 
@@ -13066,8 +13070,9 @@ def prune_incomplete_datasets():
         # of completion.
         is_pointer = (ds.storage_mode == 'hf-pointer')
         sample_count = Sample.query.filter_by(dataset_id=ds.id).count()
-        folder_path = os.path.join(datasets_root, secure_filename(ds.name))
-        folder_ok = os.path.isdir(folder_path)
+        id_path = os.path.join(datasets_root, str(ds.id))
+        name_path = os.path.join(datasets_root, secure_filename(ds.name))
+        folder_ok = os.path.isdir(id_path) or os.path.isdir(name_path)
 
         if is_pointer:
             incomplete = sample_count == 0
@@ -13080,10 +13085,9 @@ def prune_incomplete_datasets():
                 f"'{ds.name}' (storage={ds.storage_mode}, "
                 f"samples={sample_count}, folder_present={folder_ok})"
             )
-            # Remove on-disk folder if it exists at all (may be partially
-            # extracted bytes even when the row says zero samples).
-            if os.path.isdir(folder_path):
-                shutil.rmtree(folder_path, ignore_errors=True)
+            for p in (id_path, name_path):
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
             db.session.delete(ds)
             removed += 1
 
