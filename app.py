@@ -9511,7 +9511,7 @@ def update_dataset_field_type(dataset_id, field_name):
 def dataset_view(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
     page = request.args.get('page', 1, type=int)
-    samples_per_page = request.args.get('per_page', 5, type=int)
+    samples_per_page = request.args.get('per_page', 100, type=int)
     sort_by = request.args.get('sort_by', 'name')
     sort_order = request.args.get('sort_order', 'asc')
     selected_display_columns = dataset.display_columns.split(',')
@@ -9551,6 +9551,56 @@ def dataset_view(dataset_id):
     custom_field_names = set(custom_field_query)
     custom_scalar_metric_names = [name for name, ftype in custom_field_names if ftype in ('scalar', 'metric')]
 
+    # Field-filter: narrow the sample list to those whose chosen
+    # text/scalar/label custom field matches `filter_value`. For
+    # text-ish kinds we do a case-insensitive substring match; for
+    # numeric kinds we accept either a bare number (exact match) or
+    # an operator-prefixed form like `>1.5`, `<=10`, `==42`.
+    filter_field = (request.args.get('filter_field') or '').strip()
+    filter_value = (request.args.get('filter_value') or '').strip()
+    field_type_map = {name: ftype for name, ftype in custom_field_names}
+    filterable_fields = sorted(
+        name for name, ftype in custom_field_names
+        if ftype in ('text', 'label', 'scalar', 'metric')
+    )
+    if filter_field and filter_value and filter_field in field_type_map:
+        ftype = field_type_map[filter_field]
+        cf_subq = db.session.query(CustomField.sample_id).filter(
+            CustomField.name == filter_field,
+            CustomField.submission_id.is_(None),
+        )
+        if ftype in ('text', 'label'):
+            # Strip surrounding quotes (so "cat" matches the same as cat
+            # — Label values are JSON-encoded with quotes around strings).
+            needle = filter_value.strip('"').strip("'")
+            cf_subq = cf_subq.filter(CustomField.value_text.ilike(f'%{needle}%'))
+        else:
+            # scalar / metric. Parse an optional comparison operator;
+            # default is equality.
+            import re as _re
+            m = _re.match(r'^\s*(==|=|!=|<=|>=|<|>)?\s*(-?\d+(?:\.\d+)?)\s*$', filter_value)
+            if m:
+                op = m.group(1) or '='
+                try:
+                    num = float(m.group(2))
+                except ValueError:
+                    num = None
+                if num is not None:
+                    col = CustomField.value_float
+                    if op in ('=', '=='):
+                        cf_subq = cf_subq.filter(col == num)
+                    elif op == '!=':
+                        cf_subq = cf_subq.filter(col != num)
+                    elif op == '<':
+                        cf_subq = cf_subq.filter(col < num)
+                    elif op == '<=':
+                        cf_subq = cf_subq.filter(col <= num)
+                    elif op == '>':
+                        cf_subq = cf_subq.filter(col > num)
+                    elif op == '>=':
+                        cf_subq = cf_subq.filter(col >= num)
+        samples_query = samples_query.filter(Sample.id.in_(cf_subq))
+
     # Sorting
     if sort_by == 'name':
         if sort_order == 'desc':
@@ -9560,7 +9610,7 @@ def dataset_view(dataset_id):
     elif sort_by in custom_scalar_metric_names:
         # Optimized sort by custom field
         samples_query = samples_query.outerjoin(
-            CustomField, 
+            CustomField,
             and_(CustomField.sample_id == Sample.id, CustomField.name == sort_by, CustomField.submission_id == None)
         )
         if sort_order == 'desc':
@@ -9651,8 +9701,9 @@ def dataset_view(dataset_id):
                 # ("cat" or 3). Strip the JSON wrap so the template shows
                 # the bare value instead of a quoted string. If the field
                 # carries a class-name vocab (DatasetField.data_params.names,
-                # populated from HF ClassLabel.names), map the int index
-                # to the human-readable class name.
+                # populated from HF ClassLabel.names), render as
+                # "<idx> <name>" so the cell carries both pieces of
+                # information (matches the legend panel's format).
                 raw = cf.value_text
                 display = raw
                 if raw:
@@ -9662,7 +9713,7 @@ def dataset_view(dataset_id):
                         display = raw
                 names = label_vocabs.get(cf.name)
                 if names and isinstance(display, int) and 0 <= display < len(names):
-                    display = names[display]
+                    display = f"{display} {names[display]}"
                 cf_vals[cf.name] = {'type': 'label', 'value': display, 'field_id': cf.id}
             else:
                 cf_vals[cf.name] = {'type': cf.data_type, 'value': cf.value_text, 'field_id': cf.id}
@@ -9793,7 +9844,11 @@ def dataset_view(dataset_id):
                            custom_fields_map=custom_fields_map,
                            label_vocabs=label_vocabs,
                            custom_scalar_metrics=custom_scalar_metrics,
-                           sample_search_query=sample_search_query)
+                           sample_search_query=sample_search_query,
+                           filter_field=filter_field,
+                           filter_value=filter_value,
+                           filterable_fields=filterable_fields,
+                           filterable_field_types=field_type_map)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])

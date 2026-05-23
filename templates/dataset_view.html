@@ -612,8 +612,8 @@
                 <span class="ms-2 small text-muted">per page</span>
             </div>
 
-            <div class="d-flex align-items-center">
-                <label for="sort_by_select" class="form-label me-2 mb-0 small text-muted">Sort by:</label>
+            <div class="d-flex align-items-center flex-wrap gap-2">
+                <label for="sort_by_select" class="form-label mb-0 small text-muted">Sort by:</label>
                 <select id="sort_by_select" name="sort_by" onchange="saveScrollAndSubmit(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
                     <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
@@ -627,10 +627,38 @@
                 </select>
 
                 <select name="sort_order" onchange="saveScrollAndSubmit(this.form)"
-                    class="form-select form-select-sm ms-2" style="width: auto;">
+                    class="form-select form-select-sm" style="width: auto;">
                     <option value="asc" {% if sort_order=='asc' %}selected{% endif %}>Low to High</option>
                     <option value="desc" {% if sort_order=='desc' %}selected{% endif %}>High to Low</option>
                 </select>
+
+                {# Field filter — narrows the sample list to rows
+                   whose chosen text / scalar / label CustomField
+                   matches the value. Text fields do substring match;
+                   scalar / metric accept either a bare number or an
+                   operator like `>1.5`, `<=10`. #}
+                {% if filterable_fields %}
+                <label for="filter_field_select" class="form-label mb-0 small text-muted ms-3">Filter by:</label>
+                <select id="filter_field_select" name="filter_field"
+                    onchange="saveScrollAndSubmit(this.form)"
+                    class="form-select form-select-sm" style="width: auto;">
+                    <option value="">(none)</option>
+                    {% for fname in filterable_fields %}
+                    <option value="{{ fname }}" {% if filter_field == fname %}selected{% endif %}>
+                        {{ fname }} ({{ filterable_field_types[fname] }})
+                    </option>
+                    {% endfor %}
+                </select>
+                <input type="text" name="filter_value" value="{{ filter_value or '' }}"
+                       class="form-control form-control-sm" style="width: 12em;"
+                       placeholder="value (or e.g. &gt;1.5)"
+                       onchange="saveScrollAndSubmit(this.form)">
+                {% if filter_field and filter_value %}
+                <a class="btn btn-sm btn-link p-0 ms-1"
+                   href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                   title="Clear filter">×</a>
+                {% endif %}
+                {% endif %}
             </div>
         </div>
 
@@ -639,21 +667,21 @@
             <ul class="pagination justify-content-end mb-0">
                 <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                         onclick="saveScrollPos()"
-                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=1, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">«
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=1, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value) }}">«
                         First</a></li>
                 <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                         onclick="saveScrollPos()"
-                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.prev_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">‹
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.prev_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value) }}">‹
                         Previous</a></li>
                 <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
                         paginated_samples.pages }}</span></li>
                 <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                         onclick="saveScrollPos()"
-                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.next_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">Next
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.next_num, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value) }}">Next
                         ›</a></li>
                 <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                         onclick="saveScrollPos()"
-                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.pages, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}">Last
+                        href="{{ url_for('dataset_view', dataset_id=dataset.id, page=paginated_samples.pages, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value) }}">Last
                         »</a></li>
             </ul>
         </nav>
