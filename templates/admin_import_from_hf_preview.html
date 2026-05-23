@@ -2,6 +2,102 @@
 
 {% block title %}Review HF import — BenchHub admin{% endblock %}
 
+{# Structured-params editor. Renders one hidden <input> (the
+   JSON the server reads) plus one visible panel per kind. JS
+   keeps the JSON synced with the active panel and toggles
+   visibility on kind change. Scopes: 'gt' (dataset column row)
+   and 'pred' (prediction-fields row — adds the shape controls
+   for image-like kinds). #}
+{% macro params_block(scope, params_name='field_params') %}
+<input type="hidden" name="{{ params_name }}" class="params-json" value="">
+<div class="params-panels small">
+    {# Kinds with no params — render a stub so the cell isn't empty #}
+    {% for k in ['image', 'text', 'scalar', 'json', 'audio'] %}
+    <div class="params-panel text-body-secondary" data-kind="{{ k }}" data-scope="{{ scope }}" hidden>
+        {% if scope == 'pred' and k == 'image' %}
+            {{ shape_controls() }}
+        {% else %}
+            <em>(no params)</em>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="params-panel" data-kind="depth" data-scope="{{ scope }}" hidden>
+        <label class="form-label form-label-sm small mb-0">unit</label>
+        <select class="form-select form-select-sm params-input" data-key="unit" data-default="meters">
+            <option value="meters">meters</option>
+            <option value="millimeters">millimeters</option>
+            <option value="unitless">unitless</option>
+        </select>
+        {% if scope == 'pred' %}{{ shape_controls() }}{% endif %}
+    </div>
+
+    <div class="params-panel" data-kind="mask" data-scope="{{ scope }}" hidden>
+        <div class="row g-2">
+            <div class="col">
+                <label class="form-label form-label-sm small mb-0">num_classes</label>
+                <input type="number" min="0" class="form-control form-control-sm params-input"
+                       data-key="num_classes" placeholder="(optional)">
+            </div>
+            <div class="col">
+                <label class="form-label form-label-sm small mb-0">ignore_index</label>
+                <input type="number" class="form-control form-control-sm params-input"
+                       data-key="ignore_index" data-default="255" value="255">
+            </div>
+        </div>
+        {% if scope == 'pred' %}{{ shape_controls() }}{% endif %}
+    </div>
+
+    <div class="params-panel" data-kind="bboxes" data-scope="{{ scope }}" hidden>
+        <label class="form-label form-label-sm small mb-0">format</label>
+        <select class="form-select form-select-sm params-input" data-key="format" data-default="xyxy">
+            <option value="xyxy">xyxy</option>
+            <option value="xywh">xywh</option>
+            <option value="cxcywh">cxcywh</option>
+        </select>
+    </div>
+
+    <div class="params-panel" data-kind="label" data-scope="{{ scope }}" hidden>
+        <label class="form-label form-label-sm small mb-0">
+            class names <span class="text-body-secondary">(comma-separated, optional)</span>
+        </label>
+        <textarea class="form-control form-control-sm params-input"
+                  data-key="names" data-list="1" rows="1"
+                  placeholder="HF ClassLabel auto-fills if blank"></textarea>
+    </div>
+</div>
+{% endmacro %}
+
+{# Shape contract controls (pred-only). Either match an input column
+   per-sample, or fix an HxW resolution. #}
+{% macro shape_controls() %}
+<div class="mt-1 border-top pt-1">
+    <label class="form-label form-label-sm small mb-1">prediction shape</label>
+    <div class="d-flex flex-wrap gap-2 align-items-center">
+        <div class="form-check form-check-inline mb-0">
+            <input class="form-check-input shape-mode" type="radio" name="shape_mode" value="any" checked>
+            <label class="form-check-label small">any</label>
+        </div>
+        <div class="form-check form-check-inline mb-0">
+            <input class="form-check-input shape-mode" type="radio" name="shape_mode" value="match">
+            <label class="form-check-label small">match input</label>
+        </div>
+        <select class="form-select form-select-sm shape-match" style="width: auto;" disabled>
+            <option value="">(pick an input column)</option>
+        </select>
+        <div class="form-check form-check-inline mb-0">
+            <input class="form-check-input shape-mode" type="radio" name="shape_mode" value="fixed">
+            <label class="form-check-label small">fixed</label>
+        </div>
+        <input type="number" min="1" class="form-control form-control-sm shape-h"
+               placeholder="H" style="width: 5.5em;" disabled>
+        <span class="small text-body-secondary">×</span>
+        <input type="number" min="1" class="form-control form-control-sm shape-w"
+               placeholder="W" style="width: 5.5em;" disabled>
+    </div>
+</div>
+{% endmacro %}
+
 {% block content %}
 <div class="container py-4" style="max-width: 1080px;">
     <div class="d-flex align-items-baseline mb-1">
@@ -113,7 +209,7 @@
                             <th style="width: 18%;">Croissant type</th>
                             <th style="width: 18%;">Kind</th>
                             <th style="width: 16%;">Role</th>
-                            <th>Params (JSON)</th>
+                            <th>Params</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -150,9 +246,7 @@
                                 </select>
                             </td>
                             <td>
-                                <input type="text" name="field_params" class="form-control form-control-sm font-monospace"
-                                       placeholder='{}  (e.g. {"unit":"meters"})'
-                                       value="">
+                                {{ params_block('gt', 'field_params') }}
                             </td>
                         </tr>
                         {% endfor %}
@@ -163,14 +257,12 @@
             {# ---- Prediction fields ----------------------------------- #}
             <h2 class="h5 fw-semibold mt-4 mb-2">Prediction fields</h2>
             <p class="form-text small mb-2">
-                Add the fields submissions must include — these are
-                schema-only (no data lives in the HF dataset), they
-                define the wire contract for the leaderboard.
-                <code>params</code> is the type's per-instance metadata as JSON;
-                for image/mask/depth preds it can carry
-                <code>{"shape_match": "&lt;input field name&gt;"}</code>
-                (per-sample, must match an input column above) or
-                <code>{"shape": [H, W]}</code> (fixed resolution).
+                Fields submissions must include — schema-only, no data
+                lives in the HF dataset. For image / mask / depth preds
+                the Params column lets you pick a shape contract:
+                <em>any</em> (no constraint), <em>match input</em>
+                (per-sample, same shape as a named input column), or
+                <em>fixed</em> (a specific H×W).
                 Leave the list empty if you want the leaderboard to
                 derive its contract from the GT columns above
                 (one <code>&lt;name&gt;_pred</code> per GT field).
@@ -181,7 +273,7 @@
                         <tr>
                             <th style="width: 30%;">Name</th>
                             <th style="width: 18%;">Kind</th>
-                            <th>Params (JSON)</th>
+                            <th>Params</th>
                             <th style="width: 1%;"></th>
                         </tr>
                     </thead>
@@ -208,8 +300,7 @@
                         </select>
                     </td>
                     <td>
-                        <input type="text" name="pred_field_params" class="form-control form-control-sm font-monospace"
-                               placeholder='{}  (e.g. {"shape_match":"image"})'>
+                        {{ params_block('pred', 'pred_field_params') }}
                     </td>
                     <td>
                         <button type="button" class="btn btn-sm btn-link text-danger pred-remove">
@@ -318,13 +409,29 @@
         tr.querySelector('input[name="pred_field_name"]').value = `${fieldName}_pred`;
         const kindSel = tr.querySelector('select[name="pred_field_kind"]');
         if (kindSel) kindSel.value = kind;
-        const params = suggestedPredParams(kind);
-        const paramsInput = tr.querySelector('input[name="pred_field_params"]');
-        if (params && paramsInput) {
-            paramsInput.value = params;
-            paramsInput.dataset.suggested = params;
+        // For image-like preds, default shape mode to "match" against
+        // the GT column's matching input (e.g. `image` for image preds).
+        if (SHAPE_BEARING.has(kind)) {
+            const shapeRef = firstInputFieldOfKind(kind) || firstInputImageLike();
+            if (shapeRef) {
+                tr.dataset.suggestedShapeMatch = shapeRef;
+            }
         }
         predBody.appendChild(tr);
+        // Append fires the MutationObserver in the structured-params
+        // IIFE; once panels are wired, set the shape-match defaults
+        // and rebuild the JSON.
+        if (window.__bhRefreshParams) {
+            window.__bhRefreshParams(tr);
+            const shapeRef = tr.dataset.suggestedShapeMatch;
+            if (shapeRef) {
+                const matchRadio = tr.querySelector('input.shape-mode[value="match"]');
+                const matchSel = tr.querySelector('select.shape-match');
+                if (matchRadio) matchRadio.checked = true;
+                if (matchSel) matchSel.value = shapeRef;
+                window.__bhRefreshParams(tr);
+            }
+        }
     }
     function removeAutoPredRow(fieldName) {
         const row = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
@@ -347,14 +454,10 @@
         const newKind = row.querySelector('select.field-kind')?.value;
         const kindSel = predRow.querySelector('select[name="pred_field_kind"]');
         if (kindSel) kindSel.value = newKind;
-        const paramsInput = predRow.querySelector('input[name="pred_field_params"]');
-        if (paramsInput) {
-            const newParams = suggestedPredParams(newKind);
-            if (!paramsInput.value || paramsInput.dataset.suggested === paramsInput.value) {
-                paramsInput.value = newParams;
-                paramsInput.dataset.suggested = newParams;
-            }
-        }
+        // Re-run the structured-params init so the right panel shows
+        // (the change event from setting .value programmatically
+        // doesn't fire on its own).
+        if (window.__bhRefreshParams) window.__bhRefreshParams(predRow);
     }
 
     // Event delegation on `document` so we don't depend on row-level
@@ -391,7 +494,204 @@
     });
 })();
 
-// ---- 3. Sampling-strategy hint visibility ------------------------
+// ---- 3. Structured params editor ---------------------------------
+// Each row has a hidden <input class="params-json"> alongside one
+// <div class="params-panel" data-kind="X"> per kind. We show the
+// panel that matches the row's current kind dropdown, and serialise
+// the active panel's inputs back into the hidden JSON field whenever
+// they change. The server reads the JSON exactly as it did with the
+// old free-text input — no protocol change.
+(function () {
+    const SHAPE_KINDS = new Set(['image', 'mask', 'depth']);
+
+    function inputColumnNames() {
+        const out = [];
+        for (const row of document.querySelectorAll('tr.field-row')) {
+            if (row.querySelector('select.field-role')?.value !== 'input') continue;
+            out.push(row.dataset.fieldName);
+        }
+        return out;
+    }
+
+    function kindOfRow(row) {
+        // dataset-column row uses select.field-kind; pred row uses
+        // select[name="pred_field_kind"]. Look for either.
+        return (row.querySelector('select.field-kind')
+                || row.querySelector('select[name="pred_field_kind"]'))?.value || '';
+    }
+
+    function rebuildJsonForRow(row) {
+        const kind = kindOfRow(row);
+        const active = row.querySelector(`.params-panel[data-kind="${kind}"]`);
+        const hidden = row.querySelector('input.params-json');
+        if (!hidden) return;
+        if (!active) { hidden.value = ''; return; }
+
+        const obj = {};
+        active.querySelectorAll('.params-input').forEach((el) => {
+            const key = el.dataset.key;
+            const raw = (el.value ?? '').toString();
+            if (el.dataset.list === '1') {
+                const parts = raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+                if (parts.length) obj[key] = parts;
+                return;
+            }
+            if (raw === '') return;
+            if (el.type === 'number') {
+                const n = Number(raw);
+                if (!Number.isFinite(n)) return;
+                // Drop the default if the user hasn't changed it (keeps
+                // the wire format tidy — defaults stay implicit).
+                if (el.dataset.default !== undefined && Number(el.dataset.default) === n) return;
+                obj[key] = n;
+                return;
+            }
+            // String-valued select. Same default-suppression rule.
+            if (el.dataset.default && el.dataset.default === raw) return;
+            obj[key] = raw;
+        });
+
+        // Pred-only: shape contract.
+        const scope = active.dataset.scope;
+        if (scope === 'pred' && SHAPE_KINDS.has(kind)) {
+            const mode = active.querySelector('input.shape-mode:checked')?.value;
+            if (mode === 'match') {
+                const ref = active.querySelector('select.shape-match')?.value;
+                if (ref) obj.shape_match = ref;
+            } else if (mode === 'fixed') {
+                const h = parseInt(active.querySelector('input.shape-h')?.value || '', 10);
+                const w = parseInt(active.querySelector('input.shape-w')?.value || '', 10);
+                if (h > 0 && w > 0) obj.shape = [h, w];
+            }
+        }
+
+        hidden.value = Object.keys(obj).length ? JSON.stringify(obj) : '';
+    }
+
+    function refreshPanelsForRow(row) {
+        const kind = kindOfRow(row);
+        row.querySelectorAll('.params-panel').forEach((p) => {
+            p.hidden = (p.dataset.kind !== kind);
+        });
+        rebuildJsonForRow(row);
+    }
+
+    function refreshShapeMatchOptions(row) {
+        // Populate the shape-match select with current input column
+        // names. Keep the selection if it's still valid; otherwise
+        // fall back to the first option.
+        const cols = inputColumnNames();
+        row.querySelectorAll('select.shape-match').forEach((sel) => {
+            const prev = sel.value;
+            sel.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '(pick an input column)';
+            sel.appendChild(placeholder);
+            for (const c of cols) {
+                const o = document.createElement('option');
+                o.value = c;
+                o.textContent = c;
+                sel.appendChild(o);
+            }
+            if (cols.includes(prev)) sel.value = prev;
+        });
+    }
+
+    function refreshShapeMatchEverywhere() {
+        document.querySelectorAll('tr.field-row, #pred-fields-body tr').forEach(refreshShapeMatchOptions);
+    }
+
+    function refreshShapeControls(row) {
+        // Enable / disable the shape inputs based on the picked mode
+        // radio so disabled controls don't leak values into the JSON.
+        row.querySelectorAll('.params-panel').forEach((panel) => {
+            const mode = panel.querySelector('input.shape-mode:checked')?.value;
+            if (!mode) return;
+            const match = panel.querySelector('select.shape-match');
+            const h = panel.querySelector('input.shape-h');
+            const w = panel.querySelector('input.shape-w');
+            if (match) match.disabled = (mode !== 'match');
+            if (h) h.disabled = (mode !== 'fixed');
+            if (w) w.disabled = (mode !== 'fixed');
+        });
+    }
+
+    // Initial pass: show the right panel for each existing row.
+    function initRow(row) {
+        refreshShapeMatchOptions(row);
+        refreshShapeControls(row);
+        refreshPanelsForRow(row);
+    }
+    document.querySelectorAll('tr.field-row').forEach(initRow);
+
+    // Delegated change handler — same approach as auto-pred, robust to
+    // dynamically added pred rows.
+    document.addEventListener('change', (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const row = t.closest('tr.field-row, #pred-fields-body tr');
+        if (!row) return;
+        if (t.matches('select.field-kind, select[name="pred_field_kind"]')) {
+            refreshPanelsForRow(row);
+            return;
+        }
+        if (t.matches('select.field-role')) {
+            // An input-role column was added/removed — refresh the
+            // shape-match dropdowns on every pred row.
+            refreshShapeMatchEverywhere();
+            document.querySelectorAll('#pred-fields-body tr').forEach(rebuildJsonForRow);
+            return;
+        }
+        if (t.matches('input.shape-mode')) {
+            refreshShapeControls(row);
+            rebuildJsonForRow(row);
+            return;
+        }
+        if (t.matches('.params-input, select.shape-match, input.shape-h, input.shape-w')) {
+            rebuildJsonForRow(row);
+        }
+    });
+    document.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const row = t.closest('tr.field-row, #pred-fields-body tr');
+        if (!row) return;
+        if (t.matches('.params-input, input.shape-h, input.shape-w')) {
+            rebuildJsonForRow(row);
+        }
+    });
+
+    // Watch the pred-fields-body for newly added rows (auto-pred or
+    // manual Add) and initialise them.
+    const predBody = document.getElementById('pred-fields-body');
+    if (predBody) {
+        new MutationObserver((muts) => {
+            for (const m of muts) {
+                for (const node of m.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    if (node.tagName === 'TR') {
+                        // For pred rows, default the shape mode to
+                        // "match" if any input column exists.
+                        const matchRadio = node.querySelector('input.shape-mode[value="match"]');
+                        if (matchRadio && inputColumnNames().length) matchRadio.checked = true;
+                        initRow(node);
+                    }
+                }
+            }
+        }).observe(predBody, {childList: true});
+    }
+
+    // Expose for the auto-pred IIFE so it can trigger a refresh when
+    // it tweaks a pred row's kind programmatically.
+    window.__bhRefreshParams = (row) => {
+        refreshShapeMatchOptions(row);
+        refreshShapeControls(row);
+        refreshPanelsForRow(row);
+    };
+})();
+
+// ---- 4. Sampling-strategy hint visibility ------------------------
 (function () {
     const samplingSel = document.getElementById('sampling');
     if (!samplingSel) return;
