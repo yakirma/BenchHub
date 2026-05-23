@@ -144,8 +144,11 @@
                 </div>
                 <div class="col-md-3">
                     <label class="form-label fw-semibold mb-1" for="sample-cap">Max samples</label>
+                    {# -1 → no cap (import the whole split, subject to
+                       the user's storage quota). Any positive integer
+                       caps to that count. #}
                     <input type="number" id="sample-cap" name="sample_cap"
-                           class="form-control" value="500" min="1">
+                           class="form-control" value="-1" min="-1">
                     <div id="sample-cap-hint" class="form-text small mt-1"></div>
                 </div>
             </div>
@@ -350,13 +353,19 @@
     function refreshHint() {
         const opt = splitSel.options[splitSel.selectedIndex];
         const total = parseInt(opt && opt.dataset.rowCount || '0', 10) || 0;
+        const requested = parseInt(capInput.value || '0', 10);
         if (!total) {
-            capHint.textContent = '';
+            capHint.textContent = (requested === -1)
+                ? 'import every row in this split (subject to your storage quota)'
+                : '';
             capInput.removeAttribute('max');
             return;
         }
         capInput.setAttribute('max', String(total));
-        const requested = parseInt(capInput.value || '0', 10) || 0;
+        if (requested === -1) {
+            capHint.textContent = `all ${fmt(total)} rows (subject to your storage quota)`;
+            return;
+        }
         capHint.textContent = `out of ${fmt(total)} rows in this split`;
         if (requested > total) capInput.value = String(total);
     }

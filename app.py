@@ -4420,10 +4420,18 @@ def admin_import_from_hf_commit():
     repo_id = (request.form.get('repo_id') or '').strip()
     dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
     split = (request.form.get('split') or '').strip() or None
+    # sample_cap = -1 (or 0) → no cap, import everything. Anything ≥1
+    # caps to that count. Storage-quota pre-check below stops a too-big
+    # unlimited import before any HF bytes are downloaded.
+    raw_cap = (request.form.get('sample_cap') or '').strip()
     try:
-        sample_cap = max(1, int(request.form.get('sample_cap') or 500))
+        sample_cap = int(raw_cap) if raw_cap else -1
     except ValueError:
-        sample_cap = 500
+        sample_cap = -1
+    if 0 < sample_cap:
+        pass  # explicit positive cap
+    else:
+        sample_cap = -1  # canonicalise 0 / negative / missing to -1
     sampling = (request.form.get('sampling') or 'head').strip().lower()
     if sampling not in ('head', 'uniform', 'stratified'):
         sampling = 'head'
@@ -4530,11 +4538,39 @@ def admin_import_from_hf_commit():
 
     import tempfile
     from benchhub.manifest import import_typed_dataset
+    from benchhub.hf_search import fetch_split_byte_sizes, fetch_split_row_counts
     try:
         from benchhub.hf_materialize import materialize_hf_to_typed_dir
     except Exception as e:
         flash(f"HF library unavailable: {e}", 'danger')
         return redirect(url_for('admin_import_from_hf'))
+
+    # Pre-materialize storage-quota check. Estimate the on-disk size
+    # of the import by pro-rating the HF parquet-file bytes per row
+    # against the requested sample_cap (or the full split when
+    # cap=-1). 1.5x headroom covers materialization expansion
+    # (parquet → PNG/NPZ). Bail BEFORE downloading anything when the
+    # admin would blow past their storage cap; the post-materialize
+    # path still recomputes from disk as the authoritative number.
+    byte_sizes = fetch_split_byte_sizes(repo_id)
+    row_counts = fetch_split_row_counts(repo_id)
+    chosen_split = split or next(iter(row_counts), None)
+    est_bytes = 0
+    if chosen_split and byte_sizes.get(chosen_split) and row_counts.get(chosen_split):
+        split_bytes = byte_sizes[chosen_split]
+        split_rows = row_counts[chosen_split]
+        if sample_cap == -1:
+            est_bytes = split_bytes
+        else:
+            est_bytes = int(split_bytes * min(sample_cap, split_rows) / split_rows)
+        est_bytes = int(est_bytes * 1.5)  # materialization headroom
+    if est_bytes > 0:
+        ok, msg = check_quota(g.current_user, kind='dataset_create',
+                              incoming_bytes=est_bytes)
+        if not ok:
+            flash(f"{msg} (estimated {_format_bytes(est_bytes)} for this import)",
+                  'danger')
+            return redirect(url_for('admin_import_from_hf'))
 
     with tempfile.TemporaryDirectory(prefix='bh_hf_import_') as staging:
         try:
@@ -4549,6 +4585,26 @@ def admin_import_from_hf_commit():
                 sampling=sampling,
                 seed=sampling_seed,
             )
+            # Authoritative post-materialize quota check. The pre-check
+            # above is an estimate from parquet bytes; the staging dir
+            # is the real thing. Reject before copying into the live
+            # uploads folder so we don't have to roll back files too.
+            staged_bytes = 0
+            for dirpath, _, filenames in os.walk(staging):
+                for fn in filenames:
+                    try:
+                        staged_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                    except OSError:
+                        continue
+            ok, msg = check_quota(g.current_user, kind='dataset_create',
+                                  incoming_bytes=staged_bytes)
+            if not ok:
+                flash(
+                    f"{msg} (this import would write "
+                    f"{_format_bytes(staged_bytes)}).",
+                    'danger',
+                )
+                return redirect(url_for('admin_import_from_hf'))
             _, summary = import_typed_dataset(
                 staging,
                 db_session=db.session,

@@ -244,7 +244,11 @@ def materialize_hf_to_typed_dir(
         f["params"] = params
 
     total = len(ds)
-    n = min(sample_cap, total)
+    # sample_cap <= 0 means "import every row" — the admin set max
+    # samples to -1 (or left it blank). Pre-materialize quota check
+    # in the route is what's keeping unlimited imports from blowing
+    # past the user's storage cap.
+    n = total if sample_cap is None or sample_cap <= 0 else min(sample_cap, total)
     indices = _pick_indices(ds, n, fields, strategy=sampling, seed=seed)
     n = len(indices)  # may have been clamped by _pick_indices
 

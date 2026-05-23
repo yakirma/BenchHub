@@ -157,6 +157,22 @@ def test_materialize_writes_manifest_and_files(tmp_path, monkeypatch):
     assert (tmp_path / "label" / "s000001.txt").read_text() == "1"
 
 
+def test_materialize_sample_cap_minus_one_imports_every_row(tmp_path, monkeypatch):
+    """sample_cap = -1 (or 0 / None) means "no cap" — the materializer
+    pulls every row in the split. Quota gating lives in the calling
+    route, not here."""
+    rows = [{"x": i} for i in range(7)]
+    _install_fake_datasets(monkeypatch, rows)
+    summary = materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=-1,
+        staging_dir=str(tmp_path), dataset_name="full_split",
+        fields=[{"name": "x", "source_column": "x", "kind": "scalar",
+                 "role": "gt", "params": {}}],
+    )
+    assert summary["samples"] == 7
+    assert summary["total_rows_in_split"] == 7
+
+
 def test_materialize_lifts_classlabel_names_into_params(tmp_path, monkeypatch):
     """For label fields, the HF `ClassLabel.names` vocab must land in
     the manifest's per-field params so the downstream import writes

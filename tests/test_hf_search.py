@@ -217,6 +217,48 @@ def test_fetch_split_row_counts_empty_repo_id_short_circuits():
 
 
 # ---------------------------------------------------------------------------
+# fetch_split_byte_sizes — datasets-server /size endpoint, parquet bytes
+# ---------------------------------------------------------------------------
+
+def test_fetch_split_byte_sizes_extracts_per_split_bytes(monkeypatch):
+    body = b'''{
+        "size": {
+            "splits": [
+                {"config":"plain_text","split":"train","num_rows":50000,
+                 "num_bytes_parquet_files":120000000},
+                {"config":"plain_text","split":"test","num_rows":10000,
+                 "num_bytes_parquet_files":25000000}
+            ]
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/size": body})
+    assert hf_search.fetch_split_byte_sizes("uoft-cs/cifar10") == {
+        "train": 120_000_000, "test": 25_000_000,
+    }
+
+
+def test_fetch_split_byte_sizes_skips_zero_or_missing(monkeypatch):
+    body = b'''{
+        "size": {
+            "splits": [
+                {"split":"train","num_bytes_parquet_files":0},
+                {"split":"validation"},
+                {"split":"test","num_bytes_parquet_files":42}
+            ]
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/size": body})
+    assert hf_search.fetch_split_byte_sizes("any") == {"test": 42}
+
+
+def test_fetch_split_byte_sizes_returns_empty_on_network_failure(monkeypatch):
+    def _boom(*a, **kw):
+        raise urllib.error.URLError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert hf_search.fetch_split_byte_sizes("anything") == {}
+
+
+# ---------------------------------------------------------------------------
 # fetch_class_label_vocabs — datasets-server /info endpoint
 # ---------------------------------------------------------------------------
 

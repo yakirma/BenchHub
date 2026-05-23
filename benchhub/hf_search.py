@@ -176,6 +176,29 @@ def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, li
     return out
 
 
+def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:
+    """Internal: GET the datasets-server `/size` doc as a dict, or
+    None on any failure. Shared by row-count and byte-size lookups
+    so we don't double the HTTP round-trips."""
+    if not repo_id:
+        return None
+    params = urllib.parse.urlencode({"dataset": repo_id})
+    req = urllib.request.Request(
+        f"{_HF_DATASETS_SERVER}?{params}",
+        headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    try:
+        doc = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]:
     """Per-split row count for an HF dataset.
 
@@ -188,23 +211,8 @@ def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]
     Returns `{}` on network failure / non-JSON / unknown shape so
     the preview UI degrades to "no count available" rather than 500.
     """
-    if not repo_id:
-        return {}
-    params = urllib.parse.urlencode({"dataset": repo_id})
-    req = urllib.request.Request(
-        f"{_HF_DATASETS_SERVER}?{params}",
-        headers={"User-Agent": "benchhub/0.1"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return {}
-    try:
-        doc = json.loads(body)
-    except (TypeError, ValueError):
-        return {}
-    if not isinstance(doc, dict):
+    doc = _fetch_size_doc(repo_id, timeout=timeout)
+    if doc is None:
         return {}
     splits = ((doc.get("size") or {}).get("splits")) or []
     out: dict[str, int] = {}
@@ -215,4 +223,33 @@ def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]
         n = s.get("num_rows")
         if isinstance(name, str) and isinstance(n, int):
             out.setdefault(name, n)
+    return out
+
+
+def fetch_split_byte_sizes(repo_id: str, *, timeout: int = 10) -> dict[str, int]:
+    """Per-split storage size in bytes for an HF dataset.
+
+    Pulled from the same `/size` endpoint as `fetch_split_row_counts`.
+    Uses `num_bytes_parquet_files` (HF's on-disk parquet size) as the
+    proxy for how big a full materialization will be; for image /
+    audio datasets the BH PNG/NPZ layout typically lands within an
+    order of magnitude of parquet, which is plenty of fidelity for a
+    pre-import quota guard. Callers should multiply by a headroom
+    factor (e.g. 1.5x) before deciding to reject.
+
+    Returns `{}` on any failure → quota check degrades to the
+    post-materialization safety net.
+    """
+    doc = _fetch_size_doc(repo_id, timeout=timeout)
+    if doc is None:
+        return {}
+    splits = ((doc.get("size") or {}).get("splits")) or []
+    out: dict[str, int] = {}
+    for s in splits:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("split")
+        b = s.get("num_bytes_parquet_files")
+        if isinstance(name, str) and isinstance(b, int) and b > 0:
+            out.setdefault(name, b)
     return out

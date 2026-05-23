@@ -127,6 +127,46 @@ def test_dataset_view_renders_source_card_for_hf_dataset(client, db_session):
     assert '500' in body
 
 
+def test_hf_commit_rejects_over_quota_before_download(admin_client, db_session, monkeypatch):
+    """The pre-materialize quota check rejects an over-cap import
+    before `datasets.load_dataset` is even invoked, so no bytes are
+    pulled. We assert by raising loudly from the fake loader and
+    confirming the route never reaches it."""
+    monkeypatch.setattr(hfc, 'fetch_croissant',
+                        lambda repo_id, **kw: _load_fixture('croissant_cifar10.json'))
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts',
+                        lambda repo_id, **kw: {'test': 10000})
+    # 5 GB parquet × 1.5x headroom → ~7.5 GB estimate, way over the
+    # admin's default 50 MB quota.
+    monkeypatch.setattr(hfs, 'fetch_split_byte_sizes',
+                        lambda repo_id, **kw: {'test': 5_000_000_000})
+
+    def _boom(*a, **kw):
+        raise AssertionError(
+            'load_dataset must NOT be called when the pre-check rejects')
+    fake = types.ModuleType('datasets')
+    fake.load_dataset = _boom
+    monkeypatch.setitem(sys.modules, 'datasets', fake)
+
+    r = admin_client.post('/admin/import_from_hf/commit', data={
+        'repo_id': 'uoft-cs/cifar10',
+        'dataset_name': 'too_big',
+        'split': 'test',
+        'sample_cap': '-1',
+        'sampling': 'head',
+        'sampling_seed': '7',
+        'field_name': ['img', 'label'],
+        'field_source_column': ['img', 'label'],
+        'field_kind': ['image', 'label'],
+        'field_role': ['input', 'gt'],
+        'field_params': ['', ''],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    # The route flashes a danger message and redirects to the
+    # import form — the DB has no new dataset row.
+    assert Dataset.query.filter_by(name='too_big').first() is None
+
+
 def test_no_source_card_for_local_dataset(client, db_session):
     """ZIP-uploaded datasets (no source_kind) don't show the card."""
     import os
