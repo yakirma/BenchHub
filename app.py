@@ -9551,55 +9551,134 @@ def dataset_view(dataset_id):
     custom_field_names = set(custom_field_query)
     custom_scalar_metric_names = [name for name, ftype in custom_field_names if ftype in ('scalar', 'metric')]
 
+    # Class-name vocabularies for label fields. Built up front so
+    # the filter logic below can translate `cat` → index 3 before
+    # building the CustomField subquery.
+    label_vocabs = {}
+    for df in dataset.fields:
+        if df.kind != 'label':
+            continue
+        names = (df.get_params() or {}).get('names')
+        if isinstance(names, list) and names:
+            label_vocabs[df.name] = list(names)
+
     # Field-filter: narrow the sample list to those whose chosen
-    # text/scalar/label custom field matches `filter_value`. For
-    # text-ish kinds we do a case-insensitive substring match; for
-    # numeric kinds we accept either a bare number (exact match) or
-    # an operator-prefixed form like `>1.5`, `<=10`, `==42`.
+    # text / scalar / label / metric custom field matches
+    # `filter_value`. The synthetic field `sample_name` filters
+    # Sample.name directly. Text-ish kinds do a case-insensitive
+    # substring match; numeric kinds accept a bare number or an
+    # operator-prefixed form like `>1.5`, `<=10`, `==42`.
     filter_field = (request.args.get('filter_field') or '').strip()
     filter_value = (request.args.get('filter_value') or '').strip()
     field_type_map = {name: ftype for name, ftype in custom_field_names}
-    filterable_fields = sorted(
+    # Build the dropdown source: synthetic sample_name first, then
+    # any text/label/scalar/metric CF.
+    filterable_fields = ['sample_name'] + sorted(
         name for name, ftype in custom_field_names
         if ftype in ('text', 'label', 'scalar', 'metric')
     )
-    if filter_field and filter_value and filter_field in field_type_map:
+    filterable_kinds = {'sample_name': 'sample_name'}
+    filterable_kinds.update(field_type_map)
+
+    if filter_field and filter_value:
+        if filter_field == 'sample_name':
+            samples_query = samples_query.filter(
+                Sample.name.ilike(f'%{filter_value.strip()}%')
+            )
+        elif filter_field in field_type_map:
+            ftype = field_type_map[filter_field]
+            cf_subq = db.session.query(CustomField.sample_id).filter(
+                CustomField.name == filter_field,
+                CustomField.submission_id.is_(None),
+            )
+            if ftype in ('text', 'label'):
+                needle = filter_value.strip().strip('"').strip("'")
+                # Label-with-vocab special case: if the typed string
+                # matches a class name (case-insensitive) — including
+                # `0 airplane` or `cat` — translate to the integer
+                # index stored in value_text. Otherwise fall back to
+                # substring match on the raw value_text.
+                if ftype == 'label':
+                    vocab = label_vocabs.get(filter_field) or []
+                    translated = None
+                    if vocab:
+                        # Accept either the bare class name or the
+                        # combined "<idx> <name>" the cell renders.
+                        candidate = needle.split(None, 1)
+                        if len(candidate) == 2 and candidate[0].isdigit():
+                            try:
+                                idx = int(candidate[0])
+                                if 0 <= idx < len(vocab) and vocab[idx].lower() == candidate[1].lower():
+                                    translated = str(idx)
+                            except ValueError:
+                                pass
+                        if translated is None:
+                            for i, nm in enumerate(vocab):
+                                if nm.lower() == needle.lower():
+                                    translated = str(i)
+                                    break
+                    if translated is not None:
+                        cf_subq = cf_subq.filter(CustomField.value_text == translated)
+                    else:
+                        cf_subq = cf_subq.filter(CustomField.value_text.ilike(f'%{needle}%'))
+                else:
+                    cf_subq = cf_subq.filter(CustomField.value_text.ilike(f'%{needle}%'))
+            else:
+                # scalar / metric. Parse an optional comparison operator;
+                # default is equality.
+                import re as _re
+                m = _re.match(r'^\s*(==|=|!=|<=|>=|<|>)?\s*(-?\d+(?:\.\d+)?)\s*$', filter_value)
+                if m:
+                    op = m.group(1) or '='
+                    try:
+                        num = float(m.group(2))
+                    except ValueError:
+                        num = None
+                    if num is not None:
+                        col = CustomField.value_float
+                        if op in ('=', '=='):
+                            cf_subq = cf_subq.filter(col == num)
+                        elif op == '!=':
+                            cf_subq = cf_subq.filter(col != num)
+                        elif op == '<':
+                            cf_subq = cf_subq.filter(col < num)
+                        elif op == '<=':
+                            cf_subq = cf_subq.filter(col <= num)
+                        elif op == '>':
+                            cf_subq = cf_subq.filter(col > num)
+                        elif op == '>=':
+                            cf_subq = cf_subq.filter(col >= num)
+            samples_query = samples_query.filter(Sample.id.in_(cf_subq))
+
+    # Autocomplete suggestions for the active filter field. Capped
+    # at 50 entries to keep the rendered <datalist> tractable on
+    # large datasets. Numeric kinds skip suggestions (the operator
+    # syntax is more useful than a flat list of numbers).
+    filter_suggestions: list[str] = []
+    if filter_field == 'sample_name':
+        rows = db.session.query(Sample.name).filter(
+            Sample.dataset_id == dataset.id
+        ).distinct().limit(50).all()
+        filter_suggestions = [r[0] for r in rows if r[0]]
+    elif filter_field in field_type_map:
         ftype = field_type_map[filter_field]
-        cf_subq = db.session.query(CustomField.sample_id).filter(
-            CustomField.name == filter_field,
-            CustomField.submission_id.is_(None),
-        )
-        if ftype in ('text', 'label'):
-            # Strip surrounding quotes (so "cat" matches the same as cat
-            # — Label values are JSON-encoded with quotes around strings).
-            needle = filter_value.strip('"').strip("'")
-            cf_subq = cf_subq.filter(CustomField.value_text.ilike(f'%{needle}%'))
-        else:
-            # scalar / metric. Parse an optional comparison operator;
-            # default is equality.
-            import re as _re
-            m = _re.match(r'^\s*(==|=|!=|<=|>=|<|>)?\s*(-?\d+(?:\.\d+)?)\s*$', filter_value)
-            if m:
-                op = m.group(1) or '='
-                try:
-                    num = float(m.group(2))
-                except ValueError:
-                    num = None
-                if num is not None:
-                    col = CustomField.value_float
-                    if op in ('=', '=='):
-                        cf_subq = cf_subq.filter(col == num)
-                    elif op == '!=':
-                        cf_subq = cf_subq.filter(col != num)
-                    elif op == '<':
-                        cf_subq = cf_subq.filter(col < num)
-                    elif op == '<=':
-                        cf_subq = cf_subq.filter(col <= num)
-                    elif op == '>':
-                        cf_subq = cf_subq.filter(col > num)
-                    elif op == '>=':
-                        cf_subq = cf_subq.filter(col >= num)
-        samples_query = samples_query.filter(Sample.id.in_(cf_subq))
+        if ftype == 'label':
+            vocab = label_vocabs.get(filter_field) or []
+            filter_suggestions = [f"{i} {nm}" for i, nm in enumerate(vocab)]
+        elif ftype == 'text':
+            rows = (
+                db.session.query(CustomField.value_text)
+                .join(Sample, Sample.id == CustomField.sample_id)
+                .filter(
+                    Sample.dataset_id == dataset.id,
+                    CustomField.name == filter_field,
+                    CustomField.submission_id.is_(None),
+                )
+                .distinct()
+                .limit(50)
+                .all()
+            )
+            filter_suggestions = [r[0] for r in rows if r[0]]
 
     # Sorting
     if sort_by == 'name':
@@ -9641,18 +9720,6 @@ def dataset_view(dataset_id):
     dataset_metrics_data = [] # For per_sample_metrics chart
     samples_data_for_charts = []
     
-    # Class-name vocabularies for label fields, keyed by field name.
-    # Sourced from DatasetField.data_params.names (populated at HF
-    # import time from ClassLabel.names). Drives both the inline
-    # legend panel and per-cell int→name translation below.
-    label_vocabs = {}
-    for df in dataset.fields:
-        if df.kind != 'label':
-            continue
-        names = (df.get_params() or {}).get('names')
-        if isinstance(names, list) and names:
-            label_vocabs[df.name] = list(names)
-
     # Create a map of sample_id -> {field_name: value}
     # Only for samples on current page
     custom_fields_map = {}
@@ -9848,7 +9915,8 @@ def dataset_view(dataset_id):
                            filter_field=filter_field,
                            filter_value=filter_value,
                            filterable_fields=filterable_fields,
-                           filterable_field_types=field_type_map)
+                           filterable_field_types=filterable_kinds,
+                           filter_suggestions=filter_suggestions)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])

@@ -600,9 +600,9 @@
         </div>
 
         <!-- Row 2: Per Page and Sorting -->
-        <div class="d-flex align-items-center mb-3">
+        <div id="dataset-view-controls" class="d-flex align-items-center mb-3">
             <div class="d-flex align-items-center me-4">
-                <select id="per_page_select" name="per_page" onchange="this.form.submit()"
+                <select id="per_page_select" name="per_page" onchange="submitToControlsAnchor(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
                     {% for option in per_page_options %}
                     <option value="{{ option }}" {% if option==current_per_page %}selected{% endif %}>{{ option }}
@@ -614,7 +614,7 @@
 
             <div class="d-flex align-items-center flex-wrap gap-2">
                 <label for="sort_by_select" class="form-label mb-0 small text-muted">Sort by:</label>
-                <select id="sort_by_select" name="sort_by" onchange="saveScrollAndSubmit(this.form)"
+                <select id="sort_by_select" name="sort_by" onchange="submitToControlsAnchor(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
                     <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
                     <!-- Hist entropy removed - use custom fields instead -->
@@ -626,7 +626,7 @@
                     {% endfor %}
                 </select>
 
-                <select name="sort_order" onchange="saveScrollAndSubmit(this.form)"
+                <select name="sort_order" onchange="submitToControlsAnchor(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
                     <option value="asc" {% if sort_order=='asc' %}selected{% endif %}>Low to High</option>
                     <option value="desc" {% if sort_order=='desc' %}selected{% endif %}>High to Low</option>
@@ -640,7 +640,7 @@
                 {% if filterable_fields %}
                 <label for="filter_field_select" class="form-label mb-0 small text-muted ms-3">Filter by:</label>
                 <select id="filter_field_select" name="filter_field"
-                    onchange="saveScrollAndSubmit(this.form)"
+                    onchange="submitToControlsAnchor(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
                     <option value="">(none)</option>
                     {% for fname in filterable_fields %}
@@ -649,10 +649,22 @@
                     </option>
                     {% endfor %}
                 </select>
+                {# Browser-native autocomplete via <datalist>. The
+                   server pre-computes suggestions for the active
+                   field — vocab names for labels, distinct
+                   value_texts for text fields, distinct sample names
+                   for sample_name. Numeric kinds have no list. #}
                 <input type="text" name="filter_value" value="{{ filter_value or '' }}"
-                       class="form-control form-control-sm" style="width: 12em;"
-                       placeholder="value (or e.g. &gt;1.5)"
-                       onchange="saveScrollAndSubmit(this.form)">
+                       class="form-control form-control-sm" style="width: 14em;"
+                       placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}"
+                       list="filter-value-suggestions"
+                       autocomplete="off"
+                       onchange="submitToControlsAnchor(this.form)">
+                <datalist id="filter-value-suggestions">
+                    {% for sug in filter_suggestions %}
+                    <option value="{{ sug }}"></option>
+                    {% endfor %}
+                </datalist>
                 {% if filter_field and filter_value %}
                 <a class="btn btn-sm btn-link p-0 ms-1"
                    href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
@@ -1118,6 +1130,30 @@
             console.error('SessionStorage error:', e);
         }
         form.submit();
+    };
+
+    // Like saveScrollAndSubmit but appends a `#dataset-view-controls`
+    // anchor to the GET URL so the browser scrolls the controls row
+    // into view after reload. Used by per_page / sort / filter
+    // widgets — these live in the controls row, so anchoring there
+    // keeps the page from snapping back to the very top after any
+    // form-change submission.
+    window.submitToControlsAnchor = function (form) {
+        try {
+            const params = new URLSearchParams();
+            new FormData(form).forEach((v, k) => {
+                if (v === '' || v == null) return;
+                params.append(k, v);
+            });
+            const action = form.getAttribute('action') || window.location.pathname;
+            const qs = params.toString();
+            const url = action.split('#')[0] + (qs ? '?' + qs : '') + '#dataset-view-controls';
+            window.location.assign(url);
+        } catch (e) {
+            // Fallback to the regular path; user still gets a submit,
+            // just without anchor-restore.
+            form.submit();
+        }
     };
 
     window.saveScrollPos = function () {

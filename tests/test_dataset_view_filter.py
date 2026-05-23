@@ -90,6 +90,61 @@ def test_filter_by_scalar_exact_equal(client, db_session):
         assert f'data-sample-name="{n}"' not in body
 
 
+def test_filter_by_label_class_name_translates_to_index(client, db_session):
+    """Typing the class name (`cat`, `dog`) into the filter must
+    look up the matching index in the vocab and constrain by it."""
+    ds = _make_label_dataset()
+    body = client.get(f'/dataset/{ds.id}?filter_field=label&filter_value=cat').data.decode()
+    # label index 0 → "cat" → s0 and s3.
+    assert 'data-sample-name="s0"' in body
+    assert 'data-sample-name="s3"' in body
+    for n in ('s1', 's2', 's4'):
+        assert f'data-sample-name="{n}"' not in body
+
+
+def test_filter_by_label_index_plus_name_string(client, db_session):
+    """The cell render format `<idx> <name>` (e.g. `1 dog`) is also
+    accepted as a filter value — same lookup as the bare name."""
+    ds = _make_label_dataset()
+    body = client.get(f'/dataset/{ds.id}?filter_field=label&filter_value=1+dog').data.decode()
+    # label index 1 → "dog" → s1 and s4.
+    assert 'data-sample-name="s1"' in body
+    assert 'data-sample-name="s4"' in body
+    for n in ('s0', 's2', 's3'):
+        assert f'data-sample-name="{n}"' not in body
+
+
+def test_filter_by_sample_name(client, db_session):
+    """The synthetic `sample_name` filter does a case-insensitive
+    substring match on Sample.name."""
+    ds = _make_scalar_dataset()
+    body = client.get(f'/dataset/{ds.id}?filter_field=sample_name&filter_value=s3').data.decode()
+    assert 'data-sample-name="s3"' in body
+    for n in ('s0', 's1', 's2', 's4'):
+        assert f'data-sample-name="{n}"' not in body
+
+
+def test_filter_value_suggestions_for_label_field(client, db_session):
+    """When the filter_field is a label with a vocab, the
+    <datalist> for the value input enumerates `<idx> <name>` entries
+    so the browser can autocomplete what the user types."""
+    ds = _make_label_dataset()
+    body = client.get(f'/dataset/{ds.id}?filter_field=label').data.decode()
+    assert '<datalist id="filter-value-suggestions">' in body
+    assert '<option value="0 cat">' in body
+    assert '<option value="1 dog">' in body
+    assert '<option value="2 fish">' in body
+
+
+def test_filter_dropdown_includes_sample_name(client, db_session):
+    """`sample_name` is a synthetic filterable field surfaced at
+    the top of the dropdown so the admin can substring-filter by
+    sample name without touching the URL by hand."""
+    ds = _make_scalar_dataset()
+    body = client.get(f'/dataset/{ds.id}').data.decode()
+    assert 'sample_name (sample_name)' in body
+
+
 def test_filter_dropdown_lists_text_scalar_label_fields(client, db_session):
     """The Filter-by dropdown must include text / label / scalar /
     metric fields and skip image / mask / depth / audio etc."""
