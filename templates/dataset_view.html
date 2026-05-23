@@ -693,7 +693,7 @@
                 </datalist>
                 {% if filter_field and filter_value %}
                 <a class="btn btn-sm btn-link p-0 ms-1"
-                   href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                   href="{{ url_for('dataset_view', dataset_id=dataset.id) }}#dataset-view-controls"
                    title="Clear filter">×</a>
                 {% endif %}
                 {% endif %}
