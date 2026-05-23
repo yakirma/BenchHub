@@ -610,14 +610,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% for col_key in selected_comparison_display_columns %}
                         {% if all_field_types.get(col_key) != 'metric' %}
                         {% if col_key == 'per_source_stats' %}
+                        {% if has_gt_scalars_or_metrics %}
                         <th draggable="true"
                             style="width: {{ global_settings.config_width }}; min-width: {{ global_settings.config_width }}; overflow: hidden; text-overflow: ellipsis;">
                             GT Stats<div class="resizer"></div>
                         </th>
+                        {% endif %}
+                        {% if has_pred_scalars_or_metrics %}
                         <th draggable="true"
                             style="width: 500px; min-width: 500px; overflow: hidden; text-overflow: ellipsis;">
                             Submission Stats<div class="resizer"></div>
                         </th>
+                        {% endif %}
 
                         {% elif col_key == 'per_sample_metrics' %}
                         <th draggable="true"
@@ -758,38 +762,39 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             </div>
                         </td>
                         {% elif col_key == 'per_source_stats' %}
-                        {# GT Stats Cell #}
+                        {# display_metrics / display_scalars span both
+                           cells; compute once at the top so the GT
+                           cell skipping doesn't strand them undefined. #}
+                        {% set display_metrics = [] %}
+                        {% set display_scalars = [] %}
+                        {% if data.ground_truth.custom_fields %}
+                        {% for k, v in data.ground_truth.custom_fields.items() %}
+                        {% if all_field_types.get(k) == 'metric' and k not in display_metrics %}
+                        {% set _ = display_metrics.append(k) %}
+                        {% endif %}
+                        {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
+                        {% set _ = display_scalars.append(k) %}
+                        {% endif %}
+                        {% endfor %}
+                        {% endif %}
+                        {% for pred in data.predictions %}
+                        {% if pred %}
+                        {% for k, v in pred.items() %}
+                        {% if all_field_types.get(k) == 'metric' and k not in display_metrics %}
+                        {% set _ = display_metrics.append(k) %}
+                        {% endif %}
+                        {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
+                        {% set _ = display_scalars.append(k) %}
+                        {% endif %}
+                        {% endfor %}
+                        {% endif %}
+                        {% endfor %}
+
+                        {# GT Stats Cell — suppressed when the LB has
+                           no scalar/metric GT custom fields. #}
+                        {% if has_gt_scalars_or_metrics %}
                         <td>
                             <div style="max-height: 250px; overflow-y: auto;">
-                                {% set display_metrics = [] %}
-                                {% set display_scalars = [] %}
-
-                                {# Include GT custom fields #}
-                                {% if data.ground_truth.custom_fields %}
-                                {% for k, v in data.ground_truth.custom_fields.items() %}
-                                {% if all_field_types.get(k) == 'metric' and k not in display_metrics %}
-                                {% set _ = display_metrics.append(k) %}
-                                {% endif %}
-                                {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
-                                {% set _ = display_scalars.append(k) %}
-                                {% endif %}
-                                {% endfor %}
-                                {% endif %}
-
-                                {# Include submission custom fields #}
-                                {% for pred in data.predictions %}
-                                {% if pred %}
-                                {% for k, v in pred.items() %}
-                                {% if all_field_types.get(k) == 'metric' and k not in display_metrics %}
-                                {% set _ = display_metrics.append(k) %}
-                                {% endif %}
-                                {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
-                                {% set _ = display_scalars.append(k) %}
-                                {% endif %}
-                                {% endfor %}
-                                {% endif %}
-                                {% endfor %}
-
                                 <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
                                     <thead>
                                         <tr>
@@ -850,8 +855,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 </table>
                             </div>
                         </td>
+                        {% endif %}
 
-                        {# Submission Stats Cell #}
+                        {# Submission Stats Cell — suppressed when the
+                           LB has no scalar/metric pred custom fields. #}
+                        {% if has_pred_scalars_or_metrics %}
                         <td>
                             <div style="max-height: 250px; overflow-y: auto;">
                                 <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
@@ -948,6 +956,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 </table>
                             </div>
                         </td>
+                        {% endif %}
                         {% elif col_key == 'gt_config' %}
                         <td>
                             <div class="json-display">

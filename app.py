@@ -8856,8 +8856,23 @@ def comparison_view(leaderboard_id):
     if not has_gt_hist: available_display_options.pop('gt_histogram', None)
     if not has_gt_config: available_display_options.pop('gt_config', None)
     if not has_dataset_tags: available_display_options.pop('dataset_tags', None)
-    
-    
+
+    # GT-side / Submission-side scalar+metric presence drives whether
+    # the two per_source_stats columns render in the template. If both
+    # sides are empty the whole option goes away from View Options too.
+    has_gt_scalars_or_metrics = any(
+        all_field_types.get(fn) in ('scalar', 'metric')
+        for fn in dataset_custom_fields
+    )
+    has_pred_scalars_or_metrics = any(
+        all_field_types.get(fn) in ('scalar', 'metric')
+        for sub_id, fns in submission_custom_fields.items()
+        for fn in fns
+        if fn not in dataset_custom_fields
+    )
+    if not (has_gt_scalars_or_metrics or has_pred_scalars_or_metrics):
+        available_display_options.pop('per_source_stats', None)
+
     # 2. Check Submission fields (heuristic: check first sample for each submission)
     has_pred_peak = False
     submission_has_histogram = {} 
@@ -9034,6 +9049,8 @@ def comparison_view(leaderboard_id):
                            all_field_types=all_field_types,
                            dataset_custom_fields=dataset_custom_fields,
                            submission_custom_fields=submission_custom_fields,
+                           has_gt_scalars_or_metrics=has_gt_scalars_or_metrics,
+                           has_pred_scalars_or_metrics=has_pred_scalars_or_metrics,
                            submission_has_histogram=submission_has_histogram,
                            paginated_samples=paginated_samples, 
                            per_page_options=[5, 10, 20, 100], 
@@ -9711,7 +9728,15 @@ def dataset_view(dataset_id):
     if not has_shape: available_display_options.pop('signal_shape', None)
     if not has_tags: available_display_options.pop('tags', None)
 
-    
+    # GT Stats panel surfaces scalar + metric GT custom fields. No
+    # such fields on this dataset → no panel to render → drop the
+    # column option entirely so it doesn't show up in View Options.
+    has_gt_scalars_or_metrics = any(
+        ft in ('scalar', 'metric') for fn, ft in custom_field_names
+    )
+    if not has_gt_scalars_or_metrics:
+        available_display_options.pop('per_source_stats', None)
+
     # Filter selected columns to ensure they exist in available options
     selected_display_columns = [col for col in selected_display_columns if col in available_display_options]
 
