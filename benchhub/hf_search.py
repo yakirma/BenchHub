@@ -121,6 +121,59 @@ def _clear_cache() -> None:
 
 
 _HF_DATASETS_SERVER = "https://datasets-server.huggingface.co/size"
+_HF_DATASETS_SERVER_INFO = "https://datasets-server.huggingface.co/info"
+
+
+def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, list[str]]:
+    """Per-column ClassLabel vocab for an HF dataset.
+
+    Hits HF's `datasets-server` `/info` endpoint, walks each config's
+    `features` dict, and collects `{column_name: names}` for every
+    feature whose `_type` is `ClassLabel` (which exposes the
+    classification class names as a list).
+
+    First config wins on name collisions — the import flow only
+    materialises one config anyway. Returns `{}` on network failure,
+    non-JSON, or any feature-walk surprise; the preview UI degrades
+    cleanly to a blank textarea the admin can fill in by hand.
+    """
+    if not repo_id:
+        return {}
+    params = urllib.parse.urlencode({"dataset": repo_id})
+    req = urllib.request.Request(
+        f"{_HF_DATASETS_SERVER_INFO}?{params}",
+        headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return {}
+    try:
+        doc = json.loads(body)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    configs = doc.get("dataset_info") or {}
+    if not isinstance(configs, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for _cfg_name, cfg in configs.items():
+        if not isinstance(cfg, dict):
+            continue
+        features = cfg.get("features") or {}
+        if not isinstance(features, dict):
+            continue
+        for col, spec in features.items():
+            if not isinstance(spec, dict):
+                continue
+            if spec.get("_type") != "ClassLabel":
+                continue
+            names = spec.get("names")
+            if isinstance(names, list) and all(isinstance(n, str) for n in names):
+                out.setdefault(col, list(names))
+    return out
 
 
 def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]:

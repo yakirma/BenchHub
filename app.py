@@ -4624,8 +4624,13 @@ def admin_import_from_hf_preview():
     # Per-split row counts so the form can show "500 out of 10,000"
     # next to the max-samples input. Best-effort: an empty dict
     # degrades the UI cleanly to "no count available".
-    from benchhub.hf_search import fetch_split_row_counts
+    from benchhub.hf_search import fetch_class_label_vocabs, fetch_split_row_counts
     split_counts = fetch_split_row_counts(repo_id)
+    # Pull HF ClassLabel.names off the datasets-server /info endpoint
+    # so the label-kind params textarea can pre-fill the vocab — the
+    # materializer would lift it anyway at commit time, but showing
+    # it on the preview makes the dataset self-explanatory.
+    class_label_vocabs = fetch_class_label_vocabs(repo_id)
 
     # Classification datasets get stratified sampling by default —
     # `kind=label` is the Croissant parser's signal that this looks
@@ -4646,6 +4651,7 @@ def admin_import_from_hf_preview():
         # are schema-only and live in a separate section of the form.
         all_roles=['input', 'gt', 'skip'],
         has_label_field=has_label_field,
+        class_label_vocabs=class_label_vocabs,
     )
 
 

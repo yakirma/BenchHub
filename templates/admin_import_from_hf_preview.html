@@ -214,7 +214,10 @@
                     </thead>
                     <tbody>
                         {% for f in schema.fields %}
-                        <tr class="field-row" data-field-name="{{ f.name }}">
+                        {% set _src_col = f.source_column or f.name %}
+                        {% set _vocab = class_label_vocabs.get(_src_col) or class_label_vocabs.get(f.name) %}
+                        <tr class="field-row" data-field-name="{{ f.name }}"
+                            {% if _vocab %}data-label-names="{{ _vocab|tojson|forceescape }}"{% endif %}>
                             <td>
                                 <div class="font-monospace small">{{ f.name }}</div>
                                 <input type="hidden" name="field_name" value="{{ f.name }}">
@@ -617,10 +620,25 @@
         });
     }
 
+    function prefillFromRowDataset(row) {
+        // Server-side per-row hints (data-label-names from HF
+        // ClassLabel) populate the textarea once, if the admin
+        // hasn't already typed something.
+        const raw = row.dataset.labelNames;
+        if (!raw) return;
+        let names;
+        try { names = JSON.parse(raw); } catch (e) { return; }
+        if (!Array.isArray(names) || !names.length) return;
+        const ta = row.querySelector('.params-panel[data-kind="label"] textarea.params-input[data-key="names"]');
+        if (!ta || ta.value.trim()) return;
+        ta.value = names.join(', ');
+    }
+
     // Initial pass: show the right panel for each existing row.
     function initRow(row) {
         refreshShapeMatchOptions(row);
         refreshShapeControls(row);
+        prefillFromRowDataset(row);
         refreshPanelsForRow(row);
     }
     document.querySelectorAll('tr.field-row').forEach(initRow);

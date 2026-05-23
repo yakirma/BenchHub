@@ -216,6 +216,75 @@ def test_fetch_split_row_counts_empty_repo_id_short_circuits():
     assert hf_search.fetch_split_row_counts("") == {}
 
 
+# ---------------------------------------------------------------------------
+# fetch_class_label_vocabs — datasets-server /info endpoint
+# ---------------------------------------------------------------------------
+
+def test_fetch_class_label_vocabs_extracts_names(monkeypatch):
+    body = b'''{
+        "dataset_info": {
+            "plain_text": {
+                "features": {
+                    "img": {"_type": "Image"},
+                    "label": {
+                        "_type": "ClassLabel",
+                        "num_classes": 3,
+                        "names": ["airplane", "automobile", "bird"]
+                    }
+                }
+            }
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/info": body})
+    out = hf_search.fetch_class_label_vocabs("uoft-cs/cifar10")
+    assert out == {"label": ["airplane", "automobile", "bird"]}
+
+
+def test_fetch_class_label_vocabs_handles_multi_label_columns(monkeypatch):
+    body = b'''{
+        "dataset_info": {
+            "default": {
+                "features": {
+                    "coarse_label": {"_type":"ClassLabel","names":["a","b"]},
+                    "fine_label":   {"_type":"ClassLabel","names":["x","y","z"]}
+                }
+            }
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/info": body})
+    out = hf_search.fetch_class_label_vocabs("anything")
+    assert out == {
+        "coarse_label": ["a", "b"],
+        "fine_label": ["x", "y", "z"],
+    }
+
+
+def test_fetch_class_label_vocabs_skips_non_classlabel_features(monkeypatch):
+    body = b'''{
+        "dataset_info": {
+            "default": {
+                "features": {
+                    "score": {"_type":"Value","dtype":"float32"},
+                    "label": {"_type":"ClassLabel","names":["a","b"]}
+                }
+            }
+        }
+    }'''
+    _patch_fetch(monkeypatch, {"datasets-server.huggingface.co/info": body})
+    assert hf_search.fetch_class_label_vocabs("any") == {"label": ["a", "b"]}
+
+
+def test_fetch_class_label_vocabs_returns_empty_on_network_failure(monkeypatch):
+    def _boom(*a, **kw):
+        raise urllib.error.URLError("offline")
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert hf_search.fetch_class_label_vocabs("anything") == {}
+
+
+def test_fetch_class_label_vocabs_empty_repo_id_short_circuits():
+    assert hf_search.fetch_class_label_vocabs("") == {}
+
+
 def test_trending_per_domain_uses_distinct_filter(monkeypatch):
     """Each domain's call should carry its own task_categories filter
     on the URL — confirms we're not collapsing everything into one

@@ -152,6 +152,30 @@ def test_preview_renders_separate_pred_fields_section(admin_client, monkeypatch)
     assert 'name="pred_field_params"' in body
 
 
+def test_preview_renders_class_label_vocab_as_data_attribute(admin_client, monkeypatch):
+    """When the HF datasets-server /info endpoint returns a
+    ClassLabel.names vocab for a column, the matching row carries
+    `data-label-names="[...]"` so the per-kind params editor can
+    pre-fill the textarea on the client without the admin typing it."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+
+    fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda repo_id, **kw: {})
+    monkeypatch.setattr(hfs, 'fetch_class_label_vocabs',
+                        lambda repo_id, **kw: {'label': ['airplane', 'automobile', 'bird']})
+
+    body = admin_client.post(
+        '/admin/import_from_hf/preview',
+        data={'repo_id': 'uoft-cs/cifar10'},
+    ).data.decode()
+    assert 'data-label-names' in body
+    # Bracketed JSON list with the class names — escaped HTML attr.
+    assert 'airplane' in body
+    assert 'automobile' in body
+
+
 def test_preview_defaults_to_stratified_when_label_field_detected(admin_client, monkeypatch):
     """Classification datasets (any field's kind suggested as label)
     default the sampling strategy to `stratified` so the admin
