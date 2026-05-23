@@ -167,6 +167,38 @@ def test_hf_commit_rejects_over_quota_before_download(admin_client, db_session, 
     assert Dataset.query.filter_by(name='too_big').first() is None
 
 
+def test_source_card_hides_sampling_when_all_rows_imported(client, db_session):
+    """sample_cap=-1 (or samples_imported == total_rows_in_split)
+    means every row in the split is in this BH dataset — the
+    sampling method + seed don't constrain anything, so they're
+    suppressed from the card."""
+    import os
+    ds = Dataset(
+        name='full_split_dataset',
+        visibility='public',
+        source_kind='hf',
+        source_url='https://huggingface.co/datasets/foo/bar',
+        source_metadata=json.dumps({
+            'repo_id': 'foo/bar',
+            'split': 'test',
+            'sample_cap': -1,
+            'sampling': 'stratified',
+            'sampling_seed': 42,
+            'samples_imported': 10000,
+            'total_rows_in_split': 10000,
+            'rows_skipped': 0,
+        }),
+    )
+    db.session.add(ds); db.session.commit()
+    os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
+                exist_ok=True)
+    body = client.get(f'/dataset/{ds.id}').data.decode('utf-8')
+    assert 'all 10,000' in body
+    # Method + seed are suppressed on the full-split path.
+    assert 'stratified sampling' not in body
+    assert 'seed' not in body
+
+
 def test_no_source_card_for_local_dataset(client, db_session):
     """ZIP-uploaded datasets (no source_kind) don't show the card."""
     import os

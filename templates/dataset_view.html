@@ -133,15 +133,30 @@
                 <i class="bi bi-box-arrow-up-right small"></i>
             </a>
         </div>
+        {# When the whole split was imported (samples_imported equals
+           total_rows_in_split, or sample_cap was -1) the sampling
+           method + seed are meaningless — every row is in regardless
+           of strategy. Show a shorter "all rows" line in that case. #}
+        {% set _imported = src.samples_imported or 0 %}
+        {% set _total = src.total_rows_in_split or 0 %}
+        {% set _full_split = (_total > 0 and _imported >= _total)
+                          or (src.sample_cap is defined and src.sample_cap == -1) %}
         <p class="small text-body-secondary mb-0">
+            {% if _full_split %}
             Imported
-            <strong>{{ '{:,}'.format(src.samples_imported or 0) }}</strong>
+            <strong>all {{ '{:,}'.format(_total or _imported) }}</strong>
+            rows from the
+            <code>{{ src.split or 'default' }}</code> split.
+            {% else %}
+            Imported
+            <strong>{{ '{:,}'.format(_imported) }}</strong>
             of
-            <strong>{{ '{:,}'.format(src.total_rows_in_split or 0) }}</strong>
+            <strong>{{ '{:,}'.format(_total) }}</strong>
             rows from the
             <code>{{ src.split or 'default' }}</code> split
             via <code>{{ src.sampling or 'head' }}</code> sampling
             (seed&nbsp;<code>{{ src.sampling_seed }}</code>).
+            {% endif %}
             {% if src.rows_skipped %}
             <span class="text-warning-emphasis">
                 {{ src.rows_skipped }} field-value(s) skipped during materialisation.
