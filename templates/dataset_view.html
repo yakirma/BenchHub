@@ -456,6 +456,26 @@
         height: 1px;
     }
 
+    /* Confine the samples table to its own scroll container so
+       in-table scrolling doesn't move the upper controls (Sort by /
+       Filter by / per-page / pagination) off-screen. min-height
+       keeps the table usable on short viewports; max-height pegs it
+       to the viewport so the page-level scroll only kicks in past
+       the table boundary. */
+    #table-container {
+        max-height: calc(100vh - 260px);
+        min-height: 360px;
+        overflow: auto;
+    }
+    /* Keep column headers visible while the user scrolls the rows
+       inside the container. */
+    #dataset-table thead th {
+        position: sticky;
+        top: 0;
+        background: var(--bs-body-bg);
+        z-index: 5;
+    }
+
     .tag-input-wrapper {
         padding-right: 30px;
         /* Make room for X */
