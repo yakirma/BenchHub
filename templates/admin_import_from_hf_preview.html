@@ -404,6 +404,13 @@
         return JSON.stringify({shape_match: shapeRef});
     }
 
+    function gtRowForFieldName(fieldName) {
+        for (const row of document.querySelectorAll('tr.field-row')) {
+            if (row.dataset.fieldName === fieldName) return row;
+        }
+        return null;
+    }
+
     function addAutoPredRow(fieldName, kind) {
         if (predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`)) return;
         const frag = predTpl.content.cloneNode(true);
@@ -435,6 +442,13 @@
                 window.__bhRefreshParams(tr);
             }
         }
+        // Mirror gt-side per-kind params (label names, depth unit,
+        // bboxes format, mask ignore_index, ...) so the pred row
+        // doesn't ship a stale default that fights the gt contract.
+        const gtRow = gtRowForFieldName(fieldName);
+        if (gtRow && window.__bhCopyGtParamsToPred) {
+            window.__bhCopyGtParamsToPred(gtRow, tr);
+        }
     }
     function removeAutoPredRow(fieldName) {
         const row = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
@@ -461,6 +475,10 @@
         // (the change event from setting .value programmatically
         // doesn't fire on its own).
         if (window.__bhRefreshParams) window.__bhRefreshParams(predRow);
+        // Re-mirror gt params after a kind switch — without this the
+        // pred row's new panel would show its blank defaults instead
+        // of the gt's freshly-edited values.
+        if (window.__bhCopyGtParamsToPred) window.__bhCopyGtParamsToPred(row, predRow);
     }
 
     // Event delegation on `document` so we don't depend on row-level
@@ -706,6 +724,27 @@
         refreshShapeMatchOptions(row);
         refreshShapeControls(row);
         refreshPanelsForRow(row);
+    };
+
+    // Mirror a gt row's per-kind param controls into the matching
+    // pred row. We match controls by `data-key`, so e.g. label's
+    // `names` textarea and depth's `unit` select propagate from gt
+    // to pred. Shape controls are NOT mirrored — the pred shape
+    // contract is independent (admin picks any / match input /
+    // fixed). The pred row's JSON is rebuilt after the copy.
+    window.__bhCopyGtParamsToPred = (gtRow, predRow) => {
+        const kind = kindOfRow(gtRow);
+        const gtPanel = gtRow.querySelector(`.params-panel[data-kind="${kind}"]`);
+        const predPanel = predRow.querySelector(`.params-panel[data-kind="${kind}"]`);
+        if (!gtPanel || !predPanel) return;
+        gtPanel.querySelectorAll('.params-input').forEach((gtEl) => {
+            const key = gtEl.dataset.key;
+            if (!key) return;
+            const predEl = predPanel.querySelector(`.params-input[data-key="${key}"]`);
+            if (!predEl) return;
+            predEl.value = gtEl.value;
+        });
+        rebuildJsonForRow(predRow);
     };
 })();
 
