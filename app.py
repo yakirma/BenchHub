@@ -3681,6 +3681,35 @@ _PWC_AREA_RULES = [
 ]
 
 
+def _extract_metric_arg_names(python_code: str) -> list[str]:
+    """Pull the parameter names off the first FunctionDef in a
+    GlobalMetric's source. Used by the LB-creation form to render
+    one input row per arg so the admin can map each to a dataset
+    field. Anything that fails to parse (or has no top-level
+    function) returns an empty list — caller treats that as "ask
+    for a single `gt` field" by convention.
+
+    Excludes self/cls, *args / **kwargs, and the conventional
+    `pred` arg (which the LB derives from the matching pred
+    contract field automatically, so the admin shouldn't have to
+    map it explicitly).
+    """
+    import ast as _ast
+    try:
+        tree = _ast.parse(python_code or '')
+    except SyntaxError:
+        return []
+    for node in tree.body:
+        if isinstance(node, _ast.FunctionDef):
+            names: list[str] = []
+            for a in node.args.args:
+                if a.arg in ('self', 'cls'):
+                    continue
+                names.append(a.arg)
+            return names
+    return []
+
+
 def _metric_domain(metric):
     """Return the bucket label for one GlobalMetric. Falls through to
     'Other' when no rule matches — that bucket is the catchall and
@@ -7638,6 +7667,9 @@ def create_leaderboard():
 
     new_leaderboard = Leaderboard(
         name=leaderboard_name,
+        # Legacy CSV; the structured per-metric rows below are the
+        # authoritative source. Still populated so any old reader
+        # that grovels the column sees a sensible string.
         summary_metrics=','.join(request.form.getlist('summary_metrics')),
         owner_user_id=g.current_user.id,
         category=(request.form.get('category') or '').strip() or None,
@@ -7658,32 +7690,39 @@ def create_leaderboard():
 
     db.session.add(new_leaderboard)
     db.session.commit() # Commit to get ID
-    
-    # Pre-populate Standard Aggregated Metrics
-    aggregated_metrics = []
-    
-    for m in aggregated_metrics:
-        # Check if GlobalMetric exists, else create it
-        gm = GlobalMetric.query.filter_by(name=m['name']).first()
-        if not gm:
-            gm = GlobalMetric(
-                name=m['name'],
-                description=f"Default aggregated metric: {m['name']}",
-                python_code=m['code'],
-                is_aggregated=True
-            )
-            db.session.add(gm)
-            db.session.flush() # Get ID
-        
-        # Link to leaderboard via LeaderboardMetric
+
+    # Structured per-metric rows from the dataset-view inline form:
+    # parallel arrays of `metric_global_id` + `metric_mappings_json`
+    # (JSON dict of {arg_name: gt_field_name}). Each surviving pair
+    # becomes a LeaderboardMetric row bound to the user's picked
+    # GlobalMetric with the chosen arg mappings.
+    raw_metric_ids = request.form.getlist('metric_global_id')
+    raw_metric_mappings = request.form.getlist('metric_mappings_json')
+    for i, gm_id_raw in enumerate(raw_metric_ids):
+        gm_id_raw = (gm_id_raw or '').strip()
+        if not gm_id_raw:
+            continue
+        try:
+            gm_id = int(gm_id_raw)
+        except ValueError:
+            continue
+        gm = GlobalMetric.query.get(gm_id)
+        if gm is None:
+            continue
+        mapping_raw = raw_metric_mappings[i] if i < len(raw_metric_mappings) else ''
+        try:
+            mapping = json.loads(mapping_raw) if mapping_raw else {}
+            if not isinstance(mapping, dict):
+                mapping = {}
+        except (TypeError, ValueError):
+            mapping = {}
         lm = LeaderboardMetric(
             leaderboard_id=new_leaderboard.id,
             global_metric_id=gm.id,
-            arg_mappings=json.dumps(m['mappings'])
+            arg_mappings=json.dumps(mapping),
         )
         db.session.add(lm)
-    db.session.commit()
-    
+
     db.session.commit()
     
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
@@ -9887,10 +9926,36 @@ def dataset_view(dataset_id):
     ]
     
     # Also ensure selected_display_columns are sorted by priority
-    selected_display_columns = sorted(selected_display_columns, 
+    selected_display_columns = sorted(selected_display_columns,
                                        key=lambda x: get_column_priority(x, available_display_options.get(x, {}).get('type'), x in dataset_custom_fields))
 
-    return render_template('dataset_view.html', 
+    # LB-creation inline form options: pick from the user's visible
+    # GlobalMetrics + this dataset's GT field names. Each metric is
+    # serialised with its parameter names so the JS can render an
+    # input mapping row per arg when the admin picks one.
+    available_metrics_for_lb = []
+    for gm in (
+        GlobalMetric.query
+        .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
+        .order_by(GlobalMetric.name)
+        .all()
+    ):
+        args = _extract_metric_arg_names(gm.python_code or '')
+        available_metrics_for_lb.append({
+            'id': gm.id,
+            'name': gm.name,
+            'description': (gm.description or '').strip(),
+            'args': args,
+        })
+    # GT-bearing field names — what the admin can map metric inputs
+    # to. Use the DatasetField schema rows (role='gt') so the list
+    # is stable across importers and survives a dataset with zero
+    # samples loaded (e.g. before materialisation finishes).
+    gt_field_options = sorted({
+        df.name for df in dataset.fields if (df.role or '').lower() == 'gt'
+    })
+
+    return render_template('dataset_view.html',
                            dataset=dataset, 
                            paginated_samples=paginated_samples, 
                            samples_data_for_charts=samples_data_for_charts, 
@@ -9916,7 +9981,9 @@ def dataset_view(dataset_id):
                            filter_value=filter_value,
                            filterable_fields=filterable_fields,
                            filterable_field_types=filterable_kinds,
-                           filter_suggestions=filter_suggestions)
+                           filter_suggestions=filter_suggestions,
+                           available_metrics_for_lb=available_metrics_for_lb,
+                           gt_field_options=gt_field_options)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])
