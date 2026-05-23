@@ -600,7 +600,10 @@
         </div>
 
         <!-- Row 2: Per Page and Sorting -->
-        <div id="dataset-view-controls" class="d-flex align-items-center mb-3">
+        {# scroll-margin-top accounts for the fixed-top header so the
+           #dataset-view-controls anchor doesn't land under it. #}
+        <div id="dataset-view-controls" class="d-flex align-items-center mb-3"
+             style="scroll-margin-top: 90px;">
             <div class="d-flex align-items-center me-4">
                 <select id="per_page_select" name="per_page" onchange="submitToControlsAnchor(this.form)"
                     class="form-select form-select-sm" style="width: auto;">
@@ -654,12 +657,15 @@
                    field — vocab names for labels, distinct
                    value_texts for text fields, distinct sample names
                    for sample_name. Numeric kinds have no list. #}
-                <input type="text" name="filter_value" value="{{ filter_value or '' }}"
+                <input id="filter_value_input" type="text" name="filter_value"
+                       value="{{ filter_value or '' }}"
                        class="form-control form-control-sm" style="width: 14em;"
                        placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}"
                        list="filter-value-suggestions"
                        autocomplete="off"
-                       onchange="submitToControlsAnchor(this.form)">
+                       onchange="submitToControlsAnchor(this.form)"
+                       onfocus="filterValueOnFocus(this)"
+                       onblur="filterValueOnBlur(this)">
                 <datalist id="filter-value-suggestions">
                     {% for sug in filter_suggestions %}
                     <option value="{{ sug }}"></option>
@@ -1130,6 +1136,34 @@
             console.error('SessionStorage error:', e);
         }
         form.submit();
+    };
+
+    // Browser-native <datalist> hides the suggestions when the
+    // input's value already matches one of the options (which is the
+    // case after the user has picked a filter and the page reloaded).
+    // Re-clicking the input should re-open the dropdown — clear the
+    // value on focus, remember it, restore on blur if the user
+    // didn't pick anything. The submit-on-change handler runs only
+    // when the value actually differs from what we restored.
+    window.filterValueOnFocus = function (el) {
+        el.dataset.prevValue = el.value;
+        if (el.value) {
+            el.value = '';
+            // Nudge the browser to re-evaluate the datalist for the
+            // now-empty input. Some Chromium builds need this kick
+            // to actually render the suggestion popover.
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
+    window.filterValueOnBlur = function (el) {
+        const prev = el.dataset.prevValue;
+        if (el.value === '' && prev !== undefined && prev !== '') {
+            // User clicked elsewhere without picking anything —
+            // restore so we don't trigger a needless reload to a
+            // blank-filter state.
+            el.value = prev;
+        }
+        delete el.dataset.prevValue;
     };
 
     // Like saveScrollAndSubmit but appends a `#dataset-view-controls`
