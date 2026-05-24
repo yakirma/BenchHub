@@ -115,7 +115,7 @@
                             <th class="ps-3">Field name</th>
                             <th>Samples</th>
                             <th style="width: 240px;">Type</th>
-                            <th class="pe-3" style="width: 240px;">Role</th>
+                            <th class="pe-3" style="width: 360px;">Role</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -150,7 +150,12 @@
                                 <form method="post"
                                     action="{{ url_for('update_dataset_field_role', dataset_id=dataset.id, field_name=f.name) }}"
                                     class="d-flex gap-1">
-                                    <select name="role" class="form-select form-select-sm">
+                                    {# min-width so the longest option
+                                       label fits without truncation; the
+                                       outer flex still lets it grow if
+                                       the column gets wider. #}
+                                    <select name="role" class="form-select form-select-sm"
+                                            style="min-width: 230px;">
                                         <option value="gt" {{ 'selected' if f.role == 'gt' }}>gt — predicted server-side</option>
                                         <option value="input" {{ 'selected' if f.role == 'input' }}>input — given to submitter</option>
                                         <option value="skip" {{ 'selected' if f.role == 'skip' }}>skip — not used</option>
