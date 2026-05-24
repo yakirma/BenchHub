@@ -8,7 +8,7 @@ predictions" card on /leaderboard/<id>:
 
 Both bake the LB id into the file, list one constructor per
 declared pred field (so the LB's actual contract is visible at the
-top of the file), and instruct the user to set BENCHHUB_TOKEN.
+top of the file), and instruct the user to set BENCHHUB_API_TOKEN.
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_submission_script_route_returns_python(client, db_session):
     assert r.status_code == 200
     assert r.mimetype.startswith('text/x-python')
     body = r.data.decode('utf-8')
-    assert 'BENCHHUB_TOKEN' in body
+    assert 'BENCHHUB_API_TOKEN' in body
     assert f'LEADERBOARD_ID = {lb.id}' in body
     assert 'bh.Client' in body
     # No `token="YOUR_API_TOKEN"` placeholder — env var is the contract.
@@ -84,7 +84,7 @@ def test_submission_notebook_route_returns_ipynb_json(client, db_session):
         for c in nb['cells']
     )
     assert 'pip install -q benchhub-client' in all_src
-    assert 'BENCHHUB_TOKEN' in all_src
+    assert 'BENCHHUB_API_TOKEN' in all_src
     assert 'google.colab' in all_src
     assert 'userdata' in all_src
     assert f'LEADERBOARD_ID = {lb.id}' in all_src
@@ -101,7 +101,7 @@ def test_lb_page_renders_submit_action_buttons(client, db_session):
     assert 'Download script (.py)' in body
     # Code snippet uses the env-var path, not the literal placeholder.
     assert 'YOUR_API_TOKEN' not in body
-    assert 'BENCHHUB_TOKEN' in body
+    assert 'BENCHHUB_API_TOKEN' in body
     # The old toolbar Submit button is no longer in the action row.
     # (The text "Submit" still appears in headings; check the
     # specific old button class instead.)
@@ -109,26 +109,18 @@ def test_lb_page_renders_submit_action_buttons(client, db_session):
     assert 'bi-rocket-takeoff me-1"></i>Submit\n' not in body  # old text-only "Submit" button
 
 
-def test_bh_client_reads_BENCHHUB_TOKEN_env(monkeypatch):
-    """bh.Client() with no explicit token reads BENCHHUB_TOKEN first."""
+def test_bh_client_reads_BENCHHUB_API_TOKEN_env(monkeypatch):
+    """bh.Client() with no explicit token reads BENCHHUB_API_TOKEN
+    from the environment."""
     import benchhub as bh
-    monkeypatch.setenv('BENCHHUB_TOKEN', 'tok_new')
-    monkeypatch.delenv('BENCHHUB_API_TOKEN', raising=False)
+    monkeypatch.setenv('BENCHHUB_API_TOKEN', 'tok_from_env')
     c = bh.Client()
-    assert c.token == 'tok_new'
+    assert c.token == 'tok_from_env'
 
 
-def test_bh_client_falls_back_to_BENCHHUB_API_TOKEN_env(monkeypatch):
-    """Backwards compat: BENCHHUB_API_TOKEN still works."""
+def test_bh_client_explicit_token_beats_env(monkeypatch):
+    """Explicit token= arg wins over the env var."""
     import benchhub as bh
-    monkeypatch.delenv('BENCHHUB_TOKEN', raising=False)
-    monkeypatch.setenv('BENCHHUB_API_TOKEN', 'tok_legacy')
-    c = bh.Client()
-    assert c.token == 'tok_legacy'
-
-
-def test_bh_client_prefers_new_env_var_over_legacy(monkeypatch):
-    import benchhub as bh
-    monkeypatch.setenv('BENCHHUB_TOKEN', 'tok_new')
-    monkeypatch.setenv('BENCHHUB_API_TOKEN', 'tok_legacy')
-    assert bh.Client().token == 'tok_new'
+    monkeypatch.setenv('BENCHHUB_API_TOKEN', 'tok_env')
+    c = bh.Client(token='tok_explicit')
+    assert c.token == 'tok_explicit'

@@ -5480,7 +5480,7 @@ def _ipynb_to_python(notebook_json, lb=None):
 
 def _submission_script_source(lb) -> str:
     """Generate a self-contained submission script for an LB. Reads
-    BENCHHUB_TOKEN from the environment, walks placeholder sample
+    BENCHHUB_API_TOKEN from the environment, walks placeholder sample
     names, and POSTs the ZIP to /api/submit/<lb_id>. The user fills
     in the actual prediction logic — sample names + field
     construction — between the marked `# === fill in: ===` blocks."""
@@ -5525,12 +5525,12 @@ def _submission_script_source(lb) -> str:
     return f'''#!/usr/bin/env python
 """Submission script for BenchHub leaderboard {lb.id} ({lb.name!r}).
 
-Reads BENCHHUB_TOKEN from your environment, runs your model over
+Reads BENCHHUB_API_TOKEN from your environment, runs your model over
 every sample on the leaderboard, and uploads the predictions.
 
 Setup:
     pip install benchhub-client    # ships `bh.Client`, types, etc.
-    export BENCHHUB_TOKEN=<your token from BenchHub Settings>
+    export BENCHHUB_API_TOKEN=<your token from BenchHub Settings>
 
 Then:
     python {lb.name.replace(' ', '_')}_submit.py
@@ -5542,10 +5542,10 @@ import benchhub as bh
 LEADERBOARD_ID = {lb.id}
 BASE_URL = {(_get_base_url() or 'https://runbenchhub.com')!r}
 
-if not os.environ.get('BENCHHUB_TOKEN') and not os.environ.get('BENCHHUB_API_TOKEN'):
+if not os.environ.get('BENCHHUB_API_TOKEN'):
     raise SystemExit(
-        "BENCHHUB_TOKEN is not set. Get a token from "
-        f"{{BASE_URL}}/settings and run: export BENCHHUB_TOKEN=<token>"
+        "BENCHHUB_API_TOKEN is not set. Get a token from "
+        f"{{BASE_URL}}/settings and run: export BENCHHUB_API_TOKEN=<token>"
     )
 
 client = bh.Client(base_url=BASE_URL)
@@ -5576,7 +5576,7 @@ print(result)  # → {{'submission_id': ..., 'view_url': '...'}}
 
 def _submission_notebook_source(lb) -> str:
     """Generate a Colab-flavoured `.ipynb` for the LB. Reads
-    BENCHHUB_TOKEN from `google.colab.userdata` (Colab Secrets) when
+    BENCHHUB_API_TOKEN from `google.colab.userdata` (Colab Secrets) when
     running on Colab, falling back to the environment otherwise."""
     script = _submission_script_source(lb)
     # The script's pip-install + token-bootstrap step gets split out
@@ -5589,16 +5589,16 @@ def _submission_notebook_source(lb) -> str:
         "!pip install -q benchhub-client numpy\n"
     )
     token_cell = (
-        "# Pull BENCHHUB_TOKEN out of Colab Secrets (left sidebar →\n"
-        "# key icon → add new secret → name=BENCHHUB_TOKEN, value=<your token from BenchHub Settings>).\n"
+        "# Pull BENCHHUB_API_TOKEN out of Colab Secrets (left sidebar →\n"
+        "# key icon → add new secret → name=BENCHHUB_API_TOKEN, value=<your token from BenchHub Settings>).\n"
         "# Falls back to an env var when running outside Colab.\n"
         "import os\n"
         "try:\n"
         "    from google.colab import userdata\n"
-        "    os.environ['BENCHHUB_TOKEN'] = userdata.get('BENCHHUB_TOKEN')\n"
+        "    os.environ['BENCHHUB_API_TOKEN'] = userdata.get('BENCHHUB_API_TOKEN')\n"
         "except Exception:\n"
         "    pass\n"
-        "assert os.environ.get('BENCHHUB_TOKEN'), 'Set BENCHHUB_TOKEN in Colab Secrets'\n"
+        "assert os.environ.get('BENCHHUB_API_TOKEN'), 'Set BENCHHUB_API_TOKEN in Colab Secrets'\n"
     )
     body_cell = script
 

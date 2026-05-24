@@ -1615,7 +1615,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <a class="btn btn-success"
                href="https://colab.research.google.com/#fileId={{ _nb_url | urlencode }}"
                target="_blank" rel="noopener"
-               title="Open this LB's submission notebook in Colab. Set BENCHHUB_TOKEN as a Colab Secret first.">
+               title="Open this LB's submission notebook in Colab. Set BENCHHUB_API_TOKEN as a Colab Secret first.">
                 <i class="bi bi-rocket-takeoff me-1"></i>Submit via Colab
             </a>
             <a class="btn btn-outline-primary"
@@ -1625,7 +1625,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             </a>
             <a class="btn btn-outline-primary"
                href="{{ url_for('leaderboard_submission_script', leaderboard_id=leaderboard.id) }}"
-               title="Self-contained Python script. Reads BENCHHUB_TOKEN from env.">
+               title="Self-contained Python script. Reads BENCHHUB_API_TOKEN from env.">
                 <i class="bi bi-file-earmark-code me-1"></i>Download script (.py)
             </a>
         </div>
@@ -1633,17 +1633,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         <p class="small text-body-secondary mb-1">
             Both downloads use the LB's current pred contract — the
             predict-call snippet has one slot per declared pred field.
-            For Colab, set <code>BENCHHUB_TOKEN</code> as a
+            For Colab, set <code>BENCHHUB_API_TOKEN</code> as a
             <a href="https://colab.research.google.com/notebooks/secrets.ipynb"
                target="_blank" rel="noopener">Colab Secret</a>
             (left sidebar → key icon). Locally, export it as an env var:
         </p>
         <pre class="bg-body-tertiary p-3 rounded border small mb-2" style="font-size: 0.85em;"><code>pip install benchhub-client
-export BENCHHUB_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
+export BENCHHUB_API_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
 
 # Inline use (no script download):
 import benchhub as bh
-client = bh.Client()                                    # reads $BENCHHUB_TOKEN
+client = bh.Client()                                    # reads $BENCHHUB_API_TOKEN
 sub = client.submission(lb_id={{ leaderboard.id }})
 for sample_name in [...]:
     sub.predict(sample_name,
