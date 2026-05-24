@@ -118,8 +118,12 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
             else:
                  call_kwargs[arg] = _resolve_context_value(context, mapping_key, wants_typed)
         
-        # Execute code
-        local_scope = {'np': np} # Inject common libs
+        # Execute code. Inject `bh` / `benchhub` aliases so user
+        # metrics can use `bh.Label` typed annotations + isinstance
+        # asserts without an explicit `import benchhub as bh` at the
+        # top of every metric file (still works if they include it).
+        import benchhub as _bh
+        local_scope = {'np': np, 'bh': _bh, 'benchhub': _bh}
         exec(global_metric.python_code, local_scope)
         
         # Find the function (assuming name matches or it's the only one?)

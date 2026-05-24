@@ -153,6 +153,89 @@ def test_unconstrained_metric_falls_through_to_legacy_behaviour(client, db_sessi
     assert LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).count() == 1
 
 
+def test_create_metric_autoderives_kinds_from_signature(client, db_session):
+    """A metric authored with `gt: bh.Label, pred: bh.Label` style
+    annotations has its input_kinds auto-derived from the AST at
+    save time — admin can leave the comma-sep field blank."""
+    user, _ = _seed_user_and_dataset()
+    _login(client, user)
+    code = (
+        "import benchhub as bh\n"
+        "def acc(gt: bh.Label, pred: bh.Label):\n"
+        "    assert isinstance(gt, bh.Label)\n"
+        "    assert isinstance(pred, bh.Label)\n"
+        "    return float(gt.value == pred.value)\n"
+    )
+    r = client.post('/metrics/create', data={
+        'name': 'auto_typed_acc',
+        'description': 'auto-typed',
+        'python_code': code,
+        # input_kinds / input_roles intentionally left blank — they
+        # should fall back to the signature + arg-name heuristic.
+    }, follow_redirects=False)
+    assert r.status_code in (200, 302)
+    gm = GlobalMetric.query.filter_by(name='auto_typed_acc').first()
+    assert gm is not None
+    assert json.loads(gm.input_kinds) == ['label', 'label']
+    assert json.loads(gm.input_roles) == ['gt', 'pred']
+
+
+def test_create_metric_autoderives_with_attribute_alias(client, db_session):
+    """`benchhub.Depth` style annotations resolve the same as the
+    short alias `bh.Depth` — we walk attribute access either way."""
+    user, _ = _seed_user_and_dataset()
+    _login(client, user)
+    code = (
+        "import benchhub\n"
+        "def rmse(gt: benchhub.Depth, pred: benchhub.Depth):\n"
+        "    return float(((gt.array - pred.array) ** 2).mean() ** 0.5)\n"
+    )
+    r = client.post('/metrics/create', data={
+        'name': 'auto_typed_rmse',
+        'description': '',
+        'python_code': code,
+    }, follow_redirects=False)
+    gm = GlobalMetric.query.filter_by(name='auto_typed_rmse').first()
+    assert gm is not None
+    assert json.loads(gm.input_kinds) == ['depth', 'depth']
+    assert json.loads(gm.input_roles) == ['gt', 'pred']
+
+
+def test_create_metric_without_annotations_leaves_kinds_null(client, db_session):
+    """Legacy untyped signatures stay unconstrained — NULL columns."""
+    user, _ = _seed_user_and_dataset()
+    _login(client, user)
+    code = "def my(a, b):\n    return float(a == b)\n"
+    r = client.post('/metrics/create', data={
+        'name': 'untyped',
+        'description': '',
+        'python_code': code,
+    }, follow_redirects=False)
+    gm = GlobalMetric.query.filter_by(name='untyped').first()
+    assert gm is not None
+    assert gm.input_kinds is None
+    assert gm.input_roles is None
+
+
+def test_explicit_kinds_override_signature(client, db_session):
+    """An explicit `input_kinds` form field wins over the
+    annotation-derived value, so admins can override a misleading
+    annotation without rewriting the source."""
+    user, _ = _seed_user_and_dataset()
+    _login(client, user)
+    code = "def m(gt: int, pred: int):\n    return float(gt == pred)\n"
+    r = client.post('/metrics/create', data={
+        'name': 'override',
+        'description': '',
+        'python_code': code,
+        'input_kinds': 'label, label',
+        'input_roles': 'gt, pred',
+    }, follow_redirects=False)
+    gm = GlobalMetric.query.filter_by(name='override').first()
+    assert json.loads(gm.input_kinds) == ['label', 'label']
+    assert json.loads(gm.input_roles) == ['gt', 'pred']
+
+
 def test_edit_global_metric_writes_input_kinds_and_roles(client, db_session):
     user, _ = _seed_user_and_dataset()
     _login(client, user)

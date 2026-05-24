@@ -278,14 +278,22 @@
                     <div class="mb-3">
                         <label for="metric-code" class="form-label">Python Implementation</label>
                         <div class="form-text mb-2">
-                            Write a Python function that calculates your metric. The function name affects how it's
-                            called, but the arguments are key.
-                            <br>Example: <code>def score(gt, prediction): return abs(gt - prediction)</code>
+                            Write a Python function with typed args using
+                            <code>benchhub.types</code> (aliased as <code>bh</code>).
+                            Annotations like <code>gt: bh.Label</code> are parsed on
+                            save to auto-fill <strong>Input kinds</strong> below; arg
+                            names like <code>gt</code> / <code>pred</code> /
+                            <code>input</code> fill in <strong>Input roles</strong>.
+                            <strong>Assert</strong> each instance so a wrong binding
+                            fails loudly at eval time.
                         </div>
-                        <textarea class="form-control font-monospace" id="metric-code" name="python_code" rows="10"
-                            required>def my_metric(arg1, arg2):
-    # Your code here
-    return 0.0</textarea>
+                        <textarea class="form-control font-monospace" id="metric-code" name="python_code" rows="12"
+                            required>import benchhub as bh
+
+def my_metric(gt: bh.Label, pred: bh.Label):
+    assert isinstance(gt, bh.Label),   f"gt must be bh.Label, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Label), f"pred must be bh.Label, got {type(pred).__name__}"
+    return float(gt.value == pred.value)</textarea>
                     </div>
 
                     <div class="mb-3 form-check">

@@ -3717,6 +3717,128 @@ def _extract_metric_arg_names(python_code: str) -> list[str]:
     return []
 
 
+_METRIC_ROLE_GT_TOKENS = {
+    'gt', 'target', 'y_true', 'truth', 'gold', 'label_true', 'ground_truth',
+}
+_METRIC_ROLE_PRED_TOKENS = {
+    'pred', 'prediction', 'y_pred', 'output', 'predicted', 'pred_label',
+}
+_METRIC_ROLE_INPUT_TOKENS = {
+    'input', 'x', 'img', 'image', 'inp', 'src',
+}
+
+
+def _kinds_from_signature(python_code: str) -> list[str]:
+    """Parse the first FunctionDef in `python_code` and return the
+    BH kinds inferred from each arg's type annotation. Examples
+    that resolve:
+
+        def acc(gt: bh.Label, pred: bh.Label)       → ['label', 'label']
+        def rmse(gt: Depth, pred: Depth)            → ['depth', 'depth']
+        def fid(gt: benchhub.Image, pred: Image)    → ['image', 'image']
+
+    Annotations that don't name a known DTYPES class slot are
+    represented as an empty string in the returned list (so the
+    array length still matches the arg count). Returns [] when
+    parsing fails or no arg has any useful annotation — keeps the
+    caller's "input_kinds = NULL ⇒ unconstrained" fallback intact.
+    """
+    import ast as _ast
+    from benchhub.types import DTYPES
+    name_to_kind = {cls.__name__: kind for kind, cls in DTYPES.items()}
+    try:
+        tree = _ast.parse(python_code or '')
+    except SyntaxError:
+        return []
+    for node in tree.body:
+        if isinstance(node, _ast.FunctionDef):
+            kinds: list[str] = []
+            saw_any = False
+            for a in node.args.args:
+                if a.arg in ('self', 'cls'):
+                    continue
+                ann = a.annotation
+                if ann is None:
+                    kinds.append('')
+                    continue
+                final_name = None
+                if isinstance(ann, _ast.Name):
+                    final_name = ann.id
+                elif isinstance(ann, _ast.Attribute):
+                    final_name = ann.attr
+                kind = name_to_kind.get(final_name) if final_name else None
+                kinds.append(kind or '')
+                if kind:
+                    saw_any = True
+            return kinds if saw_any else []
+    return []
+
+
+def _apply_metric_typed_contract(metric, *, kinds_raw, roles_raw, python_code):
+    """Set `metric.input_kinds` / `metric.input_roles` from the form
+    submission, with auto-derivation fallbacks:
+
+      - kinds: explicit comma-sep > annotations on the function args
+        (`bh.Label`, `Depth`, …) > NULL.
+      - roles: explicit comma-sep > arg-name heuristic (gt / pred /
+        input tokens) > NULL.
+
+    Raises ValueError on any explicit-but-invalid value so the route
+    can flash a clear error.
+    """
+    from benchhub.types import DTYPES as _DTYPES_VALID
+    _VALID_ROLES = {'gt', 'pred', 'input'}
+    args = _extract_metric_arg_names(python_code or '')
+
+    # Kinds --------------------------------------------------------
+    if kinds_raw == '':
+        derived = _kinds_from_signature(python_code or '')
+        # Drop trailing empties to keep the JSON compact; if every
+        # entry is empty the column stays NULL.
+        while derived and not derived[-1]:
+            derived.pop()
+        metric.input_kinds = json.dumps(derived) if derived else None
+    else:
+        kinds = [k.strip() for k in kinds_raw.split(',') if k.strip()]
+        bad = [k for k in kinds if k not in _DTYPES_VALID]
+        if bad:
+            raise ValueError(f"unknown kind(s): {bad}")
+        metric.input_kinds = json.dumps(kinds)
+
+    # Roles --------------------------------------------------------
+    if roles_raw == '':
+        derived = _roles_from_arg_names(args)
+        while derived and not derived[-1]:
+            derived.pop()
+        metric.input_roles = json.dumps(derived) if derived else None
+    else:
+        roles = [r.strip().lower() for r in roles_raw.split(',') if r.strip()]
+        bad = [r for r in roles if r not in _VALID_ROLES]
+        if bad:
+            raise ValueError(f"unknown role(s): {bad}; expected {sorted(_VALID_ROLES)}")
+        metric.input_roles = json.dumps(roles)
+
+
+def _roles_from_arg_names(args: list[str]) -> list[str]:
+    """Heuristic role-per-arg from conventional arg names. Returns
+    [] when no arg matches a known token, so the caller can keep
+    `input_roles = NULL` rather than ship a meaningless half-filled
+    array."""
+    out: list[str] = []
+    any_match = False
+    for a in args:
+        lower = (a or '').lower()
+        if lower in _METRIC_ROLE_GT_TOKENS:
+            out.append('gt'); any_match = True
+        elif lower in _METRIC_ROLE_PRED_TOKENS:
+            out.append('pred'); any_match = True
+        elif lower in _METRIC_ROLE_INPUT_TOKENS:
+            out.append('input'); any_match = True
+        else:
+            out.append('')
+    return out if any_match else []
+
+
 def _metric_domain(metric):
     """Return the bucket label for one GlobalMetric. Falls through to
     'Other' when no rule matches — that bucket is the catchall and
@@ -3867,6 +3989,12 @@ def create_global_metric():
             owner_user_id=g.current_user.id,
             visibility=default_vis,
         )
+        _apply_metric_typed_contract(
+            metric,
+            kinds_raw=(request.form.get('input_kinds') or '').strip(),
+            roles_raw=(request.form.get('input_roles') or '').strip(),
+            python_code=python_code,
+        )
         db.session.add(metric)
         db.session.commit()
         flash(f'Metric "{name}" created successfully.', 'success')
@@ -3909,30 +4037,15 @@ def edit_global_metric(metric_id):
         metric.python_code = python_code
         metric.is_aggregated = 'is_aggregated' in request.form
         metric.accepts_aggregated_inputs = 'accepts_aggregated_inputs' in request.form
-        # Typed contract: parallel comma-separated lists of kinds +
-        # roles per arg, matched against benchhub.types.DTYPES on
-        # the kind side and {'gt','pred','input'} on the role side.
-        # An empty string clears the column → "unconstrained".
-        from benchhub.types import DTYPES as _DTYPES_VALID
-        _VALID_ROLES = {'gt', 'pred', 'input'}
-        kinds_raw = (request.form.get('input_kinds') or '').strip()
-        roles_raw = (request.form.get('input_roles') or '').strip()
-        if kinds_raw == '':
-            metric.input_kinds = None
-        else:
-            kinds = [k.strip() for k in kinds_raw.split(',') if k.strip()]
-            bad = [k for k in kinds if k not in _DTYPES_VALID]
-            if bad:
-                raise ValueError(f"unknown kind(s): {bad}")
-            metric.input_kinds = json.dumps(kinds)
-        if roles_raw == '':
-            metric.input_roles = None
-        else:
-            roles = [r.strip().lower() for r in roles_raw.split(',') if r.strip()]
-            bad = [r for r in roles if r not in _VALID_ROLES]
-            if bad:
-                raise ValueError(f"unknown role(s): {bad}; expected {sorted(_VALID_ROLES)}")
-            metric.input_roles = json.dumps(roles)
+        # Typed contract: explicit form fields win, otherwise we
+        # derive from the function signature (kinds from `bh.X`
+        # annotations) + arg-name heuristic (roles).
+        _apply_metric_typed_contract(
+            metric,
+            kinds_raw=(request.form.get('input_kinds') or '').strip(),
+            roles_raw=(request.form.get('input_roles') or '').strip(),
+            python_code=python_code,
+        )
 
         db.session.commit()
         flash(f'Metric "{metric.name}" updated.', 'success')
