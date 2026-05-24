@@ -4496,6 +4496,56 @@ def _public_name_in_use(model_cls, name, exclude_id=None):
     return q.first() is not None
 
 
+@app.route('/leaderboard/<int:leaderboard_id>/dataset_field_roles', methods=['POST'])
+@login_required
+def edit_lb_dataset_field_roles(leaderboard_id):
+    """Persist per-LB role overrides for fields from attached typed
+    datasets. Writes to `Leaderboard.field_roles_json`, which the
+    picker + runtime context-builder both honour.
+
+    Form payload: one `field_role_<dataset_field_name>` per field,
+    with value `input` / `gt` / `skip`. Missing entries fall back to
+    the dataset's declared role.
+
+    Gating mirrors pred-field editing: LB owner, admin, or owner of
+    any attached Dataset.
+    """
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if not _can_edit_lb_preds(lb, user):
+        abort(403)
+    has_verified = any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (lb.submissions or [])
+    )
+    if has_verified:
+        flash("Can't change field roles — this LB already has verified "
+              "submissions.", "warning")
+        return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+
+    # Build the set of known field names across attached datasets so
+    # the form can't smuggle in roles for fields that don't exist.
+    known_fields: set[str] = set()
+    for ds in (lb.datasets or []):
+        for df in ds.fields:
+            known_fields.add(df.name)
+
+    overrides: dict[str, str] = {}
+    for key, val in request.form.items():
+        if not key.startswith('field_role_'):
+            continue
+        name = key[len('field_role_'):]
+        if name not in known_fields:
+            continue
+        v = (val or '').strip().lower()
+        if v in ('input', 'gt', 'skip'):
+            overrides[name] = v
+    lb.field_roles_json = json.dumps(overrides) if overrides else None
+    db.session.commit()
+    flash("Saved dataset field roles.", "success")
+    return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/field_roles', methods=['POST'])
 @login_required
 @owner_required(Leaderboard, 'leaderboard_id')

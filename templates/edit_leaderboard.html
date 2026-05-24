@@ -118,6 +118,10 @@
             role="tab">Visualizations</button>
     </li>
     <li class="nav-item" role="presentation">
+        <button class="nav-link" id="dsf-tab" data-bs-toggle="tab" data-bs-target="#dsf-pane" type="button"
+            role="tab">Dataset fields</button>
+    </li>
+    <li class="nav-item" role="presentation">
         <button class="nav-link" id="pred-tab" data-bs-toggle="tab" data-bs-target="#pred-pane" type="button"
             role="tab">Prediction fields</button>
     </li>
@@ -750,7 +754,107 @@
         </div>
     </div>
 
-    <!-- Tab 4: Prediction fields editor -->
+    <!-- Tab 4: Dataset fields — per-LB role overrides for fields
+         supplied by attached datasets. The kind is intrinsic to the
+         underlying dataset (change it on the dataset's own settings
+         page); the role is per-LB (the same dataset can back many LBs
+         with different input/gt assignments). -->
+    <div class="tab-pane fade" id="dsf-pane" role="tabpanel" aria-labelledby="dsf-tab">
+        <div class="card border-0 shadow-sm mb-3">
+            <div class="card-body p-4">
+                <h5 class="fw-bold mb-2">Dataset fields</h5>
+                <p class="text-body-secondary small mb-3">
+                    For each field on this leaderboard's attached
+                    datasets, choose how it's used here:
+                    <strong>input</strong> (given to the submitter at
+                    inference time), <strong>gt</strong> (held
+                    server-side, scored against), or
+                    <strong>skip</strong> (ignored). The same dataset
+                    can back many leaderboards with different
+                    choices.
+                </p>
+
+                {% set _typed_fields = (dataset_field_options or [])|rejectattr('role', 'equalto', 'pred')|list %}
+                {% if _typed_fields %}
+                <form method="post"
+                      action="{{ url_for('edit_lb_dataset_field_roles', leaderboard_id=leaderboard.id) }}">
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead class="small text-uppercase text-body-secondary">
+                                <tr>
+                                    <th class="ps-3">Field</th>
+                                    <th style="width: 20%;">Type</th>
+                                    <th style="width: 32%;">Role on this leaderboard</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for f in _typed_fields %}
+                                <tr>
+                                    <td class="ps-3 font-monospace small">{{ f.name }}</td>
+                                    <td>
+                                        <span class="badge text-bg-light border small">{{ f.kind }}</span>
+                                    </td>
+                                    <td>
+                                        <select class="form-select form-select-sm"
+                                                name="field_role_{{ f.name }}"
+                                                {{ '' if pred_fields_editable else 'disabled' }}>
+                                            <option value="gt" {% if f.role == 'gt' %}selected{% endif %}>
+                                                GT — predicted server-side
+                                            </option>
+                                            <option value="input" {% if f.role == 'input' %}selected{% endif %}>
+                                                Input — given to submitter
+                                            </option>
+                                            <option value="skip" {% if f.role == 'skip' %}selected{% endif %}>
+                                                Skip — not used on this LB
+                                            </option>
+                                        </select>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% if not pred_fields_editable %}
+                    <div class="alert alert-warning small mt-3 mb-0">
+                        <i class="bi bi-lock me-1"></i>
+                        Roles are locked while this leaderboard has
+                        verified submissions — changing them now would
+                        silently re-route existing predictions through
+                        the wrong fields.
+                    </div>
+                    {% else %}
+                    <div class="text-end mt-3">
+                        <button type="submit" class="btn btn-primary">Save roles</button>
+                    </div>
+                    {% endif %}
+                </form>
+                {% else %}
+                <div class="text-center py-4 border rounded bg-body-tertiary">
+                    <p class="text-muted mb-0">
+                        No dataset fields to configure yet. Attach a
+                        dataset on the General tab first.
+                    </p>
+                </div>
+                {% endif %}
+
+                {# Type editing isn't done here — kinds are intrinsic
+                   to the dataset (the same `depth` field is the same
+                   bytes regardless of which LB consumes it). Link the
+                   user to the dataset's own settings page. #}
+                {% if leaderboard.datasets %}
+                <p class="small text-body-secondary mt-3 mb-0">
+                    Need to change a field's <strong>type</strong>?
+                    That lives with the dataset:
+                    {% for ds in leaderboard.datasets %}
+                    <a href="{{ url_for('dataset_settings', dataset_id=ds.id) }}">{{ ds.name }}</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab 5: Prediction fields editor -->
     <div class="tab-pane fade" id="pred-pane" role="tabpanel" aria-labelledby="pred-tab">
         {# Dataset-field role editor for HF-attached LBs. Each mapping
            entry gets a role: 'input' (shown to the submitter at

@@ -222,3 +222,93 @@ def test_pred_edit_forbidden_for_unrelated_user(client, db_session):
         'name_0': 'thing_pred', 'kind_0': 'scalar',
     })
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Dataset-fields tab — per-LB role overrides
+# ---------------------------------------------------------------------------
+
+
+def test_dataset_field_roles_tab_renders(client, db_session):
+    """The settings page exposes a "Dataset fields" tab with one row
+    per attached-dataset field; each row carries the field's kind +
+    a role selector."""
+    owner = User(email='df_owner@bench.local', display_name='o',
+                 oauth_provider='github', oauth_sub='df-1')
+    db.session.add(owner); db.session.flush()
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+
+    ds = Dataset(name='df_ds', owner_user_id=owner.id)
+    db.session.add(ds); db.session.flush()
+    _add_field(ds, 'rgb', kind='image', role='input')
+    _add_field(ds, 'depth', kind='depth', role='gt')
+
+    lb = Leaderboard(name='df_lb', summary_metrics='', owner_user_id=owner.id)
+    db.session.add(lb); db.session.flush()
+    lb.datasets.append(ds)
+    db.session.commit()
+
+    body = client.get(f'/leaderboard/{lb.id}/edit').data.decode('utf-8')
+    assert 'id="dsf-tab"' in body
+    assert 'Dataset fields' in body
+    # The role selector exists per field, name keyed by field name.
+    assert 'name="field_role_rgb"' in body
+    assert 'name="field_role_depth"' in body
+
+
+def test_dataset_field_roles_post_writes_field_roles_json(client, db_session):
+    """POSTing the role table writes the per-LB overrides to
+    `Leaderboard.field_roles_json` so the picker + runtime context
+    builder both see the swap."""
+    owner = User(email='df_owner2@bench.local', display_name='o2',
+                 oauth_provider='github', oauth_sub='df-2')
+    db.session.add(owner); db.session.flush()
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+
+    ds = Dataset(name='df_ds2', owner_user_id=owner.id)
+    db.session.add(ds); db.session.flush()
+    _add_field(ds, 'rgb', kind='image', role='gt')   # default gt
+    _add_field(ds, 'depth', kind='depth', role='gt')
+
+    lb = Leaderboard(name='df_lb2', summary_metrics='', owner_user_id=owner.id)
+    db.session.add(lb); db.session.flush()
+    lb.datasets.append(ds)
+    db.session.commit()
+
+    r = client.post(f'/leaderboard/{lb.id}/dataset_field_roles', data={
+        'field_role_rgb':   'input',
+        'field_role_depth': 'gt',
+        # Unknown field name must be silently ignored (defence-in-depth).
+        'field_role_imaginary': 'gt',
+    })
+    assert r.status_code == 302
+    db.session.refresh(lb)
+    stored = json.loads(lb.field_roles_json or '{}')
+    assert stored == {'rgb': 'input', 'depth': 'gt'}
+
+
+def test_dataset_field_roles_post_forbidden_for_unrelated_user(client, db_session):
+    """Same gate as pred-fields: random users get 403."""
+    owner = User(email='df_o3@bench.local', display_name='o3',
+                 oauth_provider='github', oauth_sub='df-3')
+    stranger = User(email='df_str@bench.local', display_name='s',
+                    oauth_provider='github', oauth_sub='df-str-1')
+    db.session.add_all([owner, stranger]); db.session.flush()
+
+    ds = Dataset(name='df_ds3', owner_user_id=owner.id)
+    db.session.add(ds); db.session.flush()
+    _add_field(ds, 'rgb', kind='image', role='gt')
+
+    lb = Leaderboard(name='df_lb3', summary_metrics='', owner_user_id=owner.id)
+    db.session.add(lb); db.session.flush()
+    lb.datasets.append(ds)
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = stranger.id
+    r = client.post(f'/leaderboard/{lb.id}/dataset_field_roles', data={
+        'field_role_rgb': 'input',
+    })
+    assert r.status_code == 403
