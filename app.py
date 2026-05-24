@@ -3839,6 +3839,27 @@ def _roles_from_arg_names(args: list[str]) -> list[str]:
     return out if any_match else []
 
 
+def _suggest_free_lb_name(base: str) -> str:
+    """Return an LB name that doesn't collide with an existing
+    Leaderboard. Starts from `<base>_benchmark`; if that's taken,
+    appends `_2`, `_3`, … until a free slot is found (capped at
+    100 attempts to avoid pathological loops). Used to pre-fill
+    the LB-name input on the create forms so the user usually
+    doesn't have to think of one.
+    """
+    base = (base or '').strip() or 'leaderboard'
+    candidate = f"{base}_benchmark"
+    if not Leaderboard.query.filter_by(name=candidate).first():
+        return candidate
+    for n in range(2, 102):
+        c = f"{base}_benchmark_{n}"
+        if not Leaderboard.query.filter_by(name=c).first():
+            return c
+    # Extremely unlikely fallback — surface the bare base with a
+    # numeric suffix.
+    return f"{base}_benchmark_{Leaderboard.query.count() + 1}"
+
+
 def _metric_domain(metric):
     """Return the bucket label for one GlobalMetric. Falls through to
     'Other' when no rule matches — that bucket is the catchall and
@@ -7744,9 +7765,16 @@ def create_lb_chooser():
         .order_by(Dataset.upload_date.desc())
         .all()
     )
+    # Suggest a free name based on the first-listed dataset so the
+    # name input pre-fills with a usable default. The user can still
+    # edit; this just removes the friction for the common case.
+    suggested_lb_name = _suggest_free_lb_name(
+        bh_datasets[0].name if bh_datasets else 'leaderboard'
+    )
     return render_template(
         'create_lb_chooser.html',
         bh_datasets=bh_datasets,
+        suggested_lb_name=suggested_lb_name,
     )
 
 
@@ -10271,7 +10299,8 @@ def dataset_view(dataset_id):
                            filter_suggestions=filter_suggestions,
                            available_metrics_for_lb=available_metrics_for_lb,
                            gt_field_options=gt_field_options,
-                           dataset_field_options=dataset_field_options)
+                           dataset_field_options=dataset_field_options,
+                           suggested_lb_name=_suggest_free_lb_name(dataset.name))
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])

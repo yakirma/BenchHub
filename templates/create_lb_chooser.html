@@ -36,8 +36,12 @@
         <div class="card-body p-4">
 
             <label class="form-label fw-semibold mb-1" for="lb-name">Leaderboard name</label>
+            {# Server pre-fills with a guaranteed-free name derived
+               from the first listed dataset so the form is ready to
+               submit out of the box. Edit if you want a custom name. #}
             <input type="text" class="form-control mb-3" id="lb-name"
                    name="leaderboard_name" required autocomplete="off"
+                   value="{{ suggested_lb_name }}"
                    placeholder="e.g. nyu-depth-v2-test">
 
             <label class="form-label fw-semibold mb-1">Attached datasets</label>

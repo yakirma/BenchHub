@@ -262,8 +262,15 @@
                     <label for="leaderboard_name" class="form-label small fw-semibold mb-1">
                         Leaderboard name
                     </label>
+                    {# Server pre-fills a guaranteed-free suggestion
+                       so most users can just hit Create without
+                       touching this field. The value re-renders on
+                       every request, so each preview shows a
+                       still-free name even if someone else just
+                       claimed the previous one. #}
                     <input type="text" id="leaderboard_name" name="leaderboard_name"
                         class="form-control" required
+                        value="{{ suggested_lb_name }}"
                         placeholder="e.g. {{ dataset.name }} benchmark">
                 </div>
 
