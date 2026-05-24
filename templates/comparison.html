@@ -69,6 +69,65 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         object-fit: cover;
     }
 
+    /* Depth colorbar — sibling of the IMG, NOT baked into the
+       served PNG, so the image's pixel grid stays exactly aligned
+       with any overlay layers stacked on top. */
+    .depth-cell {
+        position: relative;
+        display: inline-block;
+    }
+    .depth-colorbar {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 10px;
+        height: 150px;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        border-radius: 2px;
+        background: linear-gradient(to top,
+            var(--cbar-stop-0, #000),
+            var(--cbar-stop-1, #888),
+            var(--cbar-stop-2, #fff));
+        pointer-events: none;
+        z-index: 2;
+    }
+    .depth-colorbar-labels {
+        position: absolute;
+        top: 0;
+        right: 12px;
+        height: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: flex-end;
+        font-size: 9px;
+        line-height: 1;
+        color: var(--bs-body-color);
+        text-shadow: 0 0 2px var(--bs-body-bg);
+        pointer-events: none;
+        z-index: 2;
+    }
+    .depth-colorbar-labels span {
+        background: rgba(255, 255, 255, 0.6);
+        padding: 0 1px;
+        border-radius: 2px;
+    }
+
+    /* Mask pixel hover tooltip */
+    .mask-hover-tooltip {
+        position: fixed;
+        z-index: 100002;
+        padding: 2px 6px;
+        background: rgba(0, 0, 0, 0.85);
+        color: #fff;
+        font-size: 11px;
+        font-family: var(--bs-font-monospace);
+        border-radius: 3px;
+        pointer-events: none;
+        white-space: nowrap;
+        display: none;
+    }
+
     /* Resizable table columns */
     #comparison-table {
         table-layout: fixed;
@@ -1040,13 +1099,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% set _initial_src = (_src + '?cmap=turbo') if _vis_type == 'depth' else _src %}
                             <div class="text-center depth-cell" data-depth-base="{{ _src }}" data-col-key="{{ col_key }}">
                                 <img src="{{ _initial_src }}"
-                                    class="border rounded shadow-sm clickable-vis depth-img"
+                                    class="border rounded shadow-sm clickable-vis depth-img{% if _vis_type == 'mask' %} mask-img{% endif %}"
                                     style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
                                     data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ _initial_src }}"
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].gt_field_id) }}"
+                                    {% if _vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=data.custom_fields[col_key].gt_field_id) }}"{% endif %}
+                                    {% if _vis_type == 'mask' %}data-mask-raw-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}?raw=1"{% endif %}
                                     data-group-id="gt-{{ col_key }}" data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _vis_type }}" alt="{{ col_key }}">
+                                {% if _vis_type == 'depth' %}
+                                <div class="depth-colorbar" data-cmap="turbo"></div>
+                                <div class="depth-colorbar-labels">
+                                    <span class="cbar-max">…</span>
+                                    <span class="cbar-mid">…</span>
+                                    <span class="cbar-min">…</span>
+                                </div>
+                                {% endif %}
                             </div>
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_scalar_value is
                             not none %}
@@ -1077,16 +1146,30 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }};">
                             {% if data.custom_fields.get(col_key) and
                             data.custom_fields[col_key].submissions.get(pred.sub_id) %}
-                            <div class="text-center">
-                                <img src="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
-                                    class="border rounded shadow-sm clickable-vis"
+                            {% set _sub_vis_type = comparison_display_options[col_key].type %}
+                            {% set _sub_field_id = data.custom_fields[col_key].submissions[pred.sub_id] %}
+                            {% set _sub_src = url_for('serve_custom_field_image', field_id=_sub_field_id) %}
+                            {% set _sub_initial_src = (_sub_src + '?cmap=turbo') if _sub_vis_type == 'depth' else _sub_src %}
+                            <div class="text-center depth-cell" data-depth-base="{{ _sub_src }}" data-col-key="{{ col_key }}">
+                                <img src="{{ _sub_initial_src }}"
+                                    class="border rounded shadow-sm clickable-vis{% if _sub_vis_type == 'depth' %} depth-img{% endif %}{% if _sub_vis_type == 'mask' %} mask-img{% endif %}"
                                     style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
                                     data-bs-toggle="modal" data-bs-target="#vis-modal"
-                                    data-vis-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
-                                    data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].submissions[pred.sub_id]) }}"
+                                    data-vis-url="{{ _sub_initial_src }}"
+                                    data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=_sub_field_id) }}"
+                                    {% if _sub_vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=_sub_field_id) }}"{% endif %}
+                                    {% if _sub_vis_type == 'mask' %}data-mask-raw-url="{{ _sub_src }}?raw=1"{% endif %}
                                     data-group-id="sub-{{ pred.sub_id }}-{{ col_key }}"
                                     data-sample-name="{{ data.sample_name }}"
-                                    data-vis-type="{{ comparison_display_options[col_key].type }}" alt="{{ col_key }}">
+                                    data-vis-type="{{ _sub_vis_type }}" alt="{{ col_key }}">
+                                {% if _sub_vis_type == 'depth' %}
+                                <div class="depth-colorbar" data-cmap="turbo"></div>
+                                <div class="depth-colorbar-labels">
+                                    <span class="cbar-max">…</span>
+                                    <span class="cbar-mid">…</span>
+                                    <span class="cbar-min">…</span>
+                                </div>
+                                {% endif %}
                             </div>
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].sub_scalars and
                             data.custom_fields[col_key].sub_scalars.get(pred.sub_id) is not none %}
@@ -3256,7 +3339,148 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 img.src = url;
                 img.setAttribute('data-vis-url', url);
             });
+            const cbar = cell.querySelector('.depth-colorbar');
+            if (cbar) {
+                cbar.setAttribute('data-cmap', cmap);
+                applyColorbarGradient(cbar, cmap);
+            }
         });
     });
+
+    // ----- Depth colorbar (sibling of the IMG, not baked into it) -----
+    // Hardcoded gradient stops per cmap. Match matplotlib's LUT
+    // roughly enough that the bar is informative; pixel-perfect
+    // accuracy isn't the goal — labelling the range is.
+    const CMAP_STOPS = {
+        turbo:    ['#30123b', '#4145ab', '#3d96d6', '#1ac7a1', '#7df45e', '#dfdf36', '#fea73a', '#dc4b2b', '#7a0403'],
+        jet:      ['#000080', '#0000ff', '#0080ff', '#00ffff', '#80ff80', '#ffff00', '#ff8000', '#ff0000', '#800000'],
+        viridis:  ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#fde725'],
+        magma:    ['#000004', '#180f3d', '#440f76', '#721f81', '#9e2f7f', '#cd4071', '#f1605d', '#fd9668', '#fde2a3'],
+        inferno:  ['#000004', '#1b0c41', '#4a0c6b', '#781c6d', '#a52c60', '#cf4446', '#ed6925', '#fb9b06', '#f7d13d'],
+        plasma:   ['#0d0887', '#46039f', '#7201a8', '#9c179e', '#bd3786', '#d8576b', '#ed7953', '#fb9f3a', '#fdca26'],
+        gray:     ['#000000', '#222222', '#444444', '#666666', '#888888', '#aaaaaa', '#cccccc', '#dddddd', '#ffffff'],
+        normal:   ['#444488', '#5566aa', '#7788bb', '#8899cc', '#9988bb', '#aa77aa', '#bb6699', '#cc5588', '#dd4477'],
+    };
+    function applyColorbarGradient(cbar, cmap) {
+        const stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
+        // CSS gradient stacks bottom→top, so we reverse for the
+        // visual convention (max at top, min at bottom).
+        const css = 'linear-gradient(to top, ' + stops.join(', ') + ')';
+        cbar.style.background = css;
+    }
+    function fmtAxisVal(v) {
+        if (!isFinite(v)) return '–';
+        const abs = Math.abs(v);
+        if (abs === 0) return '0';
+        if (abs < 0.01 || abs >= 10000) return v.toExponential(1);
+        if (abs < 1) return v.toFixed(2);
+        if (abs < 100) return v.toFixed(1);
+        return v.toFixed(0);
+    }
+    function initDepthColorbars(root) {
+        const scope = root || document;
+        scope.querySelectorAll('.depth-cell').forEach(function (cell) {
+            const cbar = cell.querySelector('.depth-colorbar');
+            const img = cell.querySelector('img.depth-img');
+            if (!cbar || !img) return;
+            applyColorbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+            const metaUrl = img.getAttribute('data-depth-meta-url');
+            const labels = cell.querySelector('.depth-colorbar-labels');
+            if (!metaUrl || !labels || labels.dataset.loaded) return;
+            labels.dataset.loaded = '1';
+            fetch(metaUrl).then(r => r.ok ? r.json() : null).then(function (m) {
+                if (!m) return;
+                labels.querySelector('.cbar-max').textContent = fmtAxisVal(m.max);
+                labels.querySelector('.cbar-mid').textContent = fmtAxisVal((m.min + m.max) / 2);
+                labels.querySelector('.cbar-min').textContent = fmtAxisVal(m.min);
+            }).catch(function () { /* leave the placeholders */ });
+        });
+    }
+    initDepthColorbars();
+
+    // ----- Mask pixel hover -----
+    // Fetch the raw (pre-palette) mask PNG once per IMG and decode it
+    // into an OffscreenCanvas / Canvas. On mousemove, map the cursor
+    // coordinate to source pixel space (accounting for object-fit:
+    // contain letterboxing) and look up the class index.
+    const _maskHover = (function () {
+        const tooltip = document.createElement('div');
+        tooltip.className = 'mask-hover-tooltip';
+        document.body.appendChild(tooltip);
+
+        const cache = new WeakMap();  // img -> { canvas, ctx, w, h, ready }
+
+        function load(img) {
+            if (cache.has(img)) return cache.get(img);
+            const url = img.getAttribute('data-mask-raw-url');
+            if (!url) return null;
+            const entry = { canvas: null, ctx: null, w: 0, h: 0, ready: false };
+            cache.set(img, entry);
+            const raw = new Image();
+            raw.crossOrigin = 'anonymous';
+            raw.onload = function () {
+                const c = document.createElement('canvas');
+                c.width = raw.naturalWidth;
+                c.height = raw.naturalHeight;
+                const ctx = c.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(raw, 0, 0);
+                entry.canvas = c; entry.ctx = ctx;
+                entry.w = raw.naturalWidth; entry.h = raw.naturalHeight;
+                entry.ready = true;
+            };
+            raw.onerror = function () { /* fail silent — no tooltip */ };
+            raw.src = url;
+            return entry;
+        }
+
+        function pixelAt(img, clientX, clientY) {
+            const entry = load(img);
+            if (!entry || !entry.ready) return null;
+            const rect = img.getBoundingClientRect();
+            // object-fit: contain — figure out the letterboxed sub-rect.
+            const dispW = rect.width, dispH = rect.height;
+            const imgW = entry.w, imgH = entry.h;
+            if (imgW === 0 || imgH === 0) return null;
+            const dispRatio = dispW / dispH;
+            const srcRatio  = imgW / imgH;
+            let drawW, drawH, offX, offY;
+            if (srcRatio > dispRatio) {
+                drawW = dispW; drawH = dispW / srcRatio;
+                offX = 0; offY = (dispH - drawH) / 2;
+            } else {
+                drawH = dispH; drawW = dispH * srcRatio;
+                offY = 0; offX = (dispW - drawW) / 2;
+            }
+            const localX = clientX - rect.left - offX;
+            const localY = clientY - rect.top - offY;
+            if (localX < 0 || localX >= drawW || localY < 0 || localY >= drawH) return null;
+            const px = Math.floor(localX / drawW * imgW);
+            const py = Math.floor(localY / drawH * imgH);
+            try {
+                const data = entry.ctx.getImageData(px, py, 1, 1).data;
+                return { x: px, y: py, classId: data[0], r: data[0], g: data[1], b: data[2] };
+            } catch (e) { return null; }
+        }
+
+        function onMove(ev) {
+            const img = ev.target;
+            if (!img || !img.classList || !img.classList.contains('mask-img')) return;
+            const p = pixelAt(img, ev.clientX, ev.clientY);
+            if (p == null) { tooltip.style.display = 'none'; return; }
+            tooltip.textContent = '(' + p.x + ',' + p.y + ')  class=' + p.classId;
+            tooltip.style.display = 'block';
+            tooltip.style.left = (ev.clientX + 12) + 'px';
+            tooltip.style.top  = (ev.clientY + 12) + 'px';
+        }
+        function onLeave(ev) {
+            const img = ev.target;
+            if (img && img.classList && img.classList.contains('mask-img')) {
+                tooltip.style.display = 'none';
+            }
+        }
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('mouseleave', onLeave, true);
+        return { load: load };
+    })();
 </script>
 {% endblock %}

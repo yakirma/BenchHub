@@ -269,6 +269,55 @@
         min-width: 300px;
     }
 
+    /* Depth colorbar — sibling of the IMG, not baked into it,
+       so overlay alignment with other modalities stays intact. */
+    .depth-colorbar {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 10px;
+        height: 150px;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        border-radius: 2px;
+        background: linear-gradient(to top, #000, #888, #fff);
+        pointer-events: none;
+        z-index: 2;
+    }
+    .depth-colorbar-labels {
+        position: absolute;
+        top: 0;
+        right: 12px;
+        height: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: flex-end;
+        font-size: 9px;
+        line-height: 1;
+        color: var(--bs-body-color);
+        text-shadow: 0 0 2px var(--bs-body-bg);
+        pointer-events: none;
+        z-index: 2;
+    }
+    .depth-colorbar-labels span {
+        background: rgba(255, 255, 255, 0.6);
+        padding: 0 1px;
+        border-radius: 2px;
+    }
+    .mask-hover-tooltip {
+        position: fixed;
+        z-index: 100002;
+        padding: 2px 6px;
+        background: rgba(0, 0, 0, 0.85);
+        color: #fff;
+        font-size: 11px;
+        font-family: var(--bs-font-monospace);
+        border-radius: 3px;
+        pointer-events: none;
+        white-space: nowrap;
+        display: none;
+    }
+
     /* Stretch images to fill container */
     .clickable-vis {
         width: 100%;
@@ -850,15 +899,27 @@
                     {% elif col_key in custom_fields_map[sample.id] %}
                     {% set field_data = custom_fields_map[sample.id][col_key] %}
                     {% if field_data.type in ['image', 'depth', 'mask', 'audio'] %}
-                    <div class="text-center">
-                        <img src="{{ url_for('serve_custom_field_image', field_id=field_data.field_id) }}"
-                            class="border rounded shadow-sm clickable-vis"
+                    {% set _ds_src = url_for('serve_custom_field_image', field_id=field_data.field_id) %}
+                    {% set _ds_initial_src = (_ds_src + '?cmap=turbo') if field_data.type == 'depth' else _ds_src %}
+                    <div class="text-center depth-cell" style="position: relative; display: inline-block;">
+                        <img src="{{ _ds_initial_src }}"
+                            class="border rounded shadow-sm clickable-vis{% if field_data.type == 'depth' %} depth-img{% endif %}{% if field_data.type == 'mask' %} mask-img{% endif %}"
                             style="width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain; cursor: pointer;"
                             data-bs-toggle="modal" data-bs-target="#custom-field-modal"
-                            data-img-url="{{ url_for('serve_custom_field_image', field_id=field_data.field_id) }}"
+                            data-img-url="{{ _ds_initial_src }}"
                             data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=field_data.field_id) }}"
+                            {% if field_data.type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=field_data.field_id) }}"{% endif %}
+                            {% if field_data.type == 'mask' %}data-mask-raw-url="{{ _ds_src }}?raw=1"{% endif %}
                             data-sample-name="{{ sample.name }}" data-vis-type="{{ field_data.type }}"
                             alt="{{ col_key }}">
+                        {% if field_data.type == 'depth' %}
+                        <div class="depth-colorbar" data-cmap="turbo"></div>
+                        <div class="depth-colorbar-labels">
+                            <span class="cbar-max">…</span>
+                            <span class="cbar-mid">…</span>
+                            <span class="cbar-min">…</span>
+                        </div>
+                        {% endif %}
                     </div>
                     {% elif field_data.type == 'scalar' %}
                     <div class="text-center fw-bold">
@@ -2697,5 +2758,109 @@
         metricGallery.setItems(items);
         metricGallery.setCurrentIndex(currentIndex);
     };
+
+    // ----- Depth colorbar + mask pixel hover (mirrors comparison.html) -----
+    const CMAP_STOPS = {
+        turbo:    ['#30123b', '#4145ab', '#3d96d6', '#1ac7a1', '#7df45e', '#dfdf36', '#fea73a', '#dc4b2b', '#7a0403'],
+        jet:      ['#000080', '#0000ff', '#0080ff', '#00ffff', '#80ff80', '#ffff00', '#ff8000', '#ff0000', '#800000'],
+        viridis:  ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#fde725'],
+        magma:    ['#000004', '#180f3d', '#440f76', '#721f81', '#9e2f7f', '#cd4071', '#f1605d', '#fd9668', '#fde2a3'],
+        inferno:  ['#000004', '#1b0c41', '#4a0c6b', '#781c6d', '#a52c60', '#cf4446', '#ed6925', '#fb9b06', '#f7d13d'],
+        plasma:   ['#0d0887', '#46039f', '#7201a8', '#9c179e', '#bd3786', '#d8576b', '#ed7953', '#fb9f3a', '#fdca26'],
+        gray:     ['#000000', '#222222', '#444444', '#666666', '#888888', '#aaaaaa', '#cccccc', '#dddddd', '#ffffff'],
+        normal:   ['#444488', '#5566aa', '#7788bb', '#8899cc', '#9988bb', '#aa77aa', '#bb6699', '#cc5588', '#dd4477'],
+    };
+    function _applyCbarGradient(cbar, cmap) {
+        const stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
+        cbar.style.background = 'linear-gradient(to top, ' + stops.join(', ') + ')';
+    }
+    function _fmtAxisVal(v) {
+        if (!isFinite(v)) return '–';
+        const abs = Math.abs(v);
+        if (abs === 0) return '0';
+        if (abs < 0.01 || abs >= 10000) return v.toExponential(1);
+        if (abs < 1) return v.toFixed(2);
+        if (abs < 100) return v.toFixed(1);
+        return v.toFixed(0);
+    }
+    document.querySelectorAll('.depth-cell').forEach(function (cell) {
+        const cbar = cell.querySelector('.depth-colorbar');
+        const img = cell.querySelector('img.depth-img');
+        if (!cbar || !img) return;
+        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+        const metaUrl = img.getAttribute('data-depth-meta-url');
+        const labels = cell.querySelector('.depth-colorbar-labels');
+        if (!metaUrl || !labels) return;
+        fetch(metaUrl).then(r => r.ok ? r.json() : null).then(function (m) {
+            if (!m) return;
+            labels.querySelector('.cbar-max').textContent = _fmtAxisVal(m.max);
+            labels.querySelector('.cbar-mid').textContent = _fmtAxisVal((m.min + m.max) / 2);
+            labels.querySelector('.cbar-min').textContent = _fmtAxisVal(m.min);
+        }).catch(function () {});
+    });
+
+    // Mask pixel hover. Fetch the raw (no-palette) PNG once per IMG,
+    // draw to a Canvas, look up class IDs on mousemove.
+    (function () {
+        const tooltip = document.createElement('div');
+        tooltip.className = 'mask-hover-tooltip';
+        document.body.appendChild(tooltip);
+        const cache = new WeakMap();
+        function load(img) {
+            if (cache.has(img)) return cache.get(img);
+            const url = img.getAttribute('data-mask-raw-url');
+            if (!url) return null;
+            const entry = { canvas: null, ctx: null, w: 0, h: 0, ready: false };
+            cache.set(img, entry);
+            const raw = new Image();
+            raw.crossOrigin = 'anonymous';
+            raw.onload = function () {
+                const c = document.createElement('canvas');
+                c.width = raw.naturalWidth; c.height = raw.naturalHeight;
+                const ctx = c.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(raw, 0, 0);
+                entry.canvas = c; entry.ctx = ctx;
+                entry.w = raw.naturalWidth; entry.h = raw.naturalHeight;
+                entry.ready = true;
+            };
+            raw.src = url;
+            return entry;
+        }
+        function pixelAt(img, cx, cy) {
+            const entry = load(img);
+            if (!entry || !entry.ready) return null;
+            const rect = img.getBoundingClientRect();
+            const dispW = rect.width, dispH = rect.height;
+            const iw = entry.w, ih = entry.h;
+            if (!iw || !ih) return null;
+            const dr = dispW / dispH, sr = iw / ih;
+            let dW, dH, oX, oY;
+            if (sr > dr) { dW = dispW; dH = dispW / sr; oX = 0; oY = (dispH - dH) / 2; }
+            else         { dH = dispH; dW = dispH * sr; oY = 0; oX = (dispW - dW) / 2; }
+            const lx = cx - rect.left - oX, ly = cy - rect.top - oY;
+            if (lx < 0 || lx >= dW || ly < 0 || ly >= dH) return null;
+            const px = Math.floor(lx / dW * iw), py = Math.floor(ly / dH * ih);
+            try {
+                const d = entry.ctx.getImageData(px, py, 1, 1).data;
+                return { x: px, y: py, classId: d[0] };
+            } catch (e) { return null; }
+        }
+        document.addEventListener('mousemove', function (ev) {
+            const img = ev.target;
+            if (!img || !img.classList || !img.classList.contains('mask-img')) return;
+            const p = pixelAt(img, ev.clientX, ev.clientY);
+            if (p == null) { tooltip.style.display = 'none'; return; }
+            tooltip.textContent = '(' + p.x + ',' + p.y + ')  class=' + p.classId;
+            tooltip.style.display = 'block';
+            tooltip.style.left = (ev.clientX + 12) + 'px';
+            tooltip.style.top  = (ev.clientY + 12) + 'px';
+        }, true);
+        document.addEventListener('mouseleave', function (ev) {
+            const img = ev.target;
+            if (img && img.classList && img.classList.contains('mask-img')) {
+                tooltip.style.display = 'none';
+            }
+        }, true);
+    })();
 </script>
 {% endblock %}
