@@ -1516,6 +1516,13 @@ def user_usage():
         })
     used = storage_used_bytes(user)
     cap = int(user.quota_max_storage_bytes or 200 * 1024 * 1024)
+    # Admins bypass every quota cap in `check_quota` (commit f36fe8f),
+    # so the storage / dataset-count / submission-rate columns above
+    # are cosmetic for them. Surface that to the template so the
+    # progress bar shows "unlimited" instead of the underlying 50 MB
+    # row value that confused users by suggesting a cap that
+    # doesn't actually apply.
+    is_admin_user = is_admin(user)
     return render_template(
         'user_usage.html',
         items=items,
@@ -1528,6 +1535,7 @@ def user_usage():
         ds_count_cap=user.quota_max_datasets,
         sub_count_24h=daily_submission_count(user),
         sub_count_cap=user.quota_max_submissions_per_day,
+        unlimited=is_admin_user,
     )
 
 

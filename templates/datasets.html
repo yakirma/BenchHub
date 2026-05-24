@@ -251,8 +251,19 @@
         <div class="col-lg-5">
             <div class="sticky-top" style="top: 100px; z-index: 900;">
 
-            {# Storage gauge (logged-in users only) #}
-            {% if current_user and storage_cap %}
+            {# Storage gauge (logged-in users only). Admins bypass the
+               cap inside check_quota, so the progress bar would just
+               be misleading — show a plain "unlimited" line instead. #}
+            {% if current_user and current_user_is_admin %}
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-3 d-flex justify-content-between align-items-baseline small">
+                    <span class="fw-semibold">Your dataset storage</span>
+                    <span class="text-body-secondary">
+                        {{ format_bytes(storage_used) }} <span class="opacity-75">/ unlimited (admin)</span>
+                    </span>
+                </div>
+            </div>
+            {% elif current_user and storage_cap %}
             {% set pct = (storage_used * 100 // storage_cap) if storage_cap else 0 %}
             <div class="card border-0 shadow-sm mb-3">
                 <div class="card-body p-3">

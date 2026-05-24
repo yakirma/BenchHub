@@ -7,7 +7,11 @@
         <div>
             <h1 class="h3 fw-bold mb-1">Your storage</h1>
             <p class="text-body-secondary mb-0">
+                {% if unlimited %}
+                You're an admin — no storage cap applies.
+                {% else %}
                 Where your {{ cap_human }} cap is going.
+                {% endif %}
             </p>
         </div>
         <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-primary">
@@ -19,8 +23,13 @@
         <div class="card-body p-4">
             <div class="d-flex justify-content-between align-items-baseline mb-2">
                 <strong>Used</strong>
-                <span class="font-monospace">{{ used_human }} / {{ cap_human }}</span>
+                <span class="font-monospace">
+                    {{ used_human }}
+                    {% if unlimited %}<span class="text-body-secondary">/ unlimited</span>
+                    {% else %}/ {{ cap_human }}{% endif %}
+                </span>
             </div>
+            {% if not unlimited %}
             <div class="progress" style="height: 14px;" role="progressbar"
                  aria-valuenow="{{ used_pct|round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100">
                 <div class="progress-bar {% if used_pct > 90 %}bg-danger{% elif used_pct > 70 %}bg-warning{% else %}bg-primary{% endif %}"
@@ -28,12 +37,13 @@
                     {{ used_pct|round(0, 'floor')|int }}%
                 </div>
             </div>
+            {% endif %}
             <div class="row mt-3 small">
                 <div class="col-md-6">
-                    <i class="bi bi-database me-1"></i>{{ dataset_count }} / {{ ds_count_cap }} datasets
+                    <i class="bi bi-database me-1"></i>{{ dataset_count }}{% if not unlimited %} / {{ ds_count_cap }}{% endif %} datasets
                 </div>
                 <div class="col-md-6">
-                    <i class="bi bi-upload me-1"></i>{{ sub_count_24h }} / {{ sub_count_cap }} submissions in the last 24h
+                    <i class="bi bi-upload me-1"></i>{{ sub_count_24h }}{% if not unlimited %} / {{ sub_count_cap }}{% endif %} submissions in the last 24h
                 </div>
             </div>
         </div>
@@ -62,13 +72,17 @@
     </div>
     {% else %}
     <div class="alert alert-secondary">
-        <i class="bi bi-info-circle me-2"></i>No datasets yet. Upload one to start using your quota.
+        <i class="bi bi-info-circle me-2"></i>No datasets yet.
+        {% if not unlimited %}Upload one to start using your quota.
+        {% else %}Upload one to populate this page.{% endif %}
     </div>
     {% endif %}
 
+    {% if not unlimited %}
     <p class="small text-body-secondary mt-4">
         Only datasets you uploaded count toward this quota. Submitting
         predictions to someone else's leaderboard doesn't.
     </p>
+    {% endif %}
 </div>
 {% endblock %}

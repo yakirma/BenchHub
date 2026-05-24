@@ -30,11 +30,20 @@
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
             <h2 class="h6 fw-semibold text-uppercase text-body-secondary mb-3">Quotas</h2>
+            {# Admins bypass every cap inside `check_quota` (commit
+               f36fe8f), so listing the underlying row values for them
+               misleads — show one line saying so instead. #}
+            {% if current_user_is_admin %}
+            <p class="small text-body-secondary mb-0">
+                <i class="bi bi-infinity me-2"></i>Admin — quota caps don't apply.
+            </p>
+            {% else %}
             <ul class="list-unstyled small mb-0">
                 <li><i class="bi bi-database me-2"></i>{{ current_user.quota_max_datasets }} datasets max</li>
                 <li><i class="bi bi-hdd me-2"></i>{{ (current_user.quota_max_storage_bytes / 1024 / 1024)|round|int }} MB storage</li>
                 <li><i class="bi bi-arrow-up-circle me-2"></i>{{ current_user.quota_max_submissions_per_day }} submissions / 24h</li>
             </ul>
+            {% endif %}
         </div>
     </div>
 
