@@ -765,6 +765,13 @@ class Leaderboard(db.Model):
     # [{name, gt_field, kind, description}]. Surfaced in the
     # "Submission contract" widget alongside metric-derived fields.
     required_pred_fields_json = db.Column(db.Text, nullable=True)
+    # Per-LB role overrides for attached dataset fields. The Dataset
+    # is now role-neutral — the same dataset can back multiple LBs
+    # with different role assignments (one LB treats `depth` as gt,
+    # another uses it as input for a colorization task). JSON dict:
+    # `{dataset_field_name: 'input'|'gt'|'skip'}`. NULL or missing
+    # entries fall back to `DatasetField.role` as a sensible default.
+    field_roles_json = db.Column(db.Text, nullable=True)
     # Two-level taxonomy "area/task" (e.g. "Vision/Depth Estimation").
     # Auto-populated for PWC imports from the source task name via
     # `_pwc_task_to_category`; manual LBs can override via the
@@ -7236,6 +7243,39 @@ def _propose_visualizations_for_dataset(ds):
     return proposals
 
 
+def _lb_field_roles(lb) -> dict:
+    """Parse the LB's per-field role overrides. Returns a dict
+    `{field_name: 'input'|'gt'|'skip'}` for any fields the LB has
+    explicit roles for. Missing entries fall through to the
+    `DatasetField.role` default in callers."""
+    raw = (lb.field_roles_json or '').strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {
+                k: v for k, v in parsed.items()
+                if isinstance(k, str) and v in ('input', 'gt', 'skip')
+            }
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
+def _effective_field_role(lb, dataset_field) -> str:
+    """LB-side role override > dataset's declared role > 'gt' default.
+
+    The dataset is now role-neutral; LBs decide how to use each field.
+    A single Dataset can back multiple LBs with different role
+    assignments (depth field used as gt on a depth-estimation LB and
+    as input on a colorization LB)."""
+    overrides = _lb_field_roles(lb)
+    if dataset_field.name in overrides:
+        return overrides[dataset_field.name]
+    return (dataset_field.role or 'gt').lower()
+
+
 def _lb_pred_contract_from_dataset_fields(lb):
     """Derive the LB's prediction wire-contract from the
     `DatasetField` rows of every attached dataset.
@@ -8096,6 +8136,52 @@ def create_leaderboard():
             pred_field_schema=list(seen_pred.values()),
         )
 
+    # Per-field role overrides from the LB-creation form. The form
+    # posts `field_role_<dataset_field_name>` = input/gt/skip per
+    # field; we collect those into `field_roles_json` so the
+    # picker/runtime knows how to treat each attached field for
+    # THIS LB. Missing entries fall back to the dataset field's
+    # declared role.
+    _role_overrides: dict[str, str] = {}
+    for key, val in request.form.items(multi=False):
+        if not key.startswith('field_role_'):
+            continue
+        fname = key[len('field_role_'):]
+        val = (val or '').strip().lower()
+        if val in ('input', 'gt', 'skip') and fname:
+            _role_overrides[fname] = val
+
+    # Pred-field declarations from the LB form (mirrors the HF
+    # preview's Prediction-fields section). Parallel arrays of
+    # `pred_field_name` + `pred_field_kind` + `pred_field_params`.
+    # Stored on `required_pred_fields_json` so the existing
+    # contract-derivation helper picks them up.
+    pred_names = request.form.getlist('pred_field_name')
+    pred_kinds = request.form.getlist('pred_field_kind')
+    pred_params = request.form.getlist('pred_field_params')
+    pred_entries: list[dict] = []
+    from benchhub.types import DTYPES as _DTYPES_PRED
+    for i, pname in enumerate(pred_names):
+        pname = (pname or '').strip()
+        if not pname:
+            continue
+        pkind = (pred_kinds[i] if i < len(pred_kinds) else '').strip()
+        if pkind not in _DTYPES_PRED:
+            continue
+        praw = (pred_params[i] if i < len(pred_params) else '').strip()
+        try:
+            pp = json.loads(praw) if praw else {}
+            if not isinstance(pp, dict):
+                pp = {}
+        except (TypeError, ValueError):
+            pp = {}
+        pred_entries.append({
+            'name': pname,
+            'kind': pkind,
+            'params': pp,
+            'role': 'pred',
+        })
+
     new_leaderboard = Leaderboard(
         name=leaderboard_name,
         # Legacy CSV; the structured per-metric rows below are the
@@ -8104,6 +8190,8 @@ def create_leaderboard():
         summary_metrics=','.join(request.form.getlist('summary_metrics')),
         owner_user_id=g.current_user.id,
         category=(request.form.get('category') or '').strip() or None,
+        field_roles_json=(json.dumps(_role_overrides) if _role_overrides else None),
+        required_pred_fields_json=(json.dumps(pred_entries) if pred_entries else None),
     )
 
     # Handle multiple datasets
@@ -10905,9 +10993,25 @@ def download_submissions_bulk(leaderboard_id):
 @owner_required(Dataset, 'dataset_id')
 def delete_dataset(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
+    # Cascade-delete attached leaderboards (and their submissions).
+    # The same dataset can back many LBs now; dropping the dataset
+    # without dropping the LBs would leave them with a broken
+    # contract. The confirm prompt in the template surfaces the
+    # count so the admin sees what they're about to lose.
+    attached_lbs = list(dataset.leaderboards)
+    for lb in attached_lbs:
+        db.session.delete(lb)
     shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', str(dataset.id)), ignore_errors=True)
     db.session.delete(dataset)
     db.session.commit()
+    if attached_lbs:
+        flash(
+            f"Deleted dataset {dataset.name!r} and {len(attached_lbs)} attached "
+            f"leaderboard(s): {', '.join(lb.name for lb in attached_lbs)}",
+            'success',
+        )
+    else:
+        flash(f"Deleted dataset {dataset.name!r}.", 'success')
     return redirect(url_for('datasets_list'))
 
 @app.route('/delete_leaderboard/<int:leaderboard_id>', methods=['POST'])
@@ -12869,6 +12973,19 @@ def check_and_migrate_db():
                             print(f"Migration: added {_tbl}.input_kinds")
                     except Exception as e:
                         print(f"Migration error ({_tbl}.input_kinds): {e}")
+
+                # --- Leaderboard.field_roles_json (LB-level role overrides) ---
+                try:
+                    cursor.execute("PRAGMA table_info(leaderboard)")
+                    cols = [r[1] for r in cursor.fetchall()]
+                    if 'field_roles_json' not in cols:
+                        cursor.execute(
+                            "ALTER TABLE leaderboard ADD COLUMN field_roles_json TEXT DEFAULT NULL"
+                        )
+                        conn.commit()
+                        print("Migration: added leaderboard.field_roles_json")
+                except Exception as e:
+                    print(f"Migration error (leaderboard.field_roles_json): {e}")
 
                 # --- GlobalMetric.input_roles (parallel role-per-arg array) ---
                 try:

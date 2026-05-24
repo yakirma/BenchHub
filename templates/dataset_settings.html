@@ -233,13 +233,24 @@
             <h5 class="text-danger fw-bold mb-2">
                 <i class="bi bi-exclamation-octagon me-1"></i>Danger zone
             </h5>
+            {# `dataset.leaderboards` is lazy='dynamic' → .all() to materialize. #}
+            {% set _attached = dataset.leaderboards.all() %}
             <p class="mb-3">
                 Deleting <strong>{{ dataset.name }}</strong> removes the dataset,
-                all of its samples, and any leaderboards that use it.
+                all of its samples, {% if _attached %}<strong>and the
+                {{ _attached|length }} leaderboard{{ '' if _attached|length == 1 else 's' }}
+                attached to it</strong>{% else %}and any leaderboards attached to it{% endif %}.
                 This cannot be undone.
             </p>
+            {% if _attached %}
+            <ul class="small text-body-secondary mb-3">
+                {% for lb in _attached %}
+                <li><code>{{ lb.name }}</code></li>
+                {% endfor %}
+            </ul>
+            {% endif %}
             <form method="post" action="{{ url_for('delete_dataset', dataset_id=dataset.id) }}"
-                onsubmit="return confirm('Permanently delete dataset \'{{ dataset.name }}\'? This cannot be undone.');">
+                onsubmit="return confirm({% if _attached %}'Permanently delete dataset \'{{ dataset.name }}\' AND {{ _attached|length }} attached leaderboard(s)? This cannot be undone.'{% else %}'Permanently delete dataset \'{{ dataset.name }}\'? This cannot be undone.'{% endif %});">
                 <button type="submit" class="btn btn-danger">
                     <i class="bi bi-trash me-1"></i>Delete this dataset
                 </button>
