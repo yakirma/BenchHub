@@ -7851,11 +7851,26 @@ def create_leaderboard():
     raw_metric_mappings = request.form.getlist('metric_mappings_json')
     # Resolve attached datasets' field schemas once for the type-
     # assertion step below. Indexed by `(kind, role)` and `(kind,)`
-    # for quick membership checks.
+    # for quick membership checks. We add the synthesized pred
+    # contract (`<gt_name>_pred` per GT field) so picker rows that
+    # bind `pred` args to those names validate cleanly.
     _attached_fields: list[tuple[str, str, str]] = []  # (name, kind, role)
+    _seen_names: set[str] = set()
     for _ds in (new_leaderboard.datasets or []):
         for _df in _ds.fields:
-            _attached_fields.append((_df.name, _df.kind, (_df.role or 'gt').lower()))
+            _role = (_df.role or 'gt').lower()
+            _attached_fields.append((_df.name, _df.kind, _role))
+            _seen_names.add(_df.name)
+    # GT-mirrored pred contract.
+    for _ds in (new_leaderboard.datasets or []):
+        for _df in _ds.fields:
+            if (_df.role or '').lower() != 'gt':
+                continue
+            _pname = f"{_df.name}_pred"
+            if _pname in _seen_names:
+                continue
+            _attached_fields.append((_pname, _df.kind, 'pred'))
+            _seen_names.add(_pname)
     _attached_by_name = {n: (k, r) for n, k, r in _attached_fields}
 
     validation_errors: list[str] = []
@@ -7917,16 +7932,12 @@ def create_leaderboard():
                     f"{picked!r} is kind {picked_kind!r}"
                 )
                 skip_metric = True
-            if expected_role:
-                # `pred`-roled args bind to the GT field by name; the
-                # engine resolves `<name>_pred` from the pred contract.
-                want_role = 'gt' if expected_role == 'pred' else expected_role
-                if picked_role != want_role:
-                    validation_errors.append(
-                        f"{gm.name}.{arg}: expected role {expected_role!r} but "
-                        f"{picked!r} has role {picked_role!r}"
-                    )
-                    skip_metric = True
+            if expected_role and picked_role != expected_role:
+                validation_errors.append(
+                    f"{gm.name}.{arg}: expected role {expected_role!r} but "
+                    f"{picked!r} has role {picked_role!r}"
+                )
+                skip_metric = True
         if skip_metric:
             continue
 
@@ -10166,13 +10177,33 @@ def dataset_view(dataset_id):
         {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
         for df in dataset.fields
     ]
-    # Group by (kind, role) once for quick lookup below.
-    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
+    # Pred-contract synthesis: every role=gt field implies a
+    # submission-side `<name>_pred` of the same kind. We also keep
+    # any explicit role=pred field as-is. The picker shows these
+    # synthesized names for pred-role args so the admin maps the
+    # metric's `pred` to e.g. `label_pred`, not `label`.
+    pred_contract_fields: list[dict] = []
+    _pred_seen: set[str] = set()
     for f in dataset_field_options:
+        if f['role'] == 'pred' and f['name'] not in _pred_seen:
+            pred_contract_fields.append({'name': f['name'], 'kind': f['kind'], 'role': 'pred'})
+            _pred_seen.add(f['name'])
+    for f in dataset_field_options:
+        if f['role'] != 'gt':
+            continue
+        pname = f"{f['name']}_pred"
+        if pname in _pred_seen:
+            continue
+        pred_contract_fields.append({'name': pname, 'kind': f['kind'], 'role': 'pred'})
+        _pred_seen.add(pname)
+    # Group by (kind, role) once for quick lookup below — pred
+    # entries from the synthesized contract count too.
+    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
+    for f in dataset_field_options + pred_contract_fields:
         fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
     # Same but role-agnostic, for unconstrained-role metrics.
     fields_by_kind: dict[str, list[str]] = {}
-    for f in dataset_field_options:
+    for f in dataset_field_options + pred_contract_fields:
         fields_by_kind.setdefault(f['kind'], []).append(f['name'])
 
     def _arg_specs(args, kinds, roles):
@@ -10187,22 +10218,16 @@ def dataset_view(dataset_id):
 
     def _metric_satisfiable(arg_specs):
         # A metric is offered only if every declared arg can be
-        # mapped to at least one existing dataset field whose kind
-        # (and role, if declared) matches. Pred-role args are
-        # special-cased: preds don't live on the dataset, so we
-        # accept them as long as a same-kind GT exists (the LB
-        # picks the matching `<name>_pred` from the contract).
+        # mapped to at least one available field whose kind (and
+        # role, if declared) matches. Pred-role args check against
+        # the synthesized `<name>_pred` contract derived from the
+        # dataset's GT fields.
         for spec in arg_specs:
             k = spec.get('kind')
             r = spec.get('role')
             if not k:
                 continue  # unconstrained kind — anything works
-            if r == 'pred':
-                # OK iff there's a GT-role same-kind field — the
-                # pred contract is derived from GT at LB-create time.
-                if not fields_by_kind_role.get((k, 'gt')):
-                    return False
-            elif r:
+            if r:
                 if not fields_by_kind_role.get((k, r)):
                     return False
             else:
@@ -10277,7 +10302,8 @@ def dataset_view(dataset_id):
                            filter_suggestions=filter_suggestions,
                            available_metrics_for_lb=available_metrics_for_lb,
                            gt_field_options=gt_field_options,
-                           dataset_field_options=dataset_field_options)
+                           dataset_field_options=dataset_field_options,
+                           pred_contract_fields=pred_contract_fields)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])

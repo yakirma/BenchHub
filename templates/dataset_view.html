@@ -362,17 +362,18 @@
                 // — drives per-arg dropdown filtering by declared
                 // kind + role.
                 const datasetFields = {{ dataset_field_options|tojson|safe }};
+                const predFields = {{ pred_contract_fields|tojson|safe }};
                 const gtFields = {{ gt_field_options|tojson|safe }};
+                // Unified pool — input/gt come from the dataset
+                // schema, pred from the synthesized contract
+                // (one `<gt_name>_pred` per role=gt field, plus any
+                // explicit role=pred field).
+                const allFields = datasetFields.concat(predFields);
 
                 function fieldsMatching(kind, role) {
-                    // Pred-role args reference the LB's pred contract,
-                    // which is derived from GT fields. Surface the
-                    // same-kind GT names — the engine wires the actual
-                    // `<name>_pred` lookup itself.
-                    const effRole = (role === 'pred') ? 'gt' : role;
-                    return datasetFields.filter((f) => {
+                    return allFields.filter((f) => {
                         if (kind && f.kind !== kind) return false;
-                        if (effRole && f.role !== effRole) return false;
+                        if (role && f.role !== role) return false;
                         return true;
                     });
                 }

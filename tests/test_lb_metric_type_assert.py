@@ -116,6 +116,9 @@ def test_commit_rejects_wrong_kind_binding(client, db_session):
 
 
 def test_commit_keeps_correct_binding(client, db_session):
+    """`pred` arg must bind to the synthesized pred-contract name
+    (`label_pred`), not the GT name. The runtime engine reads
+    submission-side CustomFields keyed by that name."""
     user, ds = _seed_user_and_dataset()
     _login(client, user)
     gm = _seed_metric('label_acc_ok', kinds=['label', 'label'],
@@ -125,14 +128,46 @@ def test_commit_keeps_correct_binding(client, db_session):
         'leaderboard_name': 'typed_lb_ok',
         'dataset_ids': [str(ds.id)],
         'metric_global_id': [str(gm.id)],
-        'metric_mappings_json': [json.dumps({'gt': 'label', 'pred': 'label'})],
+        'metric_mappings_json': [json.dumps({'gt': 'label', 'pred': 'label_pred'})],
     }, follow_redirects=False)
     assert r.status_code in (200, 302)
     lb = Leaderboard.query.filter_by(name='typed_lb_ok').first()
     assert lb is not None
     lms = LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).all()
     assert len(lms) == 1
-    assert json.loads(lms[0].arg_mappings) == {'gt': 'label', 'pred': 'label'}
+    assert json.loads(lms[0].arg_mappings) == {'gt': 'label', 'pred': 'label_pred'}
+
+
+def test_commit_rejects_pred_arg_bound_to_gt_field(client, db_session):
+    """Binding the `pred` arg to a role=gt field (like `label`
+    instead of `label_pred`) must be rejected — the role mismatch
+    would mean the runtime reads the wrong CustomField."""
+    user, ds = _seed_user_and_dataset()
+    _login(client, user)
+    gm = _seed_metric('label_acc_role', kinds=['label', 'label'],
+                      roles=['gt', 'pred'], user=user)
+    r = client.post('/create_leaderboard', data={
+        'leaderboard_name': 'role_mismatch_lb',
+        'dataset_ids': [str(ds.id)],
+        'metric_global_id': [str(gm.id)],
+        'metric_mappings_json': [json.dumps({'gt': 'label', 'pred': 'label'})],
+    }, follow_redirects=False)
+    lb = Leaderboard.query.filter_by(name='role_mismatch_lb').first()
+    assert lb is not None
+    assert LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).count() == 0
+
+
+def test_picker_surfaces_pred_contract_name_for_pred_args(client, db_session):
+    """The dataset_view picker exposes a `pred_contract_fields`
+    list that contains `label_pred` (one entry per GT field) so
+    the JS can render it in pred-arg dropdowns."""
+    user, ds = _seed_user_and_dataset()
+    _login(client, user)
+    _seed_metric('label_acc_pred', kinds=['label', 'label'],
+                 roles=['gt', 'pred'], user=user)
+    body = client.get(f'/dataset/{ds.id}').data.decode()
+    assert 'label_pred' in body
+    assert '"role": "pred"' in body or '&#34;role&#34;: &#34;pred&#34;' in body
 
 
 def test_unconstrained_metric_falls_through_to_legacy_behaviour(client, db_session):
