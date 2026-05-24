@@ -1647,7 +1647,10 @@ client = bh.Client()                                    # reads $BENCHHUB_API_TO
 sub = client.submission(lb_id={{ leaderboard.id }})
 for sample_name in [...]:
     sub.predict(sample_name,
-                label_pred=bh.Label(predicted_class))   # or bh.LabelList(..., k=5)
+{%- for line in submission_predict_lines %}
+{{ line }}
+{%- endfor %}
+                )
 print(sub.submit(name="my run"))</code></pre>
         <p class="small text-body-secondary mb-0">
             <strong>API endpoint:</strong>

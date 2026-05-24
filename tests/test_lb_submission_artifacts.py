@@ -109,6 +109,42 @@ def test_lb_page_renders_submit_action_buttons(client, db_session):
     assert 'bi-rocket-takeoff me-1"></i>Submit\n' not in body  # old text-only "Submit" button
 
 
+def test_inline_snippet_on_lb_page_reflects_pred_contract(client, db_session):
+    """The Python snippet in the Submit-predictions card emits one
+    bh.<Kind>(...) line per declared pred field on the LB, instead
+    of a hardcoded `label_pred=bh.Label(...)`. label_list preds
+    show `bh.LabelList(..., k=K)` with the declared K."""
+    user = User(email='inline-snip@bench.local', display_name='inline',
+                oauth_provider='github', oauth_sub='inline-1')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='inline_snip_ds', visibility='public',
+                 owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    db.session.add_all([
+        DatasetField(dataset_id=ds.id, name='label', kind='label', role='gt'),
+    ])
+    db.session.commit()
+    # Two pred fields on the LB's contract — one single-class, one top-K.
+    lb = Leaderboard(
+        name='inline_snip_lb', visibility='public', owner_user_id=user.id,
+        required_pred_fields_json=json.dumps([
+            {'name': 'label_pred',      'kind': 'label',      'role': 'pred', 'params': {}},
+            {'name': 'label_topk_pred', 'kind': 'label_list', 'role': 'pred',
+             'params': {'k': 7}},
+        ]),
+    )
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+    os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
+                exist_ok=True)
+    body = client.get(f'/leaderboard/{lb.id}').data.decode()
+    # Both pred fields rendered with the right constructors.
+    assert 'label_pred=bh.Label(0)' in body
+    assert 'label_topk_pred=bh.LabelList([0] * 7, k=7)' in body
+    # Old hardcoded line is gone.
+    assert 'label_pred=bh.Label(predicted_class)' not in body
+
+
 def test_bh_client_reads_BENCHHUB_API_TOKEN_env(monkeypatch):
     """bh.Client() with no explicit token reads BENCHHUB_API_TOKEN
     from the environment."""

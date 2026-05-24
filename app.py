@@ -5562,49 +5562,65 @@ def _ipynb_to_python(notebook_json, lb=None):
     return '\n'.join(out_lines).rstrip() + '\n'
 
 
+def _pred_field_constructor_lines(lb, *, indent: str = '                  ') -> list[str]:
+    """Build the per-pred-field constructor lines for an LB's
+    `sub.predict(...)` call. One line per field declared on the
+    LB's contract; format mirrors the submitter's actual call so
+    they can copy-paste directly.
+
+    Used by both the downloadable submission script + notebook and
+    the inline Python snippet on the LB page, so they always show
+    the LB's CURRENT contract (e.g. cifar10 with a top-K pred
+    surfaces a `bh.LabelList(..., k=5)` line instead of a generic
+    `bh.Label`).
+    """
+    pred_fields = _lb_pred_contract_from_dataset_fields(lb)
+    lines: list[str] = []
+    for f in pred_fields:
+        kind = f.get('kind', 'scalar')
+        params = f.get('params') or {}
+        name = f['name']
+        if kind == 'label':
+            line = f"{indent}{name}=bh.Label(0),                       # int or str class id"
+        elif kind == 'label_list':
+            k = params.get('k', 5)
+            line = f"{indent}{name}=bh.LabelList([0] * {k}, k={k}),   # top-{k} class ids (descending confidence)"
+        elif kind == 'scalar':
+            line = f"{indent}{name}=bh.Scalar(0.0),"
+        elif kind == 'text':
+            line = f"{indent}{name}=bh.Text(''),"
+        elif kind == 'depth':
+            unit = params.get('unit', 'meters')
+            line = f"{indent}{name}=bh.Depth(np.zeros((H, W), dtype=np.float32), unit={unit!r}),"
+        elif kind == 'mask':
+            line = f"{indent}{name}=bh.Mask(np.zeros((H, W), dtype=np.uint8)),"
+        elif kind == 'image':
+            line = f"{indent}{name}=bh.Image(np.zeros((H, W, 3), dtype=np.uint8)),"
+        elif kind == 'bboxes':
+            fmt = params.get('format', 'xyxy')
+            line = f"{indent}{name}=bh.BBoxes([], format={fmt!r}),"
+        elif kind == 'audio':
+            line = f"{indent}{name}=bh.Audio(np.zeros(16000, dtype=np.float32), 16000),"
+        elif kind == 'json':
+            line = f"{indent}{name}=bh.Json({{}}),"
+        else:
+            line = f"{indent}{name}=...,  # kind={kind}"
+        lines.append(line)
+    if not lines:
+        lines = [
+            f"{indent}# No pred fields declared on this leaderboard yet.",
+            f"{indent}# Add them on the LB-creation page (or in the LB settings).",
+        ]
+    return lines
+
+
 def _submission_script_source(lb) -> str:
     """Generate a self-contained submission script for an LB. Reads
     BENCHHUB_API_TOKEN from the environment, walks placeholder sample
     names, and POSTs the ZIP to /api/submit/<lb_id>. The user fills
     in the actual prediction logic — sample names + field
     construction — between the marked `# === fill in: ===` blocks."""
-    pred_fields = _lb_pred_contract_from_dataset_fields(lb)
-    # Build a per-pred-field call snippet, one per declared field,
-    # so the generated script lists exactly the fields the LB
-    # expects (instead of a generic placeholder).
-    pred_snippets = []
-    for f in pred_fields:
-        kind = f.get('kind', 'scalar')
-        params = f.get('params') or {}
-        if kind == 'label':
-            line = f"                  {f['name']}=bh.Label(0),                       # int or str class id"
-        elif kind == 'label_list':
-            k = params.get('k', 5)
-            line = f"                  {f['name']}=bh.LabelList([0] * {k}, k={k}),  # top-{k} class ids (descending confidence)"
-        elif kind == 'scalar':
-            line = f"                  {f['name']}=bh.Scalar(0.0),"
-        elif kind == 'text':
-            line = f"                  {f['name']}=bh.Text(''),"
-        elif kind == 'depth':
-            line = f"                  {f['name']}=bh.Depth(np.zeros((H, W), dtype=np.float32), unit='meters'),"
-        elif kind == 'mask':
-            line = f"                  {f['name']}=bh.Mask(np.zeros((H, W), dtype=np.uint8)),"
-        elif kind == 'image':
-            line = f"                  {f['name']}=bh.Image(np.zeros((H, W, 3), dtype=np.uint8)),"
-        elif kind == 'bboxes':
-            line = f"                  {f['name']}=bh.BBoxes([], format='xyxy'),"
-        elif kind == 'audio':
-            line = f"                  {f['name']}=bh.Audio(np.zeros(16000, dtype=np.float32), 16000),"
-        elif kind == 'json':
-            line = f"                  {f['name']}=bh.Json({{}}),"
-        else:
-            line = f"                  {f['name']}=...,  # kind={kind}"
-        pred_snippets.append(line)
-    if not pred_snippets:
-        pred_snippets = [
-            "                  # No pred fields declared on this leaderboard's dataset yet.",
-            "                  # Add a `role=pred` DatasetField via /dataset/<id>/settings first.",
-        ]
+    pred_snippets = _pred_field_constructor_lines(lb)
 
     return f'''#!/usr/bin/env python
 """Submission script for BenchHub leaderboard {lb.id} ({lb.name!r}).
@@ -6190,10 +6206,19 @@ def leaderboard_view(leaderboard_id):
                             if (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored']
     mirrored_submissions = [s for s in submissions
                             if (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored']
+    # Per-LB constructor snippet lines for the inline Submit-predictions
+    # snippet — keeps the bh.<Kind>(...) calls in sync with the LB's
+    # actual contract (e.g. cifar10 with a top-K pred shows
+    # `label_topk_pred=bh.LabelList(..., k=5)` instead of generic
+    # `label_pred=bh.Label(...)`).
+    submission_predict_lines = _pred_field_constructor_lines(
+        leaderboard, indent='                ',
+    )
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
+                           submission_predict_lines=submission_predict_lines,
                            input_field_schema=input_field_schema,
                            gt_field_schema=gt_field_schema,
                            submissions=verified_submissions,
