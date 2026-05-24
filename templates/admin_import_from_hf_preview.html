@@ -84,7 +84,7 @@
                 <input type="number" min="1"
                        class="form-control form-control-sm params-input"
                        data-key="k" data-required="1"
-                       placeholder="5">
+                       value="5">
             </div>
             <div class="col-sm-8">
                 <label class="form-label form-label-sm small mb-0">
@@ -146,10 +146,20 @@
     <p class="mb-4"></p>
     {% endif %}
 
-    <form method="post" action="{{ url_for('admin_import_from_hf_commit') }}"
+    <form id="hf-import-form" method="post"
+          action="{{ url_for('admin_import_from_hf_commit') }}"
           class="card border-0 shadow-sm">
         <input type="hidden" name="repo_id" value="{{ repo_id }}">
         <div class="card-body p-4">
+
+        {# Client-side submit-validation banner. Populated by the
+           IIFE below when required params are blank, k is invalid,
+           pred names collide, etc. — so the user finds out before
+           the round-trip + flash. #}
+        <div id="hf-import-errors" class="alert alert-danger d-none mb-3" role="alert">
+            <strong>Fix these before import:</strong>
+            <ul class="mb-0 mt-1" id="hf-import-errors-list"></ul>
+        </div>
 
             <div class="row g-3 mb-4">
                 <div class="col-md-6">
@@ -801,6 +811,116 @@
     }
     samplingSel.addEventListener('change', refreshSamplingHint);
     refreshSamplingHint();
+})();
+
+// ---- 5. Client-side submit validation ----------------------------
+// Surface the things the server would otherwise reject after a
+// full round-trip: missing required param values, invalid k,
+// pred-name collisions / duplicates. Show them in the red banner
+// at the top of the form so the user can fix in-place instead of
+// hunting for the flash on the redirect.
+(function () {
+    const form = document.getElementById('hf-import-form');
+    const banner = document.getElementById('hf-import-errors');
+    const list = document.getElementById('hf-import-errors-list');
+    if (!form || !banner || !list) return;
+
+    function rowLabel(panel) {
+        // Walk up to find the column row's hidden field_name or the
+        // pred row's pred_field_name so error messages reference the
+        // right field by name.
+        const colRow = panel.closest('tr.field-row');
+        if (colRow) {
+            const nm = colRow.querySelector('input[name="field_name"]');
+            return nm?.value || colRow.dataset.fieldName || '(column)';
+        }
+        const predRow = panel.closest('#pred-fields-body tr');
+        if (predRow) {
+            const nm = predRow.querySelector('input[name="pred_field_name"]');
+            return (nm?.value || '').trim() || '(unnamed pred)';
+        }
+        return '(field)';
+    }
+
+    function collect() {
+        const errors = [];
+
+        // Required params on every visible (active-kind) panel.
+        document.querySelectorAll('.params-panel:not([hidden])').forEach((panel) => {
+            const kind = panel.dataset.kind;
+            panel.querySelectorAll('.params-input[data-required="1"]').forEach((el) => {
+                const raw = (el.value || '').trim();
+                if (!raw) {
+                    errors.push(`${rowLabel(panel)} (${kind}): "${el.dataset.key}" is required`);
+                    return;
+                }
+                if (el.type === 'number') {
+                    const n = Number(raw);
+                    const min = el.min ? Number(el.min) : null;
+                    if (!Number.isFinite(n)) {
+                        errors.push(`${rowLabel(panel)} (${kind}): "${el.dataset.key}" must be a number`);
+                    } else if (min !== null && n < min) {
+                        errors.push(`${rowLabel(panel)} (${kind}): "${el.dataset.key}" must be >= ${min}`);
+                    } else if (!Number.isInteger(n) && el.step !== 'any') {
+                        // Accept floats only when step is explicit; k is integer.
+                        if (el.dataset.key === 'k') {
+                            errors.push(`${rowLabel(panel)} (${kind}): "k" must be an integer`);
+                        }
+                    }
+                }
+            });
+        });
+
+        // Pred-row sanity. Skip empty rows (server drops those).
+        const colNames = new Set();
+        document.querySelectorAll('tr.field-row input[name="field_name"]').forEach((i) => {
+            if (i.value) colNames.add(i.value);
+        });
+        const predSeen = new Set();
+        document.querySelectorAll('#pred-fields-body tr').forEach((row) => {
+            const nameInput = row.querySelector('input[name="pred_field_name"]');
+            const name = (nameInput?.value || '').trim();
+            if (!name) return;
+            if (colNames.has(name)) {
+                errors.push(`Pred field "${name}" collides with a column above`);
+            }
+            if (predSeen.has(name)) {
+                errors.push(`Duplicate pred field name "${name}"`);
+            }
+            predSeen.add(name);
+        });
+
+        return errors;
+    }
+
+    function render(errors) {
+        list.innerHTML = '';
+        if (!errors.length) {
+            banner.classList.add('d-none');
+            return;
+        }
+        for (const e of errors) {
+            const li = document.createElement('li');
+            li.textContent = e;
+            list.appendChild(li);
+        }
+        banner.classList.remove('d-none');
+    }
+
+    form.addEventListener('submit', (e) => {
+        const errors = collect();
+        if (errors.length) {
+            e.preventDefault();
+            render(errors);
+            banner.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+    });
+    // Live-clear the banner once the offending value gets fixed.
+    form.addEventListener('input', () => {
+        if (!banner.classList.contains('d-none')) {
+            render(collect());
+        }
+    });
 })();
 </script>
 {% endblock %}
