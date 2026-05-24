@@ -11,10 +11,12 @@ typed-manifest pipeline the admin form uses.
 For each candidate:
   - skip if a BH Dataset already points at that repo (source_url match)
   - skip if Croissant isn't available
-  - skip if no test / validation / train split could be resolved
+  - skip if no eval-shaped split could be resolved (test / validation /
+    val / dev — train is intentionally excluded; we want eval data)
   - skip if the chosen split is bigger than `--max-bytes`
   - skip if Croissant doesn't expose enough mapped fields (need >= 2)
-  - materialize a bounded sample cap into a staging dir, then import
+  - materialize the whole chosen split (or up to `--sample-cap` rows
+    if the caller capped it) into a staging dir, then import
   - auto-fill Dataset.category from the repo's task tags
 
 Designed to run for hours. Every per-dataset failure is caught + logged
@@ -23,7 +25,7 @@ and the loop moves to the next; SIGINT exits cleanly between datasets.
 Usage:
     BENCHHUB_DATA_DIR=$HOME/.dtofbenchmarking \\
         ~/benchhub/.venv/bin/python scripts/bulk_import_hf_vision.py \\
-        --sample-cap 50 --per-task 15 --max-bytes 524288000
+        --per-task 50 --max-bytes 524288000
 
 Run with `--dry-run` first to see what it would import without
 touching the DB or hitting the network beyond the listing step.
@@ -150,11 +152,14 @@ def _top_datasets_for_task(task: str, *, limit: int) -> list[dict]:
 
 
 def _pick_split(repo_id: str) -> str | None:
-    """Prefer test → validation → val → dev → train. Returns None
-    when row-counts couldn't be fetched."""
+    """Prefer test → validation → val → dev. Train splits are
+    excluded — we're importing evaluation data, not training
+    corpora — so a dataset that only ships a `train` split is
+    skipped on purpose. Returns None when nothing eval-shaped
+    was found."""
     from benchhub.hf_search import fetch_split_row_counts
     counts = fetch_split_row_counts(repo_id) or {}
-    for cand in ("test", "validation", "val", "dev", "train"):
+    for cand in ("test", "validation", "val", "dev"):
         if counts.get(cand):
             return cand
     return None
@@ -426,8 +431,10 @@ def main(argv=None) -> int:
                    help="how many top-downloaded datasets per task to consider")
     p.add_argument("--max-datasets", type=int, default=0,
                    help="global cap on dataset attempts (0 = no cap)")
-    p.add_argument("--sample-cap", type=int, default=50,
-                   help="per-dataset sample cap for materialise")
+    p.add_argument("--sample-cap", type=int, default=-1,
+                   help="per-dataset sample cap (-1 = import every row "
+                        "in the chosen split; --max-bytes is the safety "
+                        "net for huge splits)")
     p.add_argument("--max-bytes", type=int, default=500 * 1024 * 1024,
                    help="skip datasets whose chosen split parquet exceeds this (bytes)")
     p.add_argument("--sleep-between", type=float, default=1.5,
