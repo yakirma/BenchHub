@@ -336,6 +336,23 @@ def test_pick_indices_returns_full_range_when_n_exceeds_dataset():
         == list(range(5))
 
 
+def test_full_split_import_walks_rows_in_order_no_randomisation():
+    """When the caller asks for every row (sample_cap=-1 → n=total),
+    the picker must walk the split in row order regardless of the
+    sampling strategy passed in. We assert this for all strategies
+    so a future caller that forwards a stale strategy can't
+    silently reshuffle a full import."""
+    rows = [{"label": "a"}] * 5 + [{"label": "b"}] * 5
+    ds = _FakeDataset(rows)
+    fields = [{"name": "label", "kind": "label", "role": "gt"}]
+    full = list(range(len(rows)))
+    for strat in ("head", "uniform", "stratified"):
+        assert _pick_indices(ds, len(rows), fields=fields,
+                             strategy=strat, seed=0) == full, (
+            f"strategy={strat} must NOT shuffle when n == len(ds)"
+        )
+
+
 def test_pick_indices_stratified_balances_classes():
     """All rows of class A come first, then class B. Stratified should
     pick equal counts of each, not just the head."""

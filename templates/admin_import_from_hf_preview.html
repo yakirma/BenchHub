@@ -194,32 +194,30 @@
                 </div>
             </div>
 
-            <div class="row g-3 mb-4">
+            {# Sampling is only meaningful when Max samples caps below
+               the split size. For "take everything" (-1) we just walk
+               the split in row order, no randomisation, so this whole
+               row hides itself. #}
+            <div class="row g-3 mb-4" id="sampling-row">
                 <div class="col-md-6">
                     <label class="form-label fw-semibold mb-1" for="sampling">How to pick those samples</label>
-                    {# `has_label_field` is True when any Croissant-suggested
-                       kind is `label`. Drives the default sampling strategy:
-                       stratified gives balanced classes on classification
-                       datasets without the admin having to flip it. #}
                     <select id="sampling" name="sampling" class="form-select">
-                        <option value="head">Take the first N (deterministic, fastest)</option>
+                        <option value="head">Take the first N</option>
                         <option value="uniform" {{ '' if has_label_field else 'selected' }}>Uniform random across the split</option>
                         <option value="stratified" {{ 'selected' if has_label_field else '' }}>Stratified — balanced per label class</option>
                     </select>
                     <div class="form-text small mt-1">
                         <span class="d-none" id="hint-head">
-                            Fastest path; useful for smoke tests but sensitive to row
-                            order — sorted-by-class HF datasets give a single class.
+                            Walks the split in row order. Fastest, but sorted-by-class
+                            datasets end up with one class dominating the subset.
                         </span>
                         <span class="d-none" id="hint-uniform">
-                            Seeded <code>random.sample</code> across the split. Same
-                            byte-for-byte subset across runs given the same seed.
+                            Random sample across the split. Same subset across runs
+                            given the same seed.
                         </span>
                         <span class="d-none" id="hint-stratified">
-                            Groups rows by the first <code>role=gt</code> + <code>kind=label</code>
-                            field; allocates <code>N / n_classes</code> per class with the
-                            remainder spread across the first few. Falls back to uniform
-                            if no eligible label field is declared above.
+                            Balances rows across the values of the first label field
+                            declared below; falls back to uniform if there is none.
                         </span>
                     </div>
                 </div>
@@ -644,6 +642,22 @@
     }
     samplingSel.addEventListener('change', refreshSamplingHint);
     refreshSamplingHint();
+})();
+
+// ---- 4a. Hide the sampling controls when "take everything" ------
+// sample_cap === -1 → no subset is chosen; the import walks the
+// split in row order. Showing a "how to pick" dropdown then is
+// misleading, so collapse the whole row.
+(function () {
+    const capInput = document.getElementById('sample-cap');
+    const samplingRow = document.getElementById('sampling-row');
+    if (!capInput || !samplingRow) return;
+    function refresh() {
+        const v = parseInt(capInput.value || '0', 10);
+        samplingRow.classList.toggle('d-none', v === -1);
+    }
+    capInput.addEventListener('input', refresh);
+    refresh();
 })();
 
 // ---- 4b. Sample-name-from toggle ----------------------------------
