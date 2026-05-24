@@ -12,7 +12,8 @@ For each candidate:
   - skip if a BH Dataset already points at that repo (source_url match)
   - skip if Croissant isn't available
   - skip if no eval-shaped split could be resolved (test / validation /
-    val / dev — train is intentionally excluded; we want eval data)
+    val — train and dev are intentionally excluded; we want
+    published eval data)
   - skip if the chosen split is bigger than `--max-bytes`
   - skip if Croissant doesn't expose enough mapped fields (need >= 2)
   - materialize the whole chosen split (or up to `--sample-cap` rows
@@ -152,14 +153,14 @@ def _top_datasets_for_task(task: str, *, limit: int) -> list[dict]:
 
 
 def _pick_split(repo_id: str) -> str | None:
-    """Prefer test → validation → val → dev. Train splits are
-    excluded — we're importing evaluation data, not training
-    corpora — so a dataset that only ships a `train` split is
-    skipped on purpose. Returns None when nothing eval-shaped
-    was found."""
+    """Prefer test → validation → val. `train` and `dev` are both
+    excluded — train because we're importing evaluation data not
+    training corpora, and `dev` because in BH's UX it reads like a
+    sandbox/draft split rather than a published evaluation one.
+    Returns None when nothing eval-shaped was found."""
     from benchhub.hf_search import fetch_split_row_counts
     counts = fetch_split_row_counts(repo_id) or {}
-    for cand in ("test", "validation", "val", "dev"):
+    for cand in ("test", "validation", "val"):
         if counts.get(cand):
             return cand
     return None
