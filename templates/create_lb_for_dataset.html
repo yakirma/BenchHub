@@ -253,26 +253,137 @@
                 const tpl = document.getElementById('lb-metric-row-template');
                 if (!picker || !addBtn || !rowsHost || !tpl) return;
 
-                // Full dataset-field schema [{name, kind, role}, ...]
-                // — the picker exposes ONLY what the dataset
-                // explicitly declares. Pred-role bindings need an
-                // explicit role=pred DatasetField; the picker
-                // doesn't invent `<gt>_pred` virtual entries.
-                const datasetFields = {{ dataset_field_options|tojson|safe }};
+                // Static dataset-field schema as the picker first
+                // sees it. We OVERRIDE this live by reading the
+                // field-roles table + pred-fields table on the same
+                // page — both directly affect which metrics are
+                // satisfiable, and the user is editing them right
+                // here, so a server-render-time check would always
+                // be stale.
+                const datasetFieldsStatic = {{ dataset_field_options|tojson|safe }};
                 const gtFields = {{ gt_field_options|tojson|safe }};
+
+                function currentFormFields() {
+                    // Snapshot of "what fields this LB will have"
+                    // from the current form state:
+                    //   - field-roles table overrides role per
+                    //     dataset field (input/gt/skip);
+                    //   - pred-fields table adds role=pred rows.
+                    // 'skip' is dropped — the field isn't part of
+                    // this LB's contract.
+                    const out = [];
+                    // 1) Dataset fields, with role override.
+                    const roleRows = document.querySelectorAll('tr.lb-field-roles-row');
+                    const overrideByName = {};
+                    roleRows.forEach((row) => {
+                        const sel = row.querySelector('select.lb-field-role');
+                        const fname = row.dataset.fieldName;
+                        if (fname && sel) overrideByName[fname] = sel.value;
+                    });
+                    for (const f of datasetFieldsStatic) {
+                        const role = overrideByName[f.name] || f.role;
+                        if (role === 'skip') continue;
+                        out.push({name: f.name, kind: f.kind, role});
+                    }
+                    // 2) Pred-fields table rows.
+                    document.querySelectorAll('#lb-pred-fields-body tr').forEach((tr) => {
+                        const name = (tr.querySelector('input[name="pred_field_name"]')?.value || '').trim();
+                        const kind = tr.querySelector('select[name="pred_field_kind"]')?.value || '';
+                        if (!name || !kind) return;
+                        out.push({name, kind, role: 'pred'});
+                    });
+                    return out;
+                }
 
                 function fieldsMatching(kind, role) {
                     // `kind` may be a single string ("label") or a
                     // `|`-joined union ("label|label_list") meaning
                     // the arg accepts EITHER type. Match a field if
-                    // any union member matches.
+                    // any union member matches. Reads the LIVE form
+                    // state so role changes + new pred rows are
+                    // reflected immediately.
                     const kinds = kind ? kind.split('|').filter(Boolean) : [];
-                    return datasetFields.filter((f) => {
+                    return currentFormFields().filter((f) => {
                         if (kinds.length && !kinds.includes(f.kind)) return false;
                         if (role && f.role !== role) return false;
                         return true;
                     });
                 }
+
+                function refreshPickerSatisfiability() {
+                    // Re-evaluate each option's enabled/disabled
+                    // state against the current form. Updates the
+                    // visible label + tooltip so the "(needs ...)"
+                    // hint stays accurate.
+                    const fields = currentFormFields();
+                    function specMissing(spec) {
+                        const k = spec.kind;
+                        const r = spec.role;
+                        if (!k) return false;
+                        const members = k.split('|').filter(Boolean);
+                        return !fields.some((f) =>
+                            members.includes(f.kind) && (!r || f.role === r)
+                        );
+                    }
+                    function reasonOf(spec) {
+                        const bits = [];
+                        if (spec.kind) bits.push(`kind=${spec.kind}`);
+                        if (spec.role) bits.push(`role=${spec.role}`);
+                        return `${spec.name || '?'}: needs ${bits.join(' ')}`;
+                    }
+                    for (const opt of picker.options) {
+                        if (!opt.value) continue;
+                        let specs;
+                        try { specs = JSON.parse(opt.dataset.argSpecs || '[]'); }
+                        catch (e) { continue; }
+                        const missing = specs.filter(specMissing);
+                        const baseName = opt.dataset.name || '';
+                        if (missing.length === 0) {
+                            opt.disabled = false;
+                            opt.textContent = baseName;
+                            opt.dataset.satisfiable = '1';
+                        } else {
+                            opt.disabled = true;
+                            const reasons = missing.map(reasonOf).join('; ');
+                            opt.textContent = `${baseName} (${reasons})`;
+                            opt.dataset.satisfiable = '0';
+                        }
+                    }
+                }
+
+                // Wire live recompute. Any change to a role select
+                // or a pred-row input → re-evaluate the picker.
+                document.addEventListener('change', (e) => {
+                    if (e.target.matches?.(
+                        'select.lb-field-role, ' +
+                        '#lb-pred-fields-body input[name="pred_field_name"], ' +
+                        '#lb-pred-fields-body select[name="pred_field_kind"]'
+                    )) {
+                        refreshPickerSatisfiability();
+                    }
+                });
+                document.addEventListener('input', (e) => {
+                    if (e.target.matches?.(
+                        '#lb-pred-fields-body input[name="pred_field_name"]'
+                    )) {
+                        refreshPickerSatisfiability();
+                    }
+                });
+                // Pred rows are added/removed dynamically — observe
+                // the body so adds-via-Add-button + auto-suggest
+                // (from role-flip-to-gt) trigger a recompute.
+                const _predBody = document.getElementById('lb-pred-fields-body');
+                if (_predBody) {
+                    new MutationObserver(refreshPickerSatisfiability).observe(
+                        _predBody, {childList: true},
+                    );
+                }
+                // First pass on page load — the auto-suggested pred
+                // rows from `refreshAllAuto()` (other IIFE) typically
+                // arrive milliseconds later, so do a microtask-delayed
+                // pass too.
+                refreshPickerSatisfiability();
+                queueMicrotask(refreshPickerSatisfiability);
 
                 function rebuildMappingJson(row) {
                     const mapping = {};
