@@ -70,7 +70,6 @@
                     <option value="{{ c }}"></option>
                     {% endfor %}
                 </datalist>
-                <span class="save-status small text-body-secondary"></span>
             </form>
         </div>
     </div>
@@ -145,7 +144,6 @@
                                         <option value="{{ t }}" {{ 'selected' if t == f.current_type }}>{{ t }}</option>
                                         {% endfor %}
                                     </select>
-                                    <span class="save-status small text-body-secondary"></span>
                                 </form>
                                 {% else %}
                                 <code class="small">{{ f.current_type }}</code>
@@ -162,7 +160,6 @@
                                         <option value="input" {{ 'selected' if f.role == 'input' }}>input — given to submitter</option>
                                         <option value="skip" {{ 'selected' if f.role == 'skip' }}>skip — not used</option>
                                     </select>
-                                    <span class="save-status small text-body-secondary"></span>
                                 </form>
                                 {% else %}
                                 <code class="small">{{ f.role }}</code>
@@ -269,72 +266,42 @@
 
 {% block scripts %}
 <script>
-// ---- Auto-save on change ----
+// ---- Silent auto-save on change ----
 // Every <form class="auto-save"> posts itself via fetch when one of
-// its inputs changes — no per-row "Save" button. A tiny "saved" /
-// "save failed" indicator next to the input acknowledges the
-// round-trip. Server still serves the same redirect we'd get from a
-// normal form submit; we don't follow it, just read the status.
-//
-// Falls back gracefully if JS is off: the form is a plain HTML
-// <form>, so pressing Enter still works and the page reload picks
-// up the result.
+// its inputs changes — no Save button, no confirmation indicator.
+// Falls back to plain HTML form submit if JS is off.
 (function () {
     const forms = document.querySelectorAll('form.auto-save');
     if (!forms.length) return;
 
-    function setStatus(el, kind, text) {
-        if (!el) return;
-        el.textContent = text;
-        el.classList.remove('text-success', 'text-danger', 'text-body-secondary');
-        el.classList.add(kind === 'ok' ? 'text-success'
-                         : kind === 'err' ? 'text-danger'
-                         : 'text-body-secondary');
+    function submit(form) {
+        fetch(form.action, {
+            method: 'POST',
+            body: new FormData(form),
+            redirect: 'manual',  // route returns 302; we don't follow.
+            credentials: 'same-origin',
+        }).catch(() => { /* swallow — user will retry if it matters */ });
     }
 
-    async function submitForm(form) {
-        const status = form.querySelector('.save-status');
-        setStatus(status, 'muted', 'saving…');
-        try {
-            const r = await fetch(form.action, {
-                method: 'POST',
-                body: new FormData(form),
-                // Don't follow the route's redirect — we just want
-                // to know it accepted the change. 30x counts as
-                // success here.
-                redirect: 'manual',
-                credentials: 'same-origin',
-            });
-            const ok = r.ok || (r.status >= 300 && r.status < 400) || r.type === 'opaqueredirect';
-            if (!ok) throw new Error('HTTP ' + r.status);
-            setStatus(status, 'ok', '✓ saved');
-            setTimeout(() => { if (status) status.textContent = ''; }, 1500);
-        } catch (e) {
-            setStatus(status, 'err', '✗ save failed');
-        }
-    }
-
-    // Debounce text inputs (category) so we don't fire per keystroke;
-    // select fires once per pick anyway.
+    // Debounce text inputs so we don't fire per keystroke; selects
+    // fire once per pick anyway.
     const debounced = new WeakMap();
     function schedule(form, ms) {
         clearTimeout(debounced.get(form));
-        debounced.set(form, setTimeout(() => submitForm(form), ms));
+        debounced.set(form, setTimeout(() => submit(form), ms));
     }
 
     forms.forEach((form) => {
         form.addEventListener('submit', (ev) => {
-            // Capture Enter-on-input or any non-JS path; route it
-            // through the same async flow.
             ev.preventDefault();
-            submitForm(form);
+            submit(form);
         });
         form.querySelectorAll('select').forEach((sel) => {
-            sel.addEventListener('change', () => submitForm(form));
+            sel.addEventListener('change', () => submit(form));
         });
         form.querySelectorAll('input[type="text"]').forEach((inp) => {
             inp.addEventListener('input', () => schedule(form, 600));
-            inp.addEventListener('blur', () => submitForm(form));
+            inp.addEventListener('blur', () => submit(form));
         });
     });
 })();
