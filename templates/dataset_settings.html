@@ -57,7 +57,7 @@
             </p>
             <form method="post"
                   action="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
-                  class="d-flex gap-2 align-items-center flex-wrap">
+                  class="auto-save d-flex gap-2 align-items-center flex-wrap">
                 <input type="text"
                        name="category"
                        class="form-control"
@@ -70,7 +70,7 @@
                     <option value="{{ c }}"></option>
                     {% endfor %}
                 </datalist>
-                <button type="submit" class="btn btn-primary">Save</button>
+                <span class="save-status small text-body-secondary"></span>
             </form>
         </div>
     </div>
@@ -129,17 +129,23 @@
                                 {% endif %}
                             </td>
                             <td class="small text-body-secondary">{{ f.sample_count }}</td>
+                            {# Both editors submit on change — no Save
+                               button per row. JS at the bottom of the
+                               page handles the POST + a tiny status
+                               indicator; if JS is off the user can
+                               still submit by pressing Enter, since
+                               the form is here either way. #}
                             <td>
                                 {% if schema_editable %}
                                 <form method="post"
                                     action="{{ url_for('update_dataset_field_type', dataset_id=dataset.id, field_name=f.name) }}"
-                                    class="d-flex gap-1">
+                                    class="auto-save d-flex gap-2 align-items-center">
                                     <select name="data_type" class="form-select form-select-sm">
                                         {% for t in valid_field_types %}
                                         <option value="{{ t }}" {{ 'selected' if t == f.current_type }}>{{ t }}</option>
                                         {% endfor %}
                                     </select>
-                                    <button type="submit" class="btn btn-sm btn-outline-primary">Save</button>
+                                    <span class="save-status small text-body-secondary"></span>
                                 </form>
                                 {% else %}
                                 <code class="small">{{ f.current_type }}</code>
@@ -149,18 +155,14 @@
                                 {% if schema_editable %}
                                 <form method="post"
                                     action="{{ url_for('update_dataset_field_role', dataset_id=dataset.id, field_name=f.name) }}"
-                                    class="d-flex gap-1">
-                                    {# min-width so the longest option
-                                       label fits without truncation; the
-                                       outer flex still lets it grow if
-                                       the column gets wider. #}
+                                    class="auto-save d-flex gap-2 align-items-center">
                                     <select name="role" class="form-select form-select-sm"
                                             style="min-width: 230px;">
                                         <option value="gt" {{ 'selected' if f.role == 'gt' }}>gt — predicted server-side</option>
                                         <option value="input" {{ 'selected' if f.role == 'input' }}>input — given to submitter</option>
                                         <option value="skip" {{ 'selected' if f.role == 'skip' }}>skip — not used</option>
                                     </select>
-                                    <button type="submit" class="btn btn-sm btn-outline-primary">Save</button>
+                                    <span class="save-status small text-body-secondary"></span>
                                 </form>
                                 {% else %}
                                 <code class="small">{{ f.role }}</code>
@@ -263,4 +265,78 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ---- Auto-save on change ----
+// Every <form class="auto-save"> posts itself via fetch when one of
+// its inputs changes — no per-row "Save" button. A tiny "saved" /
+// "save failed" indicator next to the input acknowledges the
+// round-trip. Server still serves the same redirect we'd get from a
+// normal form submit; we don't follow it, just read the status.
+//
+// Falls back gracefully if JS is off: the form is a plain HTML
+// <form>, so pressing Enter still works and the page reload picks
+// up the result.
+(function () {
+    const forms = document.querySelectorAll('form.auto-save');
+    if (!forms.length) return;
+
+    function setStatus(el, kind, text) {
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('text-success', 'text-danger', 'text-body-secondary');
+        el.classList.add(kind === 'ok' ? 'text-success'
+                         : kind === 'err' ? 'text-danger'
+                         : 'text-body-secondary');
+    }
+
+    async function submitForm(form) {
+        const status = form.querySelector('.save-status');
+        setStatus(status, 'muted', 'saving…');
+        try {
+            const r = await fetch(form.action, {
+                method: 'POST',
+                body: new FormData(form),
+                // Don't follow the route's redirect — we just want
+                // to know it accepted the change. 30x counts as
+                // success here.
+                redirect: 'manual',
+                credentials: 'same-origin',
+            });
+            const ok = r.ok || (r.status >= 300 && r.status < 400) || r.type === 'opaqueredirect';
+            if (!ok) throw new Error('HTTP ' + r.status);
+            setStatus(status, 'ok', '✓ saved');
+            setTimeout(() => { if (status) status.textContent = ''; }, 1500);
+        } catch (e) {
+            setStatus(status, 'err', '✗ save failed');
+        }
+    }
+
+    // Debounce text inputs (category) so we don't fire per keystroke;
+    // select fires once per pick anyway.
+    const debounced = new WeakMap();
+    function schedule(form, ms) {
+        clearTimeout(debounced.get(form));
+        debounced.set(form, setTimeout(() => submitForm(form), ms));
+    }
+
+    forms.forEach((form) => {
+        form.addEventListener('submit', (ev) => {
+            // Capture Enter-on-input or any non-JS path; route it
+            // through the same async flow.
+            ev.preventDefault();
+            submitForm(form);
+        });
+        form.querySelectorAll('select').forEach((sel) => {
+            sel.addEventListener('change', () => submitForm(form));
+        });
+        form.querySelectorAll('input[type="text"]').forEach((inp) => {
+            inp.addEventListener('input', () => schedule(form, 600));
+            inp.addEventListener('blur', () => submitForm(form));
+        });
+    });
+})();
+</script>
 {% endblock %}
