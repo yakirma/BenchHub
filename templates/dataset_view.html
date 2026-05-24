@@ -378,8 +378,13 @@
                 const gtFields = {{ gt_field_options|tojson|safe }};
 
                 function fieldsMatching(kind, role) {
+                    // `kind` may be a single string ("label") or a
+                    // `|`-joined union ("label|label_list") meaning
+                    // the arg accepts EITHER type. Match a field if
+                    // any union member matches.
+                    const kinds = kind ? kind.split('|').filter(Boolean) : [];
                     return datasetFields.filter((f) => {
-                        if (kind && f.kind !== kind) return false;
+                        if (kinds.length && !kinds.includes(f.kind)) return false;
                         if (role && f.role !== role) return false;
                         return true;
                     });

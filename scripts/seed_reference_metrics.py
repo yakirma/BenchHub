@@ -24,15 +24,23 @@ from app import GlobalMetric, User, app, db
 _ACCURACY = """\
 import benchhub as bh
 
-def accuracy(gt: bh.Label, pred: bh.Label):
-    \"\"\"Per-sample classification accuracy. gt + pred are bh.Label
-    instances; the .value attribute holds the int / str class id.
-    Pool with mean across the LB for overall accuracy.\"\"\"
+def accuracy(gt: bh.Label, pred: bh.Label | bh.LabelList):
+    \"\"\"Per-sample classification accuracy. Accepts either a single
+    bh.Label pred (exact-match against gt) OR a bh.LabelList top-K
+    pred (degraded to its first entry — same shape as top-1). One
+    metric works for both pred contracts.\"\"\"
     if gt is None or pred is None:
         return 0.0
-    assert isinstance(gt, bh.Label),   f"gt must be bh.Label, got {type(gt).__name__}"
-    assert isinstance(pred, bh.Label), f"pred must be bh.Label, got {type(pred).__name__}"
-    return 1.0 if gt.value == pred.value else 0.0
+    assert isinstance(gt, bh.Label), f"gt must be bh.Label, got {type(gt).__name__}"
+    assert isinstance(pred, (bh.Label, bh.LabelList)), \\
+        f"pred must be bh.Label or bh.LabelList, got {type(pred).__name__}"
+    if isinstance(pred, bh.LabelList):
+        if not pred.values:
+            return 0.0
+        pred_value = pred.values[0]
+    else:
+        pred_value = pred.value
+    return 1.0 if gt.value == pred_value else 0.0
 """
 
 _RMSE_DEPTH = """\
@@ -167,8 +175,8 @@ def exact_match(gt: bh.Text, pred: bh.Text):
 _SEED = [
     {
         "name": "accuracy",
-        "description": "Per-sample classification accuracy (higher is better). Pool with mean.",
-        "input_kinds": ["label", "label"],
+        "description": "Per-sample classification accuracy (higher is better). Accepts a Label pred or a LabelList top-K pred (uses first entry).",
+        "input_kinds": ["label", "label|label_list"],
         "input_roles": ["gt", "pred"],
         "python_code": _ACCURACY,
     },

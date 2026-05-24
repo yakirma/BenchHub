@@ -179,6 +179,40 @@ def test_row_value_to_typed_raises_when_k_missing():
     assert out is None
 
 
+def test_accuracy_accepts_labellist_pred_via_union():
+    """Union-typed `pred: bh.Label | bh.LabelList` lets accuracy
+    bind against a top-K pred field. It degrades the list to its
+    first entry — same behaviour as top_1_accuracy."""
+    from scripts.seed_reference_metrics import _ACCURACY
+    gt = bh.Label(3)
+    pred = bh.LabelList([3, 7, 2, 5, 1], k=5)
+    assert _run_metric(_ACCURACY, gt, pred) == 1.0
+    # Wrong top-1 → zero (even if gt appears later in the list).
+    pred2 = bh.LabelList([7, 3, 2, 5, 1], k=5)
+    assert _run_metric(_ACCURACY, gt, pred2) == 0.0
+
+
+def test_accuracy_still_accepts_label_pred():
+    """Same source supports the legacy Label×Label contract."""
+    from scripts.seed_reference_metrics import _ACCURACY
+    gt = bh.Label(3)
+    assert _run_metric(_ACCURACY, gt, bh.Label(3)) == 1.0
+    assert _run_metric(_ACCURACY, gt, bh.Label(7)) == 0.0
+
+
+def test_kinds_from_signature_parses_union():
+    """`pred: bh.Label | bh.LabelList` extracts to the `|`-joined
+    union 'label|label_list', so the picker can offer either kind
+    of pred field."""
+    from app import _kinds_from_signature
+    code = (
+        "import benchhub as bh\n"
+        "def acc(gt: bh.Label, pred: bh.Label | bh.LabelList):\n"
+        "    return 0.0\n"
+    )
+    assert _kinds_from_signature(code) == ['label', 'label|label_list']
+
+
 def test_validate_manifest_requires_k_on_label_list_field():
     from benchhub.manifest import validate_manifest
     manifest = {

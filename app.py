@@ -3740,19 +3740,54 @@ def _kinds_from_signature(python_code: str) -> list[str]:
     BH kinds inferred from each arg's type annotation. Examples
     that resolve:
 
-        def acc(gt: bh.Label, pred: bh.Label)       → ['label', 'label']
-        def rmse(gt: Depth, pred: Depth)            → ['depth', 'depth']
-        def fid(gt: benchhub.Image, pred: Image)    → ['image', 'image']
+        def acc(gt: bh.Label, pred: bh.Label)         → ['label', 'label']
+        def rmse(gt: Depth, pred: Depth)              → ['depth', 'depth']
+        def fid(gt: benchhub.Image, pred: Image)      → ['image', 'image']
 
-    Annotations that don't name a known DTYPES class slot are
-    represented as an empty string in the returned list (so the
-    array length still matches the arg count). Returns [] when
-    parsing fails or no arg has any useful annotation — keeps the
-    caller's "input_kinds = NULL ⇒ unconstrained" fallback intact.
+    Union annotations (`X | Y`, PEP 604) collapse to a `|`-joined
+    string so the picker can offer fields matching any branch:
+
+        def acc(gt: bh.Label, pred: bh.Label | bh.LabelList)
+            → ['label', 'label|label_list']
+
+    Annotations that don't name a known DTYPES class slot become
+    an empty string in the returned list (so the array length
+    still matches the arg count). Returns [] when parsing fails
+    or no arg has any useful annotation — keeps the caller's
+    "input_kinds = NULL ⇒ unconstrained" fallback intact.
     """
     import ast as _ast
     from benchhub.types import DTYPES
     name_to_kind = {cls.__name__: kind for kind, cls in DTYPES.items()}
+
+    def _kind_of_node(ann) -> str:
+        """Resolve a single annotation node to a kind, or '' if
+        it doesn't name a known DTYPES class. Handles attribute
+        access (`bh.Label`), bare names (`Label`), and unions
+        (`X | Y`) recursively."""
+        if ann is None:
+            return ''
+        if isinstance(ann, _ast.BinOp) and isinstance(ann.op, _ast.BitOr):
+            left = _kind_of_node(ann.left)
+            right = _kind_of_node(ann.right)
+            parts = [p for p in (left.split('|') if left else []) +
+                              (right.split('|') if right else []) if p]
+            # Dedupe preserving order so `Label | Label` collapses
+            # to one entry.
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for p in parts:
+                if p not in seen:
+                    seen.add(p)
+                    uniq.append(p)
+            return '|'.join(uniq)
+        final_name = None
+        if isinstance(ann, _ast.Name):
+            final_name = ann.id
+        elif isinstance(ann, _ast.Attribute):
+            final_name = ann.attr
+        return name_to_kind.get(final_name) or '' if final_name else ''
+
     try:
         tree = _ast.parse(python_code or '')
     except SyntaxError:
@@ -3764,18 +3799,9 @@ def _kinds_from_signature(python_code: str) -> list[str]:
             for a in node.args.args:
                 if a.arg in ('self', 'cls'):
                     continue
-                ann = a.annotation
-                if ann is None:
-                    kinds.append('')
-                    continue
-                final_name = None
-                if isinstance(ann, _ast.Name):
-                    final_name = ann.id
-                elif isinstance(ann, _ast.Attribute):
-                    final_name = ann.attr
-                kind = name_to_kind.get(final_name) if final_name else None
-                kinds.append(kind or '')
-                if kind:
+                k = _kind_of_node(a.annotation)
+                kinds.append(k)
+                if k:
                     saw_any = True
             return kinds if saw_any else []
     return []
@@ -3807,7 +3833,15 @@ def _apply_metric_typed_contract(metric, *, kinds_raw, roles_raw, python_code):
         metric.input_kinds = json.dumps(derived) if derived else None
     else:
         kinds = [k.strip() for k in kinds_raw.split(',') if k.strip()]
-        bad = [k for k in kinds if k not in _DTYPES_VALID]
+        # Each entry may be a single kind ('label') or a `|`-joined
+        # union ('label|label_list') meaning the arg accepts EITHER
+        # type. Every member must be a known DTYPES kind.
+        bad = []
+        for k in kinds:
+            for member in k.split('|'):
+                member = member.strip()
+                if member and member not in _DTYPES_VALID:
+                    bad.append(member)
         if bad:
             raise ValueError(f"unknown kind(s): {bad}")
         metric.input_kinds = json.dumps(kinds)
@@ -7946,12 +7980,15 @@ def create_leaderboard():
             picked_kind, picked_role = _attached_by_name[picked]
             expected_kind = kinds[idx] if idx < len(kinds) else None
             expected_role = roles[idx] if idx < len(roles) else None
-            if expected_kind and picked_kind != expected_kind:
-                validation_errors.append(
-                    f"{gm.name}.{arg}: expected kind {expected_kind!r} but "
-                    f"{picked!r} is kind {picked_kind!r}"
-                )
-                skip_metric = True
+            if expected_kind:
+                # Unions: `label|label_list` accepts either member.
+                members = [m for m in expected_kind.split('|') if m]
+                if picked_kind not in members:
+                    validation_errors.append(
+                        f"{gm.name}.{arg}: expected kind {expected_kind!r} but "
+                        f"{picked!r} is kind {picked_kind!r}"
+                    )
+                    skip_metric = True
             if expected_role and picked_role != expected_role:
                 validation_errors.append(
                     f"{gm.name}.{arg}: expected role {expected_role!r} but "
@@ -10224,18 +10261,20 @@ def dataset_view(dataset_id):
         """Returns `(ok, missing_specs)`. `missing_specs` is the list
         of arg specs that can't be matched by any available field —
         used to render a "(needs kind=label_list role=pred)" hint on
-        the disabled dropdown option."""
+        the disabled dropdown option. A union kind (`label|label_list`)
+        is satisfied when ANY member matches."""
         missing = []
         for spec in arg_specs:
             k = spec.get('kind')
             r = spec.get('role')
             if not k:
                 continue  # unconstrained kind — anything works
+            members = [m for m in k.split('|') if m]
             if r:
-                if not fields_by_kind_role.get((k, r)):
+                if not any(fields_by_kind_role.get((m, r)) for m in members):
                     missing.append(spec)
             else:
-                if not fields_by_kind.get(k):
+                if not any(fields_by_kind.get(m) for m in members):
                     missing.append(spec)
         return (not missing, missing)
 
