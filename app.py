@@ -4898,15 +4898,44 @@ def admin_import_from_hf_preview():
     )
     from benchhub.types import DTYPES
 
+    from benchhub.hf_croissant import schema_from_hf_features
+    from benchhub.hf_search import fetch_dataset_info
+
     repo_id = (request.form.get('repo_id') or '').strip()
     if not repo_id:
         flash("Enter an HF dataset repo ID first.", "warning")
         return redirect(url_for('admin_import_from_hf'))
+
+    # Try Croissant first (richer, when present); fall through to the
+    # datasets-server /info endpoint which has much broader coverage
+    # (HF auto-generates Croissant only for YAML-conformant repos
+    # with parquet bytes; /info indexes anything HF can stream).
+    schema = None
+    croissant_err = None
     try:
         doc = fetch_croissant(repo_id)
         schema = parse_croissant(doc)
     except (CroissantFetchError, ValueError) as e:
-        flash(f"Couldn't read Croissant for {repo_id!r}: {e}", "danger")
+        croissant_err = e
+    if schema is None:
+        info = fetch_dataset_info(repo_id)
+        if info is not None:
+            schema = schema_from_hf_features(
+                info['features'],
+                info.get('splits') or [],
+                name=repo_id,
+            )
+    if schema is None:
+        # Neither source had anything — surface the original Croissant
+        # error since that's the primary path; the /info fallback's
+        # silent failure isn't user-actionable.
+        flash(
+            f"Couldn't read schema for {repo_id!r}: {croissant_err}. "
+            "No Croissant document and no /info schema available — "
+            "the dataset may need a parquet conversion or a config fix "
+            "upstream.",
+            "danger",
+        )
         return redirect(url_for('admin_import_from_hf'))
 
     # Per-split row counts so the form can show "500 out of 10,000"

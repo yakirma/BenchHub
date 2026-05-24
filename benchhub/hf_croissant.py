@@ -326,6 +326,99 @@ def parse_croissant(doc: dict) -> CroissantSchema:
     )
 
 
+_HF_FEATURE_TYPE_MAP: dict[str, str] = {
+    "Image":      "image",
+    "Audio":      "audio",
+    "ClassLabel": "label",
+    "Sequence":   "json",
+    "Translation": "json",
+    "TranslationVariableLanguages": "json",
+    "Array2D":    "json",
+    "Array3D":    "json",
+    "Array4D":    "json",
+    "Array5D":    "json",
+    # `Value` is handled via dtype inspection — see _value_to_kind.
+}
+
+
+_VALUE_DTYPE_KIND: dict[str, str] = {
+    "string": "text",
+    "large_string": "text",
+    "bool": "scalar",
+    "float16": "scalar", "float32": "scalar", "float64": "scalar",
+    "int8": "scalar", "int16": "scalar", "int32": "scalar", "int64": "scalar",
+    "uint8": "scalar", "uint16": "scalar", "uint32": "scalar", "uint64": "scalar",
+    "date32": "text", "date64": "text",
+    "timestamp[s]": "text", "timestamp[ms]": "text", "timestamp[us]": "text", "timestamp[ns]": "text",
+}
+
+
+def _hf_feature_kind(spec: dict, col_name: str) -> str:
+    """Map a single HF feature spec to a BH kind. Mirrors the
+    Croissant `_TYPE_MAP` translation table for parity with the
+    Croissant flow."""
+    if not isinstance(spec, dict):
+        return "json"
+    t = spec.get("_type")
+    if t == "Value":
+        dtype = (spec.get("dtype") or "").lower()
+        kind = _VALUE_DTYPE_KIND.get(dtype, "json")
+        # Same name-based upgrade Croissant does: a Value(int*)
+        # column called `label`/`class`/`target`/... is almost
+        # certainly a classification target, not a free scalar.
+        if kind == "scalar" and col_name and col_name.lower() in _LABEL_NAME_TOKENS:
+            return "label"
+        return kind
+    return _HF_FEATURE_TYPE_MAP.get(t, "json")
+
+
+def schema_from_hf_features(
+    features: dict,
+    splits: list[str] | None = None,
+    *,
+    name: str = "",
+    description: str = "",
+) -> CroissantSchema:
+    """Build a `CroissantSchema` from an HF datasets-server `/info`
+    `features` dict. Used as the fallback when the upstream HF repo
+    has no Croissant document — `/info`'s coverage is noticeably
+    broader, so this catches the long tail of community uploads,
+    older datasets, and loader-script repos.
+
+    Mapping rules mirror `_TYPE_MAP` + the `_LABEL_NAME_TOKENS`
+    name-based upgrade in `parse_croissant`, so the downstream
+    preview form behaves identically regardless of which path the
+    schema came from.
+    """
+    fields: list[CroissantField] = []
+    for col, spec in features.items():
+        if not isinstance(col, str):
+            continue
+        if col in {"split", "split_name"}:
+            # Per-row split indicator — metadata, not data; same skip
+            # the Croissant parser does.
+            continue
+        kind = _hf_feature_kind(spec if isinstance(spec, dict) else {}, col)
+        croissant_type = (
+            spec.get("_type", "?") if isinstance(spec, dict) else "?"
+        )
+        fields.append(
+            CroissantField(
+                name=col,
+                kind=kind,
+                croissant_type=f"hf:{croissant_type}",
+                source_column=col,
+            )
+        )
+    return CroissantSchema(
+        name=name,
+        description=description,
+        record_set_id="hf_info",
+        fields=fields,
+        splits=list(splits or []),
+    )
+
+
 def fetch_and_parse(repo_id: str, *, timeout: int = 20) -> CroissantSchema:
     """Convenience: fetch + parse in one call."""
     return parse_croissant(fetch_croissant(repo_id, timeout=timeout))

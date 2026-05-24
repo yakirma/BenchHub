@@ -176,6 +176,65 @@ def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, li
     return out
 
 
+def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
+    """Fall-back schema source when Croissant isn't available.
+
+    HF's `datasets-server /info` returns the same `features` dict
+    HF's own viewer uses — broader coverage than Croissant (it
+    indexes anything HF can stream, not just YAML-conformant
+    repos). Returns the first config's `{features, splits}`, or
+    None on any failure / shape surprise.
+
+    Shape returned:
+        {"features": {col: {"_type": "...", ...}},
+         "splits": ["train", "test", ...]}
+
+    Callers convert this to the same `CroissantSchema` the preview
+    flow consumes — see benchhub.hf_croissant.schema_from_hf_features.
+    """
+    if not repo_id:
+        return None
+    params = urllib.parse.urlencode({"dataset": repo_id})
+    req = urllib.request.Request(
+        f"{_HF_DATASETS_SERVER_INFO}?{params}",
+        headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    try:
+        doc = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    configs = doc.get("dataset_info") or {}
+    if not isinstance(configs, dict) or not configs:
+        return None
+    # First config wins. Multi-config datasets pick one config at
+    # materialize time anyway; the user can switch via the form's
+    # split dropdown if they need a different config.
+    _first_name, cfg = next(iter(configs.items()))
+    if not isinstance(cfg, dict):
+        return None
+    features = cfg.get("features")
+    if not isinstance(features, dict) or not features:
+        return None
+    splits_raw = cfg.get("splits") or {}
+    splits: list[str] = []
+    if isinstance(splits_raw, dict):
+        splits = [s for s in splits_raw.keys() if isinstance(s, str)]
+    elif isinstance(splits_raw, list):
+        for s in splits_raw:
+            if isinstance(s, str):
+                splits.append(s)
+            elif isinstance(s, dict) and isinstance(s.get("name"), str):
+                splits.append(s["name"])
+    return {"features": features, "splits": splits}
+
+
 def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:
     """Internal: GET the datasets-server `/size` doc as a dict, or
     None on any failure. Shared by row-count and byte-size lookups
