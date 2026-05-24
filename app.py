@@ -11407,65 +11407,69 @@ def download_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
     # Optional submission IDs to include in the zip
     submission_ids = request.args.getlist('submission_id', type=int)
-    
+
+    # The typed registry tells us how each kind is persisted:
+    # `file_ext is None` → inline value (stash in value_float /
+    # value_text); otherwise the bytes live on disk and value_text
+    # is the relative path under UPLOAD_FOLDER. Driving the export
+    # from the same source as the importer means new kinds get
+    # bundled automatically without touching this function.
+    from benchhub.types import DTYPES as _DTYPES
+    _INLINE_EXT_BY_KIND = {
+        'scalar': '.txt',
+        'label': '.txt',
+        'label_list': '.json',
+    }
+
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w') as zf:
-        # 1. Add Ground Truth (Dataset) fields reconstructed from DB
-        # Tags
+        # Tags travel as a flat CSV file alongside the per-field
+        # folders so users get the same layout they uploaded with.
         if sample.tags:
             zf.writestr(f'ground_truth/tags/{sample.name}.txt', sample.tags)
-        
-        # Peak
-        for cf in sample.custom_fields:
-            if cf.name == 'pick' and cf.data_type == 'scalar':
-                zf.writestr(f'ground_truth/pick/{sample.name}.txt', str(cf.value_float))
-                break
-            
-        # Shape
-        if None:
-            zf.writestr(f'ground_truth/wave_shape/{sample.name}.txt', None.shape_name)
-            
-        # Config
-        if None:
-            zf.writestr(f'ground_truth/config/{sample.name}.json', None.config_json)
-            
-        # Histogram (.npz)
-        if None:
-            bins = np.array(json.loads(None.bins))
-            counts = np.array(json.loads(None.counts))
-            hist_buf = io.BytesIO()
-            np.savez_compressed(hist_buf, bins=bins, counts=counts)
-            zf.writestr(f'ground_truth/hist/{sample.name}.npz', hist_buf.getvalue())
-        
-        # Custom fields from dataset (full type coverage — previously only
-        # scalar+image were included, so depth maps and json/text fields
-        # silently dropped from the bundle).
-        for cf in sample.custom_fields:
-            if cf.data_type == 'scalar':
-                zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', str(cf.value_float))
 
-            elif cf.data_type in ('image', 'depth', 'json'):
-                # All three store a relative path under UPLOAD_FOLDER.
-                # Preserve the original filename (depth files carry a
-                # `_<W>x<H>` suffix that the importer expects on round-trip).
-                src_path = os.path.join(app.config['UPLOAD_FOLDER'], cf.value_text or '')
-                if os.path.exists(src_path):
-                    arc_filename = os.path.basename(cf.value_text)
-                    zf.write(src_path, f'ground_truth/{cf.name}/{arc_filename}')
+        for cf in sample.custom_fields:
+            kind = cf.data_type
+            # Metric outputs are bookkeeping (per-sample scores written
+            # back by the engine), not user-facing data — skip them.
+            if kind == 'metric' or (cf.name or '').startswith('lm_'):
+                continue
 
-            elif cf.data_type == 'histogram':
-                # value_text is the JSON {bins, counts}; round-trip to .npz
-                # so the bundle matches the original ZIP convention.
+            type_cls = _DTYPES.get(kind)
+            is_inline = (type_cls is not None and type_cls.file_ext is None)
+
+            # Legacy `histogram` rows have no entry in DTYPES; round-trip
+            # the cached JSON back to .npz to match the original layout.
+            if kind == 'histogram':
                 try:
-                    h = json.loads(cf.value_text)
+                    h = json.loads(cf.value_text or '{}')
                     buf = io.BytesIO()
-                    np.savez_compressed(buf, bins=np.array(h['bins']), counts=np.array(h['counts']))
-                    zf.writestr(f'ground_truth/{cf.name}/{sample.name}.npz', buf.getvalue())
+                    np.savez_compressed(buf,
+                                        bins=np.array(h.get('bins', [])),
+                                        counts=np.array(h.get('counts', [])))
+                    zf.writestr(f'ground_truth/{cf.name}/{sample.name}.npz',
+                                buf.getvalue())
                 except Exception:
                     pass
+                continue
 
-            elif cf.data_type == 'text':
-                zf.writestr(f'ground_truth/{cf.name}/{sample.name}.txt', cf.value_text or '')
+            if is_inline:
+                ext = _INLINE_EXT_BY_KIND.get(kind, '.txt')
+                if kind == 'scalar':
+                    payload = '' if cf.value_float is None else str(cf.value_float)
+                else:
+                    payload = cf.value_text or ''
+                zf.writestr(f'ground_truth/{cf.name}/{sample.name}{ext}', payload)
+                continue
+
+            # File-backed: copy the on-disk file into the bundle.
+            # Depth files carry a `_<W>x<H>` suffix the importer needs
+            # on round-trip, so keep the original filename.
+            rel = cf.value_text or ''
+            src_path = os.path.join(app.config['UPLOAD_FOLDER'], rel)
+            if rel and os.path.exists(src_path):
+                arc_filename = os.path.basename(rel)
+                zf.write(src_path, f'ground_truth/{cf.name}/{arc_filename}')
 
 
         # 2. Add Submission fields from disk
