@@ -70,27 +70,6 @@
                 {% endfor %}
             </div>
 
-            <div class="form-check mb-2">
-                <input class="form-check-input" type="checkbox"
-                       id="auto-assign" name="auto_assign_metrics" value="1">
-                <label class="form-check-label small" for="auto-assign">
-                    <strong>Auto-assign metrics</strong> — inspect the
-                    dataset's GT fields and propose typed metric bindings
-                    (you'll review + confirm before any GlobalMetric row
-                    is written).
-                </label>
-            </div>
-
-            <div class="form-check mb-3">
-                <input class="form-check-input" type="checkbox"
-                       id="lb-overwrite" name="overwrite" value="1">
-                <label class="form-check-label small" for="lb-overwrite">
-                    <strong>Overwrite</strong> any existing leaderboard
-                    with the same name (deletes the old one + its
-                    submissions; only do this if you're sure).
-                </label>
-            </div>
-
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-plus-lg me-1"></i>Create leaderboard

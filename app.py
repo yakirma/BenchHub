@@ -8187,47 +8187,10 @@ def create_leaderboard():
     # Names are global now (no project namespace).
     existing = Leaderboard.query.filter_by(name=leaderboard_name).first()
     if existing:
-        if request.form.get('overwrite'):
-            db.session.delete(existing)
-            db.session.commit()
-            flash(f'Overwriting existing leaderboard "{leaderboard_name}".', 'warning')
-        else:
-            flash(f'Leaderboard "{leaderboard_name}" already exists. Choose a different name or check "Overwrite".', 'danger')
-            return redirect(url_for('datasets_list'))
-
-    # When the user opts into auto-assigned metrics, render the preview
-    # page so they can review/edit/skip individual proposals before any
-    # GlobalMetric / GlobalVisualization rows are created. The actual
-    # commit happens in /create_leaderboard/auto_finalize.
-    auto_assign = bool(request.form.get('auto_assign_metrics'))
-    if auto_assign:
-        dataset_ids = request.form.getlist('dataset_ids')
-        if not dataset_ids and 'dataset_id' in request.form:
-            dataset_ids = [request.form['dataset_id']]
-        ds = (Dataset.query.filter(Dataset.id.in_(dataset_ids)).first()
-              if dataset_ids else None)
-        if ds is None:
-            flash("Auto-assign metrics needs a dataset attached to the LB.", "danger")
-            return redirect(url_for('datasets_list'))
-        metric_props, viz_props = _collect_auto_lb_proposals(ds)
-        if not metric_props and not viz_props:
-            flash("No GT scalar fields detected on the dataset — "
-                  "nothing to auto-attach.", "warning")
-            return redirect(url_for('dataset_view', dataset_id=ds.id))
-        # Combined pred-field schema preview so the user sees what
-        # submission folders the proposed metrics + viz will require.
-        seen_pred = {}
-        for p in metric_props + viz_props:
-            for pf in (p.get('pred_fields') or []):
-                seen_pred.setdefault(pf['name'], pf)
-        return render_template(
-            'auto_lb_preview.html',
-            leaderboard_name=leaderboard_name,
-            dataset=ds,
-            metric_proposals=metric_props,
-            viz_proposals=viz_props,
-            pred_field_schema=list(seen_pred.values()),
-        )
+        flash(
+            f'Leaderboard "{leaderboard_name}" already exists. '
+            'Choose a different name.', 'danger')
+        return redirect(url_for('datasets_list'))
 
     # Per-field role overrides from the LB-creation form. The form
     # posts `field_role_<dataset_field_name>` = input/gt/skip per
