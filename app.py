@@ -613,6 +613,13 @@ class GlobalMetric(db.Model):
     # contract yet). The LB editor's metric→field binding filters
     # available GT/pred columns by these kinds.
     input_kinds = db.Column(db.Text, nullable=True)
+    # Parallel JSON array (same length / order as `input_kinds`) of
+    # the expected dataset-field role per arg: `gt`, `pred`, or
+    # `input`. NULL ⇒ unconstrained, the LB picker accepts any role.
+    # Drives the per-arg field dropdown filter on the LB-creation
+    # form so metric `accuracy(gt, pred)` can only bind `gt` to a
+    # role=gt field and `pred` to a role=pred (or auto-derived) field.
+    input_roles = db.Column(db.Text, nullable=True)
     # Phase 1 Slice 4 multi-tenancy. NOTE: `name` is still globally unique;
     # two users can't both ship a metric called "L1Loss". For Phase 1 that's
     # acceptable (rename your fork). Composite (owner, name) uniqueness is a
@@ -3752,11 +3759,18 @@ def metrics_view():
         selected = next((m for m in metrics if m.id == selected_id), None)
     if selected is None and grouped_metrics:
         selected = grouped_metrics[0][1][0]
+    # Parse the selected metric's parameter names so the detail
+    # panel can show "<arg>: <kind>·<role>" badges instead of bare
+    # kinds.
+    selected_arg_names = (
+        _extract_metric_arg_names(selected.python_code or '') if selected else []
+    )
     return render_template(
         'metrics.html',
         metrics=metrics,
         grouped_metrics=grouped_metrics,
         selected=selected,
+        selected_arg_names=selected_arg_names,
     )
 
 def extract_code_from_file(file_storage):
@@ -3895,7 +3909,31 @@ def edit_global_metric(metric_id):
         metric.python_code = python_code
         metric.is_aggregated = 'is_aggregated' in request.form
         metric.accepts_aggregated_inputs = 'accepts_aggregated_inputs' in request.form
-        
+        # Typed contract: parallel comma-separated lists of kinds +
+        # roles per arg, matched against benchhub.types.DTYPES on
+        # the kind side and {'gt','pred','input'} on the role side.
+        # An empty string clears the column → "unconstrained".
+        from benchhub.types import DTYPES as _DTYPES_VALID
+        _VALID_ROLES = {'gt', 'pred', 'input'}
+        kinds_raw = (request.form.get('input_kinds') or '').strip()
+        roles_raw = (request.form.get('input_roles') or '').strip()
+        if kinds_raw == '':
+            metric.input_kinds = None
+        else:
+            kinds = [k.strip() for k in kinds_raw.split(',') if k.strip()]
+            bad = [k for k in kinds if k not in _DTYPES_VALID]
+            if bad:
+                raise ValueError(f"unknown kind(s): {bad}")
+            metric.input_kinds = json.dumps(kinds)
+        if roles_raw == '':
+            metric.input_roles = None
+        else:
+            roles = [r.strip().lower() for r in roles_raw.split(',') if r.strip()]
+            bad = [r for r in roles if r not in _VALID_ROLES]
+            if bad:
+                raise ValueError(f"unknown role(s): {bad}; expected {sorted(_VALID_ROLES)}")
+            metric.input_roles = json.dumps(roles)
+
         db.session.commit()
         flash(f'Metric "{metric.name}" updated.', 'success')
     except Exception as e:
@@ -7698,6 +7736,16 @@ def create_leaderboard():
     # GlobalMetric with the chosen arg mappings.
     raw_metric_ids = request.form.getlist('metric_global_id')
     raw_metric_mappings = request.form.getlist('metric_mappings_json')
+    # Resolve attached datasets' field schemas once for the type-
+    # assertion step below. Indexed by `(kind, role)` and `(kind,)`
+    # for quick membership checks.
+    _attached_fields: list[tuple[str, str, str]] = []  # (name, kind, role)
+    for _ds in (new_leaderboard.datasets or []):
+        for _df in _ds.fields:
+            _attached_fields.append((_df.name, _df.kind, (_df.role or 'gt').lower()))
+    _attached_by_name = {n: (k, r) for n, k, r in _attached_fields}
+
+    validation_errors: list[str] = []
     for i, gm_id_raw in enumerate(raw_metric_ids):
         gm_id_raw = (gm_id_raw or '').strip()
         if not gm_id_raw:
@@ -7716,12 +7764,73 @@ def create_leaderboard():
                 mapping = {}
         except (TypeError, ValueError):
             mapping = {}
+
+        # Assert input types/roles. A metric that declares
+        # `input_kinds=['label','label']` + `input_roles=['gt','pred']`
+        # must have its `gt` arg bound to a role=gt label field and
+        # its `pred` arg bound to a role=gt label field (the engine
+        # auto-derives the `<name>_pred` from the pred contract).
+        args = _extract_metric_arg_names(gm.python_code or '')
+        try:
+            kinds = json.loads(gm.input_kinds) if gm.input_kinds else []
+            if not isinstance(kinds, list):
+                kinds = []
+        except (TypeError, ValueError):
+            kinds = []
+        try:
+            roles = json.loads(gm.input_roles) if gm.input_roles else []
+            if not isinstance(roles, list):
+                roles = []
+        except (TypeError, ValueError):
+            roles = []
+
+        skip_metric = False
+        for idx, arg in enumerate(args):
+            picked = mapping.get(arg)
+            if not picked:
+                continue
+            if picked not in _attached_by_name:
+                validation_errors.append(
+                    f"{gm.name}.{arg}: {picked!r} is not a field on the attached dataset(s)"
+                )
+                skip_metric = True
+                continue
+            picked_kind, picked_role = _attached_by_name[picked]
+            expected_kind = kinds[idx] if idx < len(kinds) else None
+            expected_role = roles[idx] if idx < len(roles) else None
+            if expected_kind and picked_kind != expected_kind:
+                validation_errors.append(
+                    f"{gm.name}.{arg}: expected kind {expected_kind!r} but "
+                    f"{picked!r} is kind {picked_kind!r}"
+                )
+                skip_metric = True
+            if expected_role:
+                # `pred`-roled args bind to the GT field by name; the
+                # engine resolves `<name>_pred` from the pred contract.
+                want_role = 'gt' if expected_role == 'pred' else expected_role
+                if picked_role != want_role:
+                    validation_errors.append(
+                        f"{gm.name}.{arg}: expected role {expected_role!r} but "
+                        f"{picked!r} has role {picked_role!r}"
+                    )
+                    skip_metric = True
+        if skip_metric:
+            continue
+
         lm = LeaderboardMetric(
             leaderboard_id=new_leaderboard.id,
             global_metric_id=gm.id,
             arg_mappings=json.dumps(mapping),
         )
         db.session.add(lm)
+    if validation_errors:
+        # Don't abort the LB creation — the LB is still useful with
+        # whatever survived. Just flash the rejected pairs so the
+        # admin can re-add them with a correct binding.
+        flash(
+            'Some metric bindings were rejected: ' + '; '.join(validation_errors),
+            'warning',
+        )
 
     db.session.commit()
     
@@ -9929,10 +10038,65 @@ def dataset_view(dataset_id):
     selected_display_columns = sorted(selected_display_columns,
                                        key=lambda x: get_column_priority(x, available_display_options.get(x, {}).get('type'), x in dataset_custom_fields))
 
-    # LB-creation inline form options: pick from the user's visible
-    # GlobalMetrics + this dataset's GT field names. Each metric is
-    # serialised with its parameter names so the JS can render an
-    # input mapping row per arg when the admin picks one.
+    # LB-creation inline form options. For each visible GlobalMetric
+    # we attach:
+    #   args        — parameter names (drive the per-arg field-picker
+    #                 rows in the JS)
+    #   input_kinds — declared BH kinds per arg (or NULL = any)
+    #   input_roles — declared dataset roles per arg (or NULL = any)
+    #   arg_specs   — combined `[{name, kind, role}, ...]` for the JS
+    # We then filter the picker to only metrics whose declared input
+    # kinds AND roles can be satisfied by some combination of this
+    # dataset's available fields — so the admin doesn't see options
+    # that can never be wired up.
+    dataset_field_options = [
+        {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
+        for df in dataset.fields
+    ]
+    # Group by (kind, role) once for quick lookup below.
+    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
+    for f in dataset_field_options:
+        fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
+    # Same but role-agnostic, for unconstrained-role metrics.
+    fields_by_kind: dict[str, list[str]] = {}
+    for f in dataset_field_options:
+        fields_by_kind.setdefault(f['kind'], []).append(f['name'])
+
+    def _arg_specs(args, kinds, roles):
+        out = []
+        for i, name in enumerate(args):
+            out.append({
+                'name': name,
+                'kind': kinds[i] if i < len(kinds) else None,
+                'role': roles[i] if i < len(roles) else None,
+            })
+        return out
+
+    def _metric_satisfiable(arg_specs):
+        # A metric is offered only if every declared arg can be
+        # mapped to at least one existing dataset field whose kind
+        # (and role, if declared) matches. Pred-role args are
+        # special-cased: preds don't live on the dataset, so we
+        # accept them as long as a same-kind GT exists (the LB
+        # picks the matching `<name>_pred` from the contract).
+        for spec in arg_specs:
+            k = spec.get('kind')
+            r = spec.get('role')
+            if not k:
+                continue  # unconstrained kind — anything works
+            if r == 'pred':
+                # OK iff there's a GT-role same-kind field — the
+                # pred contract is derived from GT at LB-create time.
+                if not fields_by_kind_role.get((k, 'gt')):
+                    return False
+            elif r:
+                if not fields_by_kind_role.get((k, r)):
+                    return False
+            else:
+                if not fields_by_kind.get(k):
+                    return False
+        return True
+
     available_metrics_for_lb = []
     for gm in (
         GlobalMetric.query
@@ -9941,11 +10105,27 @@ def dataset_view(dataset_id):
         .all()
     ):
         args = _extract_metric_arg_names(gm.python_code or '')
+        try:
+            kinds = json.loads(gm.input_kinds) if gm.input_kinds else []
+            if not isinstance(kinds, list):
+                kinds = []
+        except (TypeError, ValueError):
+            kinds = []
+        try:
+            roles = json.loads(gm.input_roles) if gm.input_roles else []
+            if not isinstance(roles, list):
+                roles = []
+        except (TypeError, ValueError):
+            roles = []
+        specs = _arg_specs(args, kinds, roles)
+        if not _metric_satisfiable(specs):
+            continue
         available_metrics_for_lb.append({
             'id': gm.id,
             'name': gm.name,
             'description': (gm.description or '').strip(),
             'args': args,
+            'arg_specs': specs,
         })
     # GT-bearing field names — what the admin can map metric inputs
     # to. Use the DatasetField schema rows (role='gt') so the list
@@ -9983,7 +10163,8 @@ def dataset_view(dataset_id):
                            filterable_field_types=filterable_kinds,
                            filter_suggestions=filter_suggestions,
                            available_metrics_for_lb=available_metrics_for_lb,
-                           gt_field_options=gt_field_options)
+                           gt_field_options=gt_field_options,
+                           dataset_field_options=dataset_field_options)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])
@@ -12199,6 +12380,19 @@ def check_and_migrate_db():
                             print(f"Migration: added {_tbl}.input_kinds")
                     except Exception as e:
                         print(f"Migration error ({_tbl}.input_kinds): {e}")
+
+                # --- GlobalMetric.input_roles (parallel role-per-arg array) ---
+                try:
+                    cursor.execute("PRAGMA table_info(global_metric)")
+                    cols = [r[1] for r in cursor.fetchall()]
+                    if 'input_roles' not in cols:
+                        cursor.execute(
+                            "ALTER TABLE global_metric ADD COLUMN input_roles TEXT DEFAULT NULL"
+                        )
+                        conn.commit()
+                        print("Migration: added global_metric.input_roles")
+                except Exception as e:
+                    print(f"Migration error (global_metric.input_roles): {e}")
 
                 # --- Lower per-user storage quota 200 MB → 50 MB ---
                 # Existing users were created with the old 200 MB default;

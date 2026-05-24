@@ -291,6 +291,7 @@
                             {% for m in available_metrics_for_lb %}
                             <option value="{{ m.id }}"
                                 data-args="{{ m.args|tojson|forceescape }}"
+                                data-arg-specs="{{ m.arg_specs|tojson|forceescape }}"
                                 data-name="{{ m.name }}"
                                 {% if m.description %}title="{{ m.description }}"{% endif %}>
                                 {{ m.name }}
@@ -356,7 +357,25 @@
                 const rowsHost = document.getElementById('lb-metrics-rows');
                 const tpl = document.getElementById('lb-metric-row-template');
                 if (!picker || !addBtn || !rowsHost || !tpl) return;
+
+                // Full dataset-field schema [{name, kind, role}, ...]
+                // — drives per-arg dropdown filtering by declared
+                // kind + role.
+                const datasetFields = {{ dataset_field_options|tojson|safe }};
                 const gtFields = {{ gt_field_options|tojson|safe }};
+
+                function fieldsMatching(kind, role) {
+                    // Pred-role args reference the LB's pred contract,
+                    // which is derived from GT fields. Surface the
+                    // same-kind GT names — the engine wires the actual
+                    // `<name>_pred` lookup itself.
+                    const effRole = (role === 'pred') ? 'gt' : role;
+                    return datasetFields.filter((f) => {
+                        if (kind && f.kind !== kind) return false;
+                        if (effRole && f.role !== effRole) return false;
+                        return true;
+                    });
+                }
 
                 function rebuildMappingJson(row) {
                     const mapping = {};
@@ -367,30 +386,42 @@
                     row.querySelector('input[name="metric_mappings_json"]').value = JSON.stringify(mapping);
                 }
 
-                function addRow(globalMetricId, metricName, argNames) {
+                function addRow(globalMetricId, metricName, argSpecs) {
                     const frag = tpl.content.cloneNode(true);
                     const row = frag.querySelector('.lb-metric-row');
                     row.querySelector('input[name="metric_global_id"]').value = globalMetricId;
                     row.querySelector('.metric-name').textContent = metricName;
                     const controls = row.querySelector('.metric-arg-controls');
-                    if (!argNames || !argNames.length) {
+                    if (!argSpecs || !argSpecs.length) {
                         controls.innerHTML = '<span class="small text-body-secondary">(no inputs to map)</span>';
                     } else {
-                        for (const arg of argNames) {
+                        for (const spec of argSpecs) {
                             const wrap = document.createElement('span');
                             wrap.className = 'd-inline-flex align-items-center gap-1';
                             const lbl = document.createElement('label');
                             lbl.className = 'small text-body-secondary mb-0';
-                            lbl.textContent = arg + ':';
+                            // Show "<arg>: <kind>·<role>" so the
+                            // admin sees the expected contract
+                            // alongside the dropdown.
+                            const kindRole = [spec.kind, spec.role].filter(Boolean).join('·');
+                            lbl.textContent = spec.name + (kindRole ? ` (${kindRole})` : '') + ':';
                             const sel = document.createElement('select');
                             sel.className = 'form-select form-select-sm arg-map';
-                            sel.dataset.argName = arg;
+                            sel.dataset.argName = spec.name;
                             sel.style.width = 'auto';
-                            sel.innerHTML = '<option value="">— pick GT field —</option>' +
-                                gtFields.map((f) => `<option value="${f}">${f}</option>`).join('');
-                            // Reasonable default: if there's a same-named
-                            // GT field, pre-select it.
-                            if (gtFields.includes(arg)) sel.value = arg;
+                            // Eligible fields: filtered by declared
+                            // kind+role. If the metric is fully
+                            // unconstrained (no kind), show every GT
+                            // field (legacy behaviour).
+                            const eligible = (spec.kind || spec.role)
+                                ? fieldsMatching(spec.kind, spec.role).map((f) => f.name)
+                                : gtFields.slice();
+                            sel.innerHTML = '<option value="">— pick field —</option>' +
+                                eligible.map((f) => `<option value="${f}">${f}</option>`).join('');
+                            // Pre-select a same-named field if there's
+                            // an exact match in the eligible list.
+                            if (eligible.includes(spec.name)) sel.value = spec.name;
+                            else if (eligible.length === 1) sel.value = eligible[0];
                             sel.addEventListener('change', () => rebuildMappingJson(row));
                             wrap.appendChild(lbl);
                             wrap.appendChild(sel);
@@ -404,9 +435,16 @@
                 addBtn.addEventListener('click', () => {
                     const opt = picker.options[picker.selectedIndex];
                     if (!opt || !opt.value) return;
-                    let argNames = [];
-                    try { argNames = JSON.parse(opt.dataset.args || '[]'); } catch (e) { argNames = []; }
-                    addRow(opt.value, opt.dataset.name, argNames);
+                    let argSpecs = [];
+                    try { argSpecs = JSON.parse(opt.dataset.argSpecs || '[]'); } catch (e) { argSpecs = []; }
+                    // Fall back to args-only if specs missing.
+                    if (!argSpecs.length) {
+                        try {
+                            const argNames = JSON.parse(opt.dataset.args || '[]');
+                            argSpecs = argNames.map((n) => ({name: n, kind: null, role: null}));
+                        } catch (e) { argSpecs = []; }
+                    }
+                    addRow(opt.value, opt.dataset.name, argSpecs);
                     picker.value = '';
                 });
                 rowsHost.addEventListener('click', (e) => {

@@ -134,13 +134,25 @@
                     {% endif %}
 
                     {% set _ik = selected.input_kinds %}
-                    {% if _ik %}
-                    {% set _ik_list = _ik|from_json if _ik is string else _ik %}
-                    {% if _ik_list %}
+                    {% set _ir = selected.input_roles %}
+                    {% if _ik or _ir %}
+                    {% set _ik_list = (_ik|from_json if _ik is string else _ik) or [] %}
+                    {% set _ir_list = (_ir|from_json if _ir is string else _ir) or [] %}
+                    {% set _args = selected_arg_names or [] %}
+                    {% set _n = [_ik_list|length, _ir_list|length, _args|length]|max %}
+                    {% if _n %}
                     <div class="small mb-2">
                         <span class="text-body-secondary me-1">Accepts:</span>
-                        {% for k in _ik_list %}
-                        <span class="badge text-bg-info-subtle text-info-emphasis border me-1">{{ k }}</span>
+                        {% for i in range(_n) %}
+                        {% set _aname = _args[i] if i < _args|length else None %}
+                        {% set _akind = _ik_list[i] if i < _ik_list|length else None %}
+                        {% set _arole = _ir_list[i] if i < _ir_list|length else None %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border me-1">
+                            {% if _aname %}<code>{{ _aname }}</code>{% endif %}
+                            {% if _aname and (_akind or _arole) %}:{% endif %}
+                            {% if _akind %}{{ _akind }}{% endif %}
+                            {% if _arole %}<span class="text-body-secondary">·</span>{{ _arole }}{% endif %}
+                        </span>
                         {% if not loop.last %}<span class="text-body-secondary">×</span>{% endif %}
                         {% endfor %}
                     </div>
@@ -155,14 +167,18 @@
                                 data-id="{{ selected.id }}" data-name="{{ selected.name }}"
                                 data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
                                 data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
-                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}"
+                                data-input-kinds="{{ selected.input_kinds or '' }}"
+                                data-input-roles="{{ selected.input_roles or '' }}">
                             <i class="bi bi-pencil me-1"></i>Edit
                         </button>
                         <button class="btn btn-sm btn-outline-secondary duplicate-metric-btn"
                                 data-id="{{ selected.id }}" data-name="{{ selected.name }}"
                                 data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
                                 data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
-                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}"
+                                data-input-kinds="{{ selected.input_kinds or '' }}"
+                                data-input-roles="{{ selected.input_roles or '' }}">
                             <i class="bi bi-copy me-1"></i>Duplicate
                         </button>
                         <a href="{{ url_for('download_metric', metric_id=selected.id) }}"
@@ -173,7 +189,9 @@
                                 data-id="{{ selected.id }}" data-name="{{ selected.name }}"
                                 data-desc="{{ selected.description }}" data-code="{{ selected.python_code }}"
                                 data-aggregated="{{ 'true' if selected.is_aggregated else 'false' }}"
-                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}">
+                                data-accepts-agg="{{ 'true' if selected.accepts_aggregated_inputs else 'false' }}"
+                                data-input-kinds="{{ selected.input_kinds or '' }}"
+                                data-input-roles="{{ selected.input_roles or '' }}">
                             <i class="bi bi-upload me-1"></i>Update from file
                         </button>
                         <form action="{{ url_for('delete_global_metric', metric_id=selected.id) }}" method="post"
@@ -294,6 +312,36 @@
                         </div>
                     </div>
 
+                    {# Typed contract per arg. Two parallel comma-
+                       separated lists, one entry per function arg
+                       (in order). Drives the LB picker's "show only
+                       metrics that fit this dataset" filter plus the
+                       per-arg field-role dropdown. Leave blank for
+                       legacy / unconstrained behaviour. #}
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6">
+                            <label for="metric-input-kinds" class="form-label small fw-semibold mb-1">
+                                Input kinds (per arg, comma-sep)
+                            </label>
+                            <input type="text" class="form-control font-monospace" id="metric-input-kinds"
+                                   name="input_kinds" placeholder="e.g. label, label">
+                            <div class="form-text small">
+                                Match <code>benchhub.types</code>: image / mask / depth / audio / text
+                                / bboxes / label / scalar / json. Blank = any.
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="metric-input-roles" class="form-label small fw-semibold mb-1">
+                                Input roles (per arg, comma-sep)
+                            </label>
+                            <input type="text" class="form-control font-monospace" id="metric-input-roles"
+                                   name="input_roles" placeholder="e.g. gt, pred">
+                            <div class="form-text small">
+                                <code>gt</code> / <code>pred</code> / <code>input</code>. Blank = any.
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="text-end">
                         <button type="submit" class="btn btn-primary" id="save-btn">Create Metric</button>
                     </div>
@@ -330,6 +378,17 @@
     return 0.0`;
         document.getElementById('metric-aggregated').checked = !!data.isAgg;
         document.getElementById('metric-accepts-agg').checked = !!data.acceptsAgg;
+        // Typed-contract pre-fill. Server hands us JSON arrays; show
+        // them comma-separated for editing. Blank = unconstrained.
+        function _fromJsonArr(s) {
+            if (!s) return '';
+            try {
+                const v = JSON.parse(s);
+                return Array.isArray(v) ? v.join(', ') : '';
+            } catch (e) { return ''; }
+        }
+        document.getElementById('metric-input-kinds').value = _fromJsonArr(data.inputKinds);
+        document.getElementById('metric-input-roles').value = _fromJsonArr(data.inputRoles);
     }
 
     function openModalForEdit(data) {
@@ -353,7 +412,9 @@
                 desc: this.dataset.desc,
                 code: this.dataset.code,
                 isAgg: this.dataset.aggregated === 'true',
-                acceptsAgg: this.dataset.acceptsAgg === 'true'
+                acceptsAgg: this.dataset.acceptsAgg === 'true',
+                inputKinds: this.dataset.inputKinds,
+                inputRoles: this.dataset.inputRoles
             });
         });
     });
@@ -368,7 +429,9 @@
                 desc: this.dataset.desc,
                 code: this.dataset.code,
                 isAgg: this.dataset.aggregated === 'true',
-                acceptsAgg: this.dataset.acceptsAgg === 'true'
+                acceptsAgg: this.dataset.acceptsAgg === 'true',
+                inputKinds: this.dataset.inputKinds,
+                inputRoles: this.dataset.inputRoles
             });
             // Automatically trigger file picker
             document.getElementById('metric-file').value = ''; // Reset to ensure change event fires
