@@ -70,18 +70,25 @@ def _login(client, user):
         sess['user_id'] = user.id
 
 
-def test_picker_hides_metrics_that_cant_fit_the_dataset(client, db_session):
+def test_picker_disables_metrics_that_cant_fit_the_dataset(client, db_session):
+    """Unsatisfiable metrics show up in the picker but are
+    disabled with a `(needs …)` hint so the user can see what's
+    missing rather than just discover an empty dropdown."""
     user, ds = _seed_user_and_dataset()
     _login(client, user)
-    # accuracy on label×label preds — satisfiable: dataset has a label gt.
+    # accuracy on label×label preds — satisfiable.
     _seed_metric('accuracy_typed', kinds=['label', 'label'], roles=['gt', 'pred'], user=user)
-    # FID on image×image — NOT satisfiable: dataset has an `img` input
-    # but no role=gt image field.
+    # FID on image×image — NOT satisfiable (no role=gt image field).
     _seed_metric('fid_typed', kinds=['image', 'image'], roles=['gt', 'pred'], user=user)
 
     body = client.get(f'/dataset/{ds.id}').data.decode()
+    # accuracy renders as enabled.
     assert 'accuracy_typed' in body
-    assert 'fid_typed' not in body
+    assert 'data-satisfiable="1"' in body
+    # fid renders too, but as disabled with the (needs ...) suffix.
+    assert 'fid_typed' in body
+    assert 'data-satisfiable="0"' in body
+    assert 'needs kind=image' in body
 
 
 def test_picker_shows_metric_when_kind_matches_via_input_role(client, db_session):
@@ -162,18 +169,17 @@ def test_commit_rejects_pred_arg_bound_to_gt_field(client, db_session):
     assert LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).count() == 0
 
 
-def test_picker_hides_metric_when_dataset_has_no_matching_pred_field(client, db_session):
+def test_picker_disables_metric_when_dataset_has_no_matching_pred_field(client, db_session):
     """If a metric has a pred-role arg of kind X and the dataset
     has no explicit role=pred field of kind X, the metric is
-    unsatisfiable and gets filtered out of the picker — the
-    picker never invents `<gt>_pred` virtual entries."""
+    unsatisfiable — picker shows it as disabled with the missing-
+    field hint so the admin knows what to add to the dataset."""
     user = User(email='noPred@bench.local', display_name='nopred',
                 oauth_provider='github', oauth_sub='nopred-1')
     db.session.add(user); db.session.commit()
     ds = Dataset(name='no_pred_ds', visibility='public',
                  owner_user_id=user.id)
     db.session.add(ds); db.session.flush()
-    # GT label only — no `label_pred`.
     db.session.add(DatasetField(dataset_id=ds.id, name='label',
                                 kind='label', role='gt'))
     os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
@@ -183,8 +189,10 @@ def test_picker_hides_metric_when_dataset_has_no_matching_pred_field(client, db_
     _seed_metric('accuracy_strict', kinds=['label', 'label'],
                  roles=['gt', 'pred'], user=user)
     body = client.get(f'/dataset/{ds.id}').data.decode()
-    # The metric requires a label-pred — none declared → filtered.
-    assert 'accuracy_strict' not in body
+    assert 'accuracy_strict' in body
+    # Disabled with the (needs kind=label role=pred) hint.
+    assert 'data-satisfiable="0"' in body
+    assert 'needs kind=label role=pred' in body
 
 
 def test_picker_surfaces_explicit_pred_field_for_pred_args(client, db_session):

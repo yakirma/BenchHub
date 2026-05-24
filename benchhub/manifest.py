@@ -93,6 +93,17 @@ def validate_manifest(manifest: dict) -> None:
         params = f.get("params", {})
         if not isinstance(params, dict):
             raise ValueError(f"fields[{i}].params must be an object")
+        # Kind-specific param requirements. LabelList is the only
+        # one right now: every label_list field MUST declare an
+        # integer `k` (top-K depth) so submissions can be validated
+        # against an exact-length contract.
+        if f["kind"] == "label_list":
+            k = params.get("k")
+            if not isinstance(k, int) or k < 1:
+                raise ValueError(
+                    f"fields[{i}] kind=label_list requires params.k as a "
+                    f"positive integer; got {k!r}"
+                )
 
 
 def load_manifest(manifest_path: str | os.PathLike) -> dict:

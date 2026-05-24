@@ -466,8 +466,19 @@ class LabelList(DataType):
     file_ext = None  # stored inline
     viz_mime = "text/plain; charset=utf-8"
 
-    def __init__(self, values: list[int | str], *, names: list[str] | None = None,
-                 k: int | None = None):
+    def __init__(self, values: list[int | str], *, k: int,
+                 names: list[str] | None = None):
+        """`k` is REQUIRED: every LabelList instance carries its
+        declared top-K size. The contract is exact — the values
+        list must be exactly k long (no padding, no truncation).
+        That keeps top-1 vs top-5 unambiguous and lets metrics
+        slice `values[:k]` with confidence."""
+        try:
+            k_int = int(k)
+        except (TypeError, ValueError):
+            raise ValueError(f"LabelList requires an integer k; got {k!r}")
+        if k_int < 1:
+            raise ValueError(f"LabelList k must be >= 1; got {k_int}")
         for v in values:
             if not isinstance(v, (int, str)):
                 raise ValueError(
@@ -475,15 +486,13 @@ class LabelList(DataType):
                 )
         self.values = list(values)
         self.names = list(names) if names else None
-        self.k = int(k) if k is not None else None
+        self.k = k_int
 
     @property
     def params(self) -> dict:
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"k": self.k}
         if self.names:
             out["names"] = self.names
-        if self.k is not None:
-            out["k"] = self.k
         return out
 
     def encode(self) -> bytes:
@@ -492,16 +501,27 @@ class LabelList(DataType):
     @classmethod
     def decode(cls, blob: bytes, params: dict | None = None) -> "LabelList":
         params = params or {}
+        if "k" not in params:
+            raise ValueError(
+                "LabelList.decode requires `k` in params — the dataset "
+                "field must declare top-K size before submissions can "
+                "be evaluated against it."
+            )
         text = blob.decode("utf-8") if blob else "[]"
         values = json.loads(text) if text.strip() else []
         if not isinstance(values, list):
-            raise ValueError(f"LabelList blob must decode to a JSON list; got {type(values).__name__}")
-        return cls(values, names=params.get("names"), k=params.get("k"))
+            raise ValueError(
+                f"LabelList blob must decode to a JSON list; got {type(values).__name__}"
+            )
+        return cls(values, k=params["k"], names=params.get("names"))
 
     def validate(self) -> None:
-        if self.k is not None and len(self.values) > self.k:
+        # Exact-length contract: `pred.values` must hold exactly k
+        # entries. Sub- or over-length submissions fail the manifest
+        # check before any metric runs.
+        if len(self.values) != self.k:
             raise ValueError(
-                f"LabelList has {len(self.values)} values; declared k={self.k}"
+                f"LabelList has {len(self.values)} values; declared k={self.k} (exact match required)"
             )
 
     def visualize(self, **_: Any) -> tuple[bytes, str]:

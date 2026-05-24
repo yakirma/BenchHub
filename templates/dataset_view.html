@@ -300,8 +300,12 @@
                                 data-args="{{ m.args|tojson|forceescape }}"
                                 data-arg-specs="{{ m.arg_specs|tojson|forceescape }}"
                                 data-name="{{ m.name }}"
-                                {% if m.description %}title="{{ m.description }}"{% endif %}>
-                                {{ m.name }}
+                                data-satisfiable="{{ '1' if m.satisfiable else '0' }}"
+                                {% if not m.satisfiable %}
+                                disabled
+                                title="{{ m.missing_reason }}{% if m.description %} — {{ m.description }}{% endif %}"
+                                {% elif m.description %}title="{{ m.description }}"{% endif %}>
+                                {{ m.name }}{% if not m.satisfiable %} ({{ m.missing_reason }}){% endif %}
                             </option>
                             {% endfor %}
                         </select>
@@ -439,6 +443,7 @@
                 addBtn.addEventListener('click', () => {
                     const opt = picker.options[picker.selectedIndex];
                     if (!opt || !opt.value) return;
+                    if (opt.disabled) return;  // unsatisfiable — picker shows it as a hint, but you can't add it
                     let argSpecs = [];
                     try { argSpecs = JSON.parse(opt.dataset.argSpecs || '[]'); } catch (e) { argSpecs = []; }
                     // Fall back to args-only if specs missing.

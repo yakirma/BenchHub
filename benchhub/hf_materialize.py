@@ -162,9 +162,17 @@ def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | No
                 return bh.Label(value)
             return bh.Label(int(value))
         if kind == "label_list":
-            if isinstance(value, list):
-                return bh.LabelList(value, **params)
-            return None
+            if not isinstance(value, list):
+                return None
+            # `k` is required on the LabelList contract. The
+            # materialize caller is the manifest's `params` block —
+            # see `validate_manifest` for the up-front check.
+            if "k" not in params:
+                raise ValueError(
+                    "label_list field requires params.k (top-K depth) "
+                    "to materialize; declare it on the dataset's pred field"
+                )
+            return bh.LabelList(value, **params)
         if kind == "scalar":
             return bh.Scalar(float(value))
         if kind == "json":

@@ -65,6 +65,32 @@
                   data-key="names" data-list="1" rows="1"
                   placeholder="HF ClassLabel auto-fills if blank"></textarea>
     </div>
+
+    <div class="params-panel" data-kind="label_list" data-scope="{{ scope }}" hidden>
+        {# Top-K classification preds. `k` is REQUIRED and enforced
+           as part of the contract: every submission must ship
+           exactly k entries per sample. names mirrors the vocab
+           from the matching GT label field. #}
+        <div class="row g-2">
+            <div class="col-sm-4">
+                <label class="form-label form-label-sm small mb-0">
+                    k <span class="text-danger">*</span>
+                </label>
+                <input type="number" min="1" required
+                       class="form-control form-control-sm params-input"
+                       data-key="k" data-required="1"
+                       placeholder="5">
+            </div>
+            <div class="col-sm-8">
+                <label class="form-label form-label-sm small mb-0">
+                    class names <span class="text-body-secondary">(comma-sep, optional)</span>
+                </label>
+                <textarea class="form-control form-control-sm params-input"
+                          data-key="names" data-list="1" rows="1"
+                          placeholder="airplane, automobile, bird, …"></textarea>
+            </div>
+        </div>
+    </div>
 </div>
 {% endmacro %}
 

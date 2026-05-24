@@ -10220,12 +10220,12 @@ def dataset_view(dataset_id):
             })
         return out
 
-    def _metric_satisfiable(arg_specs):
-        # A metric is offered only if every declared arg can be
-        # mapped to at least one available field whose kind (and
-        # role, if declared) matches. Pred-role args check against
-        # the synthesized `<name>_pred` contract derived from the
-        # dataset's GT fields.
+    def _metric_satisfiability(arg_specs):
+        """Returns `(ok, missing_specs)`. `missing_specs` is the list
+        of arg specs that can't be matched by any available field —
+        used to render a "(needs kind=label_list role=pred)" hint on
+        the disabled dropdown option."""
+        missing = []
         for spec in arg_specs:
             k = spec.get('kind')
             r = spec.get('role')
@@ -10233,11 +10233,22 @@ def dataset_view(dataset_id):
                 continue  # unconstrained kind — anything works
             if r:
                 if not fields_by_kind_role.get((k, r)):
-                    return False
+                    missing.append(spec)
             else:
                 if not fields_by_kind.get(k):
-                    return False
-        return True
+                    missing.append(spec)
+        return (not missing, missing)
+
+    def _missing_reason(missing_specs):
+        parts = []
+        for s in missing_specs:
+            bits = []
+            if s.get('kind'):
+                bits.append(f"kind={s['kind']}")
+            if s.get('role'):
+                bits.append(f"role={s['role']}")
+            parts.append(f"{s.get('name') or '?'}: needs " + ' '.join(bits))
+        return '; '.join(parts)
 
     available_metrics_for_lb = []
     for gm in (
@@ -10260,14 +10271,19 @@ def dataset_view(dataset_id):
         except (TypeError, ValueError):
             roles = []
         specs = _arg_specs(args, kinds, roles)
-        if not _metric_satisfiable(specs):
-            continue
+        ok, missing = _metric_satisfiability(specs)
+        # Show ALL metrics, even unsatisfiable ones. The picker
+        # disables them and surfaces a (needs …) hint so the user
+        # sees WHY a metric isn't pickable and what field to add
+        # (e.g. a `kind=label_list role=pred` field for top-K).
         available_metrics_for_lb.append({
             'id': gm.id,
             'name': gm.name,
             'description': (gm.description or '').strip(),
             'args': args,
             'arg_specs': specs,
+            'satisfiable': ok,
+            'missing_reason': '' if ok else _missing_reason(missing),
         })
     # GT-bearing field names — what the admin can map metric inputs
     # to. Use the DatasetField schema rows (role='gt') so the list
