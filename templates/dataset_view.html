@@ -364,11 +364,19 @@
                 const datasetFields = {{ dataset_field_options|tojson|safe }};
                 const predFields = {{ pred_contract_fields|tojson|safe }};
                 const gtFields = {{ gt_field_options|tojson|safe }};
-                // Unified pool — input/gt come from the dataset
-                // schema, pred from the synthesized contract
-                // (one `<gt_name>_pred` per role=gt field, plus any
-                // explicit role=pred field).
-                const allFields = datasetFields.concat(predFields);
+                // Unified pool — input/gt/pred from the dataset
+                // schema, plus synthesized `<gt_name>_pred` entries
+                // for GT fields without an explicit pred declaration.
+                // Dedupe by `name` so an explicit role=pred field
+                // that ALSO happens to follow the `<gt>_pred`
+                // naming doesn't get listed twice.
+                const _seenNames = new Set();
+                const allFields = [];
+                for (const f of datasetFields.concat(predFields)) {
+                    if (_seenNames.has(f.name)) continue;
+                    _seenNames.add(f.name);
+                    allFields.push(f);
+                }
 
                 function fieldsMatching(kind, role) {
                     return allFields.filter((f) => {

@@ -157,6 +157,42 @@ def test_commit_rejects_pred_arg_bound_to_gt_field(client, db_session):
     assert LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).count() == 0
 
 
+def test_pred_contract_doesnt_double_count_explicit_pred_field(client, db_session):
+    """When the dataset already has an explicit role=pred
+    DatasetField (e.g. `label_pred` set via the HF import's
+    Prediction-fields section), the pred-contract synthesizer
+    must NOT add another entry with the same name. JS would then
+    surface it twice in the per-arg dropdown."""
+    user = User(email='dupe@bench.local', display_name='dupe',
+                oauth_provider='github', oauth_sub='dupe-1')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='dupe_ds', visibility='public', owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    db.session.add_all([
+        DatasetField(dataset_id=ds.id, name='label',      kind='label', role='gt'),
+        DatasetField(dataset_id=ds.id, name='label_pred', kind='label', role='pred'),
+    ])
+    os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
+                exist_ok=True)
+    db.session.commit()
+    _login(client, user)
+    _seed_metric('label_acc_dup', kinds=['label', 'label'],
+                 roles=['gt', 'pred'], user=user)
+    body = client.get(f'/dataset/{ds.id}').data.decode()
+    # The pred-contract synthesizer's JSON ships only NEW entries.
+    # We assert it doesn't contain the existing pred name.
+    # The pred_contract_fields var is rendered inline; with the
+    # existing label_pred declared, the synthesized list should be
+    # empty (or contain only OTHER names).
+    import re
+    m = re.search(r'predFields = (\[.*?\]);', body)
+    assert m is not None
+    pred_field_payload = m.group(1)
+    # The explicit `label_pred` mustn't appear in the synthesized list.
+    assert '"label_pred"' not in pred_field_payload \
+        and "'label_pred'" not in pred_field_payload
+
+
 def test_picker_surfaces_pred_contract_name_for_pred_args(client, db_session):
     """The dataset_view picker exposes a `pred_contract_fields`
     list that contains `label_pred` (one entry per GT field) so

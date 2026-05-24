@@ -10177,25 +10177,22 @@ def dataset_view(dataset_id):
         {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
         for df in dataset.fields
     ]
-    # Pred-contract synthesis: every role=gt field implies a
-    # submission-side `<name>_pred` of the same kind. We also keep
-    # any explicit role=pred field as-is. The picker shows these
-    # synthesized names for pred-role args so the admin maps the
-    # metric's `pred` to e.g. `label_pred`, not `label`.
+    # Pred-contract synthesis: for each role=gt field, add a
+    # submission-side `<name>_pred` of the same kind. Explicit
+    # role=pred DatasetFields are NOT re-added here — they already
+    # live in `dataset_field_options`, and the picker's JS unions
+    # both sources. Re-adding them would surface the same pred
+    # name twice in the per-arg dropdown.
     pred_contract_fields: list[dict] = []
-    _pred_seen: set[str] = set()
-    for f in dataset_field_options:
-        if f['role'] == 'pred' and f['name'] not in _pred_seen:
-            pred_contract_fields.append({'name': f['name'], 'kind': f['kind'], 'role': 'pred'})
-            _pred_seen.add(f['name'])
+    _existing_names = {f['name'] for f in dataset_field_options}
     for f in dataset_field_options:
         if f['role'] != 'gt':
             continue
         pname = f"{f['name']}_pred"
-        if pname in _pred_seen:
+        if pname in _existing_names:
             continue
         pred_contract_fields.append({'name': pname, 'kind': f['kind'], 'role': 'pred'})
-        _pred_seen.add(pname)
+        _existing_names.add(pname)
     # Group by (kind, role) once for quick lookup below — pred
     # entries from the synthesized contract count too.
     fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
