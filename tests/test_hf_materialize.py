@@ -157,6 +157,89 @@ def test_materialize_writes_manifest_and_files(tmp_path, monkeypatch):
     assert (tmp_path / "label" / "s000001.txt").read_text() == "1"
 
 
+def test_materialize_sample_name_from_text_column_uses_its_values(tmp_path, monkeypatch):
+    """Admin picks a text column → its sanitized value becomes the
+    sample name on disk + in the manifest."""
+    rows = [
+        {"id": "alpha", "label": 0},
+        {"id": "beta",  "label": 1},
+        {"id": "gamma/three", "label": 2},  # gets sanitised
+    ]
+    _install_fake_datasets(monkeypatch, rows)
+    summary = materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="named",
+        fields=[
+            {"name": "id",    "source_column": "id",    "kind": "text",
+             "role": "input", "params": {}},
+            {"name": "label", "source_column": "label", "kind": "label",
+             "role": "gt", "params": {}},
+        ],
+        sample_name_from="id",
+    )
+    assert summary["samples"] == 3
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["samples"] == ["alpha", "beta", "gamma_three"]
+    # Files land under the chosen names.
+    assert (tmp_path / "label" / "alpha.txt").exists()
+    assert (tmp_path / "label" / "beta.txt").exists()
+    assert (tmp_path / "label" / "gamma_three.txt").exists()
+
+
+def test_materialize_sample_name_dedupes_collisions(tmp_path, monkeypatch):
+    """Two rows with the same text value get distinct names — the
+    second gets a `__<row_idx>` suffix so the on-disk layout is
+    always unique."""
+    rows = [
+        {"id": "dup", "label": 0},
+        {"id": "dup", "label": 1},
+    ]
+    _install_fake_datasets(monkeypatch, rows)
+    materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="dedupe",
+        fields=[
+            {"name": "id",    "source_column": "id",    "kind": "text",
+             "role": "input", "params": {}},
+            {"name": "label", "source_column": "label", "kind": "label",
+             "role": "gt", "params": {}},
+        ],
+        sample_name_from="id",
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["samples"][0] == "dup"
+    # Second occurrence carries a stable suffix tied to source-row index.
+    assert manifest["samples"][1].startswith("dup__")
+    assert manifest["samples"][0] != manifest["samples"][1]
+
+
+def test_materialize_sample_name_falls_back_when_value_empty(tmp_path, monkeypatch):
+    """An empty / whitespace text value uses the numbered default
+    for that row instead of dropping the sample."""
+    rows = [
+        {"id": "first", "x": 1},
+        {"id": "",      "x": 2},
+        {"id": None,    "x": 3},
+    ]
+    _install_fake_datasets(monkeypatch, rows)
+    materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="empty_names",
+        fields=[
+            {"name": "id", "source_column": "id", "kind": "text",
+             "role": "input", "params": {}},
+            {"name": "x",  "source_column": "x",  "kind": "scalar",
+             "role": "gt", "params": {}},
+        ],
+        sample_name_from="id",
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["samples"][0] == "first"
+    # Empty and None fall back to enumerated names.
+    assert manifest["samples"][1].startswith("s00000")
+    assert manifest["samples"][2].startswith("s00000")
+
+
 def test_materialize_sample_cap_minus_one_imports_every_row(tmp_path, monkeypatch):
     """sample_cap = -1 (or 0 / None) means "no cap" — the materializer
     pulls every row in the split. Quota gating lives in the calling

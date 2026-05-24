@@ -4871,6 +4871,7 @@ def admin_import_from_hf_commit():
                 hf_token=getattr(g.current_user, 'hf_token', None),
                 sampling=sampling,
                 seed=sampling_seed,
+                sample_name_from=(request.form.get('sample_name_from') or '').strip() or None,
             )
             # Authoritative post-materialize quota check. The pre-check
             # above is an estimate from parquet bytes; the staging dir

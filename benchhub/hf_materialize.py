@@ -183,6 +183,24 @@ def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | No
     return None
 
 
+_SAMPLE_NAME_SAFE_RE = None  # populated lazily; avoids importing `re` at module top
+
+
+def _sanitize_sample_name(raw: str) -> str:
+    """Cap length, replace path / shell-hostile chars with `_`, and
+    strip leading/trailing whitespace + dots. Empty results return
+    '' so the caller can fall back to enumeration."""
+    import re as _re
+    global _SAMPLE_NAME_SAFE_RE
+    if _SAMPLE_NAME_SAFE_RE is None:
+        _SAMPLE_NAME_SAFE_RE = _re.compile(r"[^A-Za-z0-9._-]+")
+    cleaned = _SAMPLE_NAME_SAFE_RE.sub("_", str(raw)).strip("._ \t\r\n")
+    # The filename pieces written under <field>/<sample>.<ext> need
+    # to stay reasonable. 80 chars is plenty of room for human
+    # identifiers without bloating directory listings.
+    return cleaned[:80]
+
+
 def materialize_hf_to_typed_dir(
     repo_id: str,
     *,
@@ -195,6 +213,7 @@ def materialize_hf_to_typed_dir(
     hf_token: str | None = None,
     sampling: str = "head",
     seed: int = 42,
+    sample_name_from: str | None = None,
 ) -> dict:
     """Download up to `sample_cap` rows of `repo_id[:split]` and lay
     them out under `staging_dir` in the typed-manifest format.
@@ -267,10 +286,39 @@ def materialize_hf_to_typed_dir(
     root = Path(staging_dir)
     root.mkdir(parents=True, exist_ok=True)
 
-    # Sample names are based on enumeration position, not source row
-    # index, so the on-disk layout stays compact (`s000000..s00000N`)
-    # regardless of which rows we picked from the source.
-    sample_names = [f"s{i:06d}" for i in range(n)]
+    # Sample names: by default, enumeration-based (`s000000..s00000N`)
+    # to keep the on-disk layout compact regardless of which rows
+    # we picked from the source. Admin can override by passing
+    # `sample_name_from=<column>` — usually a text column carrying
+    # human-readable identifiers (image filename, captions, qid).
+    # Duplicates + empty / unsanitisable values fall back to the
+    # enumerated form for that row, so the resulting list is always
+    # unique without dropping samples.
+    fallback_names = [f"s{i:06d}" for i in range(n)]
+    if sample_name_from:
+        sample_names: list[str] = []
+        seen: set[str] = set()
+        n_collisions = 0
+        for fallback_idx, source_idx in enumerate(indices):
+            row = ds[source_idx]
+            raw = row.get(sample_name_from) if isinstance(row, dict) else None
+            cleaned = _sanitize_sample_name(raw) if raw is not None else ""
+            name = cleaned or fallback_names[fallback_idx]
+            if name in seen:
+                n_collisions += 1
+                # Disambiguate with a stable numeric suffix tied to
+                # the source row index, NOT a running counter, so
+                # the same raw value always lands on the same name
+                # across re-imports with the same seed.
+                name = f"{name}__{source_idx}"
+                # Pathological case: even that collides. Fall back
+                # to the enumerated default.
+                if name in seen:
+                    name = fallback_names[fallback_idx]
+            seen.add(name)
+            sample_names.append(name)
+    else:
+        sample_names = fallback_names
     # Pred fields are schema-only declarations — the HF source has
     # no column for them. They go into the manifest so the
     # downstream `import_typed_dataset` writes a DatasetField row,

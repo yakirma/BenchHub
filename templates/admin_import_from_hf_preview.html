@@ -195,6 +195,33 @@
             </div>
 
             <div class="row g-3 mb-4">
+                {# Sample-name source. By default samples are
+                   numbered `s000000..s00000N`; admin can pick a
+                   text-kind column to use its value as the
+                   human-readable sample name instead. Duplicates +
+                   empty values fall back to the numbered form for
+                   that row, so the resulting set stays unique. #}
+                {% set _text_cols = schema.fields | selectattr('kind', 'equalto', 'text') | list %}
+                {% if _text_cols %}
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold mb-1" for="sample-name-from">Sample name from</label>
+                    <select id="sample-name-from" name="sample_name_from" class="form-select">
+                        <option value="" selected>(auto-numbered <code>s000000</code>…)</option>
+                        {% for f in _text_cols %}
+                        <option value="{{ f.source_column or f.name }}">
+                            {{ f.source_column or f.name }} <span class="text-body-secondary">(text)</span>
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <div class="form-text small mt-1">
+                        Use this text column's value as each sample's name
+                        on disk. Path-hostile characters get sanitised to
+                        <code>_</code>; duplicate / empty values fall back
+                        to the numbered form per row.
+                    </div>
+                </div>
+                {% endif %}
+
                 <div class="col-md-6">
                     <label class="form-label fw-semibold mb-1" for="sampling">How to pick those samples</label>
                     {# `has_label_field` is True when any Croissant-suggested
