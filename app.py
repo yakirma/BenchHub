@@ -9816,49 +9816,56 @@ def docs(page='index'):
 
 @app.route('/api/depth_image/<path:filepath>')
 def serve_depth_image(filepath):
-    """
-    Serve a depth map .npz as a heatmap image.
-    filepath should be relative to UPLOAD_FOLDER.
+    """Serve a depth-map .npz as a pure colormapped PNG — no
+    matplotlib axes, no baked-in colorbar. The frontend draws its
+    own CSS-gradient colorbar as a sibling so the image's pixel
+    grid stays exactly aligned with overlay layers stacked on top.
+
+    ``?cmap=`` selects the palette (turbo / jet / viridis / magma /
+    inferno / plasma / gray); default is turbo to match the
+    column-header dropdown's pre-selected option.
     """
     full_path = os.path.join(app.config['UPLOAD_FOLDER'], filepath)
-    
+
     if not os.path.exists(full_path):
         return abort(404, description="File not found")
 
     try:
-        # Load npz
         with np.load(full_path) as data:
-            # Heuristic: Find first 2D array
             arr = None
             for key in data.files:
                 if len(data[key].shape) == 2:
                     arr = data[key]
                     break
-            
+            if arr is None and data.files:
+                arr = data[data.files[0]]
             if arr is None:
-                # Fallback to first available if any
-                if data.files:
-                    arr = data[data.files[0]]
-                else:
-                    return abort(500, description="Empty npz file")
+                return abort(500, description="Empty npz file")
 
-        # Plot
-        fig = plt.figure(figsize=(4, 3), dpi=72) # Slightly wider for colorbar
-        ax = fig.add_axes([0, 0, 0.85, 1]) # Adjust specific axes for image
-        ax.set_axis_off()
-        im = ax.imshow(arr, cmap='turbo', aspect='auto')
-        
-        # Add colorbar
-        cax = fig.add_axes([0.86, 0.1, 0.05, 0.8])
-        fig.colorbar(im, cax=cax)
-        
-        output = io.BytesIO()
-        FigureCanvas(fig).print_png(output)
-        plt.close(fig)
-        output.seek(0)
-        
-        return send_file(output, mimetype='image/png')
-            
+        # Normalise to 0..255 over the array's own min/max range.
+        # Constant arrays land at 0 (avoids divide-by-zero).
+        arr = np.asarray(arr, dtype=np.float32)
+        arr = np.where(np.isfinite(arr), arr, 0.0)
+        vmin, vmax = float(arr.min()), float(arr.max())
+        if vmax > vmin:
+            gray = ((arr - vmin) / (vmax - vmin) * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            gray = np.zeros_like(arr, dtype=np.uint8)
+
+        cmap = (request.args.get('cmap') or 'turbo').strip().lower()
+        if cmap == 'gray':
+            rgb = np.stack([gray, gray, gray], axis=-1)
+        else:
+            lut = _matplotlib_lut(cmap)
+            rgb = lut[gray]
+
+        from PIL import Image as _PILImage
+        out = _PILImage.fromarray(rgb, mode='RGB')
+        buf = io.BytesIO()
+        out.save(buf, format='PNG', optimize=False)
+        buf.seek(0)
+        return send_file(buf, mimetype='image/png', max_age=60)
+
     except Exception as e:
         print(f"Error serving depth image: {e}")
         return abort(500, description=str(e))
