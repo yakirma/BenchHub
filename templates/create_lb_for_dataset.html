@@ -67,7 +67,15 @@
                             </thead>
                             <tbody>
                                 {% for f in dataset.dataset_fields %}
-                                <tr class="lb-field-roles-row" data-field-name="{{ f.name }}" data-field-kind="{{ f.kind }}">
+                                {# `data-field-params` carries the gt field's
+                                   stored params (e.g. label `names` vocab,
+                                   depth `unit`). The auto-pred-suggest JS
+                                   reads it to copy relevant params into
+                                   the matching pred row(s). #}
+                                <tr class="lb-field-roles-row"
+                                    data-field-name="{{ f.name }}"
+                                    data-field-kind="{{ f.kind }}"
+                                    data-field-params="{{ f.params or '{}' }}">
                                     <td class="ps-2 font-monospace small">{{ f.name }}</td>
                                     <td><code class="small">{{ f.kind }}</code></td>
                                     <td class="pe-2">
@@ -498,6 +506,30 @@
                     const fname = fieldRow.dataset.fieldName;
                     const kind = fieldRow.dataset.fieldKind;
                     if (!fname) return;
+                    // Inherit relevant params from the GT field so
+                    // the pred contract keeps the vocab / unit /
+                    // format hints. E.g. a `label` GT with
+                    // names=[airplane, automobile, ...] gives the
+                    // auto-pred row the same `names` so submitters
+                    // see the class vocabulary on the LB page.
+                    let gtParams = {};
+                    try { gtParams = JSON.parse(fieldRow.dataset.fieldParams || '{}'); }
+                    catch (e) { gtParams = {}; }
+                    function paramsString(extra) {
+                        // Merge gtParams + per-variant extras (extras
+                        // win on key collision). Returns a compact
+                        // JSON string ready to drop into the params
+                        // text input.
+                        const merged = {};
+                        for (const k of Object.keys(gtParams)) {
+                            const v = gtParams[k];
+                            if (v != null && v !== '') merged[k] = v;
+                        }
+                        Object.assign(merged, extra || {});
+                        return Object.keys(merged).length
+                            ? JSON.stringify(merged) : '';
+                    }
+
                     // Per-variant suggestions. Most kinds get a single
                     // `<name>_pred` row of the matching kind. Label
                     // GTs additionally get a `<name>_topk_pred` row
@@ -509,14 +541,14 @@
                         suffix: '_pred',
                         kind: kind,
                         variantTag: 'single',
-                        paramsHint: '',
+                        paramsHint: paramsString({}),
                     });
                     if (kind === 'label') {
                         variants.push({
                             suffix: '_topk_pred',
                             kind: 'label_list',
                             variantTag: 'topk',
-                            paramsHint: '{"k": 5}',
+                            paramsHint: paramsString({k: 5}),
                         });
                     }
                     for (const v of variants) {
