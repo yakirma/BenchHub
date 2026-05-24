@@ -5478,6 +5478,216 @@ def _ipynb_to_python(notebook_json, lb=None):
     return '\n'.join(out_lines).rstrip() + '\n'
 
 
+def _submission_script_source(lb) -> str:
+    """Generate a self-contained submission script for an LB. Reads
+    BENCHHUB_TOKEN from the environment, walks placeholder sample
+    names, and POSTs the ZIP to /api/submit/<lb_id>. The user fills
+    in the actual prediction logic — sample names + field
+    construction — between the marked `# === fill in: ===` blocks."""
+    pred_fields = _lb_pred_contract_from_dataset_fields(lb)
+    # Build a per-pred-field call snippet, one per declared field,
+    # so the generated script lists exactly the fields the LB
+    # expects (instead of a generic placeholder).
+    pred_snippets = []
+    for f in pred_fields:
+        kind = f.get('kind', 'scalar')
+        params = f.get('params') or {}
+        if kind == 'label':
+            line = f"                  {f['name']}=bh.Label(0),                       # int or str class id"
+        elif kind == 'label_list':
+            k = params.get('k', 5)
+            line = f"                  {f['name']}=bh.LabelList([0] * {k}, k={k}),  # top-{k} class ids (descending confidence)"
+        elif kind == 'scalar':
+            line = f"                  {f['name']}=bh.Scalar(0.0),"
+        elif kind == 'text':
+            line = f"                  {f['name']}=bh.Text(''),"
+        elif kind == 'depth':
+            line = f"                  {f['name']}=bh.Depth(np.zeros((H, W), dtype=np.float32), unit='meters'),"
+        elif kind == 'mask':
+            line = f"                  {f['name']}=bh.Mask(np.zeros((H, W), dtype=np.uint8)),"
+        elif kind == 'image':
+            line = f"                  {f['name']}=bh.Image(np.zeros((H, W, 3), dtype=np.uint8)),"
+        elif kind == 'bboxes':
+            line = f"                  {f['name']}=bh.BBoxes([], format='xyxy'),"
+        elif kind == 'audio':
+            line = f"                  {f['name']}=bh.Audio(np.zeros(16000, dtype=np.float32), 16000),"
+        elif kind == 'json':
+            line = f"                  {f['name']}=bh.Json({{}}),"
+        else:
+            line = f"                  {f['name']}=...,  # kind={kind}"
+        pred_snippets.append(line)
+    if not pred_snippets:
+        pred_snippets = [
+            "                  # No pred fields declared on this leaderboard's dataset yet.",
+            "                  # Add a `role=pred` DatasetField via /dataset/<id>/settings first.",
+        ]
+
+    return f'''#!/usr/bin/env python
+"""Submission script for BenchHub leaderboard {lb.id} ({lb.name!r}).
+
+Reads BENCHHUB_TOKEN from your environment, runs your model over
+every sample on the leaderboard, and uploads the predictions.
+
+Setup:
+    pip install benchhub-client    # ships `bh.Client`, types, etc.
+    export BENCHHUB_TOKEN=<your token from BenchHub Settings>
+
+Then:
+    python {lb.name.replace(' ', '_')}_submit.py
+"""
+import os
+import numpy as np
+import benchhub as bh
+
+LEADERBOARD_ID = {lb.id}
+BASE_URL = {(_get_base_url() or 'https://runbenchhub.com')!r}
+
+if not os.environ.get('BENCHHUB_TOKEN') and not os.environ.get('BENCHHUB_API_TOKEN'):
+    raise SystemExit(
+        "BENCHHUB_TOKEN is not set. Get a token from "
+        f"{{BASE_URL}}/settings and run: export BENCHHUB_TOKEN=<token>"
+    )
+
+client = bh.Client(base_url=BASE_URL)
+contract = client.leaderboard_contract(LEADERBOARD_ID)
+print(f"LB {{LEADERBOARD_ID}} pred contract: {{contract}}")
+
+# === fill in: how do you load your test inputs? ============================
+# Return an iterable of (sample_name, *whatever your model needs*).
+def iter_samples():
+    raise NotImplementedError("Yield (sample_name, ...) tuples for your test set")
+# ===========================================================================
+
+sub = client.submission(LEADERBOARD_ID)
+for item in iter_samples():
+    sample_name = item[0]
+    # === fill in: your prediction(s) per sample ============================
+    # Construct one bh.<Kind>(...) per pred field declared on the LB.
+    # The generated calls below match the LB's current contract:
+    sub.predict(sample_name,
+{chr(10).join(pred_snippets)}
+                )
+    # =======================================================================
+
+result = sub.submit(name='my submission')
+print(result)  # → {{'submission_id': ..., 'view_url': '...'}}
+'''
+
+
+def _submission_notebook_source(lb) -> str:
+    """Generate a Colab-flavoured `.ipynb` for the LB. Reads
+    BENCHHUB_TOKEN from `google.colab.userdata` (Colab Secrets) when
+    running on Colab, falling back to the environment otherwise."""
+    script = _submission_script_source(lb)
+    # The script's pip-install + token-bootstrap step gets split out
+    # into its own Colab cell; the rest of the script becomes a
+    # single body cell. Token reading uses Colab userdata when
+    # available so users don't have to paste tokens into the
+    # notebook.
+    install_cell = (
+        "# Install the BenchHub client + numpy. Run once per fresh runtime.\n"
+        "!pip install -q benchhub-client numpy\n"
+    )
+    token_cell = (
+        "# Pull BENCHHUB_TOKEN out of Colab Secrets (left sidebar →\n"
+        "# key icon → add new secret → name=BENCHHUB_TOKEN, value=<your token from BenchHub Settings>).\n"
+        "# Falls back to an env var when running outside Colab.\n"
+        "import os\n"
+        "try:\n"
+        "    from google.colab import userdata\n"
+        "    os.environ['BENCHHUB_TOKEN'] = userdata.get('BENCHHUB_TOKEN')\n"
+        "except Exception:\n"
+        "    pass\n"
+        "assert os.environ.get('BENCHHUB_TOKEN'), 'Set BENCHHUB_TOKEN in Colab Secrets'\n"
+    )
+    body_cell = script
+
+    nb = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    f"# BenchHub submission — {lb.name}\n",
+                    "\n",
+                    f"Leaderboard #{lb.id}. Fill in `iter_samples()` + the per-pred-field constructors, then run all cells.\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": install_cell.splitlines(keepends=True),
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": token_cell.splitlines(keepends=True),
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": body_cell.splitlines(keepends=True),
+            },
+        ],
+        "metadata": {
+            "colab": {"provenance": []},
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 0,
+    }
+    return json.dumps(nb, indent=2)
+
+
+def _get_base_url():
+    """Best-effort base URL for the running app — used to bake an
+    `BASE_URL = ...` into the generated submission scripts. Empty
+    string when nothing usable is available (the script's
+    `bh.Client()` falls back to the BenchHub-client default)."""
+    try:
+        return request.url_root.rstrip('/')
+    except Exception:
+        return ''
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/submission_script.py')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_submission_script(leaderboard_id):
+    """Download a self-contained Python submission script for this LB."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    body = _submission_script_source(lb)
+    safe = secure_filename(lb.name) or f'lb_{lb.id}'
+    return Response(
+        body,
+        mimetype='text/x-python; charset=utf-8',
+        headers={
+            'Content-Disposition': f'attachment; filename="{safe}_submit.py"',
+        },
+    )
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/submission_notebook.ipynb')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_submission_notebook(leaderboard_id):
+    """Download a Colab-flavoured `.ipynb` for this LB."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    body = _submission_notebook_source(lb)
+    safe = secure_filename(lb.name) or f'lb_{lb.id}'
+    return Response(
+        body,
+        mimetype='application/x-ipynb+json',
+        headers={
+            'Content-Disposition': f'attachment; filename="{safe}_submit.ipynb"',
+        },
+    )
+
+
 @app.route('/leaderboard/<int:leaderboard_id>')
 @visibility_required(Leaderboard, 'leaderboard_id')
 def leaderboard_view(leaderboard_id):

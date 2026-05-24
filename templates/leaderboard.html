@@ -426,23 +426,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <i class="bi bi-grid me-1"></i>View dataset
         </a>
         {% endif %}
-        {# Submit flow placeholder. The Colab notebook scaffold relied
-           on HF-mirrored datasets and is gone with the HF cleanup; the
-           replacement is the `benchhub-client` Python package documented
-           on /supported_types. Until that ships, this is a static link. #}
-        {% if current_user %}
-        <a class="btn btn-success"
-           href="{{ url_for('supported_types') }}"
-           title="See the type system and submission API.">
-            <i class="bi bi-rocket-takeoff me-1"></i>Submit
-        </a>
-        {% else %}
-        <a class="btn btn-success"
-           href="{{ url_for('login', next=request.path) }}"
-           title="Log in to submit predictions to this leaderboard.">
-            <i class="bi bi-box-arrow-in-right me-1"></i>Log in to submit
-        </a>
-        {% endif %}
+        {# Submit lives in the "Submit predictions" card below
+           (Colab + script download + Python snippet), not in the
+           toolbar — keeps the top row focused on navigation. #}
         <a href="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}"
             class="btn btn-outline-primary">Settings</a>
         {# Owner/admin Delete action. Lives here too because the
@@ -1616,24 +1602,57 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         <p class="small text-body-secondary mb-2">
             Submissions go through the <a href="{{ url_for('supported_types') }}">typed contract</a>:
             one ZIP with a <code>manifest.json</code> + <code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code>
-            per prediction. The Python client builds + posts the ZIP for you;
-            see the example below.
+            per prediction. Three ways to start:
         </p>
-        <pre class="bg-body-tertiary p-3 rounded border small mb-2" style="font-size: 0.85em;"><code>import benchhub as bh
 
-client = bh.Client(token="YOUR_API_TOKEN")  # /settings → API token
+        {# Quick-start action row: one click per common workflow.
+           The notebook URL is hosted on this server; Colab opens
+           it via its `#fileId=<URL>` import path. The script
+           download is a plain .py the user can run locally. #}
+        {% set _script_url = url_for('leaderboard_submission_script', leaderboard_id=leaderboard.id, _external=True) %}
+        {% set _nb_url = url_for('leaderboard_submission_notebook', leaderboard_id=leaderboard.id, _external=True) %}
+        <div class="d-flex flex-wrap gap-2 mb-3">
+            <a class="btn btn-success"
+               href="https://colab.research.google.com/#fileId={{ _nb_url | urlencode }}"
+               target="_blank" rel="noopener"
+               title="Open this LB's submission notebook in Colab. Set BENCHHUB_TOKEN as a Colab Secret first.">
+                <i class="bi bi-rocket-takeoff me-1"></i>Submit via Colab
+            </a>
+            <a class="btn btn-outline-primary"
+               href="{{ url_for('leaderboard_submission_notebook', leaderboard_id=leaderboard.id) }}"
+               title="Download the Colab notebook to upload manually.">
+                <i class="bi bi-journal-code me-1"></i>Download .ipynb
+            </a>
+            <a class="btn btn-outline-primary"
+               href="{{ url_for('leaderboard_submission_script', leaderboard_id=leaderboard.id) }}"
+               title="Self-contained Python script. Reads BENCHHUB_TOKEN from env.">
+                <i class="bi bi-file-earmark-code me-1"></i>Download script (.py)
+            </a>
+        </div>
+
+        <p class="small text-body-secondary mb-1">
+            Both downloads use the LB's current pred contract — the
+            predict-call snippet has one slot per declared pred field.
+            For Colab, set <code>BENCHHUB_TOKEN</code> as a
+            <a href="https://colab.research.google.com/notebooks/secrets.ipynb"
+               target="_blank" rel="noopener">Colab Secret</a>
+            (left sidebar → key icon). Locally, export it as an env var:
+        </p>
+        <pre class="bg-body-tertiary p-3 rounded border small mb-2" style="font-size: 0.85em;"><code>pip install benchhub-client
+export BENCHHUB_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
+
+# Inline use (no script download):
+import benchhub as bh
+client = bh.Client()                                    # reads $BENCHHUB_TOKEN
 sub = client.submission(lb_id={{ leaderboard.id }})
 for sample_name in [...]:
     sub.predict(sample_name,
-                label_pred=bh.Label(my_predicted_class))   # or bh.LabelList(..., k=5)
-result = sub.submit(name="my run")
-print(result)  # {'submission_id': ..., 'view_url': '/leaderboard/{{ leaderboard.id }}/submission/...'}</code></pre>
+                label_pred=bh.Label(predicted_class))   # or bh.LabelList(..., k=5)
+print(sub.submit(name="my run"))</code></pre>
         <p class="small text-body-secondary mb-0">
             <strong>API endpoint:</strong>
             <code>POST /api/submit/{{ leaderboard.id }}</code>
             (multipart <code>submission_zip</code>, bearer token in <code>Authorization</code>).
-            See <code>scripts/import_typed_dataset.py</code> for the manifest shape
-            and <code>benchhub.client.SubmissionBuilder</code> for the client API.
         </p>
     </div>
 </div>

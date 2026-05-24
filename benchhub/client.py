@@ -107,7 +107,8 @@ class Client:
     """Entry point for programmatic submissions.
 
     Configuration precedence is constructor args > environment.
-    Token comes from `BENCHHUB_API_TOKEN`; base URL from
+    Token comes from `BENCHHUB_TOKEN` (preferred) with a
+    `BENCHHUB_API_TOKEN` fallback for back-compat; base URL from
     `BENCHHUB_BASE_URL`. The `transport` arg is the HTTP plumbing;
     tests pass a Flask-test-client wrapper, production gets the default
     `requests`-backed one.
@@ -120,7 +121,12 @@ class Client:
         *,
         transport: Any = None,
     ):
-        self.token = token or os.environ.get("BENCHHUB_API_TOKEN") or ""
+        self.token = (
+            token
+            or os.environ.get("BENCHHUB_TOKEN")
+            or os.environ.get("BENCHHUB_API_TOKEN")
+            or ""
+        )
         self.base_url = (
             base_url
             or os.environ.get("BENCHHUB_BASE_URL")
@@ -173,7 +179,7 @@ class Client:
         if not self.token:
             raise ValueError(
                 "BenchHub Client has no API token — pass `token=...` or "
-                "set BENCHHUB_API_TOKEN."
+                "set BENCHHUB_TOKEN in your environment."
             )
         return self.transport.post_submission_zip(
             leaderboard_id, name, zip_bytes, self.token,
@@ -183,7 +189,7 @@ class Client:
         if not self.token:
             raise ValueError(
                 "BenchHub Client has no API token — pass `token=...` or "
-                "set BENCHHUB_API_TOKEN."
+                "set BENCHHUB_TOKEN in your environment."
             )
         return self.transport.post_dataset_zip(
             zip_bytes, self.token, visibility=visibility,
