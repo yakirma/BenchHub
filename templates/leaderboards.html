@@ -282,8 +282,9 @@
         {% set _hf = _hf_atts[0] if _hf_atts else None %}
         {% set _bh_ds_count = lb.datasets|length %}
         {% set _accent = lb.name | accent_color %}
+        {% set _accent_bg = lb.name | accent_bg %}
         <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-3"
-             style="border-left: 4px solid {{ _accent }};">
+             style="border-left: 4px solid {{ _accent }}; background-color: {{ _accent_bg }};">
             {% if thumb %}
             <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                class="flex-shrink-0"

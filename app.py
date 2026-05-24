@@ -13350,9 +13350,40 @@ def _accent_color_for(name) -> str:
     return _CARD_ACCENT_PALETTE[h[0] % len(_CARD_ACCENT_PALETTE)]
 
 
+def _accent_bg_for(name) -> str:
+    """Mix the accent for `name` with the warm-cream card background
+    so the whole card can take the accent tint without sacrificing
+    text contrast. Returns an `rgb(...)` string ready for inline
+    style.
+
+    Mixed at ~14% accent + 86% cream — strong enough that the
+    catalog stops looking like one beige wall, soft enough that the
+    body text (dark warm-brown) stays comfortably readable.
+    """
+    accent = _accent_color_for(name)
+    # `#f5efe2` is the card base in the warm-cream theme.
+    base = (0xf5, 0xef, 0xe2)
+    try:
+        ar = int(accent[1:3], 16)
+        ag = int(accent[3:5], 16)
+        ab = int(accent[5:7], 16)
+    except (ValueError, IndexError):
+        return f"rgb({base[0]},{base[1]},{base[2]})"
+    mix = 0.14
+    r = int(round(ar * mix + base[0] * (1 - mix)))
+    g = int(round(ag * mix + base[1] * (1 - mix)))
+    b = int(round(ab * mix + base[2] * (1 - mix)))
+    return f"rgb({r},{g},{b})"
+
+
 @app.template_filter('accent_color')
 def accent_color_filter(s):
     return _accent_color_for(s)
+
+
+@app.template_filter('accent_bg')
+def accent_bg_filter(s):
+    return _accent_bg_for(s)
 
 def check_and_migrate_db():
     """
