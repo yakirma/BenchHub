@@ -414,36 +414,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
     </div>
     <div class="d-flex align-items-center gap-2">
-        {# Explore samples: opens the comparison view with submissions
-           empty so the user can browse the cached GT side (samples,
-           labels, GT thumbnails) without first uploading a
-           submission. Useful for sizing up the dataset before
-           committing to a model. When the LB has no cached GT yet,
-           dim the button + relabel so users don't waste a click. #}
-        {% if lb_explorable %}
+        {# Direct link to the primary attached dataset. Replaces the
+           old "Explore samples" comparison-view-as-samples-browser
+           — datasets are always materialised now, so `/dataset/<id>`
+           is the canonical place to browse GT samples. #}
+        {% set _primary_ds = leaderboard.datasets[0] if leaderboard.datasets else None %}
+        {% if _primary_ds %}
         <a class="btn btn-outline-secondary"
-           href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, samples_only=1) }}"
-           title="Browse the cached samples and their ground truth without comparing submissions.">
-            <i class="bi bi-grid me-1"></i>Explore samples
-            <span class="badge text-bg-success-subtle text-success-emphasis border ms-1"
-                  style="font-size: 0.7em;"
-                  title="Ground-truth samples cached">
-                <i class="bi bi-check-circle-fill"></i>
-            </span>
+           href="{{ url_for('dataset_view', dataset_id=_primary_ds.id) }}"
+           title="Browse the dataset attached to this leaderboard.">
+            <i class="bi bi-grid me-1"></i>View dataset
         </a>
-        {% else %}
-        {# No samples cached yet. With HF removed, all datasets are
-           BH-uploaded ZIPs — if the LB has no samples something's
-           broken upstream. Render a disabled badge. #}
-        <span class="btn btn-outline-secondary disabled"
-              tabindex="-1" role="button" aria-disabled="true"
-              title="No GT samples cached for this leaderboard yet — the owner can populate them.">
-            <i class="bi bi-grid me-1"></i>No samples yet
-            <span class="badge text-bg-warning-subtle text-warning-emphasis border ms-1"
-                  style="font-size: 0.7em;">
-                <i class="bi bi-hourglass-split"></i>
-            </span>
-        </span>
         {% endif %}
         {# Submit flow placeholder. The Colab notebook scaffold relied
            on HF-mirrored datasets and is gone with the HF cleanup; the

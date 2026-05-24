@@ -350,28 +350,9 @@
                     <span class="mx-2 opacity-50">|</span>
                     <i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}
                     {% endif %}
-                    <span class="mx-2 opacity-50">|</span>
-                    {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
-                    <span class="text-success-emphasis"
-                          title="Ground-truth samples cached — Explore samples will show data">
-                        <i class="bi bi-check-circle-fill me-1"></i>Explorable
-                    </span>
-                    {% else %}
-                    <span class="text-warning-emphasis"
-                          title="No GT samples cached yet — Explore samples will be empty">
-                        <i class="bi bi-hourglass-split me-1"></i>No samples
-                    </span>
-                    {% endif %}
                 </small>
             </div>
             <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                {% if explorable_lb_ids is defined and lb.id in explorable_lb_ids %}
-                <a href="{{ url_for('comparison_view', leaderboard_id=lb.id, samples_only=1) }}"
-                   class="btn btn-sm btn-outline-primary"
-                   title="Explore cached samples">
-                    <i class="bi bi-grid"></i> Explore
-                </a>
-                {% endif %}
                 <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                    class="btn btn-sm btn-outline-primary"
                    title="Open leaderboard">

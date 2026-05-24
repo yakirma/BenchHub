@@ -2234,13 +2234,10 @@ def landing():
 
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
-    explorable_lb_ids = _compute_explorable_lb_ids([lb.id for lb, _ in featured])
-
 
     return render_template(
         'landing.html',
         featured=featured_rows,
-        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -2312,8 +2309,6 @@ def home():
         leaderboard_thumbs[lb.id] = (
             _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
         )
-    explorable_lb_ids = _compute_explorable_lb_ids([lb.id for lb in leaderboards])
-
     return render_template(
         'home.html',
         datasets=datasets,
@@ -2322,7 +2317,6 @@ def home():
         personal_lbs=personal_lbs,
         dataset_thumbs=dataset_thumbs,
         leaderboard_thumbs=leaderboard_thumbs,
-        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -2440,9 +2434,6 @@ def leaderboards():
     # because Python's sorted() is stable. Empty/None categories sink
     # to the bottom via the high sentinel.
     rows.sort(key=lambda r: (r['lb'].category or '￿').lower())
-    # Per-LB "explorability" flag (see _compute_explorable_lb_ids).
-    explorable_lb_ids = _compute_explorable_lb_ids([r['lb'].id for r in rows])
-
     # Tag cloud: count of *visible* leaderboards per tag, plus dataset
     # tag counts folded in. Only tags with at least one visible item show.
     visible_lb_filter = visible_in_list(Leaderboard, getattr(g, 'current_user', None))
@@ -2547,7 +2538,6 @@ def leaderboards():
         leaderboard_thumbs=leaderboard_thumbs,
         category_tree=category_tree,
         active_category=category_filter,
-        explorable_lb_ids=explorable_lb_ids,
     )
 
 
@@ -5906,10 +5896,8 @@ def leaderboard_view(leaderboard_id):
                             if (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored']
     mirrored_submissions = [s for s in submissions
                             if (getattr(s, 'kind', 'verified') or 'verified') == 'mirrored']
-    lb_explorable = leaderboard.id in _compute_explorable_lb_ids([leaderboard.id])
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
-                           lb_explorable=lb_explorable,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
                            input_field_schema=input_field_schema,
