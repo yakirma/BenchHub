@@ -214,6 +214,7 @@ def materialize_hf_to_typed_dir(
     sampling: str = "head",
     seed: int = 42,
     sample_name_from: str | None = None,
+    progress_cb=None,
 ) -> dict:
     """Download up to `sample_cap` rows of `repo_id[:split]` and lay
     them out under `staging_dir` in the typed-manifest format.
@@ -235,6 +236,13 @@ def materialize_hf_to_typed_dir(
     for f in fields:
         if f["kind"] not in DTYPES:
             raise ValueError(f"unknown kind {f['kind']!r} for field {f['name']!r}")
+
+    if progress_cb is not None:
+        try:
+            progress_cb({"phase": "downloading", "current": 0, "total": 0,
+                         "message": f"Streaming {repo_id}…"})
+        except Exception:
+            pass
 
     from datasets import load_dataset  # heavy import — gate to call time.
 
@@ -352,8 +360,22 @@ def materialize_hf_to_typed_dir(
     for f in data_bearing:
         (root / f["name"]).mkdir(parents=True, exist_ok=True)
 
+    def _emit(phase, **kw):
+        if progress_cb is None:
+            return
+        try:
+            progress_cb({"phase": phase, **kw})
+        except Exception:
+            pass  # progress reporting is best-effort
+
+    _emit("materializing", current=0, total=n,
+          message=f"Writing {n} sample(s) × {len(data_bearing)} field(s)…")
+
     written = 0
     skipped: list[str] = []
+    # Heartbeat the progress callback every PROGRESS_EVERY rows.
+    # Too frequent → wasteful DB writes; too sparse → bar feels frozen.
+    PROGRESS_EVERY = max(1, n // 100) if n > 100 else 1
     for sample_idx, source_idx in enumerate(indices):
         row = ds[source_idx]
         sample_name = sample_names[sample_idx]
@@ -368,6 +390,9 @@ def materialize_hf_to_typed_dir(
             ext = cls.file_ext or ".txt"
             (root / f["name"] / f"{sample_name}{ext}").write_bytes(inst.encode())
             written += 1
+        if (sample_idx + 1) % PROGRESS_EVERY == 0 or sample_idx == n - 1:
+            _emit("materializing", current=sample_idx + 1, total=n,
+                  message=f"Wrote sample {sample_idx + 1}/{n}")
 
     return {
         "samples": n,

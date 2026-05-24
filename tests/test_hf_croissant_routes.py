@@ -281,12 +281,16 @@ def test_commit_route_imports_fields_with_neutral_role(client, db_session, tmp_p
 
     def _fake_import(source_root, *, db_session, Dataset, Sample, CustomField,
                      DatasetField=None, upload_folder, owner_user_id=None,
-                     visibility='public'):
+                     visibility='public', existing_dataset=None, **_kw):
         from pathlib import Path
         m = json.loads(Path(source_root, 'manifest.json').read_text())
-        ds = Dataset(name=m['name'], owner_user_id=owner_user_id,
-                     visibility=visibility)
-        db_session.add(ds); db_session.flush()
+        if existing_dataset is not None:
+            ds = existing_dataset
+        else:
+            ds = Dataset(name=m['name'], owner_user_id=owner_user_id,
+                         visibility=visibility)
+            db_session.add(ds)
+        db_session.flush()
         if DatasetField is not None:
             for f in m['fields']:
                 df = DatasetField(dataset_id=ds.id, name=f['name'],

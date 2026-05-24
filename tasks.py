@@ -1,7 +1,12 @@
 import logging
 import json
 import os
-from app import celery, db, Submission, LeaderboardMetric, MetricResult, Sample, app, CustomField
+import shutil
+import tempfile
+from app import (
+    celery, db, Submission, LeaderboardMetric, MetricResult, Sample, app,
+    CustomField, Dataset, DatasetField,
+)
 from metric_engine import (
     evaluate_dynamic_metric,
     evaluate_in_sandbox,
@@ -10,6 +15,134 @@ from metric_engine import (
     _sandbox_enabled,
 )
 import numpy as np
+
+
+@celery.task(bind=True, name='tasks.run_hf_import')
+def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
+                  sampling_seed, dataset_name, fields, sample_name_from,
+                  hf_token, owner_user_id):
+    """Background HF import. The Dataset row has already been created
+    by the route with `import_status='importing'` so it appears on
+    /datasets immediately; this task fills it in.
+
+    Progress lands in two places: `Dataset.import_progress_json`
+    (persisted, survives page reloads / app restarts) and Celery's
+    AsyncResult meta (cheap polling via `state='PROGRESS'`).
+
+    On success: status → 'ready', source_metadata is written.
+    On failure: status → 'failed', import_error carries the message.
+    The dataset stays on /datasets either way so the admin can see
+    what went wrong.
+    """
+    from benchhub.manifest import import_typed_dataset
+    from benchhub.hf_materialize import materialize_hf_to_typed_dir
+
+    with app.app_context():
+        def _persist_progress(state):
+            ds = Dataset.query.get(dataset_id)
+            if ds is None:
+                return
+            ds.import_progress_json = json.dumps(state)
+            db.session.commit()
+            try:
+                self.update_state(state='PROGRESS', meta=state)
+            except Exception:
+                pass
+
+        # Marker so /dataset/<id> shows "Starting…" before
+        # materialize even reaches the load_dataset step.
+        _persist_progress({'phase': 'starting', 'current': 0, 'total': 0,
+                           'message': 'Queued — starting import…'})
+
+        with tempfile.TemporaryDirectory(prefix='bh_hf_import_') as staging:
+            try:
+                mat_summary = materialize_hf_to_typed_dir(
+                    repo_id=repo_id,
+                    split=split,
+                    sample_cap=sample_cap,
+                    staging_dir=staging,
+                    dataset_name=dataset_name,
+                    fields=fields,
+                    hf_token=hf_token,
+                    sampling=sampling,
+                    seed=sampling_seed,
+                    sample_name_from=sample_name_from,
+                    progress_cb=_persist_progress,
+                )
+                # Post-materialize quota check against actual bytes.
+                _persist_progress({'phase': 'quota-check', 'current': 0, 'total': 0,
+                                   'message': 'Checking storage quota…'})
+                staged_bytes = 0
+                for dirpath, _, filenames in os.walk(staging):
+                    for fn in filenames:
+                        try:
+                            staged_bytes += os.path.getsize(os.path.join(dirpath, fn))
+                        except OSError:
+                            continue
+                from app import check_quota, User, _format_bytes
+                owner = User.query.get(owner_user_id) if owner_user_id else None
+                if owner is not None:
+                    ok, msg = check_quota(owner, kind='dataset_create',
+                                          incoming_bytes=staged_bytes)
+                    if not ok:
+                        raise RuntimeError(
+                            f"{msg} (this import would write {_format_bytes(staged_bytes)})"
+                        )
+
+                _persist_progress({'phase': 'importing', 'current': 0, 'total': 0,
+                                   'message': 'Writing rows to the database…'})
+                existing = Dataset.query.get(dataset_id)
+                _, summary = import_typed_dataset(
+                    staging,
+                    db_session=db.session,
+                    Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                    DatasetField=DatasetField,
+                    upload_folder=app.config['UPLOAD_FOLDER'],
+                    existing_dataset=existing,
+                )
+                existing.source_kind = 'hf'
+                existing.source_url = f'https://huggingface.co/datasets/{repo_id}'
+                existing.source_metadata = json.dumps({
+                    'repo_id': repo_id,
+                    'split': mat_summary.get('split'),
+                    'sample_cap': sample_cap,
+                    'sampling': mat_summary.get('sampling'),
+                    'sampling_seed': mat_summary.get('seed'),
+                    'total_rows_in_split': mat_summary.get('total_rows_in_split'),
+                    'samples_imported': mat_summary.get('samples'),
+                    'rows_written': mat_summary.get('rows_written'),
+                    'rows_skipped': mat_summary.get('rows_skipped'),
+                })
+                existing.import_status = 'ready'
+                existing.import_error = None
+                existing.import_progress_json = json.dumps({
+                    'phase': 'done', 'current': summary['samples'],
+                    'total': summary['samples'],
+                    'message': f"Imported {summary['samples']} sample(s).",
+                })
+                db.session.commit()
+                return {'dataset_id': dataset_id, **summary}
+            except Exception as e:
+                db.session.rollback()
+                ds = Dataset.query.get(dataset_id)
+                if ds is not None:
+                    ds.import_status = 'failed'
+                    ds.import_error = str(e)
+                    ds.import_progress_json = json.dumps({
+                        'phase': 'failed', 'current': 0, 'total': 0,
+                        'message': str(e),
+                    })
+                    # Clean up any partial bytes on disk.
+                    folder = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets', str(dataset_id))
+                    shutil.rmtree(folder, ignore_errors=True)
+                    db.session.commit()
+                # Don't re-raise: the failure is already persisted on
+                # the Dataset row + import_error. Re-raising would
+                # bubble through eager Celery into the calling route
+                # (in tests / dev) and surface as a 500. Return an
+                # error dict so AsyncResult.successful() is true but
+                # the row carries the truth.
+                return {'dataset_id': dataset_id, 'error': str(e)}
 
 # Configure logging
 logger = logging.getLogger(__name__)

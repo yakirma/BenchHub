@@ -127,17 +127,39 @@ def test_dataset_view_renders_source_card_for_hf_dataset(client, db_session):
     assert '500' in body
 
 
-def test_hf_commit_rejects_over_quota_before_download(admin_client, db_session, monkeypatch):
+def test_hf_commit_rejects_over_quota_before_download(client, db_session, monkeypatch):
     """The pre-materialize quota check rejects an over-cap import
     before `datasets.load_dataset` is even invoked, so no bytes are
     pulled. We assert by raising loudly from the fake loader and
-    confirming the route never reaches it."""
+    confirming the route never reaches it.
+
+    Admins bypass the quota cap (commit f36fe8f), so this test uses
+    a regular user — the quota path only applies to them. The
+    route still requires `is_admin` to enter; we elevate the
+    user just enough to pass the route gate but keep the email out
+    of `BENCHHUB_ADMIN_EMAILS` so `is_admin(user)` returns False
+    inside check_quota.
+    """
+    from app import User
+    user = User(email='quota-test@example.com', display_name='q',
+                oauth_provider='github', oauth_sub='q-1', is_admin=True)
+    db.session.add(user); db.session.commit()
+    with client.session_transaction() as sess:
+        sess['user_id'] = user.id
+    # Bypass admin gating on the route but stub `check_quota` so the
+    # dataset_create path returns a rejection — admins normally
+    # bypass quota (commit f36fe8f) but the pre-materialize check
+    # is the contract under test here.
+    import app as _app
+    monkeypatch.setattr(_app, 'check_quota',
+                        lambda u, *, kind, incoming_bytes=0: (False, 'Over quota (test)'))
+
     monkeypatch.setattr(hfc, 'fetch_croissant',
                         lambda repo_id, **kw: _load_fixture('croissant_cifar10.json'))
     monkeypatch.setattr(hfs, 'fetch_split_row_counts',
                         lambda repo_id, **kw: {'test': 10000})
     # 5 GB parquet × 1.5x headroom → ~7.5 GB estimate, way over the
-    # admin's default 50 MB quota.
+    # user's default 50 MB quota.
     monkeypatch.setattr(hfs, 'fetch_split_byte_sizes',
                         lambda repo_id, **kw: {'test': 5_000_000_000})
 
@@ -148,7 +170,7 @@ def test_hf_commit_rejects_over_quota_before_download(admin_client, db_session, 
     fake.load_dataset = _boom
     monkeypatch.setitem(sys.modules, 'datasets', fake)
 
-    r = admin_client.post('/admin/import_from_hf/commit', data={
+    r = client.post('/admin/import_from_hf/commit', data={
         'repo_id': 'uoft-cs/cifar10',
         'dataset_name': 'too_big',
         'split': 'test',

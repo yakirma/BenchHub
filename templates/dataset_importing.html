@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}{{ dataset.name }} — Importing{% endblock %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <div class="mb-3">
+        <a href="{{ url_for('datasets_list') }}" class="text-decoration-none small text-body-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to datasets
+        </a>
+    </div>
+
+    <h1 class="h3 fw-bold mb-1">
+        {% if dataset.import_status == 'failed' %}
+        <i class="bi bi-x-octagon-fill text-danger me-1"></i>
+        {% else %}
+        <i class="bi bi-arrow-repeat text-primary me-1"></i>
+        {% endif %}
+        {{ dataset.name }}
+    </h1>
+    <p class="text-body-secondary mb-4">
+        {% if dataset.import_status == 'failed' %}
+            Import failed. The dataset row is kept so you can see the error;
+            delete it from the danger zone below when you've moved on.
+        {% else %}
+            Importing in the background. You can close this tab and come
+            back — progress lives on the dataset row and the import
+            keeps running.
+        {% endif %}
+    </p>
+
+    {% if dataset.import_status == 'failed' %}
+    <div class="alert alert-danger">
+        <strong>Error:</strong>
+        <code class="d-block mt-1 small">{{ dataset.import_error or '(no detail)' }}</code>
+    </div>
+    {% else %}
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <div class="d-flex justify-content-between align-items-baseline mb-2">
+                <h2 class="h6 fw-semibold mb-0" id="phase-label">
+                    {{ progress.phase or 'queued' }}
+                </h2>
+                <span class="small text-body-secondary" id="progress-numbers">
+                    {% if progress.total %}
+                    {{ progress.current or 0 }} / {{ progress.total }}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="progress" role="progressbar"
+                 style="height: 18px;"
+                 aria-valuemin="0" aria-valuemax="100"
+                 aria-valuenow="{{ (100 * (progress.current or 0) / (progress.total or 1))|int }}">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                     id="progress-bar"
+                     style="width: {{ (100 * (progress.current or 0) / (progress.total or 1))|int }}%">
+                </div>
+            </div>
+            <p class="small text-body-secondary mt-2 mb-0" id="progress-message">
+                {{ progress.message or 'Waiting…' }}
+            </p>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Owner-only delete in case the failed import left a stub the
+       admin wants gone. Cascade-delete same as a normal Dataset.delete. #}
+    {% if current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
+    <div class="card border-danger shadow-sm mt-4">
+        <div class="card-body p-4">
+            <h5 class="text-danger fw-bold mb-2">
+                <i class="bi bi-exclamation-octagon me-1"></i>Danger zone
+            </h5>
+            <p class="mb-3 small">
+                Cancel + remove this dataset row.
+                {% if dataset.import_status == 'importing' %}
+                Note: the background task may already be writing rows;
+                the cleanup is best-effort.
+                {% endif %}
+            </p>
+            <form method="post"
+                  action="{{ url_for('delete_dataset', dataset_id=dataset.id) }}"
+                  onsubmit="return confirm('Delete this dataset row?');">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-trash me-1"></i>Delete row
+                </button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if dataset.import_status == 'importing' %}
+<script>
+// Poll for import progress every 1.5s. When the status flips to
+// 'ready', reload the page so the user lands on the normal
+// dataset view; on 'failed' reload to show the error block.
+(function () {
+    const url = "{{ url_for('dataset_import_status', dataset_id=dataset.id) }}";
+    const phaseEl = document.getElementById('phase-label');
+    const numbersEl = document.getElementById('progress-numbers');
+    const barEl = document.getElementById('progress-bar');
+    const msgEl = document.getElementById('progress-message');
+    async function tick() {
+        try {
+            const r = await fetch(url, {cache: 'no-store'});
+            if (!r.ok) return;
+            const data = await r.json();
+            if (data.status === 'ready' || data.status === 'failed') {
+                window.location.reload();
+                return;
+            }
+            const p = data.progress || {};
+            if (phaseEl)   phaseEl.textContent = p.phase || data.status || 'working';
+            const cur = p.current || 0, tot = p.total || 0;
+            if (numbersEl) numbersEl.textContent = tot ? `${cur} / ${tot}` : '';
+            const pct = tot ? Math.min(100, Math.round((100 * cur) / tot)) : 0;
+            if (barEl) {
+                barEl.style.width = pct + '%';
+                barEl.parentElement?.setAttribute('aria-valuenow', String(pct));
+            }
+            if (msgEl) msgEl.textContent = p.message || '';
+        } catch (e) { /* network blips are fine — next tick will catch up */ }
+    }
+    tick();
+    setInterval(tick, 1500);
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -137,6 +137,7 @@ def import_typed_dataset(
     owner_user_id: int | None = None,
     visibility: str = "public",
     DatasetField=None,
+    existing_dataset=None,
 ) -> tuple[int, dict]:
     """Materialise a typed dataset into the DB + uploads volume.
 
@@ -146,6 +147,12 @@ def import_typed_dataset(
     Inline kinds (scalar/label) decode the file content via the type
     class and store the value directly in CustomField.value_float /
     .value_text — no on-disk copy.
+
+    When `existing_dataset` is provided, attach Sample/DatasetField/
+    CustomField rows to that pre-created row instead of creating a
+    new Dataset. Used by the async import flow that creates the
+    Dataset eagerly (with `import_status='importing'`) so it appears
+    on /datasets while the background task is still working.
 
     Returns (dataset_id, summary_dict).
     The caller is responsible for db_session.commit().
@@ -169,12 +176,15 @@ def import_typed_dataset(
             + ("…" if len(missing) > 5 else "")
         )
 
-    dataset = Dataset(
-        name=manifest["name"],
-        owner_user_id=owner_user_id,
-        visibility=visibility,
-    )
-    db_session.add(dataset)
+    if existing_dataset is not None:
+        dataset = existing_dataset
+    else:
+        dataset = Dataset(
+            name=manifest["name"],
+            owner_user_id=owner_user_id,
+            visibility=visibility,
+        )
+        db_session.add(dataset)
     db_session.flush()  # need dataset.id for the upload path
 
     dataset_dir = Path(upload_folder) / "datasets" / str(dataset.id)

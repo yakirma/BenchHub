@@ -434,6 +434,17 @@ class Dataset(db.Model):
     # know where the bytes originally came from. NULL for datasets that
     # were uploaded straight as a ZIP without a known external origin.
     source_url = db.Column(db.Text, nullable=True)
+    # Long-running import state. `ready` = fully materialised (the
+    # default for the existing flow + back-compat for legacy rows).
+    # `importing` = a background task is downloading + writing rows;
+    # the dataset is listed on /datasets with a progress badge and
+    # /dataset/<id> renders a live progress page instead of the
+    # normal view. `failed` = task raised; `import_error` carries
+    # the message. NULL is treated as `ready` everywhere.
+    import_status = db.Column(db.String(20), nullable=True, default='ready')
+    import_progress_json = db.Column(db.Text, nullable=True)
+    import_error = db.Column(db.Text, nullable=True)
+    import_task_id = db.Column(db.String(60), nullable=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     # leaderboards = db.relationship('Leaderboard', backref='dataset', lazy=True, cascade="all, delete-orphan") # Deprecated: use many-to-many
     samples = db.relationship('Sample', backref='dataset', lazy=True, cascade="all, delete-orphan")
@@ -4859,82 +4870,54 @@ def admin_import_from_hf_commit():
                   'danger')
             return redirect(url_for('admin_import_from_hf'))
 
-    with tempfile.TemporaryDirectory(prefix='bh_hf_import_') as staging:
-        try:
-            mat_summary = materialize_hf_to_typed_dir(
-                repo_id=repo_id,
-                split=split,
-                sample_cap=sample_cap,
-                staging_dir=staging,
-                dataset_name=dataset_name,
-                fields=selected,
-                hf_token=getattr(g.current_user, 'hf_token', None),
-                sampling=sampling,
-                seed=sampling_seed,
-                sample_name_from=(request.form.get('sample_name_from') or '').strip() or None,
-            )
-            # Authoritative post-materialize quota check. The pre-check
-            # above is an estimate from parquet bytes; the staging dir
-            # is the real thing. Reject before copying into the live
-            # uploads folder so we don't have to roll back files too.
-            staged_bytes = 0
-            for dirpath, _, filenames in os.walk(staging):
-                for fn in filenames:
-                    try:
-                        staged_bytes += os.path.getsize(os.path.join(dirpath, fn))
-                    except OSError:
-                        continue
-            ok, msg = check_quota(g.current_user, kind='dataset_create',
-                                  incoming_bytes=staged_bytes)
-            if not ok:
-                flash(
-                    f"{msg} (this import would write "
-                    f"{_format_bytes(staged_bytes)}).",
-                    'danger',
-                )
-                return redirect(url_for('admin_import_from_hf'))
-            _, summary = import_typed_dataset(
-                staging,
-                db_session=db.session,
-                Dataset=Dataset, Sample=Sample, CustomField=CustomField,
-                DatasetField=DatasetField,
-                upload_folder=app.config['UPLOAD_FOLDER'],
-                owner_user_id=g.current_user.id,
-            )
-            # Record provenance so the dataset page can link back to
-            # the HF source and explain how this BH copy was sampled.
-            ds_row = Dataset.query.get(summary['dataset_id'])
-            if ds_row is not None:
-                ds_row.source_kind = 'hf'
-                ds_row.source_url = f'https://huggingface.co/datasets/{repo_id}'
-                ds_row.source_metadata = json.dumps({
-                    'repo_id': repo_id,
-                    'split': mat_summary.get('split'),
-                    'sample_cap': sample_cap,
-                    'sampling': mat_summary.get('sampling'),
-                    'sampling_seed': mat_summary.get('seed'),
-                    'total_rows_in_split': mat_summary.get('total_rows_in_split'),
-                    'samples_imported': mat_summary.get('samples'),
-                    'rows_written': mat_summary.get('rows_written'),
-                    'rows_skipped': mat_summary.get('rows_skipped'),
-                })
-            db.session.commit()
-        except FileNotFoundError as e:
-            db.session.rollback()
-            flash(f"Materialisation produced incomplete files: {e}", 'danger')
-            return redirect(url_for('admin_import_from_hf'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f"HF import failed: {e}", 'danger')
-            return redirect(url_for('admin_import_from_hf'))
+    # Pre-create the Dataset row with `import_status='importing'` so
+    # the row appears on /datasets immediately and the admin can
+    # navigate away. The background task fills in Sample +
+    # CustomField + DatasetField rows and flips the status to
+    # 'ready' (or 'failed' with an `import_error` payload).
+    try:
+        ds_row = Dataset(
+            name=dataset_name,
+            owner_user_id=g.current_user.id,
+            visibility='public',
+            import_status='importing',
+            import_progress_json=json.dumps({
+                'phase': 'queued', 'current': 0, 'total': 0,
+                'message': 'Waiting for a worker to pick up the import…',
+            }),
+        )
+        db.session.add(ds_row)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Couldn't create dataset row: {e}", 'danger')
+        return redirect(url_for('admin_import_from_hf'))
 
-    msg = (f"Imported {summary['samples']} sample(s) × {summary['fields']} field(s) "
-           f"from {repo_id} (split={split or 'default'}, rows_written={mat_summary['rows_written']}, "
-           f"rows_skipped={mat_summary['rows_skipped']}).")
-    flash(msg, 'success')
-    if 'dataset_view' in app.view_functions:
-        return redirect(url_for('dataset_view', dataset_id=summary['dataset_id']))
-    return redirect(url_for('datasets_list'))
+    import tasks as _tasks
+    async_result = _tasks.run_hf_import.delay(
+        dataset_id=ds_row.id,
+        repo_id=repo_id,
+        split=split,
+        sample_cap=sample_cap,
+        sampling=sampling,
+        sampling_seed=sampling_seed,
+        dataset_name=dataset_name,
+        fields=selected,
+        sample_name_from=(request.form.get('sample_name_from') or '').strip() or None,
+        hf_token=getattr(g.current_user, 'hf_token', None),
+        owner_user_id=g.current_user.id,
+    )
+    try:
+        ds_row.import_task_id = async_result.id
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    flash(
+        f"Importing {repo_id} in the background. You can leave this "
+        f"page — progress lives on the dataset page below and on /datasets.",
+        'success',
+    )
+    return redirect(url_for('dataset_view', dataset_id=ds_row.id))
 
 
 @app.route('/admin/import_from_hf/preview', methods=['POST'])
@@ -10314,10 +10297,40 @@ def update_dataset_field_type(dataset_id, field_name):
     return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
 
+@app.route('/dataset/<int:dataset_id>/import_status.json')
+@visibility_required(Dataset, 'dataset_id')
+def dataset_import_status(dataset_id):
+    dataset = Dataset.query.get_or_404(dataset_id)
+    try:
+        progress = json.loads(dataset.import_progress_json) if dataset.import_progress_json else {}
+    except (TypeError, ValueError):
+        progress = {}
+    return jsonify({
+        'status': dataset.import_status or 'ready',
+        'error': dataset.import_error,
+        'progress': progress,
+    })
+
+
 @app.route('/dataset/<int:dataset_id>')
 @visibility_required(Dataset, 'dataset_id')
 def dataset_view(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
+    # When the dataset is still being imported asynchronously, the
+    # rest of the dataset_view assumes Sample / CustomField rows
+    # already exist — render a small progress page instead.
+    # Failed imports also land here so the admin sees the error
+    # message + can clean up.
+    if (dataset.import_status or 'ready') in ('importing', 'failed'):
+        try:
+            progress = json.loads(dataset.import_progress_json) if dataset.import_progress_json else {}
+        except (TypeError, ValueError):
+            progress = {}
+        return render_template(
+            'dataset_importing.html',
+            dataset=dataset,
+            progress=progress,
+        )
     page = request.args.get('page', 1, type=int)
     samples_per_page = request.args.get('per_page', 100, type=int)
     sort_by = request.args.get('sort_by', 'name')
@@ -11256,6 +11269,12 @@ def serve_custom_field_image(field_id):
         return "Image not found", 404
 
     if custom_field.data_type == 'mask':
+        # `?raw=1` serves the underlying class-index PNG unmodified so
+        # the frontend can read pixel values via a Canvas getImageData
+        # for hover tooltips. The default still applies the palette
+        # for visual rendering.
+        if request.args.get('raw') in ('1', 'true'):
+            return send_file(image_path)
         # BH masks land on disk as raw class-index PNGs (values like
         # 0/1 for binary masks, 0/1/2/4 for multi-class). Rendered as
         # grayscale those are visually black. Apply the deterministic-
@@ -11312,6 +11331,37 @@ def serve_custom_field_depth_data(field_id):
         return abort(400, description="Not a depth field")
         
     return serve_depth_data(custom_field.value_text)
+
+@app.route('/api/custom_field_depth_meta/<int:field_id>')
+def serve_custom_field_depth_meta(field_id):
+    """Return just {min, max, shape} for a depth field. The full
+    array endpoint loads ~MB per request; this one is for the
+    inline colorbar labels in the comparison + dataset views,
+    where rendering 50 cells × full arrays is wasteful."""
+    custom_field = CustomField.query.get_or_404(field_id)
+    if custom_field.data_type != 'depth':
+        return abort(400, description="Not a depth field")
+    full_path = os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text or '')
+    if not os.path.exists(full_path):
+        return abort(404, description="File not found")
+    try:
+        with np.load(full_path) as data:
+            arr = None
+            for key in data.files:
+                if len(data[key].shape) == 2:
+                    arr = data[key]; break
+            if arr is None and data.files:
+                arr = data[data.files[0]]
+            if arr is None:
+                return abort(500, description="Empty npz")
+            return jsonify({
+                'min': float(np.nanmin(arr)),
+                'max': float(np.nanmax(arr)),
+                'shape': list(arr.shape),
+            })
+    except Exception as e:
+        return abort(500, description=str(e))
+
 
 @app.route('/api/custom_field_json/<int:field_id>')
 def serve_custom_field_json(field_id):
@@ -12967,6 +13017,25 @@ def check_and_migrate_db():
                     except Exception as e:
                         print(f"Migration error ({_tbl}.input_kinds): {e}")
 
+                # --- Dataset.import_status + import_progress_json + import_error + import_task_id ---
+                for _col, _spec in (
+                    ('import_status',        "TEXT DEFAULT 'ready'"),
+                    ('import_progress_json', 'TEXT DEFAULT NULL'),
+                    ('import_error',         'TEXT DEFAULT NULL'),
+                    ('import_task_id',       'TEXT DEFAULT NULL'),
+                ):
+                    try:
+                        cursor.execute("PRAGMA table_info(dataset)")
+                        cols = [r[1] for r in cursor.fetchall()]
+                        if _col not in cols:
+                            cursor.execute(
+                                f"ALTER TABLE dataset ADD COLUMN {_col} {_spec}"
+                            )
+                            conn.commit()
+                            print(f"Migration: added dataset.{_col}")
+                    except Exception as e:
+                        print(f"Migration error (dataset.{_col}): {e}")
+
                 # --- Leaderboard.field_roles_json (LB-level role overrides) ---
                 try:
                     cursor.execute("PRAGMA table_info(leaderboard)")
@@ -14110,6 +14179,12 @@ def prune_incomplete_datasets():
     removed = 0
 
     for ds in Dataset.query.all():
+        # Async HF imports look "incomplete" by all the usual signals
+        # (no samples yet, no folder) right up until the Celery task
+        # finishes. Skip those — the task itself flips status to
+        # 'failed' + cleans up, or 'ready' on success.
+        if (ds.import_status or 'ready') == 'importing':
+            continue
         # Pointer-mode datasets INTENTIONALLY have no on-disk folder —
         # bytes live on HF and stream through bench_cache. Skip the
         # folder check for them; sample-count > 0 is the only signal
