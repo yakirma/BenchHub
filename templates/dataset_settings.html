@@ -97,88 +97,10 @@
     </div>
     {% endif %}
 
-    {# ---- Pred fields (the dataset's declared submission contract) ---- #}
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body p-4">
-            <h5 class="fw-bold mb-2">
-                <i class="bi bi-arrow-right-circle me-1"></i>Pred fields
-            </h5>
-            <p class="text-body-secondary small mb-3">
-                Submissions must include each <code>role=pred</code> field
-                declared here. Names are usually <code>&lt;gt_field&gt;_pred</code>;
-                kind must match a <a href="{{ url_for('supported_types') }}">supported type</a>.
-                Params is JSON (e.g. <code>{"k": 5}</code> for a top-K
-                <code>label_list</code>, <code>{"unit": "meters"}</code> for depth).
-            </p>
-            {% set _pred_fields = dataset.fields | selectattr('role', 'equalto', 'pred') | list %}
-            {% if _pred_fields %}
-            <div class="table-responsive mb-3">
-                <table class="table table-sm align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th class="ps-3">Name</th>
-                            <th>Kind</th>
-                            <th>Params</th>
-                            <th class="pe-3" style="width: 1%;"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for f in _pred_fields %}
-                        <tr>
-                            <td class="ps-3 font-monospace small">{{ f.name }}</td>
-                            <td><code class="small">{{ f.kind }}</code></td>
-                            <td class="font-monospace small text-body-secondary">
-                                {{ f.params or '{}' }}
-                            </td>
-                            <td class="pe-3">
-                                <form method="post"
-                                      action="{{ url_for('delete_dataset_pred_field', dataset_id=dataset.id, field_name=f.name) }}"
-                                      onsubmit="return confirm('Delete pred field {{ f.name }}? Existing submissions to LBs using this field stay, but new submissions will need a fresh contract.');"
-                                      class="m-0">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
-                                        <i class="bi bi-trash"></i>
-                                    </button>
-                                </form>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="small text-body-secondary fst-italic mb-3">
-                No pred fields declared yet — LBs attached to this dataset
-                have an empty submission contract.
-            </p>
-            {% endif %}
-            <form method="post" action="{{ url_for('add_dataset_pred_field', dataset_id=dataset.id) }}"
-                  class="row g-2 align-items-end">
-                <div class="col-md-4">
-                    <label class="form-label small fw-semibold mb-1">Name</label>
-                    <input type="text" name="name" class="form-control form-control-sm font-monospace"
-                           placeholder="e.g. label_pred" required>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small fw-semibold mb-1">Kind</label>
-                    <select name="kind" class="form-select form-select-sm" required>
-                        {% for k in valid_field_types %}
-                        <option value="{{ k }}">{{ k }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label small fw-semibold mb-1">Params (JSON, optional)</label>
-                    <input type="text" name="params" class="form-control form-control-sm font-monospace"
-                           placeholder='{"k": 5}'>
-                </div>
-                <div class="col-md-1 d-grid">
-                    <button type="submit" class="btn btn-sm btn-primary">
-                        <i class="bi bi-plus-lg"></i>
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
+    {# Pred fields moved to the per-LB creation form. Datasets
+       are role-neutral; each LB defines its own pred contract
+       independently. Old add/delete pred-field routes stay for
+       back-compat but no longer have UI here. #}
 
     {# ---- Sharing (only useful when not fully public) ---- #}
     {% if dataset.visibility != 'public' %}

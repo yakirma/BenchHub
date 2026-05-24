@@ -233,26 +233,24 @@
 
             <h2 class="h5 fw-semibold mb-2">Fields</h2>
             <p class="form-text small mb-3">
-                <strong>Kind</strong> is filled from Croissant's
-                <code>dataType</code> — change it when the column
-                semantically differs (e.g. an
-                <code>sc:ImageObject</code> column that's actually a
-                segmentation mask → set kind to <code>mask</code>).
-                Pick a <strong>role</strong> for every field you want
-                to import: <code>input</code> (given to submitters at
-                inference time) or <code>gt</code> (held server-side,
-                target of prediction). Set <strong>skip</strong> to
-                drop the field from the import entirely.
+                <strong>Kind</strong> is filled from the upstream
+                schema — change it when the column semantically
+                differs (e.g. an <code>Image</code> column that's
+                actually a segmentation mask → set kind to
+                <code>mask</code>). <strong>Params</strong> carry
+                per-instance metadata (depth <code>unit</code>,
+                bboxes <code>format</code>, label-list
+                <code>k</code>). Roles + pred fields are picked
+                later, per leaderboard.
             </p>
 
             <div class="table-responsive mb-3">
                 <table class="table align-middle">
                     <thead class="table-light">
                         <tr>
-                            <th style="width: 20%;">Field</th>
-                            <th style="width: 18%;">Croissant type</th>
-                            <th style="width: 18%;">Kind</th>
-                            <th style="width: 16%;">Role</th>
+                            <th style="width: 25%;">Field</th>
+                            <th style="width: 20%;">Source type</th>
+                            <th style="width: 20%;">Kind</th>
                             <th>Params</th>
                         </tr>
                     </thead>
@@ -282,17 +280,6 @@
                                 </select>
                             </td>
                             <td>
-                                <select name="field_role" class="form-select form-select-sm field-role" required>
-                                    {# Disabled placeholder so the browser refuses
-                                       to submit unless the admin picks something
-                                       — no "skip everything by default" trap. #}
-                                    <option value="" selected disabled hidden>— pick —</option>
-                                    {% for r in all_roles %}
-                                    <option value="{{ r }}">{{ r }}</option>
-                                    {% endfor %}
-                                </select>
-                            </td>
-                            <td>
                                 {{ params_block('gt', 'field_params') }}
                             </td>
                         </tr>
@@ -300,62 +287,13 @@
                     </tbody>
                 </table>
             </div>
-
-            {# ---- Prediction fields ----------------------------------- #}
-            <h2 class="h5 fw-semibold mt-4 mb-2">Prediction fields</h2>
-            <p class="form-text small mb-2">
-                Fields submissions must include — schema-only, no data
-                lives in the HF dataset. For image / mask / depth preds
-                the Params column lets you pick a shape contract:
-                <em>any</em> (no constraint), <em>match input</em>
-                (per-sample, same shape as a named input column), or
-                <em>fixed</em> (a specific H×W).
-                Leave the list empty if you want the leaderboard to
-                derive its contract from the GT columns above
-                (one <code>&lt;name&gt;_pred</code> per GT field).
+            <p class="form-text small mb-2 text-body-secondary">
+                <i class="bi bi-info-circle me-1"></i>
+                Role assignment (input vs gt vs skip) + prediction
+                fields are picked per <strong>leaderboard</strong>,
+                not per dataset. The same dataset can back many LBs
+                with different role / pred contracts.
             </p>
-            <div class="table-responsive mb-2">
-                <table class="table align-middle mb-0" id="pred-fields-table">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width: 30%;">Name</th>
-                            <th style="width: 18%;">Kind</th>
-                            <th>Params</th>
-                            <th style="width: 1%;"></th>
-                        </tr>
-                    </thead>
-                    <tbody id="pred-fields-body">
-                        {# Initial state: empty. The JS below clones the
-                           hidden <template> row when the admin clicks Add. #}
-                    </tbody>
-                </table>
-            </div>
-            <button type="button" id="pred-add-row" class="btn btn-sm btn-outline-primary mb-4">
-                <i class="bi bi-plus-lg me-1"></i>Add prediction field
-            </button>
-            <template id="pred-row-template">
-                <tr>
-                    <td>
-                        <input type="text" name="pred_field_name" class="form-control form-control-sm font-monospace"
-                               placeholder="e.g. depth_pred" autocomplete="off">
-                    </td>
-                    <td>
-                        <select name="pred_field_kind" class="form-select form-select-sm">
-                            {% for k in all_kinds %}
-                            <option value="{{ k }}">{{ k }}</option>
-                            {% endfor %}
-                        </select>
-                    </td>
-                    <td>
-                        {{ params_block('pred', 'pred_field_params') }}
-                    </td>
-                    <td>
-                        <button type="button" class="btn btn-sm btn-link text-danger pred-remove">
-                            remove
-                        </button>
-                    </td>
-                </tr>
-            </template>
 
             <div class="d-flex gap-2">
                 <button type="submit" class="btn btn-primary">
@@ -415,155 +353,6 @@
     refreshHint();
 })();
 
-// ---- 2. Auto-pred-row suggestion ---------------------------------
-// When the admin sets a column's role to `gt`, mirror it into the
-// Prediction-fields section as `<name>_pred` of the same kind. For
-// image-like preds the params field is pre-filled with
-// {"shape_match":"<input>"}. Auto-rows are removed when the role
-// flips off gt, UNLESS the admin renamed the row (don't blow away
-// manual work).
-(function () {
-    const predBody = document.getElementById('pred-fields-body');
-    const predTpl = document.getElementById('pred-row-template');
-    const predAddBtn = document.getElementById('pred-add-row');
-    if (!predBody || !predTpl) return;
-
-    const SHAPE_BEARING = new Set(['image', 'mask', 'depth']);
-    const IMAGE_LIKE = new Set(['image', 'mask', 'depth']);
-
-    function firstInputFieldOfKind(kind) {
-        for (const row of document.querySelectorAll('tr.field-row')) {
-            const role = row.querySelector('select.field-role')?.value;
-            const k = row.querySelector('select.field-kind')?.value;
-            if (role === 'input' && k === kind) return row.dataset.fieldName;
-        }
-        return null;
-    }
-    function firstInputImageLike() {
-        for (const row of document.querySelectorAll('tr.field-row')) {
-            const role = row.querySelector('select.field-role')?.value;
-            const k = row.querySelector('select.field-kind')?.value;
-            if (role === 'input' && IMAGE_LIKE.has(k)) return row.dataset.fieldName;
-        }
-        return null;
-    }
-    function suggestedPredParams(predKind) {
-        if (!SHAPE_BEARING.has(predKind)) return '';
-        const shapeRef = firstInputFieldOfKind(predKind) || firstInputImageLike();
-        if (!shapeRef) return '';
-        return JSON.stringify({shape_match: shapeRef});
-    }
-
-    function gtRowForFieldName(fieldName) {
-        for (const row of document.querySelectorAll('tr.field-row')) {
-            if (row.dataset.fieldName === fieldName) return row;
-        }
-        return null;
-    }
-
-    function addAutoPredRow(fieldName, kind) {
-        if (predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`)) return;
-        const frag = predTpl.content.cloneNode(true);
-        const tr = frag.querySelector('tr');
-        tr.setAttribute('data-auto-for', fieldName);
-        tr.querySelector('input[name="pred_field_name"]').value = `${fieldName}_pred`;
-        const kindSel = tr.querySelector('select[name="pred_field_kind"]');
-        if (kindSel) kindSel.value = kind;
-        // For image-like preds, default shape mode to "match" against
-        // the GT column's matching input (e.g. `image` for image preds).
-        if (SHAPE_BEARING.has(kind)) {
-            const shapeRef = firstInputFieldOfKind(kind) || firstInputImageLike();
-            if (shapeRef) {
-                tr.dataset.suggestedShapeMatch = shapeRef;
-            }
-        }
-        predBody.appendChild(tr);
-        // Append fires the MutationObserver in the structured-params
-        // IIFE; once panels are wired, set the shape-match defaults
-        // and rebuild the JSON.
-        if (window.__bhRefreshParams) {
-            window.__bhRefreshParams(tr);
-            const shapeRef = tr.dataset.suggestedShapeMatch;
-            if (shapeRef) {
-                const matchRadio = tr.querySelector('input.shape-mode[value="match"]');
-                const matchSel = tr.querySelector('select.shape-match');
-                if (matchRadio) matchRadio.checked = true;
-                if (matchSel) matchSel.value = shapeRef;
-                window.__bhRefreshParams(tr);
-            }
-        }
-        // Mirror gt-side per-kind params (label names, depth unit,
-        // bboxes format, mask ignore_index, ...) so the pred row
-        // doesn't ship a stale default that fights the gt contract.
-        const gtRow = gtRowForFieldName(fieldName);
-        if (gtRow && window.__bhCopyGtParamsToPred) {
-            window.__bhCopyGtParamsToPred(gtRow, tr);
-        }
-    }
-    function removeAutoPredRow(fieldName) {
-        const row = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
-        if (!row) return;
-        const expected = `${fieldName}_pred`;
-        const current = row.querySelector('input[name="pred_field_name"]')?.value || '';
-        if (current === expected) row.remove();
-    }
-    function syncAutoPredForRow(row) {
-        const fieldName = row.dataset.fieldName;
-        const role = row.querySelector('select.field-role')?.value;
-        const kind = row.querySelector('select.field-kind')?.value;
-        if (role === 'gt') addAutoPredRow(fieldName, kind);
-        else removeAutoPredRow(fieldName);
-    }
-    function syncKindOnExistingAutoRow(row) {
-        const fieldName = row.dataset.fieldName;
-        const predRow = predBody.querySelector(`tr[data-auto-for="${CSS.escape(fieldName)}"]`);
-        if (!predRow) return;
-        const newKind = row.querySelector('select.field-kind')?.value;
-        const kindSel = predRow.querySelector('select[name="pred_field_kind"]');
-        if (kindSel) kindSel.value = newKind;
-        // Re-run the structured-params init so the right panel shows
-        // (the change event from setting .value programmatically
-        // doesn't fire on its own).
-        if (window.__bhRefreshParams) window.__bhRefreshParams(predRow);
-        // Re-mirror gt params after a kind switch — without this the
-        // pred row's new panel would show its blank defaults instead
-        // of the gt's freshly-edited values.
-        if (window.__bhCopyGtParamsToPred) window.__bhCopyGtParamsToPred(row, predRow);
-    }
-
-    // Event delegation on `document` so we don't depend on row-level
-    // listener attachment having succeeded at script-eval time. If the
-    // delegated listener doesn't fire when you change a role
-    // dropdown, the script either didn't load or threw before this
-    // line — check DevTools console.
-    console.log('[bh-pred-suggest] wired delegated change listener');
-    document.addEventListener('change', (e) => {
-        const t = e.target;
-        if (!(t instanceof HTMLSelectElement)) return;
-        const isRole = t.classList.contains('field-role');
-        const isKind = t.classList.contains('field-kind');
-        if (!isRole && !isKind) return;
-        const row = t.closest('tr.field-row');
-        if (!row) return;
-        console.log('[bh-pred-suggest] change on', row.dataset.fieldName,
-                    'role=', row.querySelector('select.field-role')?.value,
-                    'kind=', row.querySelector('select.field-kind')?.value);
-        syncAutoPredForRow(row);
-        if (isKind) syncKindOnExistingAutoRow(row);
-    });
-
-    if (predAddBtn) {
-        predAddBtn.addEventListener('click', () => {
-            const frag = predTpl.content.cloneNode(true);
-            predBody.appendChild(frag);
-        });
-    }
-    predBody.addEventListener('click', (e) => {
-        if (e.target.classList.contains('pred-remove')) {
-            e.target.closest('tr')?.remove();
-        }
-    });
-})();
 
 // ---- 3. Structured params editor ---------------------------------
 // Each row has a hidden <input class="params-json"> alongside one

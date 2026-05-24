@@ -274,6 +274,122 @@
                         placeholder="e.g. {{ dataset.name }} benchmark">
                 </div>
 
+                {# ---- Field roles -----------------------------------
+                   The Dataset is role-neutral now. Each LB decides
+                   how to use the same field: as `input` (given to the
+                   submitter), `gt` (held server-side as the target),
+                   or `skip` (not used by this LB). Defaults come from
+                   the dataset's declared role hint. #}
+                {% if dataset.dataset_fields %}
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold mb-1">Field roles</label>
+                    <p class="form-text small mt-0 mb-2">
+                        Pick how each field is used on this leaderboard.
+                        Defaults mirror the dataset's declared roles —
+                        adjust per LB.
+                    </p>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="ps-2">Field</th>
+                                    <th>Kind</th>
+                                    <th style="width: 140px;" class="pe-2">Role</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for f in dataset.dataset_fields %}
+                                <tr class="lb-field-roles-row" data-field-name="{{ f.name }}" data-field-kind="{{ f.kind }}">
+                                    <td class="ps-2 font-monospace small">{{ f.name }}</td>
+                                    <td><code class="small">{{ f.kind }}</code></td>
+                                    <td class="pe-2">
+                                        <select name="field_role_{{ f.name }}"
+                                                class="form-select form-select-sm lb-field-role">
+                                            {% set _default = (f.role or 'gt').lower() %}
+                                            <option value="input" {{ 'selected' if _default == 'input' }}>input</option>
+                                            <option value="gt"    {{ 'selected' if _default == 'gt' }}>gt</option>
+                                            <option value="skip"  {{ 'selected' if _default == 'skip' }}>skip</option>
+                                        </select>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endif %}
+
+                {# ---- Pred fields ----------------------------------
+                   Predictions are LB-level: same dataset can back many
+                   LBs with different pred contracts. Each row =
+                   one declared pred field. Auto-suggested rows mirror
+                   each role=gt field; the admin can edit or remove. #}
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold mb-1">Prediction fields</label>
+                    <p class="form-text small mt-0 mb-2">
+                        Fields submissions must include — defines the
+                        wire contract for this LB. Auto-suggested
+                        below mirrors every <code>gt</code>-roled
+                        field above; edit / remove / add as you go.
+                    </p>
+                    <div class="table-responsive mb-2">
+                        <table class="table table-sm align-middle mb-0" id="lb-pred-fields-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="ps-2" style="width: 30%;">Name</th>
+                                    <th style="width: 18%;">Kind</th>
+                                    <th>Params (JSON, optional)</th>
+                                    <th class="pe-2" style="width: 1%;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="lb-pred-fields-body"></tbody>
+                        </table>
+                    </div>
+                    <button type="button" id="lb-pred-add-row"
+                            class="btn btn-sm btn-outline-primary mb-2">
+                        <i class="bi bi-plus-lg me-1"></i>Add pred field
+                    </button>
+                    <template id="lb-pred-row-template">
+                        <tr>
+                            <td class="ps-2">
+                                <input type="text" name="pred_field_name"
+                                       class="form-control form-control-sm font-monospace"
+                                       placeholder="e.g. label_pred"
+                                       autocomplete="off">
+                            </td>
+                            <td>
+                                <select name="pred_field_kind" class="form-select form-select-sm">
+                                    {% for k in (filterable_field_types.keys() | list) %}
+                                    {% endfor %}
+                                    {# DTYPES dropdown — sourced from the dataset_view route's
+                                       `valid_kinds` if present, else inline list. #}
+                                    <option value="image">image</option>
+                                    <option value="mask">mask</option>
+                                    <option value="depth">depth</option>
+                                    <option value="audio">audio</option>
+                                    <option value="text">text</option>
+                                    <option value="bboxes">bboxes</option>
+                                    <option value="label">label</option>
+                                    <option value="label_list">label_list</option>
+                                    <option value="scalar">scalar</option>
+                                    <option value="json">json</option>
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" name="pred_field_params"
+                                       class="form-control form-control-sm font-monospace"
+                                       placeholder='{}  e.g. {"k": 5} for label_list'>
+                            </td>
+                            <td class="pe-2">
+                                <button type="button" class="btn btn-sm btn-link text-danger p-0 lb-pred-remove"
+                                        title="Remove">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                </div>
+
                 {# ---- Per-metric add widget ----
                    Each "Add metric" appends a row that captures the
                    chosen GlobalMetric id + a per-arg mapping to one
@@ -466,6 +582,95 @@
                         e.target.closest('.lb-metric-row')?.remove();
                     }
                 });
+            })();
+
+            // Pred-fields editor for the LB-creation form. Mirrors
+            // every role=gt field above into the table as a
+            // `<gt_name>_pred` row of the same kind. Auto-rows have
+            // `data-auto-for="<gt_name>"`; flipping a role away from
+            // gt drops the auto-row (unless the admin renamed it).
+            (function () {
+                const body = document.getElementById('lb-pred-fields-body');
+                const tpl = document.getElementById('lb-pred-row-template');
+                const addBtn = document.getElementById('lb-pred-add-row');
+                if (!body || !tpl) return;
+
+                function findExisting(name) {
+                    return body.querySelector(`tr[data-auto-for="${CSS.escape(name)}"]`);
+                }
+
+                function makeRow({name, kind, autoFor, paramsHint}) {
+                    const frag = tpl.content.cloneNode(true);
+                    const tr = frag.querySelector('tr');
+                    if (autoFor) tr.setAttribute('data-auto-for', autoFor);
+                    tr.querySelector('input[name="pred_field_name"]').value = name;
+                    const kSel = tr.querySelector('select[name="pred_field_kind"]');
+                    if (kSel) kSel.value = kind;
+                    if (paramsHint) {
+                        tr.querySelector('input[name="pred_field_params"]').value = paramsHint;
+                    }
+                    return tr;
+                }
+
+                function addAutoRowFor(fieldRow) {
+                    const fname = fieldRow.dataset.fieldName;
+                    const kind = fieldRow.dataset.fieldKind;
+                    if (!fname || findExisting(fname)) return;
+                    // label_list defaults: suggest k=5 as a starter.
+                    const paramsHint = (kind === 'label_list') ? '{"k": 5}' : '';
+                    body.appendChild(makeRow({
+                        name: `${fname}_pred`,
+                        kind: kind,
+                        autoFor: fname,
+                        paramsHint,
+                    }));
+                }
+
+                function removeAutoRowFor(fieldName) {
+                    const tr = findExisting(fieldName);
+                    if (!tr) return;
+                    // Don't blow away an admin-edited row.
+                    const nm = tr.querySelector('input[name="pred_field_name"]')?.value || '';
+                    if (nm !== `${fieldName}_pred`) return;
+                    tr.remove();
+                }
+
+                function refreshAllAuto() {
+                    // For each field-role row: if role==gt and no auto
+                    // pred row exists, add one; if role!=gt and an
+                    // unedited auto row exists, remove it.
+                    document.querySelectorAll('tr.lb-field-roles-row').forEach((row) => {
+                        const role = row.querySelector('select.lb-field-role')?.value;
+                        const fname = row.dataset.fieldName;
+                        if (role === 'gt') addAutoRowFor(row);
+                        else removeAutoRowFor(fname);
+                    });
+                }
+
+                // Wire role-change → re-sync auto pred rows.
+                document.addEventListener('change', (e) => {
+                    if (e.target.classList?.contains('lb-field-role')) {
+                        const row = e.target.closest('tr.lb-field-roles-row');
+                        if (row) {
+                            const role = e.target.value;
+                            const fname = row.dataset.fieldName;
+                            if (role === 'gt') addAutoRowFor(row);
+                            else removeAutoRowFor(fname);
+                        }
+                    }
+                });
+
+                addBtn?.addEventListener('click', () => {
+                    body.appendChild(makeRow({name: '', kind: 'label'}));
+                });
+                body.addEventListener('click', (e) => {
+                    if (e.target.closest('.lb-pred-remove')) {
+                        e.target.closest('tr')?.remove();
+                    }
+                });
+
+                // Initial pass: pre-seed auto rows from defaults.
+                refreshAllAuto();
             })();
             </script>
             <p class="form-text small mb-0 mt-2">

@@ -4681,34 +4681,20 @@ def admin_import_from_hf_commit():
 
     names = request.form.getlist('field_name')
     kinds = request.form.getlist('field_kind')
-    roles = request.form.getlist('field_role')
     params_raw = request.form.getlist('field_params')
     source_columns = request.form.getlist('field_source_column')
 
-    if not (len(names) == len(kinds) == len(roles) == len(params_raw)):
+    if not (len(names) == len(kinds) == len(params_raw)):
         flash('Field rows malformed — please retry from the preview page.', 'danger')
         return redirect(url_for('admin_import_from_hf'))
 
-    # The preview form forces an explicit role pick via a disabled
-    # placeholder + `required`; if any role still arrives blank
-    # (e.g. JS-disabled browser, bookmarked POST), bounce with a
-    # clear message so the field isn't silently dropped.
-    missing_roles = [
-        names[i] for i, role in enumerate(roles) if not (role or '').strip()
-    ]
-    if missing_roles:
-        flash(
-            f"Pick a role for every field — these are blank: "
-            f"{', '.join(repr(n) for n in missing_roles)}",
-            'warning',
-        )
-        return redirect(url_for('admin_import_from_hf'))
-
+    # Dataset is now role-neutral — every imported field is just
+    # data. LBs choose how to use each field (input vs gt vs skip)
+    # at creation time. We still set DatasetField.role to a
+    # placeholder value (`'gt'`) so the column isn't NULL; downstream
+    # LB creation overrides via `field_roles_json`.
     selected: list[dict] = []
     for i, name in enumerate(names):
-        role = roles[i] if i < len(roles) else 'skip'
-        if role == 'skip':
-            continue
         kind = kinds[i] if i < len(kinds) else 'json'
         params_str = (params_raw[i] if i < len(params_raw) else '').strip()
         try:
@@ -4721,58 +4707,11 @@ def admin_import_from_hf_commit():
             'name': name,
             'source_column': (source_columns[i] if i < len(source_columns) else name) or name,
             'kind': kind,
-            'role': role,
+            'role': 'gt',  # placeholder; LB-side `field_roles_json` is canonical.
             'params': params,
         })
     if not selected:
-        flash('Every column was set to "skip" — nothing to import.', 'warning')
-        return redirect(url_for('admin_import_from_hf'))
-
-    # Prediction fields are declared separately on the preview form
-    # — they're schema-only declarations the LB will require from
-    # submissions, NOT mappings of HF columns. Blank rows (admin
-    # added a row then left it empty) are dropped.
-    from benchhub.types import DTYPES as _DTYPES
-    pred_names = request.form.getlist('pred_field_name')
-    pred_kinds = request.form.getlist('pred_field_kind')
-    pred_params_raw = request.form.getlist('pred_field_params')
-    existing_names = {f['name'] for f in selected}
-    pred_errors: list[str] = []
-    for i, pname in enumerate(pred_names):
-        pname = (pname or '').strip()
-        if not pname:
-            continue
-        if pname in existing_names:
-            pred_errors.append(
-                f"pred field {pname!r} collides with a column name above"
-            )
-            continue
-        pkind = (pred_kinds[i] if i < len(pred_kinds) else '').strip()
-        if pkind not in _DTYPES:
-            pred_errors.append(
-                f"pred field {pname!r}: unknown kind {pkind!r}"
-            )
-            continue
-        params_str = (pred_params_raw[i] if i < len(pred_params_raw) else '').strip()
-        try:
-            params = json.loads(params_str) if params_str else {}
-            if not isinstance(params, dict):
-                params = {}
-        except (TypeError, ValueError):
-            pred_errors.append(
-                f"pred field {pname!r}: params must be JSON; got {params_str!r}"
-            )
-            continue
-        selected.append({
-            'name': pname,
-            'source_column': pname,
-            'kind': pkind,
-            'role': 'pred',
-            'params': params,
-        })
-        existing_names.add(pname)
-    if pred_errors:
-        flash("Prediction fields invalid: " + "; ".join(pred_errors), 'warning')
+        flash('No fields to import.', 'warning')
         return redirect(url_for('admin_import_from_hf'))
 
     import tempfile

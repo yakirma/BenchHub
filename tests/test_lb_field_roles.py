@@ -202,6 +202,25 @@ def test_delete_dataset_with_no_attached_lbs_still_works(client, db_session):
     assert Dataset.query.get(ds.id) is None
 
 
+def test_dataset_view_inline_lb_form_has_role_table_and_pred_section(client, db_session):
+    """The LB-creation panel on /dataset/<id> renders the new
+    'Field roles' table (one row per declared dataset field) +
+    'Prediction fields' table + auto-pred JS scaffolding."""
+    user, ds = _seed_dataset_and_user()
+    _login(client, user)
+    body = client.get(f'/dataset/{ds.id}').data.decode()
+    # Field roles table renders one row per dataset field.
+    assert 'Field roles' in body
+    assert 'name="field_role_img"' in body
+    assert 'name="field_role_label"' in body
+    assert 'name="field_role_depth"' in body
+    # Prediction fields section + auto-row template.
+    assert 'Prediction fields' in body
+    assert 'id="lb-pred-fields-body"' in body
+    assert 'id="lb-pred-add-row"' in body
+    assert 'id="lb-pred-row-template"' in body
+
+
 def test_dataset_settings_warns_about_attached_lbs(client, db_session):
     """The Danger zone on /dataset/<id>/settings lists the attached
     LBs the cascade delete will remove, so the admin sees the

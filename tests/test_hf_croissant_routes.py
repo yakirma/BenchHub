@@ -91,15 +91,12 @@ def test_preview_renders_partial_form_from_fixture(admin_client, monkeypatch):
     assert '(50,000)' in body
 
 
-def test_preview_role_dropdowns_default_to_disabled_placeholder(
+def test_preview_no_longer_renders_role_dropdown_or_pred_fields(
     admin_client, monkeypatch,
 ):
-    """The preview form must force an explicit role pick — every
-    `name="field_role"` <select> renders a disabled placeholder as
-    the default option, no role-name is selected, and the select is
-    HTML5-required so the browser refuses to submit until the admin
-    chooses one. Pred is NOT in the column dropdown (pred fields
-    are a separate section, not a re-labelling of an HF column)."""
+    """Roles + pred fields moved to LB creation. The HF import
+    preview is now role-neutral and pred-field-free; it captures
+    only what the dataset itself owns (name, kind, params)."""
     from benchhub import hf_croissant as hfc
     from benchhub import hf_search as hfs
 
@@ -108,48 +105,19 @@ def test_preview_role_dropdowns_default_to_disabled_placeholder(
     monkeypatch.setattr(hfs, 'fetch_split_row_counts',
                         lambda repo_id, **kw: {"train": 50000, "test": 10000})
 
-    r = admin_client.post(
+    body = admin_client.post(
         '/admin/import_from_hf/preview',
         data={'repo_id': 'uoft-cs/cifar10'},
-    )
-    assert r.status_code == 200
-    body = r.data.decode()
-    # The role select is `required` and carries a disabled+selected
-    # placeholder so unmodified submits get blocked.
-    assert 'name="field_role" class="form-select form-select-sm field-role" required' in body
-    assert 'value="" selected disabled hidden' in body
-    # Only input / gt / skip in the per-column dropdown; pred lives
-    # in its own section below.
-    for role in ('input', 'gt', 'skip'):
-        assert f'<option value="{role}" selected>' not in body
-        assert f'<option value="{role}">' in body
-    assert '<option value="pred"' not in body
-
-
-def test_preview_renders_separate_pred_fields_section(admin_client, monkeypatch):
-    """The preview page renders an empty Prediction-fields table +
-    an Add button + the cloneable <template> row carrying name/kind/
-    params inputs. Pred fields go into THIS section, never as a
-    re-labelled HF column."""
-    from benchhub import hf_croissant as hfc
-    from benchhub import hf_search as hfs
-
-    fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
-    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
-    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda repo_id, **kw: {})
-
-    r = admin_client.post(
-        '/admin/import_from_hf/preview',
-        data={'repo_id': 'uoft-cs/cifar10'},
-    )
-    body = r.data.decode()
-    # Empty body, the template, and the Add button — all need to be present.
-    assert 'id="pred-fields-body"' in body
-    assert 'id="pred-row-template"' in body
-    assert 'id="pred-add-row"' in body
-    assert 'name="pred_field_name"' in body
-    assert 'name="pred_field_kind"' in body
-    assert 'name="pred_field_params"' in body
+    ).data.decode()
+    # No role <select> on any column row.
+    assert 'name="field_role"' not in body
+    # No "Prediction fields" section header / Add-row button.
+    assert 'Prediction fields' not in body
+    # No <input name="pred_field_name"> form elements either (the
+    # `pred_field_name` string can appear in dead JS branches; check
+    # the actual form-element string instead).
+    assert '<input type="text" name="pred_field_name"' not in body
+    assert 'id="pred-add-row"' not in body
 
 
 def test_preview_renders_class_label_vocab_as_data_attribute(admin_client, monkeypatch):
@@ -226,15 +194,16 @@ def test_preview_keeps_uniform_default_when_no_label_field(admin_client, monkeyp
     assert '<option value="stratified" selected>' not in body
 
 
-def test_commit_route_collects_pred_fields_into_selected(client, db_session, tmp_path, monkeypatch):
-    """The commit handler merges the pred_field_* arrays into the
-    list it hands to materialize_hf_to_typed_dir, tagged role='pred'.
-    Stub the materialiser + importer to capture what flows through
-    without touching the network."""
+def test_commit_route_imports_fields_with_neutral_role(client, db_session, tmp_path, monkeypatch):
+    """Dataset is role-neutral now: the commit handler hands every
+    field to the materializer with role='gt' as a placeholder (the
+    column is NOT NULL on DatasetField). LBs override per-LB via
+    `field_roles_json` at creation time. No more pred-fields
+    section on the import — preds are LB-level."""
     from app import app as flask_app
     monkeypatch.setitem(flask_app.config, 'UPLOAD_FOLDER', str(tmp_path))
-    admin = User(email='predsec@bench.local', display_name='ps',
-                 oauth_provider='github', oauth_sub='ps-1', is_admin=True)
+    admin = User(email='neutral@bench.local', display_name='n',
+                 oauth_provider='github', oauth_sub='n-1', is_admin=True)
     db.session.add(admin); db.session.commit()
     with client.session_transaction() as sess:
         sess['user_id'] = admin.id
@@ -245,7 +214,6 @@ def test_commit_route_collects_pred_fields_into_selected(client, db_session, tmp
     def _fake_materialize(repo_id, *, split, sample_cap, staging_dir,
                           dataset_name, fields, **kw):
         captured['fields'] = fields
-        # Write a manifest the importer can later read.
         from pathlib import Path
         Path(staging_dir, 'manifest.json').write_text(json.dumps({
             'name': dataset_name, 'version': '1.0',
@@ -261,13 +229,11 @@ def test_commit_route_collects_pred_fields_into_selected(client, db_session, tmp
 
     monkeypatch.setattr(hfm, 'materialize_hf_to_typed_dir', _fake_materialize)
 
-    # Also stub import_typed_dataset since we don't have real files on disk.
     from benchhub import manifest as bh_manifest
 
     def _fake_import(source_root, *, db_session, Dataset, Sample, CustomField,
                      DatasetField=None, upload_folder, owner_user_id=None,
                      visibility='public'):
-        # Read the staged manifest and create the DatasetField rows.
         from pathlib import Path
         m = json.loads(Path(source_root, 'manifest.json').read_text())
         ds = Dataset(name=m['name'], owner_user_id=owner_user_id,
@@ -291,90 +257,21 @@ def test_commit_route_collects_pred_fields_into_selected(client, db_session, tmp
 
     r = client.post('/admin/import_from_hf/commit', data={
         'repo_id': 'uoft-cs/cifar10',
-        'dataset_name': 'wp-test',
+        'dataset_name': 'neutral-test',
         'split': 'test',
         'sample_cap': '1',
         'sampling': 'head',
         'sampling_seed': '0',
-        # One column kept as input + the pred section adds one role=pred.
-        'field_name': ['img'],
-        'field_source_column': ['img'],
-        'field_kind': ['image'],
-        'field_role': ['input'],
-        'field_params': [''],
-        'pred_field_name': ['depth_pred'],
-        'pred_field_kind': ['depth'],
-        'pred_field_params': ['{"shape": [16, 24]}'],
+        'field_name': ['img', 'label'],
+        'field_source_column': ['img', 'label'],
+        'field_kind': ['image', 'label'],
+        'field_params': ['', ''],
     }, follow_redirects=False)
     assert r.status_code == 302
-
-    # The materialiser saw both fields, with the pred tagged role='pred'.
+    # Both fields land as role='gt' placeholders; LB decides at creation.
     by_name = {f['name']: f for f in captured['fields']}
-    assert by_name['img']['role'] == 'input'
-    assert by_name['depth_pred']['role'] == 'pred'
-    assert by_name['depth_pred']['params'] == {'shape': [16, 24]}
-    # And the resulting Dataset has the DatasetField row.
-    ds = Dataset.query.filter_by(name='wp-test').one()
-    schema = {f.name: f for f in
-              __import__('app').DatasetField.query.filter_by(dataset_id=ds.id).all()}
-    assert schema['depth_pred'].role == 'pred'
-    assert schema['depth_pred'].get_params() == {'shape': [16, 24]}
-
-
-def test_commit_route_rejects_pred_field_colliding_with_column(client, db_session, monkeypatch):
-    """A pred field name that duplicates an imported column name
-    is a contract bug — bounce with a flash."""
-    admin = User(email='collide@bench.local', display_name='c',
-                 oauth_provider='github', oauth_sub='c-1', is_admin=True)
-    db.session.add(admin); db.session.commit()
-    with client.session_transaction() as sess:
-        sess['user_id'] = admin.id
-
-    r = client.post('/admin/import_from_hf/commit', data={
-        'repo_id': 'x/y', 'dataset_name': 'd', 'split': 'test', 'sample_cap': '1',
-        'sampling': 'head',
-        'field_name': ['label'],
-        'field_source_column': ['label'],
-        'field_kind': ['label'],
-        'field_role': ['gt'],
-        'field_params': [''],
-        'pred_field_name': ['label'],  # ← collision with column
-        'pred_field_kind': ['label'],
-        'pred_field_params': [''],
-    }, follow_redirects=False)
-    assert r.status_code == 302
-    assert '/admin/import_from_hf' in r.headers['Location']
-
-
-def test_commit_route_rejects_blank_roles(client, db_session):
-    """JS-disabled browser or bookmarked POST can still submit with
-    an empty role string. Server-side check bounces with a clear
-    flash listing the affected field names."""
-    admin = User(email='blank-role@bench.local', display_name='br',
-                 oauth_provider='github', oauth_sub='br-1', is_admin=True)
-    db.session.add(admin); db.session.commit()
-    with client.session_transaction() as sess:
-        sess['user_id'] = admin.id
-
-    r = client.post(
-        '/admin/import_from_hf/commit',
-        data={
-            'repo_id': 'uoft-cs/cifar10',
-            'dataset_name': 'unused',
-            'split': 'test',
-            'sample_cap': '5',
-            'sampling': 'head',
-            'field_name': ['img', 'label'],
-            'field_source_column': ['img', 'label'],
-            'field_kind': ['image', 'scalar'],
-            'field_role': ['gt', ''],       # one missing
-            'field_params': ['', ''],
-        },
-        follow_redirects=False,
-    )
-    assert r.status_code == 302
-    # Redirects back to the form (not the preview).
-    assert '/admin/import_from_hf' in r.headers['Location']
+    assert by_name['img']['role'] == 'gt'
+    assert by_name['label']['role'] == 'gt'
 
 
 def test_preview_404_when_croissant_fetch_fails(admin_client, monkeypatch):

@@ -135,12 +135,11 @@ def test_delete_only_targets_role_pred(client, db_session):
     assert any(f.name == 'label' and f.role == 'gt' for f in ds.fields)
 
 
-def test_dataset_settings_renders_pred_field_editor(client, db_session):
+def test_dataset_settings_no_longer_has_pred_field_editor(client, db_session):
+    """Pred fields moved to LB creation. The dataset settings page
+    shouldn't surface a "Pred fields" editor anymore — the same
+    dataset can back many LBs with different pred contracts."""
     user, ds = _seed_user_and_dataset()
     _login(client, user)
     body = client.get(f'/dataset/{ds.id}/settings').data.decode()
-    assert 'Pred fields' in body
-    assert 'name="kind"' in body
-    # The full DTYPES list is in the kind dropdown.
-    assert '>label_list<' in body
-    assert '>bboxes<' in body
+    assert 'Pred fields' not in body
