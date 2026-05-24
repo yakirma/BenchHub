@@ -22,25 +22,32 @@ from app import GlobalMetric, User, app, db
 # literals here; the seeder writes them to GlobalMetric.python_code.
 
 _ACCURACY = """\
-def accuracy(gt, pred):
+import benchhub as bh
+
+def accuracy(gt: bh.Label, pred: bh.Label):
     \"\"\"Per-sample classification accuracy. gt + pred are bh.Label
     instances; the .value attribute holds the int / str class id.
     Pool with mean across the LB for overall accuracy.\"\"\"
     if gt is None or pred is None:
         return 0.0
+    assert isinstance(gt, bh.Label),   f"gt must be bh.Label, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Label), f"pred must be bh.Label, got {type(pred).__name__}"
     return 1.0 if gt.value == pred.value else 0.0
 """
 
 _RMSE_DEPTH = """\
-def rmse(gt, pred):
+import numpy as np
+import benchhub as bh
+
+def rmse(gt: bh.Depth, pred: bh.Depth):
     \"\"\"Per-sample root mean squared error for Depth predictions.
     Handles unit mismatch by normalising both to meters.\"\"\"
-    import numpy as np
     if gt is None or pred is None:
         return float('nan')
+    assert isinstance(gt, bh.Depth),   f"gt must be bh.Depth, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Depth), f"pred must be bh.Depth, got {type(pred).__name__}"
     g = gt.array.astype(np.float32)
     p = pred.array.astype(np.float32)
-    # Unit normalisation — Depth carries unit in .unit.
     def to_meters(arr, unit):
         if unit == 'millimeters':
             return arr / 1000.0
@@ -55,11 +62,15 @@ def rmse(gt, pred):
 """
 
 _MAE_DEPTH = """\
-def mae(gt, pred):
+import numpy as np
+import benchhub as bh
+
+def mae(gt: bh.Depth, pred: bh.Depth):
     \"\"\"Per-sample mean absolute error for Depth, in meters.\"\"\"
-    import numpy as np
     if gt is None or pred is None:
         return float('nan')
+    assert isinstance(gt, bh.Depth),   f"gt must be bh.Depth, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Depth), f"pred must be bh.Depth, got {type(pred).__name__}"
     g = gt.array.astype(np.float32)
     p = pred.array.astype(np.float32)
     def to_meters(arr, unit):
@@ -72,12 +83,16 @@ def mae(gt, pred):
 """
 
 _IOU_MASK = """\
-def iou(gt, pred):
+import numpy as np
+import benchhub as bh
+
+def iou(gt: bh.Mask, pred: bh.Mask):
     \"\"\"Per-sample mean IoU across all class IDs for a segmentation
     Mask. ignore_index is honored when set on the gt Mask.\"\"\"
-    import numpy as np
     if gt is None or pred is None:
         return float('nan')
+    assert isinstance(gt, bh.Mask),   f"gt must be bh.Mask, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Mask), f"pred must be bh.Mask, got {type(pred).__name__}"
     g = gt.array
     p = pred.array
     if g.shape != p.shape:
@@ -102,12 +117,16 @@ def iou(gt, pred):
 """
 
 _TEXT_EM = """\
-def exact_match(gt, pred):
+import benchhub as bh
+
+def exact_match(gt: bh.Text, pred: bh.Text):
     \"\"\"Per-sample exact-match for Text predictions. Strips whitespace
     and lowercases for a forgiving compare; tighter variants can layer
     tokenisation on top.\"\"\"
     if gt is None or pred is None:
         return 0.0
+    assert isinstance(gt, bh.Text),   f"gt must be bh.Text, got {type(gt).__name__}"
+    assert isinstance(pred, bh.Text), f"pred must be bh.Text, got {type(pred).__name__}"
     g = gt.text.strip().lower()
     p = pred.text.strip().lower()
     return 1.0 if g == p else 0.0
@@ -123,30 +142,35 @@ _SEED = [
         "name": "accuracy",
         "description": "Per-sample classification accuracy (higher is better). Pool with mean.",
         "input_kinds": ["label", "label"],
+        "input_roles": ["gt", "pred"],
         "python_code": _ACCURACY,
     },
     {
         "name": "rmse_depth",
         "description": "Root-mean-squared error for Depth predictions in meters (lower is better).",
         "input_kinds": ["depth", "depth"],
+        "input_roles": ["gt", "pred"],
         "python_code": _RMSE_DEPTH,
     },
     {
         "name": "mae_depth",
         "description": "Mean absolute error for Depth predictions in meters (lower is better).",
         "input_kinds": ["depth", "depth"],
+        "input_roles": ["gt", "pred"],
         "python_code": _MAE_DEPTH,
     },
     {
         "name": "iou_mask",
         "description": "Per-sample mean IoU across class IDs for segmentation Masks (higher is better).",
         "input_kinds": ["mask", "mask"],
+        "input_roles": ["gt", "pred"],
         "python_code": _IOU_MASK,
     },
     {
         "name": "exact_match_text",
         "description": "Per-sample exact-match for Text predictions, whitespace + case insensitive (higher is better).",
         "input_kinds": ["text", "text"],
+        "input_roles": ["gt", "pred"],
         "python_code": _TEXT_EM,
     },
 ]
@@ -165,6 +189,7 @@ def seed_reference_metrics(owner_email: str | None = None) -> dict:
             existing = GlobalMetric.query.filter_by(name=entry["name"]).first()
             payload = dict(entry)
             payload["input_kinds"] = json.dumps(payload["input_kinds"])
+            payload["input_roles"] = json.dumps(payload["input_roles"])
             if existing:
                 for k, v in payload.items():
                     setattr(existing, k, v)
