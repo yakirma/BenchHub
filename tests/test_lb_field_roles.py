@@ -208,7 +208,7 @@ def test_dataset_view_inline_lb_form_has_role_table_and_pred_section(client, db_
     'Prediction fields' table + auto-pred JS scaffolding."""
     user, ds = _seed_dataset_and_user()
     _login(client, user)
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     # Field roles table renders one row per dataset field.
     assert 'Field roles' in body
     assert 'name="field_role_img"' in body

@@ -81,7 +81,7 @@ def test_picker_disables_metrics_that_cant_fit_the_dataset(client, db_session):
     # FID on image×image — NOT satisfiable (no role=gt image field).
     _seed_metric('fid_typed', kinds=['image', 'image'], roles=['gt', 'pred'], user=user)
 
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     # accuracy renders as enabled.
     assert 'accuracy_typed' in body
     assert 'data-satisfiable="1"' in body
@@ -99,7 +99,7 @@ def test_picker_shows_metric_when_kind_matches_via_input_role(client, db_session
     _login(client, user)
     _seed_metric('image_check', kinds=['image'], roles=['input'],
                  code='def f(img):\n    return 0\n', user=user)
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     assert 'image_check' in body
 
 
@@ -188,7 +188,7 @@ def test_picker_disables_metric_when_dataset_has_no_matching_pred_field(client, 
     _login(client, user)
     _seed_metric('accuracy_strict', kinds=['label', 'label'],
                  roles=['gt', 'pred'], user=user)
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     assert 'accuracy_strict' in body
     # Disabled with the (needs kind=label role=pred) hint.
     assert 'data-satisfiable="0"' in body
@@ -202,7 +202,7 @@ def test_picker_surfaces_explicit_pred_field_for_pred_args(client, db_session):
     _login(client, user)
     _seed_metric('label_acc_pred', kinds=['label', 'label'],
                  roles=['gt', 'pred'], user=user)
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     # `label_pred` is an explicit DatasetField row → must appear.
     assert 'label_pred' in body
 

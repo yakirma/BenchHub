@@ -3877,6 +3877,115 @@ def _roles_from_arg_names(args: list[str]) -> list[str]:
     return out if any_match else []
 
 
+def _build_lb_creation_context(dataset):
+    """Build the (`available_metrics_for_lb`, `gt_field_options`,
+    `dataset_field_options`) triple that the LB-creation form needs.
+
+    Shared between the dataset-view page (for any other widgets that
+    consume these) and the dedicated `/dataset/<id>/create_lb` page
+    that renders the actual form.
+
+    Returns:
+      available_metrics_for_lb : list[dict]
+          One entry per visible GlobalMetric. Includes the metric's
+          arg list, declared `(kind, role)` per arg, and a
+          satisfiability flag (`True` when this dataset can supply
+          every arg; `False` plus a `missing_reason` otherwise).
+          Unsatisfiable metrics still appear so the picker can
+          render them disabled with a "(needs …)" hint.
+      gt_field_options : list[str]
+          Names of `role=gt` DatasetFields — the default target set
+          for unconstrained metric arg dropdowns.
+      dataset_field_options : list[dict]
+          Per-field `{name, kind, role}` so the picker JS can filter
+          per-arg dropdowns by (kind, role).
+    """
+    dataset_field_options = [
+        {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
+        for df in dataset.fields
+    ]
+    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
+    for f in dataset_field_options:
+        fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
+    fields_by_kind: dict[str, list[str]] = {}
+    for f in dataset_field_options:
+        fields_by_kind.setdefault(f['kind'], []).append(f['name'])
+
+    def _arg_specs(args, kinds, roles):
+        return [
+            {
+                'name': name,
+                'kind': kinds[i] if i < len(kinds) else None,
+                'role': roles[i] if i < len(roles) else None,
+            }
+            for i, name in enumerate(args)
+        ]
+
+    def _metric_satisfiability(arg_specs):
+        missing = []
+        for spec in arg_specs:
+            k = spec.get('kind')
+            r = spec.get('role')
+            if not k:
+                continue
+            members = [m for m in k.split('|') if m]
+            if r:
+                if not any(fields_by_kind_role.get((m, r)) for m in members):
+                    missing.append(spec)
+            else:
+                if not any(fields_by_kind.get(m) for m in members):
+                    missing.append(spec)
+        return (not missing, missing)
+
+    def _missing_reason(missing_specs):
+        parts = []
+        for s in missing_specs:
+            bits = []
+            if s.get('kind'):
+                bits.append(f"kind={s['kind']}")
+            if s.get('role'):
+                bits.append(f"role={s['role']}")
+            parts.append(f"{s.get('name') or '?'}: needs " + ' '.join(bits))
+        return '; '.join(parts)
+
+    available_metrics_for_lb = []
+    for gm in (
+        GlobalMetric.query
+        .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
+        .order_by(GlobalMetric.name)
+        .all()
+    ):
+        args = _extract_metric_arg_names(gm.python_code or '')
+        try:
+            kinds = json.loads(gm.input_kinds) if gm.input_kinds else []
+            if not isinstance(kinds, list):
+                kinds = []
+        except (TypeError, ValueError):
+            kinds = []
+        try:
+            roles = json.loads(gm.input_roles) if gm.input_roles else []
+            if not isinstance(roles, list):
+                roles = []
+        except (TypeError, ValueError):
+            roles = []
+        specs = _arg_specs(args, kinds, roles)
+        ok, missing = _metric_satisfiability(specs)
+        available_metrics_for_lb.append({
+            'id': gm.id,
+            'name': gm.name,
+            'description': (gm.description or '').strip(),
+            'args': args,
+            'arg_specs': specs,
+            'satisfiable': ok,
+            'missing_reason': '' if ok else _missing_reason(missing),
+        })
+
+    gt_field_options = sorted({
+        df.name for df in dataset.fields if (df.role or '').lower() == 'gt'
+    })
+    return available_metrics_for_lb, gt_field_options, dataset_field_options
+
+
 def _suggest_free_lb_name(base: str) -> str:
     """Return an LB name that doesn't collide with an existing
     Leaderboard. Starts from `<base>_benchmark`; if that's taken,
@@ -7979,6 +8088,32 @@ def favicon():
     )
 
 
+@app.route('/dataset/<int:dataset_id>/create_lb', methods=['GET'])
+@login_required
+@visibility_required(Dataset, 'dataset_id')
+def create_lb_for_dataset(dataset_id):
+    """Dedicated LB-creation page backed by a specific dataset.
+
+    The form used to live inline on `/dataset/<id>` inside a
+    collapse panel, but it grew enough (field roles + pred fields
+    + per-metric picker with arg mappings) to deserve its own page.
+    POST still goes to `/create_leaderboard` so the route handler
+    is unchanged.
+    """
+    dataset = Dataset.query.get_or_404(dataset_id)
+    available_metrics_for_lb, gt_field_options, dataset_field_options = (
+        _build_lb_creation_context(dataset)
+    )
+    return render_template(
+        'create_lb_for_dataset.html',
+        dataset=dataset,
+        suggested_lb_name=_suggest_free_lb_name(dataset.name),
+        available_metrics_for_lb=available_metrics_for_lb,
+        gt_field_options=gt_field_options,
+        dataset_field_options=dataset_field_options,
+    )
+
+
 @app.route('/create_lb', methods=['GET'])
 @login_required
 def create_lb_chooser():
@@ -10537,118 +10672,11 @@ def dataset_view(dataset_id):
     selected_display_columns = sorted(selected_display_columns,
                                        key=lambda x: get_column_priority(x, available_display_options.get(x, {}).get('type'), x in dataset_custom_fields))
 
-    # LB-creation inline form options. For each visible GlobalMetric
-    # we attach:
-    #   args        — parameter names (drive the per-arg field-picker
-    #                 rows in the JS)
-    #   input_kinds — declared BH kinds per arg (or NULL = any)
-    #   input_roles — declared dataset roles per arg (or NULL = any)
-    #   arg_specs   — combined `[{name, kind, role}, ...]` for the JS
-    # We then filter the picker to only metrics whose declared input
-    # kinds AND roles can be satisfied by some combination of this
-    # dataset's available fields — so the admin doesn't see options
-    # that can never be wired up.
-    dataset_field_options = [
-        {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
-        for df in dataset.fields
-    ]
-    # Group by (kind, role) once for quick lookup below. Pred-role
-    # entries come ONLY from explicit role=pred DatasetField rows
-    # — the picker doesn't invent pred fields. If a metric needs a
-    # pred binding and the dataset has no matching role=pred field,
-    # the metric is unsatisfiable and gets filtered out below.
-    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
-    for f in dataset_field_options:
-        fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
-    # Same but role-agnostic, for unconstrained-role metrics.
-    fields_by_kind: dict[str, list[str]] = {}
-    for f in dataset_field_options:
-        fields_by_kind.setdefault(f['kind'], []).append(f['name'])
-
-    def _arg_specs(args, kinds, roles):
-        out = []
-        for i, name in enumerate(args):
-            out.append({
-                'name': name,
-                'kind': kinds[i] if i < len(kinds) else None,
-                'role': roles[i] if i < len(roles) else None,
-            })
-        return out
-
-    def _metric_satisfiability(arg_specs):
-        """Returns `(ok, missing_specs)`. `missing_specs` is the list
-        of arg specs that can't be matched by any available field —
-        used to render a "(needs kind=label_list role=pred)" hint on
-        the disabled dropdown option. A union kind (`label|label_list`)
-        is satisfied when ANY member matches."""
-        missing = []
-        for spec in arg_specs:
-            k = spec.get('kind')
-            r = spec.get('role')
-            if not k:
-                continue  # unconstrained kind — anything works
-            members = [m for m in k.split('|') if m]
-            if r:
-                if not any(fields_by_kind_role.get((m, r)) for m in members):
-                    missing.append(spec)
-            else:
-                if not any(fields_by_kind.get(m) for m in members):
-                    missing.append(spec)
-        return (not missing, missing)
-
-    def _missing_reason(missing_specs):
-        parts = []
-        for s in missing_specs:
-            bits = []
-            if s.get('kind'):
-                bits.append(f"kind={s['kind']}")
-            if s.get('role'):
-                bits.append(f"role={s['role']}")
-            parts.append(f"{s.get('name') or '?'}: needs " + ' '.join(bits))
-        return '; '.join(parts)
-
-    available_metrics_for_lb = []
-    for gm in (
-        GlobalMetric.query
-        .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
-        .order_by(GlobalMetric.name)
-        .all()
-    ):
-        args = _extract_metric_arg_names(gm.python_code or '')
-        try:
-            kinds = json.loads(gm.input_kinds) if gm.input_kinds else []
-            if not isinstance(kinds, list):
-                kinds = []
-        except (TypeError, ValueError):
-            kinds = []
-        try:
-            roles = json.loads(gm.input_roles) if gm.input_roles else []
-            if not isinstance(roles, list):
-                roles = []
-        except (TypeError, ValueError):
-            roles = []
-        specs = _arg_specs(args, kinds, roles)
-        ok, missing = _metric_satisfiability(specs)
-        # Show ALL metrics, even unsatisfiable ones. The picker
-        # disables them and surfaces a (needs …) hint so the user
-        # sees WHY a metric isn't pickable and what field to add
-        # (e.g. a `kind=label_list role=pred` field for top-K).
-        available_metrics_for_lb.append({
-            'id': gm.id,
-            'name': gm.name,
-            'description': (gm.description or '').strip(),
-            'args': args,
-            'arg_specs': specs,
-            'satisfiable': ok,
-            'missing_reason': '' if ok else _missing_reason(missing),
-        })
-    # GT-bearing field names — what the admin can map metric inputs
-    # to. Use the DatasetField schema rows (role='gt') so the list
-    # is stable across importers and survives a dataset with zero
-    # samples loaded (e.g. before materialisation finishes).
-    gt_field_options = sorted({
-        df.name for df in dataset.fields if (df.role or '').lower() == 'gt'
-    })
+    # LB-creation form context — shared with the standalone
+    # /dataset/<id>/create_lb page below.
+    available_metrics_for_lb, gt_field_options, dataset_field_options = (
+        _build_lb_creation_context(dataset)
+    )
 
     return render_template('dataset_view.html',
                            dataset=dataset, 

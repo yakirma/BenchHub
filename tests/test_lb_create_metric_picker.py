@@ -158,7 +158,7 @@ def test_dataset_view_renders_metric_picker_dropdown(client, db_session):
         sess['user_id'] = user.id
     ds, gm = _seed_dataset_and_metric(user)
 
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     assert 'id="lb-metric-picker"' in body
     assert 'id="lb-metric-add"' in body
     # Metric name + JSON-encoded args show up in the option markup.

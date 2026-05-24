@@ -47,20 +47,43 @@ def leaderboard(db_session, project, dataset):
 # ---------------------------------------------------------------------------
 
 
-def test_dataset_view_renders_new_leaderboard_form_for_signed_in(
+def test_dataset_view_shows_new_leaderboard_link_for_signed_in(
     auth_client, logged_in_user, db_session,
 ):
-    """Anyone signed in sees the inline 'New leaderboard' form on a
-    dataset detail page (not just the owner)."""
+    """Anyone signed in sees a 'New leaderboard' link on the
+    dataset detail page that takes them to the dedicated LB-
+    creation page. The form itself lives at
+    /dataset/<id>/create_lb so the dataset page stays focused."""
     from app import Dataset, db as _db
     ds = Dataset(name='lb_form_ds', visibility='public')
     _db.session.add(ds); _db.session.commit()
 
     body = auth_client.get(f'/dataset/{ds.id}').data
     assert b'New leaderboard' in body
-    # Form posts to the create endpoint with this dataset pre-selected.
-    assert b'/create_leaderboard' in body
-    assert f'value="{ds.id}"'.encode() in body
+    assert f'/dataset/{ds.id}/create_lb'.encode() in body
+    # The inline collapse form is gone — no <form action=create_leaderboard>
+    # on the dataset page anymore.
+    assert b'action="/create_leaderboard"' not in body
+
+
+def test_dedicated_lb_creation_page_renders(auth_client, logged_in_user, db_session):
+    """`GET /dataset/<id>/create_lb` renders the full LB-creation
+    form (name input, role table for declared fields, pred-fields
+    table, metric picker)."""
+    from app import Dataset, DatasetField, db as _db
+    ds = Dataset(name='dedicated_form_ds', visibility='public')
+    _db.session.add(ds); _db.session.flush()
+    _db.session.add(DatasetField(dataset_id=ds.id, name='img',
+                                 kind='image', role='input'))
+    _db.session.commit()
+    body = auth_client.get(f'/dataset/{ds.id}/create_lb').data.decode()
+    assert 'New leaderboard' in body
+    assert 'name="leaderboard_name"' in body
+    assert 'action="/create_leaderboard"' in body
+    # The new sections from Phase 2 still render on the dedicated page.
+    assert 'Field roles' in body
+    assert 'Prediction fields' in body
+    assert 'name="field_role_img"' in body
 
 
 def test_dataset_view_hides_new_leaderboard_form_anon(client, db_session):

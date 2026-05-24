@@ -62,7 +62,7 @@ def test_dataset_view_prefills_lb_name_input(client, db_session):
     user, ds = _seed_dataset('mydata')
     with client.session_transaction() as sess:
         sess['user_id'] = user.id
-    body = client.get(f'/dataset/{ds.id}').data.decode()
+    body = client.get(f'/dataset/{ds.id}/create_lb').data.decode()
     # The pre-fill is a name derived from the dataset name.
     assert 'value="mydata_benchmark"' in body
 
