@@ -1521,6 +1521,13 @@ def check_quota(user, *, kind, incoming_bytes=0):
     if user is None:
         return False, "Sign in required."
 
+    # Admins (BENCHHUB_ADMIN_EMAILS / is_admin) are exempt from
+    # quota caps — they're the ones seeding curated datasets +
+    # bulk-importing reference benchmarks, which routinely exceed
+    # the 50 MB user cap. Regular users still get the limits.
+    if is_admin(user):
+        return True, None
+
     if kind == 'dataset_create':
         if dataset_count(user) >= user.quota_max_datasets:
             return False, (
