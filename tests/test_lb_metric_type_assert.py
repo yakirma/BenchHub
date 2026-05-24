@@ -35,10 +35,15 @@ def _seed_user_and_dataset():
     ds = Dataset(name='typed_ds', visibility='public',
                  owner_user_id=user.id)
     db.session.add(ds); db.session.flush()
+    # Pred fields are part of the dataset contract — declare them
+    # explicitly. The picker / commit-validation no longer invents
+    # `<gt>_pred` virtual entries, so tests that need a pred-side
+    # binding must seed an explicit role=pred DatasetField.
     db.session.add_all([
-        DatasetField(dataset_id=ds.id, name='label',  kind='label',  role='gt'),
-        DatasetField(dataset_id=ds.id, name='img',    kind='image',  role='input'),
-        DatasetField(dataset_id=ds.id, name='depth_gt', kind='depth', role='gt'),
+        DatasetField(dataset_id=ds.id, name='label',       kind='label', role='gt'),
+        DatasetField(dataset_id=ds.id, name='img',         kind='image', role='input'),
+        DatasetField(dataset_id=ds.id, name='depth_gt',    kind='depth', role='gt'),
+        DatasetField(dataset_id=ds.id, name='label_pred',  kind='label', role='pred'),
     ])
     os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
                 exist_ok=True)
@@ -157,53 +162,41 @@ def test_commit_rejects_pred_arg_bound_to_gt_field(client, db_session):
     assert LeaderboardMetric.query.filter_by(leaderboard_id=lb.id).count() == 0
 
 
-def test_pred_contract_doesnt_double_count_explicit_pred_field(client, db_session):
-    """When the dataset already has an explicit role=pred
-    DatasetField (e.g. `label_pred` set via the HF import's
-    Prediction-fields section), the pred-contract synthesizer
-    must NOT add another entry with the same name. JS would then
-    surface it twice in the per-arg dropdown."""
-    user = User(email='dupe@bench.local', display_name='dupe',
-                oauth_provider='github', oauth_sub='dupe-1')
+def test_picker_hides_metric_when_dataset_has_no_matching_pred_field(client, db_session):
+    """If a metric has a pred-role arg of kind X and the dataset
+    has no explicit role=pred field of kind X, the metric is
+    unsatisfiable and gets filtered out of the picker — the
+    picker never invents `<gt>_pred` virtual entries."""
+    user = User(email='noPred@bench.local', display_name='nopred',
+                oauth_provider='github', oauth_sub='nopred-1')
     db.session.add(user); db.session.commit()
-    ds = Dataset(name='dupe_ds', visibility='public', owner_user_id=user.id)
+    ds = Dataset(name='no_pred_ds', visibility='public',
+                 owner_user_id=user.id)
     db.session.add(ds); db.session.flush()
-    db.session.add_all([
-        DatasetField(dataset_id=ds.id, name='label',      kind='label', role='gt'),
-        DatasetField(dataset_id=ds.id, name='label_pred', kind='label', role='pred'),
-    ])
+    # GT label only — no `label_pred`.
+    db.session.add(DatasetField(dataset_id=ds.id, name='label',
+                                kind='label', role='gt'))
     os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
                 exist_ok=True)
     db.session.commit()
     _login(client, user)
-    _seed_metric('label_acc_dup', kinds=['label', 'label'],
+    _seed_metric('accuracy_strict', kinds=['label', 'label'],
                  roles=['gt', 'pred'], user=user)
     body = client.get(f'/dataset/{ds.id}').data.decode()
-    # The pred-contract synthesizer's JSON ships only NEW entries.
-    # We assert it doesn't contain the existing pred name.
-    # The pred_contract_fields var is rendered inline; with the
-    # existing label_pred declared, the synthesized list should be
-    # empty (or contain only OTHER names).
-    import re
-    m = re.search(r'predFields = (\[.*?\]);', body)
-    assert m is not None
-    pred_field_payload = m.group(1)
-    # The explicit `label_pred` mustn't appear in the synthesized list.
-    assert '"label_pred"' not in pred_field_payload \
-        and "'label_pred'" not in pred_field_payload
+    # The metric requires a label-pred — none declared → filtered.
+    assert 'accuracy_strict' not in body
 
 
-def test_picker_surfaces_pred_contract_name_for_pred_args(client, db_session):
-    """The dataset_view picker exposes a `pred_contract_fields`
-    list that contains `label_pred` (one entry per GT field) so
-    the JS can render it in pred-arg dropdowns."""
+def test_picker_surfaces_explicit_pred_field_for_pred_args(client, db_session):
+    """When the dataset DOES declare a role=pred field, it's the
+    real source of truth for the pred-arg dropdown."""
     user, ds = _seed_user_and_dataset()
     _login(client, user)
     _seed_metric('label_acc_pred', kinds=['label', 'label'],
                  roles=['gt', 'pred'], user=user)
     body = client.get(f'/dataset/{ds.id}').data.decode()
+    # `label_pred` is an explicit DatasetField row → must appear.
     assert 'label_pred' in body
-    assert '"role": "pred"' in body or '&#34;role&#34;: &#34;pred&#34;' in body
 
 
 def test_unconstrained_metric_falls_through_to_legacy_behaviour(client, db_session):

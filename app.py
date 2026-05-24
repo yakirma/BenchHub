@@ -7850,28 +7850,13 @@ def create_leaderboard():
     raw_metric_ids = request.form.getlist('metric_global_id')
     raw_metric_mappings = request.form.getlist('metric_mappings_json')
     # Resolve attached datasets' field schemas once for the type-
-    # assertion step below. Indexed by `(kind, role)` and `(kind,)`
-    # for quick membership checks. We add the synthesized pred
-    # contract (`<gt_name>_pred` per GT field) so picker rows that
-    # bind `pred` args to those names validate cleanly.
-    _attached_fields: list[tuple[str, str, str]] = []  # (name, kind, role)
-    _seen_names: set[str] = set()
+    # assertion step below. Only explicit DatasetField rows count
+    # — pred bindings must reference a real role=pred field on the
+    # dataset, not a synthesized `<gt>_pred` entry.
+    _attached_by_name: dict[str, tuple[str, str]] = {}
     for _ds in (new_leaderboard.datasets or []):
         for _df in _ds.fields:
-            _role = (_df.role or 'gt').lower()
-            _attached_fields.append((_df.name, _df.kind, _role))
-            _seen_names.add(_df.name)
-    # GT-mirrored pred contract.
-    for _ds in (new_leaderboard.datasets or []):
-        for _df in _ds.fields:
-            if (_df.role or '').lower() != 'gt':
-                continue
-            _pname = f"{_df.name}_pred"
-            if _pname in _seen_names:
-                continue
-            _attached_fields.append((_pname, _df.kind, 'pred'))
-            _seen_names.add(_pname)
-    _attached_by_name = {n: (k, r) for n, k, r in _attached_fields}
+            _attached_by_name[_df.name] = (_df.kind, (_df.role or 'gt').lower())
 
     validation_errors: list[str] = []
     for i, gm_id_raw in enumerate(raw_metric_ids):
@@ -10177,30 +10162,17 @@ def dataset_view(dataset_id):
         {'name': df.name, 'kind': df.kind, 'role': (df.role or 'gt').lower()}
         for df in dataset.fields
     ]
-    # Pred-contract synthesis: for each role=gt field, add a
-    # submission-side `<name>_pred` of the same kind. Explicit
-    # role=pred DatasetFields are NOT re-added here — they already
-    # live in `dataset_field_options`, and the picker's JS unions
-    # both sources. Re-adding them would surface the same pred
-    # name twice in the per-arg dropdown.
-    pred_contract_fields: list[dict] = []
-    _existing_names = {f['name'] for f in dataset_field_options}
-    for f in dataset_field_options:
-        if f['role'] != 'gt':
-            continue
-        pname = f"{f['name']}_pred"
-        if pname in _existing_names:
-            continue
-        pred_contract_fields.append({'name': pname, 'kind': f['kind'], 'role': 'pred'})
-        _existing_names.add(pname)
-    # Group by (kind, role) once for quick lookup below — pred
-    # entries from the synthesized contract count too.
+    # Group by (kind, role) once for quick lookup below. Pred-role
+    # entries come ONLY from explicit role=pred DatasetField rows
+    # — the picker doesn't invent pred fields. If a metric needs a
+    # pred binding and the dataset has no matching role=pred field,
+    # the metric is unsatisfiable and gets filtered out below.
     fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
-    for f in dataset_field_options + pred_contract_fields:
+    for f in dataset_field_options:
         fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
     # Same but role-agnostic, for unconstrained-role metrics.
     fields_by_kind: dict[str, list[str]] = {}
-    for f in dataset_field_options + pred_contract_fields:
+    for f in dataset_field_options:
         fields_by_kind.setdefault(f['kind'], []).append(f['name'])
 
     def _arg_specs(args, kinds, roles):
@@ -10299,8 +10271,7 @@ def dataset_view(dataset_id):
                            filter_suggestions=filter_suggestions,
                            available_metrics_for_lb=available_metrics_for_lb,
                            gt_field_options=gt_field_options,
-                           dataset_field_options=dataset_field_options,
-                           pred_contract_fields=pred_contract_fields)
+                           dataset_field_options=dataset_field_options)
 
 
 @app.route('/dataset/<int:dataset_id>/update_display_columns', methods=['POST'])
