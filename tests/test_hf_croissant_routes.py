@@ -91,17 +91,18 @@ def test_preview_renders_partial_form_from_fixture(admin_client, monkeypatch):
     assert '(50,000)' in body
 
 
-def test_preview_offers_sample_name_from_dropdown_for_text_cols(
+def test_preview_renders_use_as_name_badge_on_text_field_rows(
     admin_client, monkeypatch,
 ):
-    """When the upstream schema has any text-kind column, the
-    preview form surfaces a 'Sample name from' dropdown listing
-    them so the admin can use their values as sample names
-    instead of the default `s000000…` enumeration."""
+    """Each text-kind field row gets a small "use as name" badge
+    in the field cell. Clicking it sets the hidden
+    `sample_name_from` tracker to that column's source name.
+    Non-text rows render the same button but `hidden`, so the
+    eligibility-tracking JS can flip it visible when the admin
+    changes a row's kind to text."""
     from benchhub import hf_croissant as hfc
     from benchhub import hf_search as hfs
 
-    # Synthetic schema: image + a text-kind `caption`.
     fixture = {
         "@type": "sc:Dataset", "name": "synth",
         "recordSet": [{
@@ -119,37 +120,23 @@ def test_preview_offers_sample_name_from_dropdown_for_text_cols(
 
     body = admin_client.post('/admin/import_from_hf/preview',
                              data={'repo_id': 'x/y'}).data.decode()
-    assert 'name="sample_name_from"' in body
-    # Default is the auto-numbered option (selected).
-    assert 'auto-numbered' in body
-    # The text column appears as a selectable option.
-    assert '<option value="caption">' in body
-
-
-def test_preview_skips_sample_name_dropdown_when_no_text_cols(
-    admin_client, monkeypatch,
-):
-    """No text columns → no point showing the dropdown."""
-    from benchhub import hf_croissant as hfc
-    from benchhub import hf_search as hfs
-
-    fixture = {
-        "@type": "sc:Dataset", "name": "synth",
-        "recordSet": [{
-            "@id": "rs", "@type": "cr:RecordSet",
-            "field": [
-                {"@id": "rs/img", "@type": "cr:Field", "dataType": "sc:ImageObject",
-                 "source": {"extract": {"column": "img"}}},
-                {"@id": "rs/score", "@type": "cr:Field", "dataType": "sc:Float",
-                 "source": {"extract": {"column": "score"}}},
-            ],
-        }],
-    }
-    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
-    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda repo_id, **kw: {})
-    body = admin_client.post('/admin/import_from_hf/preview',
-                             data={'repo_id': 'x/y'}).data.decode()
-    assert 'name="sample_name_from"' not in body
+    # Hidden tracker present, starts empty.
+    assert 'id="sample-name-from" name="sample_name_from" value=""' in body
+    # Per-row badge on the text column row, eligible (not hidden).
+    import re
+    text_badge = re.search(
+        r'<button[^>]*class="[^"]*sample-name-toggle[^"]*"[^>]*data-source-column="caption"[^>]*>',
+        body,
+    )
+    assert text_badge is not None, 'expected a sample-name-toggle on the caption row'
+    assert ' hidden' not in text_badge.group(0)
+    # Non-text image row also has a badge in markup, but `hidden`.
+    img_badge = re.search(
+        r'<button[^>]*class="[^"]*sample-name-toggle[^"]*"[^>]*data-source-column="img"[^>]*>',
+        body,
+    )
+    assert img_badge is not None
+    assert ' hidden' in img_badge.group(0)
 
 
 def test_preview_no_longer_renders_role_dropdown_or_pred_fields(

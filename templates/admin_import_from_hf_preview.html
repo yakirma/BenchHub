@@ -195,33 +195,6 @@
             </div>
 
             <div class="row g-3 mb-4">
-                {# Sample-name source. By default samples are
-                   numbered `s000000..s00000N`; admin can pick a
-                   text-kind column to use its value as the
-                   human-readable sample name instead. Duplicates +
-                   empty values fall back to the numbered form for
-                   that row, so the resulting set stays unique. #}
-                {% set _text_cols = schema.fields | selectattr('kind', 'equalto', 'text') | list %}
-                {% if _text_cols %}
-                <div class="col-md-6">
-                    <label class="form-label fw-semibold mb-1" for="sample-name-from">Sample name from</label>
-                    <select id="sample-name-from" name="sample_name_from" class="form-select">
-                        <option value="" selected>(auto-numbered <code>s000000</code>…)</option>
-                        {% for f in _text_cols %}
-                        <option value="{{ f.source_column or f.name }}">
-                            {{ f.source_column or f.name }} <span class="text-body-secondary">(text)</span>
-                        </option>
-                        {% endfor %}
-                    </select>
-                    <div class="form-text small mt-1">
-                        Use this text column's value as each sample's name
-                        on disk. Path-hostile characters get sanitised to
-                        <code>_</code>; duplicate / empty values fall back
-                        to the numbered form per row.
-                    </div>
-                </div>
-                {% endif %}
-
                 <div class="col-md-6">
                     <label class="form-label fw-semibold mb-1" for="sampling">How to pick those samples</label>
                     {# `has_label_field` is True when any Croissant-suggested
@@ -282,13 +255,33 @@
                         </tr>
                     </thead>
                     <tbody>
+                        {# Hidden tracker for the chosen sample-name source.
+                           Empty = auto-numbered (s000000..). Per-row badge
+                           on text-kind fields below toggles its value. #}
+                        <input type="hidden" id="sample-name-from" name="sample_name_from" value="">
                         {% for f in schema.fields %}
                         {% set _src_col = f.source_column or f.name %}
                         {% set _vocab = class_label_vocabs.get(_src_col) or class_label_vocabs.get(f.name) %}
                         <tr class="field-row" data-field-name="{{ f.name }}"
+                            data-source-column="{{ _src_col }}"
                             {% if _vocab %}data-label-names="{{ _vocab|tojson|forceescape }}"{% endif %}>
                             <td>
-                                <div class="font-monospace small">{{ f.name }}</div>
+                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                    <div class="font-monospace small">{{ f.name }}</div>
+                                    {# Click-to-use-as-sample-name toggle. Only
+                                       text-kind fields are eligible — `bh.Text`
+                                       values are human-readable IDs. Visibility
+                                       follows the kind <select> live (JS toggles
+                                       `.hidden`). #}
+                                    <button type="button"
+                                            class="btn btn-sm btn-link p-0 sample-name-toggle small text-decoration-none"
+                                            data-source-column="{{ _src_col }}"
+                                            {% if f.kind != 'text' %}hidden{% endif %}
+                                            title="Use this column's values as the sample name on disk.">
+                                        <i class="bi bi-tag-fill"></i>
+                                        <span class="sample-name-toggle-label">use as name</span>
+                                    </button>
+                                </div>
                                 <input type="hidden" name="field_name" value="{{ f.name }}">
                                 <input type="hidden" name="field_source_column" value="{{ f.source_column or f.name }}">
                                 {% if f.source_column and f.source_column != f.name %}
@@ -655,6 +648,64 @@
     }
     samplingSel.addEventListener('change', refreshSamplingHint);
     refreshSamplingHint();
+})();
+
+// ---- 4b. Sample-name-from toggle ----------------------------------
+// Click the small "use as name" badge on any text-kind field row
+// to use that column's values as sample names on disk. Single-
+// selection: clicking one badge clears the others. Eligibility
+// (visible/hidden) tracks the kind <select> live, so changing a
+// field's kind to/from text shows/hides the badge.
+(function () {
+    const hidden = document.getElementById('sample-name-from');
+    if (!hidden) return;
+
+    function refreshBadge(btn) {
+        const lbl = btn.querySelector('.sample-name-toggle-label');
+        const active = (hidden.value === btn.dataset.sourceColumn) && hidden.value;
+        btn.classList.toggle('text-success', active);
+        btn.classList.toggle('fw-bold', active);
+        if (lbl) lbl.textContent = active ? '✓ sample name' : 'use as name';
+    }
+    function refreshAllBadges() {
+        document.querySelectorAll('.sample-name-toggle').forEach(refreshBadge);
+    }
+    function refreshEligibility() {
+        // Show the badge only on text-kind rows; hide elsewhere.
+        // If the currently-selected source column is no longer
+        // text-kind, clear the selection so submit doesn't ship a
+        // stale value.
+        let stillEligible = !hidden.value;
+        document.querySelectorAll('tr.field-row').forEach((row) => {
+            const kind = row.querySelector('select.field-kind')?.value;
+            const btn = row.querySelector('.sample-name-toggle');
+            if (!btn) return;
+            const isText = (kind === 'text');
+            btn.hidden = !isText;
+            if (isText && btn.dataset.sourceColumn === hidden.value) {
+                stillEligible = true;
+            }
+        });
+        if (!stillEligible && hidden.value) {
+            hidden.value = '';
+        }
+        refreshAllBadges();
+    }
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.sample-name-toggle');
+        if (!btn) return;
+        e.preventDefault();
+        const col = btn.dataset.sourceColumn || '';
+        // Toggle: clicking the active one clears; clicking another
+        // moves the selection.
+        hidden.value = (hidden.value === col) ? '' : col;
+        refreshAllBadges();
+    });
+    document.addEventListener('change', (e) => {
+        if (e.target.matches?.('select.field-kind')) refreshEligibility();
+    });
+    refreshEligibility();
 })();
 
 // ---- 5. Client-side submit validation ----------------------------
