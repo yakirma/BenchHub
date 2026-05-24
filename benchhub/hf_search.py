@@ -235,6 +235,35 @@ def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
     return {"features": features, "splits": splits}
 
 
+def fetch_dataset_card(repo_id: str, *, timeout: int = 10) -> dict | None:
+    """Return the HF Hub's per-dataset metadata document — the same
+    JSON the dataset card page is rendered from. Carries `tags`
+    (list of `task_categories:*`, `task_ids:*`, `language:*`, …),
+    `cardData` (the YAML front-matter the uploader declared), and
+    similar discovery signals. Used by the importer to lift
+    `task_categories` into BH's Area/Task taxonomy at materialise
+    time so the imported dataset isn't dropped into Uncategorized.
+
+    Returns the parsed dict or None on any HTTP / parse failure.
+    """
+    if not repo_id:
+        return None
+    url = f"{_HF_API_BASE}/{urllib.parse.quote(repo_id, safe='/')}"
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    try:
+        doc = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:
     """Internal: GET the datasets-server `/size` doc as a dict, or
     None on any failure. Shared by row-count and byte-size lookups

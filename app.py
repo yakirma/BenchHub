@@ -3788,6 +3788,101 @@ _METRIC_DOMAIN_RULES = [
 # Medical/Speech/Code MUST come before Vision/NLP so domain-specific words
 # (e.g. "medical image segmentation", "speech recognition", "code generation")
 # don't get grabbed by the broader Vision/NLP regexes.
+# HF task-category id → (Area, human-readable Task). Drives
+# `_hf_tags_to_category(tags)` — when the importer pulls the
+# dataset card from HF Hub, the first matching `task_categories:*`
+# tag (or `task_ids:*` for sub-task specificity) seeds the
+# Dataset.category column so the row lands in the right bucket
+# on /datasets and /leaderboards without the admin having to type
+# the string by hand. Owners can still override on the dataset
+# settings page.
+_HF_TASK_TO_AREA_TASK: dict[str, tuple[str, str]] = {
+    # --- Vision ---
+    'image-classification':        ('Vision', 'Image Classification'),
+    'zero-shot-image-classification': ('Vision', 'Zero-Shot Image Classification'),
+    'image-segmentation':          ('Vision', 'Image Segmentation'),
+    'semantic-segmentation':       ('Vision', 'Semantic Segmentation'),
+    'instance-segmentation':       ('Vision', 'Instance Segmentation'),
+    'panoptic-segmentation':       ('Vision', 'Panoptic Segmentation'),
+    'object-detection':            ('Vision', 'Object Detection'),
+    'zero-shot-object-detection':  ('Vision', 'Zero-Shot Object Detection'),
+    'face-detection':              ('Vision', 'Face Detection'),
+    'depth-estimation':            ('Vision', 'Depth Estimation'),
+    'monocular-depth-estimation':  ('Vision', 'Depth Estimation'),
+    'image-to-image':              ('Vision', 'Image-to-Image'),
+    'image-to-text':               ('Vision', 'Image Captioning'),
+    'image-feature-extraction':    ('Vision', 'Feature Extraction'),
+    'image-generation':            ('Vision', 'Image Generation'),
+    'unconditional-image-generation': ('Vision', 'Image Generation'),
+    'text-to-image':               ('Vision', 'Text-to-Image'),
+    'text-to-video':               ('Vision', 'Text-to-Video'),
+    'video-classification':        ('Vision', 'Video Classification'),
+    'pose-estimation':             ('Vision', 'Pose Estimation'),
+    'optical-flow':                ('Vision', 'Optical Flow'),
+    'super-resolution':            ('Vision', 'Super-Resolution'),
+    'denoising':                   ('Vision', 'Denoising'),
+    'inpainting':                  ('Vision', 'Inpainting'),
+    # --- NLP ---
+    'text-classification':         ('NLP', 'Text Classification'),
+    'token-classification':        ('NLP', 'Token Classification'),
+    'zero-shot-classification':    ('NLP', 'Zero-Shot Classification'),
+    'question-answering':          ('NLP', 'Question Answering'),
+    'visual-question-answering':   ('NLP', 'Visual Question Answering'),
+    'translation':                 ('NLP', 'Translation'),
+    'summarization':               ('NLP', 'Summarization'),
+    'text-generation':             ('NLP', 'Text Generation'),
+    'text2text-generation':        ('NLP', 'Text-to-Text Generation'),
+    'fill-mask':                   ('NLP', 'Fill Mask'),
+    'sentence-similarity':         ('NLP', 'Sentence Similarity'),
+    'feature-extraction':          ('NLP', 'Feature Extraction'),
+    'conversational':              ('NLP', 'Conversational'),
+    # --- Speech & Audio ---
+    'automatic-speech-recognition': ('Speech & Audio', 'Speech Recognition'),
+    'text-to-speech':              ('Speech & Audio', 'Text-to-Speech'),
+    'audio-classification':        ('Speech & Audio', 'Audio Classification'),
+    'audio-to-audio':              ('Speech & Audio', 'Audio-to-Audio'),
+    'voice-activity-detection':    ('Speech & Audio', 'Voice Activity Detection'),
+    # --- Tabular ---
+    'tabular-classification':      ('Tabular', 'Tabular Classification'),
+    'tabular-regression':          ('Tabular', 'Tabular Regression'),
+    'tabular-to-text':             ('Tabular', 'Tabular-to-Text'),
+    # --- Time series ---
+    'time-series-forecasting':     ('Time Series', 'Forecasting'),
+    # --- Graph ---
+    'graph-ml':                    ('Graph', 'Graph ML'),
+    # --- RL ---
+    'reinforcement-learning':      ('Reinforcement Learning', 'Reinforcement Learning'),
+    'robotics':                    ('Reinforcement Learning', 'Robotics'),
+}
+
+
+def _hf_tags_to_category(tags) -> str | None:
+    """Map a HuggingFace dataset's tag list onto BH's `Area/Task`
+    taxonomy. Walks `task_ids:*` first (more specific) before
+    `task_categories:*` (broader). Returns None if nothing matches —
+    callers leave `Dataset.category` NULL in that case so the row
+    lands in Uncategorized rather than the wrong bucket.
+    """
+    if not tags:
+        return None
+    prefixes = ('task_ids:', 'task_categories:', 'task:')
+    for prefix in prefixes:
+        for tag in tags:
+            if not isinstance(tag, str) or not tag.startswith(prefix):
+                continue
+            key = tag[len(prefix):].strip().lower()
+            mapped = _HF_TASK_TO_AREA_TASK.get(key)
+            if mapped:
+                return f"{mapped[0]}/{mapped[1]}"
+    # "medical" as a domain prefix on any task — promote to Medical
+    # so e.g. medical-image-segmentation lands under Medical, not
+    # Vision. Mirrors the old _DOMAIN_PREFIXES heuristic.
+    text = ' '.join(t.lower() for t in tags if isinstance(t, str))
+    if 'medical' in text or 'clinical' in text or 'radiograph' in text:
+        return 'Medical/Other'
+    return None
+
+
 _PWC_AREA_RULES = [
     ('Medical', (
         r'medical', r'\bmri\b', r'\bct\b.*scan', r'pathology',
@@ -10540,14 +10635,31 @@ def _dataset_field_types(dataset):
     return sorted(by_name.values(), key=lambda r: r['name'])
 
 
-@app.route('/dataset/<int:dataset_id>/settings', methods=['GET'])
+@app.route('/dataset/<int:dataset_id>/settings', methods=['GET', 'POST'])
 @login_required
 @owner_required(Dataset, 'dataset_id')
 def dataset_settings(dataset_id):
     """Dedicated settings page — collects all owner-only controls
-    (sharing, danger zone, field types) in one place so they aren't
-    scattered across the busy dataset detail view."""
+    (sharing, danger zone, field types, category) in one place so
+    they aren't scattered across the busy dataset detail view.
+
+    POST is for inline edits on this same page (currently: the
+    Area/Task category). Other settings still have their own
+    dedicated POST routes (sharing visibility, field-type
+    reclassifier, pred-field add/remove).
+    """
     dataset = Dataset.query.get_or_404(dataset_id)
+    if request.method == 'POST':
+        if 'category' in request.form:
+            cat = (request.form.get('category') or '').strip()
+            # Strip duplicate slashes / trailing whitespace so a
+            # later equality filter against another dataset's
+            # category doesn't miss a trivially-different string.
+            cat = '/'.join(seg.strip() for seg in cat.split('/') if seg.strip())
+            dataset.category = cat or None
+            db.session.commit()
+            flash("Saved category.", "success")
+        return redirect(url_for('dataset_settings', dataset_id=dataset.id))
     field_types = _dataset_field_types(dataset)
     # Source provenance for the HF-import badge.
     hf_meta = None
@@ -10561,12 +10673,26 @@ def dataset_settings(dataset_id):
     # want the full DTYPES registry so admins can add e.g. a
     # label_list pred to an existing dataset.
     from benchhub.types import DTYPES as _DTYPES
+    # Category datalist — union of existing dataset + LB categories
+    # so the user gets type-ahead for buckets in use elsewhere on
+    # the site instead of inventing a one-off Area/Task that
+    # nobody else will browse to.
+    known_categories = sorted({
+        row[0] for row in (
+            db.session.query(Dataset.category)
+            .filter(Dataset.category.isnot(None)).distinct().all()
+        ) + (
+            db.session.query(Leaderboard.category)
+            .filter(Leaderboard.category.isnot(None)).distinct().all()
+        ) if row[0]
+    })
     return render_template(
         'dataset_settings.html',
         dataset=dataset,
         field_types=field_types,
         valid_field_types=sorted(_DTYPES),
         hf_meta=hf_meta,
+        known_categories=known_categories,
     )
 
 
@@ -13187,6 +13313,46 @@ def from_json_filter(s):
         return json.loads(s)
     except Exception:
         return {}
+
+
+# Stable per-card accent palette. The list / leaderboard catalogs
+# used to be a wall of identical cream rows — eyes glazed over once
+# you scrolled past five. Each card now gets one color from this
+# palette, picked by hashing its name so the assignment is the same
+# across page loads (and stable when the row is filtered in/out).
+# Palette colors are chosen to look at home on the warm-cream theme
+# (`#fcf9f4` body, `#f5efe2` cards) and to remain readable as a
+# left-edge stripe + a very faint background tint.
+_CARD_ACCENT_PALETTE = (
+    '#7c3aed',  # violet (brand primary)
+    '#d97706',  # amber
+    '#059669',  # emerald
+    '#dc2626',  # red
+    '#0891b2',  # cyan
+    '#db2777',  # pink
+    '#65a30d',  # lime
+    '#9333ea',  # purple
+    '#2563eb',  # blue
+    '#ea580c',  # orange
+)
+
+
+def _accent_color_for(name) -> str:
+    """Return a stable accent color for a string. Hash → index into
+    `_CARD_ACCENT_PALETTE`. Always returns a non-empty hex — empty /
+    None input lands on the first slot, which is fine for the
+    "Uncategorized" / placeholder rows that share that fallback.
+    """
+    if not name:
+        return _CARD_ACCENT_PALETTE[0]
+    import hashlib
+    h = hashlib.md5(str(name).encode('utf-8', 'replace')).digest()
+    return _CARD_ACCENT_PALETTE[h[0] % len(_CARD_ACCENT_PALETTE)]
+
+
+@app.template_filter('accent_color')
+def accent_color_filter(s):
+    return _accent_color_for(s)
 
 def check_and_migrate_db():
     """

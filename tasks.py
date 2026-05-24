@@ -113,6 +113,28 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                     'rows_written': mat_summary.get('rows_written'),
                     'rows_skipped': mat_summary.get('rows_skipped'),
                 })
+                # Auto-fill the Area/Task category from HF's
+                # task_categories / task_ids tags so the dataset
+                # lands in the right discovery bucket instead of
+                # Uncategorized. Only overwrites a NULL category —
+                # if the dataset row already carries one (manual
+                # tweak, re-import), we leave it alone.
+                if not existing.category:
+                    try:
+                        from benchhub.hf_search import fetch_dataset_card
+                        from app import _hf_tags_to_category
+                        card = fetch_dataset_card(repo_id)
+                        if card:
+                            tags = card.get('tags') or []
+                            cat = _hf_tags_to_category(tags)
+                            if cat:
+                                existing.category = cat
+                    except Exception:
+                        # Category is a nice-to-have; a failure to
+                        # fetch the card shouldn't poison the whole
+                        # import. The owner can set it on the
+                        # dataset settings page.
+                        pass
                 existing.import_status = 'ready'
                 existing.import_error = None
                 existing.import_progress_json = json.dumps({
