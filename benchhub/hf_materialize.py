@@ -161,6 +161,10 @@ def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | No
             if isinstance(value, (int, str)):
                 return bh.Label(value)
             return bh.Label(int(value))
+        if kind == "label_list":
+            if isinstance(value, list):
+                return bh.LabelList(value, **params)
+            return None
         if kind == "scalar":
             return bh.Scalar(float(value))
         if kind == "json":

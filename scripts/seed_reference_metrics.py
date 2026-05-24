@@ -116,6 +116,33 @@ def iou(gt: bh.Mask, pred: bh.Mask):
     return float(np.mean(ious)) if ious else float('nan')
 """
 
+_TOP_1_ACC = """\
+import benchhub as bh
+
+def top_1_accuracy(gt: bh.Label, pred: bh.LabelList):
+    \"\"\"Per-sample top-1 accuracy for classification with a ranked
+    pred list. Checks gt.value against the FIRST entry of pred.values
+    (i.e. the model's top guess).\"\"\"
+    if gt is None or pred is None or not pred.values:
+        return 0.0
+    assert isinstance(gt, bh.Label),     f"gt must be bh.Label, got {type(gt).__name__}"
+    assert isinstance(pred, bh.LabelList), f"pred must be bh.LabelList, got {type(pred).__name__}"
+    return 1.0 if gt.value == pred.values[0] else 0.0
+"""
+
+_TOP_5_ACC = """\
+import benchhub as bh
+
+def top_5_accuracy(gt: bh.Label, pred: bh.LabelList):
+    \"\"\"Per-sample top-5 accuracy. 1.0 if gt.value appears anywhere
+    in the first 5 entries of pred.values, else 0.0.\"\"\"
+    if gt is None or pred is None:
+        return 0.0
+    assert isinstance(gt, bh.Label),     f"gt must be bh.Label, got {type(gt).__name__}"
+    assert isinstance(pred, bh.LabelList), f"pred must be bh.LabelList, got {type(pred).__name__}"
+    return 1.0 if gt.value in pred.values[:5] else 0.0
+"""
+
 _TEXT_EM = """\
 import benchhub as bh
 
@@ -172,6 +199,20 @@ _SEED = [
         "input_kinds": ["text", "text"],
         "input_roles": ["gt", "pred"],
         "python_code": _TEXT_EM,
+    },
+    {
+        "name": "top_1_accuracy",
+        "description": "Per-sample top-1 accuracy: gt matches the FIRST entry of a ranked LabelList pred (higher is better).",
+        "input_kinds": ["label", "label_list"],
+        "input_roles": ["gt", "pred"],
+        "python_code": _TOP_1_ACC,
+    },
+    {
+        "name": "top_5_accuracy",
+        "description": "Per-sample top-5 accuracy: gt appears in the first 5 entries of a ranked LabelList pred (higher is better).",
+        "input_kinds": ["label", "label_list"],
+        "input_roles": ["gt", "pred"],
+        "python_code": _TOP_5_ACC,
     },
 ]
 

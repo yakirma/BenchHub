@@ -454,6 +454,68 @@ class Label(DataType):
 
 
 # ---------------------------------------------------------------------------
+# LabelList — ranked list of class predictions (top-K). Same vocab
+# semantics as Label, but the .values list holds K entries in
+# descending-confidence order. The dataset declares the expected K
+# via params['k']; the LB binding's metric (top_1 / top_5) chooses
+# how deep to slice. Stored inline as a JSON-encoded list.
+# ---------------------------------------------------------------------------
+
+class LabelList(DataType):
+    kind = "label_list"
+    file_ext = None  # stored inline
+    viz_mime = "text/plain; charset=utf-8"
+
+    def __init__(self, values: list[int | str], *, names: list[str] | None = None,
+                 k: int | None = None):
+        for v in values:
+            if not isinstance(v, (int, str)):
+                raise ValueError(
+                    f"LabelList values must be int or str; got {type(v).__name__}"
+                )
+        self.values = list(values)
+        self.names = list(names) if names else None
+        self.k = int(k) if k is not None else None
+
+    @property
+    def params(self) -> dict:
+        out: dict[str, Any] = {}
+        if self.names:
+            out["names"] = self.names
+        if self.k is not None:
+            out["k"] = self.k
+        return out
+
+    def encode(self) -> bytes:
+        return json.dumps(self.values).encode("utf-8")
+
+    @classmethod
+    def decode(cls, blob: bytes, params: dict | None = None) -> "LabelList":
+        params = params or {}
+        text = blob.decode("utf-8") if blob else "[]"
+        values = json.loads(text) if text.strip() else []
+        if not isinstance(values, list):
+            raise ValueError(f"LabelList blob must decode to a JSON list; got {type(values).__name__}")
+        return cls(values, names=params.get("names"), k=params.get("k"))
+
+    def validate(self) -> None:
+        if self.k is not None and len(self.values) > self.k:
+            raise ValueError(
+                f"LabelList has {len(self.values)} values; declared k={self.k}"
+            )
+
+    def visualize(self, **_: Any) -> tuple[bytes, str]:
+        """Render as `<idx> <name>, <idx> <name>, …` if a vocab is
+        attached; otherwise just the comma-joined values."""
+        if (self.names
+                and all(isinstance(v, int) and 0 <= v < len(self.names)
+                        for v in self.values)):
+            labeled = [f"{v} {self.names[v]}" for v in self.values]
+            return ", ".join(labeled).encode("utf-8"), self.viz_mime
+        return ", ".join(str(v) for v in self.values).encode("utf-8"), self.viz_mime
+
+
+# ---------------------------------------------------------------------------
 # Scalar — single float.
 # ---------------------------------------------------------------------------
 
@@ -520,6 +582,7 @@ __all__ = [
     "Text",
     "BBoxes",
     "Label",
+    "LabelList",
     "Scalar",
     "Json",
     "get_type",
