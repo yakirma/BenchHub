@@ -1896,6 +1896,87 @@ def admins_settings():
     )
 
 
+@app.route('/admin/user_storage', methods=['GET'])
+@login_required
+def admin_user_storage():
+    """Per-user storage breakdown for admins. Groups datasets by owner,
+    sums `Dataset.storage_bytes` (the same counter `storage_used_bytes`
+    walks for a single user), and lists submission counts so a bad
+    actor blasting through the soft cap is visible in one place.
+
+    Sort is bytes-desc by default, so the heaviest users float to the
+    top — that's almost always what an admin's looking for here."""
+    if not is_admin(g.current_user):
+        abort(403)
+
+    # One pass: join User ⋈ Dataset on owner; LEFT join so users with
+    # zero datasets still appear (they may still be holding submission
+    # rows or just be on the platform).
+    rows = (
+        db.session.query(
+            User.id, User.email, User.display_name,
+            User.is_admin, User.quota_max_storage_bytes,
+            User.quota_max_datasets, User.quota_max_submissions_per_day,
+            func.count(Dataset.id),
+            func.coalesce(func.sum(Dataset.storage_bytes), 0),
+        )
+        .outerjoin(Dataset, Dataset.owner_user_id == User.id)
+        .group_by(User.id)
+        .all()
+    )
+
+    # Submission counts in the trailing 24h, joined client-side because
+    # the query above already has dataset aggregates; mixing them in
+    # one GROUP BY produces a cross-product.
+    cutoff = datetime.utcnow() - timedelta(days=1)
+    sub_24h = dict(
+        db.session.query(
+            Submission.owner_user_id,
+            func.count(Submission.id),
+        )
+        .filter(Submission.upload_date >= cutoff)
+        .group_by(Submission.owner_user_id)
+        .all()
+    )
+
+    items = []
+    total_bytes = 0
+    for (uid, email, name, is_admin_flag, storage_cap,
+         ds_cap, sub_cap, ds_count, storage_used) in rows:
+        storage_used = int(storage_used or 0)
+        total_bytes += storage_used
+        items.append({
+            'id': uid,
+            'email': email or '',
+            'display_name': name or email or f'user #{uid}',
+            'is_admin': bool(is_admin_flag),
+            'storage_used': storage_used,
+            'storage_cap': int(storage_cap or 0),
+            'dataset_count': int(ds_count or 0),
+            'dataset_cap': int(ds_cap or 0),
+            'sub_24h': int(sub_24h.get(uid, 0)),
+            'sub_cap': int(sub_cap or 0),
+        })
+
+    sort = (request.args.get('sort') or 'storage').strip()
+    if sort == 'name':
+        items.sort(key=lambda r: r['display_name'].lower())
+    elif sort == 'datasets':
+        items.sort(key=lambda r: -r['dataset_count'])
+    elif sort == 'subs':
+        items.sort(key=lambda r: -r['sub_24h'])
+    else:
+        items.sort(key=lambda r: -r['storage_used'])
+
+    return render_template(
+        'admin_user_storage.html',
+        items=items,
+        total_bytes=total_bytes,
+        total_human=_format_bytes(total_bytes),
+        sort=sort,
+    )
+
+
 @app.route('/admin/cache_stats', methods=['GET'])
 @login_required
 def admin_cache_stats():

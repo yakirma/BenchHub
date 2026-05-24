@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}User storage — BenchHub admin{% endblock %}
+
+{% macro fmt_bytes(n) -%}
+{%- if not n %}0 B
+{%- elif n < 1024 %}{{ n }} B
+{%- elif n < 1024 * 1024 %}{{ '%.1f'|format(n / 1024) }} KB
+{%- elif n < 1024 * 1024 * 1024 %}{{ '%.1f'|format(n / (1024 * 1024)) }} MB
+{%- else %}{{ '%.2f'|format(n / (1024 * 1024 * 1024)) }} GB
+{%- endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 1100px;">
+    <h1 class="h3 fw-bold mb-1">
+        <i class="bi bi-people text-primary me-1"></i>User storage
+    </h1>
+    <p class="text-body-secondary mb-4">
+        Per-user dataset bytes + counts. Submissions to someone else's
+        leaderboard don't count toward the dataset author's storage —
+        the LB owner bears those bytes via the dataset itself.
+    </p>
+
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">All users — total bytes</div>
+                    <div class="h4 mb-0">{{ total_human }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">Users tracked</div>
+                    <div class="h4 mb-0">{{ items|length }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-body p-3">
+                    <div class="small text-body-secondary">Active sort</div>
+                    <div class="h6 mb-0">
+                        {% if sort == 'name' %}name
+                        {% elif sort == 'datasets' %}dataset count
+                        {% elif sort == 'subs' %}24h submissions
+                        {% else %}bytes used{% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if items %}
+    <div class="card border-0 shadow-sm">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light small text-uppercase text-body-secondary">
+                    <tr>
+                        <th class="ps-3">
+                            <a class="text-body text-decoration-none"
+                               href="?sort=name">User</a>
+                        </th>
+                        <th class="text-end">
+                            <a class="text-body text-decoration-none"
+                               href="?sort=storage">Bytes used</a>
+                        </th>
+                        <th>Cap</th>
+                        <th class="text-end">
+                            <a class="text-body text-decoration-none"
+                               href="?sort=datasets">Datasets</a>
+                        </th>
+                        <th class="text-end">
+                            <a class="text-body text-decoration-none"
+                               href="?sort=subs">Subs 24h</a>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for u in items %}
+                    <tr>
+                        <td class="ps-3">
+                            <div class="fw-semibold">
+                                {{ u.display_name }}
+                                {% if u.is_admin %}
+                                <span class="badge text-bg-warning-subtle text-warning-emphasis border small fw-normal ms-1">
+                                    <i class="bi bi-shield-check me-1"></i>admin
+                                </span>
+                                {% endif %}
+                            </div>
+                            <div class="small text-body-secondary font-monospace">{{ u.email }}</div>
+                        </td>
+                        <td class="text-end font-monospace">{{ fmt_bytes(u.storage_used) }}</td>
+                        <td>
+                            {% if u.is_admin %}
+                            <span class="small text-body-secondary"><i class="bi bi-infinity"></i></span>
+                            {% else %}
+                            {% set pct = (u.storage_used * 100 // u.storage_cap) if u.storage_cap else 0 %}
+                            <div style="min-width: 160px;">
+                                <div class="small text-body-secondary mb-1 font-monospace">
+                                    of {{ fmt_bytes(u.storage_cap) }}
+                                </div>
+                                <div class="progress" style="height: 6px;">
+                                    <div class="progress-bar {{ 'bg-danger' if pct >= 90 else 'bg-warning' if pct >= 75 else 'bg-primary' }}"
+                                         style="width: {{ pct if pct <= 100 else 100 }}%;"></div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            {{ u.dataset_count }}{% if not u.is_admin %} / {{ u.dataset_cap }}{% endif %}
+                        </td>
+                        <td class="text-end">
+                            {{ u.sub_24h }}{% if not u.is_admin %} / {{ u.sub_cap }}{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">No users yet.</div>
+    {% endif %}
+</div>
+{% endblock %}
