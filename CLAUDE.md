@@ -37,17 +37,15 @@ Big chunks of legacy machinery were already removed. Read this before touching c
 - Tests: 26 entire test files removed (HF, PWC, colab, sota, llm proposer, smart-num-classlabel, auto-lb-metrics, lb-preview-extras, detect-custom-fields, process-dataset-zip, process-submission-zip, prune-incomplete-datasets, routes-dataset, remote-submissions, quotas-curated, canonicality, account-delete-hf, attachment-iter, get-metric-context, sota-picker, submission-colab-link, text-gt, create-lb-chooser, hf-* full suite).
 - `/explore` is now a back-compat 302 → `/leaderboards`. The `Explore samples` button on LB pages is gone; the catalog is at `/leaderboards` only.
 
-**Live state**: 500 passing tests, 1 xfailed (`test_non_scalar_gt_fields_loaded_lazily` — placeholder for the upcoming get_metric_context rewrite). Empty DB (wiped earlier). Site serves cleanly at `runbenchhub.com`.
+**Live state**: 800+ passing tests, zero xfailed, zero TODOs in source. Site serves cleanly at `runbenchhub.com`.
 
-**What's NEW**:
-- `benchhub/` package: `benchhub.types` defines the 9 MVP `DataType` subclasses (`Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`) with `encode()`/`decode()`/`validate()` + `DTYPES` registry. Imported by `app.py` and (eventually) by the future `benchhub-client` PyPI package.
+**`benchhub/` package** (single source of truth for the typed contract):
+- `benchhub.types` defines 10 `DataType` subclasses: `Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `LabelList` (top-K with required `k`), `Scalar`, `Json`. Each with `encode()`/`decode()`/`validate()`/`visualize()` + the `DTYPES` registry. Imported by `app.py`, `metric_engine.py`, and the `benchhub-client` package surface (`Client`, `SubmissionBuilder`, `BHDatasetCreator`).
 - `/supported_types` page is driven from `DTYPES` at request time so it can't drift from code.
 
-**Still TODO in Phase A** (not yet done):
-- Migrate `CustomField.field_type` → `data_type` (string, same as `DataType.kind`) + add `data_params` JSON column for per-instance metadata (`unit`, `format`, etc.). Requires migration block in `check_and_migrate_db`.
-- Update `metric_engine.get_metric_context` and `evaluate_dynamic_metric` to construct + pass typed instances (`Depth(arr, unit="meters")`) instead of dict-of-arrays. The single xfailed test guards this work.
-
-**Phase B (next)**: admin-only typed-manifest dataset upload that materializes datasets fully on disk in the typed shape, plus the `benchhub-client` package for submissions.
+**Metric authoring convention** (auto-derives from signatures):
+- `def accuracy(gt: bh.Label, pred: bh.Label | bh.LabelList)` — annotations are parsed at save time into `GlobalMetric.input_kinds` (PEP 604 unions allowed, `|`-joined). Arg names like `gt` / `pred` / `input` map to `input_roles` via heuristic.
+- Runtime `isinstance` asserts live in the metric body; the engine injects `bh` / `benchhub` aliases into the exec scope.
 
 ## Project overview
 

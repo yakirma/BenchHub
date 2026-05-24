@@ -122,14 +122,18 @@ def _seed_dataset_with_schema(name: str, fields: list[dict]) -> Dataset:
     return ds
 
 
-def test_lb_contract_derives_one_pred_per_gt_field(db_session):
-    """A vanilla GT-only dataset gives one `<name>_pred` entry per
-    field, kinds + params carried through."""
+def test_lb_contract_collects_explicit_pred_fields(db_session):
+    """The LB pred contract comes from explicit role=pred
+    DatasetField rows. GT-only datasets get an empty contract —
+    the engine never invents `<name>_pred` mirror entries."""
     ds = _seed_dataset_with_schema("c1_ds", [
         {"name": "image",    "kind": "image", "role": "input"},
         {"name": "depth_gt", "kind": "depth", "role": "gt",
          "params": {"unit": "meters"}},
         {"name": "label",    "kind": "label", "role": "gt"},
+        {"name": "depth_gt_pred", "kind": "depth", "role": "pred",
+         "params": {"unit": "meters"}},
+        {"name": "label_pred",    "kind": "label", "role": "pred"},
     ])
     lb = Leaderboard(name="c1_lb", summary_metrics="", visibility="public")
     lb.datasets.append(ds)
@@ -137,22 +141,26 @@ def test_lb_contract_derives_one_pred_per_gt_field(db_session):
 
     contract = _lb_pred_contract_from_dataset_fields(lb)
     by_name = {e["name"]: e for e in contract}
-    # Inputs are not mirrored as preds.
+    # Inputs are not turned into preds.
     assert "image_pred" not in by_name
+    # GT-only fields without an explicit pred get nothing.
     assert by_name["depth_gt_pred"]["kind"] == "depth"
     assert by_name["depth_gt_pred"]["params"] == {"unit": "meters"}
     assert by_name["depth_gt_pred"]["role"] == "pred"
     assert by_name["label_pred"]["kind"] == "label"
 
 
-def test_lb_contract_unions_across_multiple_attached_datasets(db_session):
-    """LB attached to two datasets unions their GT fields (first
-    appearance wins on name collision)."""
+def test_lb_contract_unions_explicit_pred_across_multiple_datasets(db_session):
+    """LB attached to two datasets unions their explicit pred
+    fields. GT-only fields contribute nothing to the contract."""
     ds_a = _seed_dataset_with_schema("u_a", [
-        {"name": "label", "kind": "label", "role": "gt"},
+        {"name": "label",      "kind": "label", "role": "gt"},
+        {"name": "label_pred", "kind": "label", "role": "pred"},
     ])
     ds_b = _seed_dataset_with_schema("u_b", [
-        {"name": "depth", "kind": "depth", "role": "gt", "params": {"unit": "meters"}},
+        {"name": "depth",      "kind": "depth", "role": "gt"},
+        {"name": "depth_pred", "kind": "depth", "role": "pred",
+         "params": {"unit": "meters"}},
     ])
     lb = Leaderboard(name="u_lb", summary_metrics="", visibility="public")
     lb.datasets.extend([ds_a, ds_b])
@@ -160,6 +168,22 @@ def test_lb_contract_unions_across_multiple_attached_datasets(db_session):
 
     names = {e["name"] for e in _lb_pred_contract_from_dataset_fields(lb)}
     assert names == {"label_pred", "depth_pred"}
+
+
+def test_lb_contract_empty_when_no_explicit_pred_declared(db_session):
+    """No GT-mirror fallback — a GT-only dataset gives an empty
+    contract. Submissions against such an LB are rejected at
+    manifest-validation time with a clear "no pred fields" error
+    rather than the engine inventing a contract the dataset never
+    promised."""
+    ds = _seed_dataset_with_schema("no_pred_ds", [
+        {"name": "label", "kind": "label", "role": "gt"},
+    ])
+    lb = Leaderboard(name="no_pred_lb", summary_metrics="", visibility="public")
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+
+    assert _lb_pred_contract_from_dataset_fields(lb) == []
 
 
 def test_lb_explicit_required_pred_fields_overrides_derivation(db_session):
@@ -209,11 +233,12 @@ def api_user(db_session):
 def test_typed_submit_validates_against_dataset_derived_contract(
     client, api_user, db_session,
 ):
-    """LB has NO required_pred_fields_json; the dataset's GT schema
-    is the contract. A submission with the wrong kind for that field
-    gets a 400."""
+    """LB has NO required_pred_fields_json; the dataset's explicit
+    role=pred fields are the contract. A submission with the wrong
+    kind for that field gets a 400."""
     ds = _seed_dataset_with_schema("e2e_ds", [
-        {"name": "depth_gt", "kind": "depth", "role": "gt"},
+        {"name": "depth_gt",      "kind": "depth", "role": "gt"},
+        {"name": "depth_gt_pred", "kind": "depth", "role": "pred"},
     ])
     db.session.add(Sample(dataset_id=ds.id, name="s0"))
     lb = Leaderboard(name="e2e_lb", summary_metrics="", visibility="public")

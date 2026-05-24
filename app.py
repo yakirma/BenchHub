@@ -7018,12 +7018,12 @@ def _lb_pred_contract_from_dataset_fields(lb):
       1. `Leaderboard.required_pred_fields_json` — set by an admin
          to fully override the contract (rename pred fields,
          restrict kinds, etc.). Used as-is when non-empty.
-      2. Explicit `role='pred'` DatasetField rows. When ANY attached
-         dataset declares pred fields, those are the contract — GT
-         mirroring is skipped to avoid double-listing.
-      3. GT-mirrored fallback: one `<name>_pred` entry per
-         `role='gt'` field, same kind + params. The default for
-         datasets that just declare inputs + ground truth.
+      2. Explicit `role='pred'` DatasetField rows. These are the
+         contract. If the dataset(s) declare none, the LB has no
+         pred contract — submissions are rejected at manifest-
+         validation time with a clear "this dataset has no pred
+         fields declared" error rather than the engine inventing
+         `<gt>_pred` entries the dataset never promised.
 
     Returns a list of `{name, kind, params, role}` entries
     (`role='pred'`) in the shape `import_typed_submission` consumes.
@@ -7041,7 +7041,9 @@ def _lb_pred_contract_from_dataset_fields(lb):
         except (TypeError, ValueError):
             pass
 
-    # 2. Explicit `role='pred'` on the dataset wins over derivation.
+    # 2. Explicit `role='pred'` on the dataset. Source of truth.
+    # No GT-mirror fallback — preds belong to the dataset's
+    # declared schema (the picker enforces the same rule).
     explicit: dict[str, dict] = {}
     for ds in (lb.datasets or []):
         for f in (ds.dataset_fields or []):
@@ -7053,25 +7055,7 @@ def _lb_pred_contract_from_dataset_fields(lb):
                 'params': f.get_params(),
                 'role': 'pred',
             }
-    if explicit:
-        return list(explicit.values())
-
-    # 3. Default: mirror GT fields one-to-one.
-    seen: dict[str, dict] = {}
-    for ds in (lb.datasets or []):
-        for f in (ds.dataset_fields or []):
-            if f.role != 'gt':
-                continue
-            name = f"{f.name}_pred"
-            if name in seen:
-                continue
-            seen[name] = {
-                'name': name,
-                'kind': f.kind,
-                'params': f.get_params(),
-                'role': 'pred',
-            }
-    return list(seen.values())
+    return list(explicit.values())
 
 
 def _lb_submission_pred_fields(lb):
@@ -9798,13 +9782,93 @@ def dataset_settings(dataset_id):
             hf_meta = json.loads(dataset.source_metadata)
         except Exception:
             hf_meta = None
+    # `valid_field_types` is the legacy type list used by the old
+    # field-type reclassifier. For the new pred-field editor we
+    # want the full DTYPES registry so admins can add e.g. a
+    # label_list pred to an existing dataset.
+    from benchhub.types import DTYPES as _DTYPES
     return render_template(
         'dataset_settings.html',
         dataset=dataset,
         field_types=field_types,
-        valid_field_types=_VALID_FIELD_TYPES,
+        valid_field_types=sorted(_DTYPES),
         hf_meta=hf_meta,
     )
+
+
+@app.route('/dataset/<int:dataset_id>/pred_fields/add', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def add_dataset_pred_field(dataset_id):
+    """Append a `role=pred` DatasetField to a dataset post-import.
+
+    The HF preview's Prediction-fields section is the primary path,
+    but a user might realise mid-experiment that they need a top-K
+    pred (`label_list`) on an existing dataset. Adding it here
+    avoids the re-import → re-bind metrics cycle.
+
+    Validates per the manifest rules (known kind, kind-specific
+    params — e.g. label_list needs a positive integer `k`).
+    """
+    from benchhub.types import DTYPES as _DTYPES
+    dataset = Dataset.query.get_or_404(dataset_id)
+    name = (request.form.get('name') or '').strip()
+    kind = (request.form.get('kind') or '').strip()
+    params_raw = (request.form.get('params') or '').strip()
+
+    if not name:
+        flash('Pred field name is required.', 'danger')
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    if kind not in _DTYPES:
+        flash(f"Unknown kind {kind!r}; expected one of {sorted(_DTYPES)}.", 'danger')
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    if any(f.name == name for f in dataset.fields):
+        flash(f"A field named {name!r} already exists on this dataset.", 'danger')
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    try:
+        params = json.loads(params_raw) if params_raw else {}
+        if not isinstance(params, dict):
+            raise ValueError("params must be a JSON object")
+    except (TypeError, ValueError) as e:
+        flash(f"Params must be a JSON object: {e}", 'danger')
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    # Kind-specific params check (same logic as validate_manifest).
+    if kind == 'label_list':
+        k = params.get('k')
+        if not isinstance(k, int) or k < 1:
+            flash("label_list requires params.k as a positive integer "
+                  "(e.g. {\"k\": 5}).", 'danger')
+            return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    df = DatasetField(dataset_id=dataset.id, name=name, kind=kind, role='pred')
+    df.set_params(params)
+    db.session.add(df)
+    db.session.commit()
+    flash(f'Added pred field "{name}" (kind={kind}).', 'success')
+    return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+
+@app.route('/dataset/<int:dataset_id>/pred_fields/<path:field_name>/delete', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def delete_dataset_pred_field(dataset_id, field_name):
+    """Drop a role=pred DatasetField from a dataset. Submissions to
+    existing LBs that referenced this pred field stay (they're
+    already evaluated and stored as MetricResult), but new submissions
+    will follow the updated contract."""
+    dataset = Dataset.query.get_or_404(dataset_id)
+    df = next(
+        (f for f in dataset.fields
+         if f.name == field_name and (f.role or '').lower() == 'pred'),
+        None,
+    )
+    if df is None:
+        flash(f"No pred field named {field_name!r}.", 'warning')
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    db.session.delete(df)
+    db.session.commit()
+    flash(f'Removed pred field "{field_name}".', 'success')
+    return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
 
 @app.route('/dataset/<int:dataset_id>/field/<path:field_name>/type', methods=['POST'])
@@ -13753,6 +13817,19 @@ def run_migrations():
         except Exception as e:
             # Boot must continue even if the cleanup hits a snag.
             print(f"prune_incomplete_datasets failed (non-fatal): {e}")
+        # Idempotent reference-metric upsert. Every boot the curated
+        # set (accuracy / rmse_depth / mae_depth / iou_mask /
+        # exact_match_text / top_1_accuracy / top_5_accuracy) lands
+        # on the live DB with the current source code + input_kinds
+        # + input_roles, so a `git pull && systemctl restart` ships
+        # new reference metrics or fixes to existing ones without a
+        # manual seed-script step. Best-effort: any failure (HF API
+        # check, etc.) is non-fatal.
+        try:
+            from scripts.seed_reference_metrics import seed_reference_metrics
+            seed_reference_metrics()
+        except Exception as e:
+            print(f"seed_reference_metrics failed (non-fatal): {e}")
 
 
 # Auto-run migrations at module import time when the env var is set. On the

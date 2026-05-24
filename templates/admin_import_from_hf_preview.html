@@ -736,6 +736,14 @@
         }
         if (t.matches('.params-input, select.shape-match, input.shape-h, input.shape-w')) {
             rebuildJsonForRow(row);
+            // Live mirror: if a GT-column row's params change, propagate
+            // the new values to any matching auto-pred row so the pred
+            // contract stays in sync. We only mirror non-shape params
+            // (label.names, depth.unit, etc.) — the pred shape contract
+            // is intentionally independent.
+            if (row.matches('tr.field-row') && t.matches('.params-input')) {
+                mirrorGtToAutoPred(row);
+            }
         }
     });
     document.addEventListener('input', (e) => {
@@ -745,8 +753,28 @@
         if (!row) return;
         if (t.matches('.params-input, input.shape-h, input.shape-w')) {
             rebuildJsonForRow(row);
+            if (row.matches('tr.field-row') && t.matches('.params-input')) {
+                mirrorGtToAutoPred(row);
+            }
         }
     });
+
+    function mirrorGtToAutoPred(gtRow) {
+        const fieldName = gtRow.dataset.fieldName;
+        if (!fieldName) return;
+        const predRow = document.querySelector(
+            `#pred-fields-body tr[data-auto-for="${CSS.escape(fieldName)}"]`
+        );
+        if (!predRow) return;
+        // Only mirror when the auto-pred row is still using the
+        // suggested `<gt>_pred` name — once the admin renames it,
+        // they own the pred row and we stop pushing.
+        const nameInput = predRow.querySelector('input[name="pred_field_name"]');
+        if (nameInput && nameInput.value !== `${fieldName}_pred`) return;
+        if (window.__bhCopyGtParamsToPred) {
+            window.__bhCopyGtParamsToPred(gtRow, predRow);
+        }
+    }
 
     // Watch the pred-fields-body for newly added rows (auto-pred or
     // manual Add) and initialise them.

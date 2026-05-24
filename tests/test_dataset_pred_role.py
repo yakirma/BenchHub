@@ -188,9 +188,13 @@ def test_lb_contract_uses_explicit_pred_fields_when_present(db_session):
     assert contract[0]["kind"] == "json"
 
 
-def test_lb_contract_falls_back_to_gt_mirror_when_no_pred_declared(db_session):
-    """The pre-existing behaviour stays: a dataset declaring only
-    GT fields still gets a `<name>_pred` mirror as its contract."""
+def test_lb_contract_empty_when_dataset_has_no_pred_fields(db_session):
+    """Pred fields are part of the dataset's declared schema. A
+    dataset with only GT fields and no explicit role=pred field
+    has an EMPTY pred contract — the engine no longer invents
+    `<name>_pred` mirror entries. Submissions against such an LB
+    fail at manifest validation time with a clear "no pred fields"
+    error rather than the runtime guessing what the user meant."""
     ds = _seed_dataset_with_schema("only_gt_ds", [
         {"name": "label", "kind": "label", "role": "gt"},
     ])
@@ -200,7 +204,7 @@ def test_lb_contract_falls_back_to_gt_mirror_when_no_pred_declared(db_session):
     db.session.add(lb); db.session.commit()
 
     contract = _lb_pred_contract_from_dataset_fields(lb)
-    assert [e["name"] for e in contract] == ["label_pred"]
+    assert contract == []
 
 
 def test_lb_contract_unions_explicit_pred_across_datasets(db_session):
