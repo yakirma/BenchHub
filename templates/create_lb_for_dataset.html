@@ -474,14 +474,17 @@
                 const addBtn = document.getElementById('lb-pred-add-row');
                 if (!body || !tpl) return;
 
-                function findExisting(name) {
-                    return body.querySelector(`tr[data-auto-for="${CSS.escape(name)}"]`);
+                function findExisting(key) {
+                    // `key` is `<gt_field>:<variant>` so a single gt
+                    // field can own multiple auto rows (e.g. label
+                    // gt → both `_pred` and `_topk_pred` variants).
+                    return body.querySelector(`tr[data-auto-for="${CSS.escape(key)}"]`);
                 }
 
-                function makeRow({name, kind, autoFor, paramsHint}) {
+                function makeRow({name, kind, autoForKey, paramsHint}) {
                     const frag = tpl.content.cloneNode(true);
                     const tr = frag.querySelector('tr');
-                    if (autoFor) tr.setAttribute('data-auto-for', autoFor);
+                    if (autoForKey) tr.setAttribute('data-auto-for', autoForKey);
                     tr.querySelector('input[name="pred_field_name"]').value = name;
                     const kSel = tr.querySelector('select[name="pred_field_kind"]');
                     if (kSel) kSel.value = kind;
@@ -494,24 +497,51 @@
                 function addAutoRowFor(fieldRow) {
                     const fname = fieldRow.dataset.fieldName;
                     const kind = fieldRow.dataset.fieldKind;
-                    if (!fname || findExisting(fname)) return;
-                    // label_list defaults: suggest k=5 as a starter.
-                    const paramsHint = (kind === 'label_list') ? '{"k": 5}' : '';
-                    body.appendChild(makeRow({
-                        name: `${fname}_pred`,
+                    if (!fname) return;
+                    // Per-variant suggestions. Most kinds get a single
+                    // `<name>_pred` row of the matching kind. Label
+                    // GTs additionally get a `<name>_topk_pred` row
+                    // of kind=label_list so top_1 / top_5 metrics
+                    // are bindable out of the box — the admin can
+                    // remove either row they don't need.
+                    const variants = [];
+                    variants.push({
+                        suffix: '_pred',
                         kind: kind,
-                        autoFor: fname,
-                        paramsHint,
-                    }));
+                        variantTag: 'single',
+                        paramsHint: '',
+                    });
+                    if (kind === 'label') {
+                        variants.push({
+                            suffix: '_topk_pred',
+                            kind: 'label_list',
+                            variantTag: 'topk',
+                            paramsHint: '{"k": 5}',
+                        });
+                    }
+                    for (const v of variants) {
+                        const key = `${fname}:${v.variantTag}`;
+                        if (findExisting(key)) continue;
+                        body.appendChild(makeRow({
+                            name: `${fname}${v.suffix}`,
+                            kind: v.kind,
+                            autoForKey: key,
+                            paramsHint: v.paramsHint,
+                        }));
+                    }
                 }
 
                 function removeAutoRowFor(fieldName) {
-                    const tr = findExisting(fieldName);
-                    if (!tr) return;
-                    // Don't blow away an admin-edited row.
-                    const nm = tr.querySelector('input[name="pred_field_name"]')?.value || '';
-                    if (nm !== `${fieldName}_pred`) return;
-                    tr.remove();
+                    // Walk every variant tied to this gt field, but
+                    // only remove rows the admin hasn't renamed.
+                    body.querySelectorAll(
+                        `tr[data-auto-for^="${CSS.escape(fieldName)}:"]`
+                    ).forEach((tr) => {
+                        const expectedSuffix = tr.dataset.autoFor.split(':')[1] === 'topk'
+                            ? '_topk_pred' : '_pred';
+                        const nm = tr.querySelector('input[name="pred_field_name"]')?.value || '';
+                        if (nm === `${fieldName}${expectedSuffix}`) tr.remove();
+                    });
                 }
 
                 function refreshAllAuto() {
