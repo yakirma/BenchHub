@@ -810,17 +810,14 @@
             <div class="card-body p-4">
                 <h5 class="fw-bold mb-2">Prediction fields</h5>
                 <p class="text-body-secondary small">
-                    The schema submissions to this leaderboard must follow.
-                    Each row maps to a folder named <code>&lt;type&gt;_&lt;field_name&gt;</code>
-                    in the submission ZIP.
+                    The fields submissions to this leaderboard must include.
                 </p>
                 {% if not pred_fields_editable %}
                 <div class="alert alert-warning small">
                     <i class="bi bi-lock me-1"></i>
-                    This leaderboard already has verified submissions, so
-                    the prediction schema is frozen — changing kinds
-                    would silently re-interpret existing prediction files.
-                    Delete the submissions if you really need to edit.
+                    This leaderboard already has verified submissions,
+                    so the fields are locked. Delete those submissions
+                    first if you really need to change them.
                 </div>
                 {% endif %}
 

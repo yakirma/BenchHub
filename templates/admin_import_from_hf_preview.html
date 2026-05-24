@@ -277,7 +277,7 @@
                                             class="btn btn-sm btn-link p-0 sample-name-toggle small text-decoration-none"
                                             data-source-column="{{ _src_col }}"
                                             {% if f.kind != 'text' %}hidden{% endif %}
-                                            title="Use this column's values as the sample name on disk.">
+                                            title="Use this column's values as the sample name.">
                                         <i class="bi bi-tag-fill"></i>
                                         <span class="sample-name-toggle-label">use as name</span>
                                     </button>
@@ -309,10 +309,9 @@
             </div>
             <p class="form-text small mb-2 text-body-secondary">
                 <i class="bi bi-info-circle me-1"></i>
-                Role assignment (input vs gt vs skip) + prediction
-                fields are picked per <strong>leaderboard</strong>,
-                not per dataset. The same dataset can back many LBs
-                with different role / pred contracts.
+                Which fields are inputs vs targets is chosen per
+                <strong>leaderboard</strong>, not here — one dataset can
+                back several leaderboards.
             </p>
 
             <div class="d-flex gap-2">
@@ -324,11 +323,8 @@
                 </a>
             </div>
             <p class="form-text small mt-2 mb-0">
-                The commit step pulls the data via
-                <code>datasets.load_dataset()</code>, materialises it
-                into the BH typed-manifest layout under
-                <code>uploads/datasets/&lt;id&gt;/</code>, and creates
-                the Dataset + Sample + CustomField rows.
+                The download runs in the background. You can leave this
+                page; the dataset row shows live progress.
             </p>
         </div>
     </form>

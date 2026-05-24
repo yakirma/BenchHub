@@ -572,14 +572,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <i class="bi bi-box-arrow-up-right text-primary me-1"></i>
             Prediction <span class="text-body-secondary">({{ pred_field_schema|length }})</span>
             <span class="badge text-bg-primary-subtle text-primary-emphasis border small fw-normal ms-1">
-                you ship in the ZIP
+                what you submit
             </span>
         </h3>
         <div class="table-responsive">
             <table class="table table-sm align-middle mb-0">
                 <thead class="table-light small">
                     <tr>
-                        <th class="ps-3" style="width: 26%;">Folder</th>
+                        <th class="ps-3" style="width: 26%;">Field</th>
                         <th style="width: 12%;">Kind</th>
                         <th style="width: 16%;">Scores against GT</th>
                         <th>Meaning</th>
@@ -1153,7 +1153,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <ul class="dropdown-menu">
                             <li><button class="dropdown-item" type="submit"
                                     formaction="{{ url_for('download_submissions_bulk', leaderboard_id=leaderboard.id) }}">
-                                    Source ZIPs
+                                    Submission files
                                 </button></li>
                             <li><button class="dropdown-item" type="submit"
                                     formaction="{{ url_for('download_submissions_metrics_bulk', leaderboard_id=leaderboard.id) }}">
@@ -1277,7 +1277,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         <li>
                                             <a class="dropdown-item"
                                                 href="{{ url_for('download_submission', submission_id=submission.id) }}">
-                                                <i class="bi bi-download me-2"></i>Download ZIP
+                                                <i class="bi bi-download me-2"></i>Download files
                                             </a>
                                         </li>
                                         <li>
@@ -1600,9 +1600,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <i class="bi bi-cloud-upload me-1"></i>Submit predictions
         </h5>
         <p class="small text-body-secondary mb-2">
-            Submissions go through the <a href="{{ url_for('supported_types') }}">typed contract</a>:
-            one ZIP with a <code>manifest.json</code> + <code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code>
-            per prediction. Three ways to start:
+            Three ways to get your predictions in:
         </p>
 
         {# Quick-start action row: one click per common workflow.
@@ -1631,12 +1629,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
 
         <p class="small text-body-secondary mb-1">
-            Both downloads use the LB's current pred contract — the
-            predict-call snippet has one slot per declared pred field.
-            For Colab, set <code>BENCHHUB_API_TOKEN</code> as a
+            Each download is tailored to this leaderboard's fields.
+            For Colab, add <code>BENCHHUB_API_TOKEN</code> as a
             <a href="https://colab.research.google.com/notebooks/secrets.ipynb"
-               target="_blank" rel="noopener">Colab Secret</a>
-            (left sidebar → key icon). Locally, export it as an env var:
+               target="_blank" rel="noopener">Colab Secret</a>.
+            Locally, export it as an env var:
         </p>
         <pre class="bg-body-tertiary p-3 rounded border small mb-2" style="font-size: 0.85em;"><code>pip install benchhub-client
 export BENCHHUB_API_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
@@ -1652,11 +1649,6 @@ for sample_name in [...]:
 {%- endfor %}
                 )
 print(sub.submit(name="my run"))</code></pre>
-        <p class="small text-body-secondary mb-0">
-            <strong>API endpoint:</strong>
-            <code>POST /api/submit/{{ leaderboard.id }}</code>
-            (multipart <code>submission_zip</code>, bearer token in <code>Authorization</code>).
-        </p>
     </div>
 </div>
 

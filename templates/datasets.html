@@ -24,8 +24,7 @@
                 <span class="badge bg-secondary fs-6 align-middle ms-2">{{ entries|length }}</span>
             </h2>
             <p class="text-body-secondary small mb-3">
-                Locally-uploaded ZIPs and HF-cached references, grouped by
-                the same Area/Task taxonomy used on /leaderboards.
+                Benchmark datasets you can attach to a leaderboard.
             </p>
 
             {# Client-side search across BH + HF entries via the
@@ -201,12 +200,12 @@
                                 <i class="bi bi-box-arrow-up-right small text-body-secondary"></i>
                             </a>
                             <span class="badge text-bg-info-subtle text-info-emphasis border small ms-1"
-                                  title="HuggingFace-cached (no local ZIP)">
+                                  title="Imported from HuggingFace">
                                 <i class="bi bi-cloud-arrow-down me-1"></i>HF
                             </span>
                             {% if hf.hf_split %}
                             <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
-                                  title="HF split currently streamed for GT">
+                                  title="HuggingFace split">
                                 split: {{ hf.hf_split }}
                             </span>
                             {% endif %}
@@ -278,20 +277,18 @@
                 <div class="card-body p-4">
                     <h5 class="fw-bold mb-1">
                         <i class="bi bi-cloud-arrow-up me-1 text-primary"></i>
-                        Upload a typed dataset ZIP
+                        Upload a dataset
                     </h5>
                     <p class="small text-body-secondary mb-3">
-                        The ZIP root needs a <code>manifest.json</code>
-                        (typed contract: name, fields[], samples[]) plus
-                        one sub-folder per field holding
-                        <code>&lt;sample&gt;.&lt;ext&gt;</code>.
-                        See <a href="{{ url_for('supported_types') }}">/supported_types</a>.
+                        Drop in a packaged dataset. See the
+                        <a href="{{ url_for('supported_types') }}">supported types</a>
+                        for what each field can hold.
                     </p>
                     <form method="post" action="{{ url_for('upload_typed_dataset_zip') }}"
                           enctype="multipart/form-data">
                         <label for="dataset_zip" class="upload-dropzone d-block text-center px-3 py-4 mb-3 rounded">
                             <i class="bi bi-cloud-arrow-up display-6 text-body-secondary d-block mb-1"></i>
-                            <span class="fw-semibold small">Drop a typed ZIP here or click</span>
+                            <span class="fw-semibold small">Drop your dataset here or click to choose</span>
                             <div id="zip-name" class="small text-primary mt-1 d-none"></div>
                         </label>
                         <input type="file" id="dataset_zip" name="dataset_zip"
@@ -323,10 +320,9 @@
                         </button>
                     </div>
                     <p class="small text-body-secondary mb-2">
-                        Stage typed values in memory, validate locally,
-                        upload as one ZIP. Reads
-                        <code>BENCHHUB_API_TOKEN</code> from
-                        <a href="{{ url_for('api_tokens') }}">your token page</a>.
+                        Stage samples in Python, then upload in one call.
+                        Grab your token from the
+                        <a href="{{ url_for('api_tokens') }}">tokens page</a>.
                     </p>
                     <pre id="creator-snippet" class="small mb-0 p-3 rounded font-monospace"
                          style="background:#f5efe2;border:1px solid #e8dfc8;overflow-x:auto;"><code>import benchhub as bh
@@ -355,8 +351,8 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                 <div class="card-body p-4">
                     <h5 class="fw-bold mb-1">Add a dataset</h5>
                     <p class="small text-body-secondary mb-0">
-                        <a href="{{ url_for('login') }}">Log in</a> to upload
-                        a typed dataset ZIP (50&nbsp;MB total per user).
+                        <a href="{{ url_for('login') }}">Log in</a> to add
+                        your own datasets.
                     </p>
                 </div>
             </div>

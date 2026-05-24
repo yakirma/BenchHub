@@ -95,15 +95,13 @@
         <div class="card border-0 shadow-sm mb-3">
             <div class="card-body p-3">
                 <h2 class="h6 fw-semibold mb-2">
-                    <i class="bi bi-upload text-primary me-1"></i>Submissions will need to ship
+                    <i class="bi bi-upload text-primary me-1"></i>What submitters will send
                     <span class="text-body-secondary fw-normal small ms-1">— editable</span>
                 </h2>
                 <p class="form-text small mb-2">
-                    One folder per field. Rename or change a field's type;
+                    One field per row. Rename or change a field's type, or
                     untick <em>Keep</em> to drop the field and any metrics
-                    that depend on it. Bare-name folders &mdash;
-                    <code>metric_*</code> is reserved for user-precomputed
-                    metric values, never raw predictions.
+                    that depend on it.
                 </p>
                 <div id="auto-pred-list">
                     {% for pf in pred_field_schema %}
