@@ -326,6 +326,85 @@ def test_commit_route_imports_fields_with_neutral_role(client, db_session, tmp_p
     assert by_name['label']['role'] == 'gt'
 
 
+def test_commit_drops_field_used_as_sample_name_source(client, db_session, tmp_path, monkeypatch):
+    """When the admin toggles `use as name` on a text field, that
+    field's values become the on-disk sample names; importing it
+    ALSO as a regular column would duplicate the same data in
+    every Sample row. The commit handler must drop it from the
+    field list before materialise."""
+    from app import app as flask_app
+    monkeypatch.setitem(flask_app.config, 'UPLOAD_FOLDER', str(tmp_path))
+    admin = User(email='dedupe@bench.local', display_name='d',
+                 oauth_provider='github', oauth_sub='d-1', is_admin=True)
+    db.session.add(admin); db.session.commit()
+    with client.session_transaction() as sess:
+        sess['user_id'] = admin.id
+
+    captured = {}
+    import benchhub.hf_materialize as hfm
+
+    def _fake_materialize(repo_id, *, split, sample_cap, staging_dir,
+                          dataset_name, fields, sample_name_from=None, **kw):
+        captured['fields'] = fields
+        captured['sample_name_from'] = sample_name_from
+        from pathlib import Path
+        Path(staging_dir, 'manifest.json').write_text(json.dumps({
+            'name': dataset_name, 'version': '1.0',
+            'fields': [
+                {'name': f['name'], 'kind': f['kind'],
+                 'role': f['role'], 'params': f.get('params') or {}}
+                for f in fields
+            ],
+            'samples': ['s0'],
+        }))
+        return {'samples': 1, 'fields': len(fields),
+                'rows_written': 0, 'rows_skipped': 0}
+
+    monkeypatch.setattr(hfm, 'materialize_hf_to_typed_dir', _fake_materialize)
+
+    from benchhub import manifest as bh_manifest
+
+    def _fake_import(source_root, *, db_session, Dataset, Sample, CustomField,
+                     DatasetField=None, upload_folder, owner_user_id=None,
+                     visibility='public', existing_dataset=None, **_kw):
+        from pathlib import Path
+        m = json.loads(Path(source_root, 'manifest.json').read_text())
+        ds = existing_dataset or Dataset(
+            name=m['name'], owner_user_id=owner_user_id, visibility=visibility)
+        if existing_dataset is None:
+            db_session.add(ds)
+        db_session.flush()
+        return ds.id, {
+            'dataset_id': ds.id, 'name': m['name'],
+            'samples': len(m['samples']), 'fields': len(m['fields']),
+            'custom_field_rows': 0, 'files_copied': 0, 'bytes_on_disk': 0,
+        }
+
+    monkeypatch.setattr(bh_manifest, 'import_typed_dataset', _fake_import)
+
+    r = client.post('/admin/import_from_hf/commit', data={
+        'repo_id': 'uoft-cs/cifar10',
+        'dataset_name': 'name-dedupe',
+        'split': 'test',
+        'sample_cap': '1',
+        'sampling': 'head',
+        'sampling_seed': '0',
+        'field_name':           ['filename',  'img',   'label'],
+        'field_source_column':  ['filename',  'img',   'label'],
+        'field_kind':           ['text',      'image', 'label'],
+        'field_params':         ['',          '',      ''],
+        'sample_name_from': 'filename',
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert captured['sample_name_from'] == 'filename'
+    by_name = {f['name']: f for f in captured['fields']}
+    assert 'filename' not in by_name, (
+        "the column flagged as sample-name source must NOT also "
+        "be imported as its own field"
+    )
+    assert 'img' in by_name and 'label' in by_name
+
+
 def test_preview_404_when_croissant_fetch_fails(admin_client, monkeypatch):
     from benchhub import hf_croissant as hfc
 

@@ -4803,6 +4803,7 @@ def admin_import_from_hf_commit():
     kinds = request.form.getlist('field_kind')
     params_raw = request.form.getlist('field_params')
     source_columns = request.form.getlist('field_source_column')
+    sample_name_from = (request.form.get('sample_name_from') or '').strip() or None
 
     if not (len(names) == len(kinds) == len(params_raw)):
         flash('Field rows malformed — please retry from the preview page.', 'danger')
@@ -4815,6 +4816,15 @@ def admin_import_from_hf_commit():
     # LB creation overrides via `field_roles_json`.
     selected: list[dict] = []
     for i, name in enumerate(names):
+        source_column = (source_columns[i] if i < len(source_columns) else name) or name
+        # If this field's source column is the one chosen as the
+        # sample-name source, drop it from the field list — the
+        # values are already represented as the sample names on
+        # disk + in the Sample.name column, and re-importing them as
+        # a separate text field would duplicate the same information
+        # in every comparison view.
+        if sample_name_from and source_column == sample_name_from:
+            continue
         kind = kinds[i] if i < len(kinds) else 'json'
         params_str = (params_raw[i] if i < len(params_raw) else '').strip()
         try:
@@ -4825,7 +4835,7 @@ def admin_import_from_hf_commit():
             params = {}
         selected.append({
             'name': name,
-            'source_column': (source_columns[i] if i < len(source_columns) else name) or name,
+            'source_column': source_column,
             'kind': kind,
             'role': 'gt',  # placeholder; LB-side `field_roles_json` is canonical.
             'params': params,
@@ -4903,7 +4913,7 @@ def admin_import_from_hf_commit():
         sampling_seed=sampling_seed,
         dataset_name=dataset_name,
         fields=selected,
-        sample_name_from=(request.form.get('sample_name_from') or '').strip() or None,
+        sample_name_from=sample_name_from,
         hf_token=getattr(g.current_user, 'hf_token', None),
         owner_user_id=g.current_user.id,
     )
