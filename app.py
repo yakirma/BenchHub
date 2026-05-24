@@ -10602,12 +10602,31 @@ def serve_author_avatar(filename):
     avatar_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'author_avatars')
     return send_from_directory(avatar_dir, filename)
 
-_VALID_FIELD_TYPES = ('image', 'scalar', 'metric', 'histogram', 'depth', 'json', 'text')
+# Source-of-truth for accepted dataset field kinds. Pulled from the
+# typed registry plus 'metric'/'histogram', which are legacy values
+# the engine still recognises but aren't full DataType subclasses.
+def _valid_field_types() -> set[str]:
+    from benchhub.types import DTYPES as _DTYPES
+    return set(_DTYPES.keys()) | {'metric', 'histogram'}
+
+
+def _lbs_using_dataset(dataset):
+    """Return the Leaderboards that have this dataset attached. Used
+    to gate destructive field-schema edits — once an LB references a
+    dataset, changing a field's kind or role on the dataset would
+    silently re-interpret data the LB's metrics already scored
+    against. Edits remain available while the dataset is unbound."""
+    return list(dataset.leaderboards) if dataset else []
 
 
 def _dataset_field_types(dataset):
-    """Return [{name, current_type, sample_count}] for every distinct
-    custom-field name on this dataset, used by the settings UI."""
+    """Return [{name, current_type, role, sample_count, mixed}] for
+    every distinct custom-field name on this dataset, used by the
+    settings UI.
+
+    `role` comes from the declared `DatasetField.role` so the settings
+    page can render a per-field role selector alongside the kind one.
+    """
     sample_ids = [s.id for s in dataset.samples]
     if not sample_ids:
         return []
@@ -10621,6 +10640,12 @@ def _dataset_field_types(dataset):
         .group_by(CustomField.name, CustomField.data_type)
         .all()
     )
+    # Roles + canonical kinds from the declared schema (DatasetField),
+    # which is the source the LB picker reads against.
+    df_meta = {
+        df.name: {'role': (df.role or 'gt').lower(), 'kind': df.kind}
+        for df in dataset.fields
+    }
     # Collapse: a field name with mixed types (rare, mid-edit state) shows
     # the most common one and a "mixed" flag.
     by_name = {}
@@ -10628,6 +10653,7 @@ def _dataset_field_types(dataset):
         entry = by_name.setdefault(name, {
             'name': name, 'current_type': ftype,
             'sample_count': 0, 'mixed': False,
+            'role': (df_meta.get(name) or {}).get('role', 'gt'),
         })
         entry['sample_count'] += cnt
         if entry.get('current_type') != ftype:
@@ -10686,13 +10712,21 @@ def dataset_settings(dataset_id):
             .filter(Leaderboard.category.isnot(None)).distinct().all()
         ) if row[0]
     })
+    # Schema edits (kind / role) are locked once an LB binds metrics
+    # against this dataset — changing a field then would silently
+    # re-route bytes those metrics scored against. Show the locked
+    # state in the UI with the list of leaderboards so the owner can
+    # detach them if they really need to edit.
+    lbs_using = _lbs_using_dataset(dataset)
     return render_template(
         'dataset_settings.html',
         dataset=dataset,
         field_types=field_types,
-        valid_field_types=sorted(_DTYPES),
+        valid_field_types=sorted(_valid_field_types()),
         hf_meta=hf_meta,
         known_categories=known_categories,
+        lbs_using=lbs_using,
+        schema_editable=(not lbs_using),
     )
 
 
@@ -10775,27 +10809,94 @@ def delete_dataset_pred_field(dataset_id, field_name):
 @login_required
 @owner_required(Dataset, 'dataset_id')
 def update_dataset_field_type(dataset_id, field_name):
-    """Reclassify every CustomField row with this name on this dataset
-    to a new data_type. Useful when auto-detection picked the wrong
-    type (e.g. a `metric_*` column that landed as 'scalar')."""
+    """Re-classify a dataset field's kind. Updates both
+    `DatasetField.kind` (the declared schema) and every CustomField
+    row that carries this name on the dataset (so the runtime
+    decoder picks the right path).
+
+    Gated on the dataset having no leaderboards attached — once an
+    LB binds metrics against a field, changing its kind would
+    silently re-interpret bytes those metrics already scored
+    against. Detach the LBs (or delete them) to unlock.
+    """
+    dataset = Dataset.query.get_or_404(dataset_id)
+    lbs = _lbs_using_dataset(dataset)
+    if lbs:
+        flash(
+            f"Can't change field types — {len(lbs)} leaderboard"
+            f"{'' if len(lbs) == 1 else 's'} use this dataset. Detach "
+            "them first to unlock.",
+            "warning",
+        )
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
     new_type = (request.form.get('data_type') or '').strip()
-    if new_type not in _VALID_FIELD_TYPES:
+    valid = _valid_field_types()
+    if new_type not in valid:
         flash(f"Invalid field type '{new_type}'.", "danger")
         return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
-    dataset = Dataset.query.get_or_404(dataset_id)
+    # Update the declared schema row (DatasetField.kind drives the
+    # picker satisfiability checks + role-table rendering on LB edit).
+    df = DatasetField.query.filter_by(
+        dataset_id=dataset.id, name=field_name,
+    ).first()
+    if df is not None:
+        df.kind = new_type
+
     sample_ids = [s.id for s in dataset.samples]
-    if not sample_ids:
-        flash("No samples to update.", "warning")
+    updated = 0
+    if sample_ids:
+        updated = (
+            CustomField.query
+            .filter(CustomField.sample_id.in_(sample_ids),
+                    CustomField.name == field_name)
+            .update({'data_type': new_type}, synchronize_session=False)
+        )
+    db.session.commit()
+    flash(
+        f"Reclassified '{field_name}' to '{new_type}' "
+        f"({updated} sample row(s) updated).",
+        "success",
+    )
+    return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+
+@app.route('/dataset/<int:dataset_id>/field/<path:field_name>/role', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def update_dataset_field_role(dataset_id, field_name):
+    """Change a dataset field's declared role (`input` / `gt` /
+    `skip`). Gated on no-LBs-using — same reason as the kind editor:
+    an LB's metric mappings refer to the field's gt/input
+    designation, and flipping it after the fact would silently
+    re-route or skip the data those metrics are scoring against.
+    """
+    dataset = Dataset.query.get_or_404(dataset_id)
+    lbs = _lbs_using_dataset(dataset)
+    if lbs:
+        flash(
+            f"Can't change field roles — {len(lbs)} leaderboard"
+            f"{'' if len(lbs) == 1 else 's'} use this dataset. Detach "
+            "them first to unlock.",
+            "warning",
+        )
         return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
-    updated = (
-        CustomField.query
-        .filter(CustomField.sample_id.in_(sample_ids), CustomField.name == field_name)
-        .update({'data_type': new_type}, synchronize_session=False)
-    )
+    new_role = (request.form.get('role') or '').strip().lower()
+    if new_role not in ('input', 'gt', 'skip'):
+        flash(f"Invalid role '{new_role}'.", "danger")
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    df = DatasetField.query.filter_by(
+        dataset_id=dataset.id, name=field_name,
+    ).first()
+    if df is None:
+        flash(f"No field named '{field_name}' on this dataset.", "danger")
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+    df.role = new_role
     db.session.commit()
-    flash(f"Reclassified {updated} '{field_name}' rows to '{new_type}'.", "success")
+    flash(f"'{field_name}' is now role={new_role}.", "success")
     return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
 
