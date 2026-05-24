@@ -289,6 +289,149 @@ def test_dataset_field_roles_post_writes_field_roles_json(client, db_session):
     assert stored == {'rgb': 'input', 'depth': 'gt'}
 
 
+# ---------------------------------------------------------------------------
+# Lifecycle policy: add-anytime, remove-only-when-empty
+# ---------------------------------------------------------------------------
+
+
+def _mk_lb_with_subs(db_session, owner, pred_fields=None, with_submission=True):
+    """Helper: returns an LB owned by `owner`, attached to one dataset,
+    optionally seeded with a verified Submission so `has_verified_subs`
+    is true."""
+    from app import Submission
+    ds = Dataset(name=f'life_ds_{owner.id}', owner_user_id=owner.id)
+    db.session.add(ds); db.session.flush()
+    _add_field(ds, 'label', kind='label', role='gt')
+
+    lb = Leaderboard(
+        name=f'life_lb_{owner.id}',
+        summary_metrics='',
+        owner_user_id=owner.id,
+        required_pred_fields_json=(json.dumps(pred_fields) if pred_fields else None),
+    )
+    db.session.add(lb); db.session.flush()
+    lb.datasets.append(ds)
+    if with_submission:
+        sub = Submission(leaderboard_id=lb.id, name='s1',
+                         processing_status='Processed')
+        db.session.add(sub)
+    db.session.commit()
+    return lb
+
+
+def test_pred_add_allowed_when_lb_has_submissions(client, db_session):
+    """Adding a NEW pred field is allowed even with verified
+    submissions — it only widens the contract for future ones."""
+    owner = User(email='add_ok@bench.local', display_name='a',
+                 oauth_provider='github', oauth_sub='add-1')
+    db.session.add(owner); db.session.flush()
+    lb = _mk_lb_with_subs(
+        db_session, owner,
+        pred_fields=[{'name': 'label_pred', 'kind': 'label',
+                      'gt_field': 'label', 'description': ''}],
+    )
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+    r = client.post(f'/leaderboard/{lb.id}/pred_fields', data={
+        # Preserve the existing row …
+        'name_0': 'label_pred', 'kind_0': 'label', 'description_0': '',
+        # … and add a brand-new one.
+        'name_1': 'confidence_pred', 'kind_1': 'scalar', 'description_1': '',
+    })
+    assert r.status_code == 302
+    db.session.refresh(lb)
+    schema = json.loads(lb.required_pred_fields_json)
+    names = {e['name'] for e in schema}
+    assert {'label_pred', 'confidence_pred'} <= names
+
+
+def test_pred_remove_blocked_when_lb_has_submissions(client, db_session):
+    """Removing an existing pred field with verified subs present
+    must fail — the LB keeps its old schema."""
+    owner = User(email='rem_no@bench.local', display_name='r',
+                 oauth_provider='github', oauth_sub='rem-1')
+    db.session.add(owner); db.session.flush()
+    lb = _mk_lb_with_subs(
+        db_session, owner,
+        pred_fields=[
+            {'name': 'label_pred', 'kind': 'label',
+             'gt_field': 'label', 'description': ''},
+            {'name': 'extra_pred', 'kind': 'scalar',
+             'gt_field': 'extra', 'description': ''},
+        ],
+    )
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+    r = client.post(f'/leaderboard/{lb.id}/pred_fields', data={
+        # Drop `extra_pred`.
+        'name_0': 'label_pred', 'kind_0': 'label', 'description_0': '',
+    })
+    assert r.status_code == 302
+    db.session.refresh(lb)
+    names = {e['name'] for e in json.loads(lb.required_pred_fields_json)}
+    assert names == {'label_pred', 'extra_pred'}, (
+        "the remove attempt must NOT take effect when subs exist"
+    )
+
+
+def test_pred_kind_change_blocked_when_lb_has_submissions(client, db_session):
+    """Changing the kind of an existing field with subs present must
+    fail — the LB keeps the old kind."""
+    owner = User(email='kind_no@bench.local', display_name='k',
+                 oauth_provider='github', oauth_sub='kind-1')
+    db.session.add(owner); db.session.flush()
+    lb = _mk_lb_with_subs(
+        db_session, owner,
+        pred_fields=[{'name': 'label_pred', 'kind': 'label',
+                      'gt_field': 'label', 'description': ''}],
+    )
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+    r = client.post(f'/leaderboard/{lb.id}/pred_fields', data={
+        'name_0': 'label_pred', 'kind_0': 'scalar', 'description_0': '',
+    })
+    assert r.status_code == 302
+    db.session.refresh(lb)
+    schema = json.loads(lb.required_pred_fields_json)
+    assert schema[0]['kind'] == 'label'
+
+
+def test_metric_remove_blocked_when_lb_has_submissions(client, db_session):
+    """Removing a LeaderboardMetric drops its column + every MetricResult
+    that powered it — only legal on an empty LB."""
+    from app import LeaderboardMetric, Submission
+    owner = User(email='mrem@bench.local', display_name='m',
+                 oauth_provider='github', oauth_sub='mrem-1')
+    db.session.add(owner); db.session.flush()
+    ds = Dataset(name='mrem_ds', owner_user_id=owner.id)
+    db.session.add(ds); db.session.flush()
+    _add_field(ds, 'label', kind='label', role='gt')
+
+    lb = Leaderboard(name='mrem_lb', summary_metrics='',
+                     owner_user_id=owner.id)
+    db.session.add(lb); db.session.flush()
+    lb.datasets.append(ds)
+    gm = _mk_label_metric(name='metric_to_keep')
+    lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
+                           target_name='metric_to_keep',
+                           arg_mappings='{}', pooling_type='mean',
+                           sort_direction='higher_is_better')
+    db.session.add(lm); db.session.flush()
+    db.session.add(Submission(leaderboard_id=lb.id, name='s1',
+                              processing_status='Processed'))
+    db.session.commit()
+    lm_id = lm.id
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner.id
+    r = client.post(
+        f'/leaderboard/{lb.id}/leaderboard_metric/{lm_id}/delete',
+    )
+    assert r.status_code == 302
+    # The metric is still there — the policy blocked the removal.
+    assert LeaderboardMetric.query.get(lm_id) is not None
+
+
 def test_dataset_field_roles_post_forbidden_for_unrelated_user(client, db_session):
     """Same gate as pred-fields: random users get 403."""
     owner = User(email='df_o3@bench.local', display_name='o3',

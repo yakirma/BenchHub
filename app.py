@@ -2864,6 +2864,19 @@ def edit_leaderboard(leaderboard_id):
         (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
         for s in (leaderboard.submissions or [])
     )
+    # Lifecycle policy:
+    #   - ADDING new metrics / pred fields is always allowed (it
+    #     only widens the contract for future submissions).
+    #   - REMOVING or renaming a metric / pred field, or changing
+    #     a kind / role on an existing field, requires the LB to
+    #     be empty (no verified submissions).
+    # The template renders existing rows read-only and hides the
+    # remove buttons when `pred_edit_allowed` is False, but still
+    # exposes the add-row button + save when the user is permitted.
+    pred_add_allowed = _can_edit_lb_preds(
+        leaderboard, getattr(g, 'current_user', None)
+    )
+    pred_edit_allowed = pred_add_allowed and not has_verified_subs
     # Contract-filtered metric picker — same mechanism as the LB
     # creation page, but built against this LB's effective contract
     # (attached-dataset fields + per-LB role overrides + required
@@ -2890,7 +2903,10 @@ def edit_leaderboard(leaderboard_id):
                            global_visualizations=global_visualizations,
                            known_categories=known_categories,
                            pred_fields_schema=pred_fields_schema,
-                           pred_fields_editable=not has_verified_subs,
+                           pred_fields_editable=pred_edit_allowed,
+                           pred_add_allowed=pred_add_allowed,
+                           pred_edit_allowed=pred_edit_allowed,
+                           has_verified_subs=has_verified_subs,
                            available_metrics_for_lb=available_metrics_for_lb,
                            gt_field_options=gt_field_options,
                            dataset_field_options=dataset_field_options,
@@ -3187,8 +3203,25 @@ def delete_leaderboard_metric(leaderboard_id, metric_id):
     lm = LeaderboardMetric.query.get_or_404(metric_id)
     if lm.leaderboard_id != leaderboard_id:
         abort(403)
-        
+
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
+    # Removing a metric is a contract change — every existing
+    # submission's MetricResult row for this binding gets dropped
+    # and the leaderboard column it powered disappears. Allow only
+    # while the LB is empty (no verified submissions); adding
+    # metrics is still always allowed.
+    has_verified = any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (leaderboard.submissions or [])
+    )
+    if has_verified:
+        flash(
+            "Can't remove a metric — this leaderboard already has "
+            "verified submissions. Delete them first to unlock.",
+            "warning",
+        )
+        return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id))
+
     metric_name = lm.target_name if lm.target_name else lm.global_metric.name
     
     # 1. Remove from selected_metrics (Display Columns)
@@ -4589,10 +4622,20 @@ def edit_lb_field_roles(leaderboard_id):
 @app.route('/leaderboard/<int:leaderboard_id>/pred_fields', methods=['POST'])
 @login_required
 def edit_lb_pred_fields(leaderboard_id):
-    """Editable pred-field schema for an LB. Allowed only while the
-    LB has no verified submissions — once people have uploaded
-    predictions, the contract is frozen so existing submissions don't
-    silently re-interpret their files.
+    """Edit the LB's prediction-field schema.
+
+    Lifecycle policy:
+      - **Adding** new prediction fields is allowed at ANY point in
+        the LB's lifetime, even when verified submissions already
+        exist. New fields don't reinterpret any existing prediction
+        bytes; they only widen the contract for future submissions.
+      - **Removing** an existing field, **renaming** it, or
+        **changing its kind** is allowed ONLY when the LB has no
+        verified submissions. Otherwise those changes would
+        silently re-route or invalidate predictions already stored
+        on disk.
+      - Description text is free to change at any time — it's
+        metadata, not contract.
 
     Gating: admin, OR the LB owner, OR the owner of any attached
     Dataset. The dataset creator is included because they author the
@@ -4608,21 +4651,18 @@ def edit_lb_pred_fields(leaderboard_id):
     user = getattr(g, 'current_user', None)
     if not _can_edit_lb_preds(lb, user):
         abort(403)
-    # Refuse on LBs with real (non-mirrored) submissions: changing kinds
-    # would silently re-route existing CFs through the wrong decoder.
     has_verified = any(
         (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
         for s in (lb.submissions or [])
     )
-    if has_verified:
-        flash("Can't edit prediction fields — this LB already has "
-              "verified submissions. Delete them first to unlock.", "warning")
-        return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
-    valid_kinds = {
-        'image', 'mask', 'depth', 'audio',
-        'scalar', 'text', 'json', 'histogram',
-    }
+    # Source the valid-kinds set from the typed registry — adding a
+    # new DataType subclass shouldn't require editing this allow-list
+    # by hand (the old hand-rolled set was missing `label` /
+    # `label_list` / `bboxes`, which silently coerced existing rows
+    # of those kinds to `scalar` on save).
+    from benchhub.types import DTYPES as _DTYPES
+    valid_kinds = set(_DTYPES.keys()) | {'histogram'}
     # Collate by index. Form keys look like `name_0`, `kind_0`,
     # `description_0`, `name_1`, ...
     rows = {}
@@ -4653,6 +4693,41 @@ def edit_lb_pred_fields(leaderboard_id):
             'name': name, 'kind': kind, 'gt_field': gt_field,
             'description': desc,
         })
+
+    # When submissions exist, refuse any change that would alter
+    # the kind of, or remove, an existing pred field. Adding new
+    # fields is fine because they don't reinterpret stored bytes.
+    if has_verified:
+        try:
+            old = json.loads(lb.required_pred_fields_json or '[]')
+            if not isinstance(old, list):
+                old = []
+        except (TypeError, ValueError):
+            old = []
+        old_by_name = {e.get('name'): e for e in old if isinstance(e, dict)}
+        new_by_name = {e['name']: e for e in saved}
+        removed = set(old_by_name) - set(new_by_name)
+        if removed:
+            flash(
+                "Can't remove prediction fields — this leaderboard "
+                "already has verified submissions. Delete those "
+                "submissions first to unlock.",
+                "warning",
+            )
+            return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+        for name, old_entry in old_by_name.items():
+            new_entry = new_by_name.get(name)
+            if not new_entry:
+                continue
+            if (old_entry.get('kind') or '').strip() != (new_entry.get('kind') or '').strip():
+                flash(
+                    f"Can't change kind of '{name}' — this leaderboard "
+                    "already has verified submissions. Delete them "
+                    "first to unlock.",
+                    "warning",
+                )
+                return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
+
     lb.required_pred_fields_json = json.dumps(saved) if saved else None
     db.session.commit()
     flash(f"Saved {len(saved)} prediction field(s).", "success")

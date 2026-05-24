@@ -497,12 +497,22 @@
                                             data-mappings="{{ lm.arg_mappings }}">
                                             Duplicate
                                         </button>
+                                        {# Removing a metric drops the column + all
+                                           MetricResult rows that powered it. Allowed
+                                           only on empty LBs — adding remains open
+                                           always. #}
+                                        {% if has_verified_subs %}
+                                        <button type="button" class="btn btn-sm btn-outline-danger"
+                                                disabled
+                                                title="Locked — this leaderboard has submissions. Delete them first to remove a metric.">Remove</button>
+                                        {% else %}
                                         <form
                                             action="{{ url_for('delete_leaderboard_metric', leaderboard_id=leaderboard.id, metric_id=lm.id) }}"
                                             method="post" style="display:inline;">
                                             <button type="submit" class="btn btn-sm btn-outline-danger"
                                                 onclick="return confirm('Remove this metric from leaderboard?')">Remove</button>
                                         </form>
+                                        {% endif %}
                                     </div>
                                 </td>
                             </tr>
@@ -931,15 +941,23 @@
                 <p class="text-body-secondary small">
                     The fields submissions to this leaderboard must include.
                 </p>
-                {% if not pred_fields_editable %}
-                <div class="alert alert-warning small">
-                    <i class="bi bi-lock me-1"></i>
-                    This leaderboard already has verified submissions,
-                    so the fields are locked. Delete those submissions
-                    first if you really need to change them.
+                {% if has_verified_subs %}
+                <div class="alert alert-info small">
+                    <i class="bi bi-info-circle me-1"></i>
+                    This leaderboard already has submissions. You can
+                    still <strong>add</strong> new prediction fields
+                    (future submissions will need them) but renaming,
+                    removing, or changing the kind of an existing
+                    field is locked — that would silently re-interpret
+                    files people already uploaded. Delete the
+                    submissions first if you really need to.
                 </div>
                 {% endif %}
 
+                {# When the user can do anything at all (add-only or
+                   full edit), render the form. `pred_edit_allowed`
+                   gates per-field rename / kind / remove; new rows
+                   added by the JS are always fully editable. #}
                 <form method="post"
                       action="{{ url_for('edit_lb_pred_fields', leaderboard_id=leaderboard.id) }}">
                     <table class="table align-middle">
@@ -953,12 +971,12 @@
                         </thead>
                         <tbody id="pred-rows">
                             {% for pf in pred_fields_schema %}
-                            <tr class="pred-row">
+                            <tr class="pred-row" data-existing="1">
                                 <td>
                                     <input type="text" class="form-control form-control-sm font-monospace pred-name"
                                            name="name_{{ loop.index0 }}"
                                            value="{{ pf.name }}"
-                                           {{ '' if pred_fields_editable else 'readonly' }}
+                                           {{ '' if pred_edit_allowed else 'readonly' }}
                                            required pattern="[A-Za-z0-9_][A-Za-z0-9_.-]*_pred"
                                            title="Must end in _pred">
                                     {% if pf.used_by %}
@@ -970,20 +988,25 @@
                                 <td>
                                     <select class="form-select form-select-sm pred-kind"
                                             name="kind_{{ loop.index0 }}"
-                                            {{ '' if pred_fields_editable else 'disabled' }}>
-                                        {% for k in ['image', 'mask', 'depth', 'audio', 'scalar', 'text', 'json', 'histogram'] %}
+                                            {{ '' if pred_edit_allowed else 'disabled' }}>
+                                        {% for k in ['image', 'mask', 'depth', 'audio', 'scalar', 'text', 'label', 'label_list', 'bboxes', 'json', 'histogram'] %}
                                         <option value="{{ k }}" {{ 'selected' if pf.kind == k }}>{{ k }}</option>
                                         {% endfor %}
                                     </select>
+                                    {% if not pred_edit_allowed %}
+                                    {# disabled <select>s don't post their value — mirror it as a hidden input so the diff check on save sees the unchanged kind, not a missing field. #}
+                                    <input type="hidden" name="kind_{{ loop.index0 }}" value="{{ pf.kind }}">
+                                    {% endif %}
                                 </td>
                                 <td>
+                                    {# Description is metadata, always editable when the user is permitted. #}
                                     <input type="text" class="form-control form-control-sm pred-desc"
                                            name="description_{{ loop.index0 }}"
                                            value="{{ pf.description or '' }}"
-                                           {{ '' if pred_fields_editable else 'readonly' }}>
+                                           {{ '' if pred_add_allowed else 'readonly' }}>
                                 </td>
                                 <td>
-                                    {% if pred_fields_editable %}
+                                    {% if pred_edit_allowed %}
                                     <button type="button" class="btn btn-sm btn-outline-danger pred-remove"
                                             title="Remove this field">
                                         <i class="bi bi-x-lg"></i>
@@ -994,7 +1017,7 @@
                             {% endfor %}
                         </tbody>
                     </table>
-                    {% if pred_fields_editable %}
+                    {% if pred_add_allowed %}
                     <div class="d-flex justify-content-between">
                         <button type="button" id="pred-add-row" class="btn btn-sm btn-outline-primary">
                             <i class="bi bi-plus-lg me-1"></i>Add prediction field
@@ -1010,11 +1033,12 @@
     </div>
 </div>
 
-{% if pred_fields_editable %}
+{% if pred_add_allowed %}
 <script>
     // Pred-field editor: add/remove rows. Index is just so server-side
     // collation knows the rows are independent — final ordering is
-    // decided by the server.
+    // decided by the server. Add is always enabled (when the user is
+    // permitted); remove buttons are only rendered for editable rows.
     (function () {
         const tbody = document.getElementById('pred-rows');
         if (!tbody) return;
@@ -1027,7 +1051,7 @@
         if (addBtn) {
             addBtn.addEventListener('click', () => {
                 const idx = nextIdx++;
-                const kinds = ['image','mask','depth','audio','scalar','text','json','histogram'];
+                const kinds = ['image','mask','depth','audio','scalar','text','label','label_list','bboxes','json','histogram'];
                 const opts = kinds.map(k => `<option value="${k}">${k}</option>`).join('');
                 const tr = document.createElement('tr');
                 tr.className = 'pred-row';
