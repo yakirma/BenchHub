@@ -67,16 +67,21 @@
     </div>
 
     <div class="params-panel" data-kind="label_list" data-scope="{{ scope }}" hidden>
-        {# Top-K classification preds. `k` is REQUIRED and enforced
-           as part of the contract: every submission must ship
-           exactly k entries per sample. names mirrors the vocab
-           from the matching GT label field. #}
+        {# Top-K classification preds. `k` is enforced as part of
+           the contract: every submission must ship exactly k
+           entries per sample. We DON'T use HTML `required` here
+           because the input lives inside a hidden panel for non-
+           active kinds, and Chrome won't focus a hidden required
+           field on submit — it logs "An invalid form control with
+           name='' is not focusable." instead. The * marker keeps
+           the visual cue; manifest validator + LabelList ctor
+           reject any missing k server-side. #}
         <div class="row g-2">
             <div class="col-sm-4">
                 <label class="form-label form-label-sm small mb-0">
-                    k <span class="text-danger">*</span>
+                    k <span class="text-danger" title="required">*</span>
                 </label>
-                <input type="number" min="1" required
+                <input type="number" min="1"
                        class="form-control form-control-sm params-input"
                        data-key="k" data-required="1"
                        placeholder="5">
