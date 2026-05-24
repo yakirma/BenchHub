@@ -249,6 +249,60 @@ If the box's LAN IP shifts (DHCP), the router's port-forward (TCP 2222
 → port 22) needs updating; reserve the IP in the router admin to
 prevent recurrence.
 
+## DB backups
+
+A user-level systemd timer takes a daily SQLite snapshot of
+`~/.dtofbenchmarking/database.db` and keeps the last 14. The
+canonical copies live in `ops/` in the repo; the deployed copies
+sit on the box at the paths in the table.
+
+| Repo source (canonical) | Deployed location | Role |
+|---|---|---|
+| `ops/benchhub_db_backup.py` | `~/bin/benchhub_db_backup.py` | The snapshot script — uses sqlite3's online-backup API so gunicorn / celery don't need to stop; gzips the result. |
+| `ops/benchhub-db-backup.service` | `~/.config/systemd/user/benchhub-db-backup.service` | One-shot unit that runs the script. |
+| `ops/benchhub-db-backup.timer` | `~/.config/systemd/user/benchhub-db-backup.timer` | Daily at 03:00 local (with up to 10 min random delay); `Persistent=true` so a missed run catches up after a reboot. |
+| (output only) | `~/.dtofbenchmarking/db_backups/` | Snapshot output dir. `database-YYYYMMDD-HHMMSS.db.gz`. |
+
+First-time install on a fresh box:
+
+```bash
+mkdir -p ~/bin ~/.config/systemd/user ~/.dtofbenchmarking/db_backups
+cp ops/benchhub_db_backup.py ~/bin/
+chmod +x ~/bin/benchhub_db_backup.py
+cp ops/benchhub-db-backup.service ops/benchhub-db-backup.timer \
+    ~/.config/systemd/user/
+loginctl enable-linger "$USER"   # so user timer survives logout
+systemctl --user daemon-reload
+systemctl --user enable --now benchhub-db-backup.timer
+```
+
+`loginctl enable-linger ymatri` is already set, so the user
+systemd instance — and therefore the timer — survives logout.
+
+Useful commands:
+
+```bash
+# Take a snapshot right now.
+systemctl --user start benchhub-db-backup.service
+
+# When did it last run? When's the next?
+systemctl --user list-timers benchhub-db-backup.timer
+
+# Tail snapshot history.
+journalctl --user -u benchhub-db-backup -n 30
+
+# Restore from a snapshot (stop the services first or the WAL writer
+# will fight you):
+sudo systemctl stop benchhub-web
+sudo systemctl stop benchhub-celery
+zcat ~/.dtofbenchmarking/db_backups/database-YYYYMMDD-HHMMSS.db.gz \
+  > ~/.dtofbenchmarking/database.db
+# Wipe any stale WAL/-shm — the snapshot is a self-contained DB.
+rm -f ~/.dtofbenchmarking/database.db-wal ~/.dtofbenchmarking/database.db-shm
+sudo systemctl start benchhub-celery
+sudo systemctl start benchhub-web
+```
+
 ## Common breakages we've already hit
 
 - **`sudo systemctl restart` doesn't trigger code reload for a hot

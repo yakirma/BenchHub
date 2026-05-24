@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily BenchHub DB snapshot (03:00 local) + on-boot catch-up
+
+[Timer]
+# 03:00 local time, every day. The unit runs against the wall clock,
+# so a missed run (laptop suspended, host powered off) is picked up
+# at next start thanks to Persistent=true.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+# Smear up to 10 min so cluster-wide hourly load isn't a single spike
+# — irrelevant on this single box but a free habit.
+RandomizedDelaySec=600
+Unit=benchhub-db-backup.service
+
+[Install]
+WantedBy=timers.target

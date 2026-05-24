@@ -1,0 +1,16 @@
+[Unit]
+Description=Snapshot the BenchHub SQLite database
+# Don't run while a backup is already running; OnFailure logs to
+# journal automatically (`journalctl --user -u benchhub-db-backup`).
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/ymatri/bin/benchhub_db_backup.py
+# Standard streams go to the user journal so the timer's last run
+# is inspectable with `systemctl --user status benchhub-db-backup`.
+StandardOutput=journal
+StandardError=journal
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
