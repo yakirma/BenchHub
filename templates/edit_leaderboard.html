@@ -330,14 +330,29 @@
                                         <label for="global_metric_id" class="form-label small fw-bold">Select
                                             Metric</label>
                                         <div class="input-group input-group-sm">
+                                            {# Contract-filtered picker. Each option carries
+                                               the metric's arg names, arg specs (kind+role)
+                                               and a satisfiable flag computed against THIS
+                                               LB's effective contract. Unsatisfiable rows
+                                               are kept visible but disabled so users see
+                                               WHY a metric can't be added. #}
                                             <select class="form-select" id="global_metric_id" name="global_metric_id"
                                                 required>
                                                 <option value="" disabled selected>Choose a metric...</option>
-                                                {% for gm in global_metrics %}
-                                                <option value="{{ gm.id }}" data-code="{{ gm.python_code }}">{{ gm.name
-                                                    }}
-                                                    {% if
-                                                    gm.is_aggregated %}[Aggregated]{% endif %}</option>
+                                                {% for m in available_metrics_for_lb %}
+                                                {% set _gm = (global_metrics|selectattr('id', 'equalto', m.id)|list|first) %}
+                                                <option value="{{ m.id }}"
+                                                    {% if _gm %}data-code="{{ _gm.python_code }}"{% endif %}
+                                                    data-args="{{ m.args|tojson|forceescape }}"
+                                                    data-arg-specs="{{ m.arg_specs|tojson|forceescape }}"
+                                                    data-name="{{ m.name }}"
+                                                    data-satisfiable="{{ '1' if m.satisfiable else '0' }}"
+                                                    {% if not m.satisfiable %}
+                                                    disabled
+                                                    title="{{ m.missing_reason }}{% if m.description %} — {{ m.description }}{% endif %}"
+                                                    {% elif m.description %}title="{{ m.description }}"{% endif %}>
+                                                    {{ m.name }}{% if _gm and _gm.is_aggregated %} [Aggregated]{% endif %}{% if not m.satisfiable %} ({{ m.missing_reason }}){% endif %}
+                                                </option>
                                                 {% endfor %}
                                             </select>
                                             <a href="{{ url_for('metrics_view') }}" class="btn btn-outline-secondary"

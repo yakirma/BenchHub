@@ -2864,6 +2864,14 @@ def edit_leaderboard(leaderboard_id):
         (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
         for s in (leaderboard.submissions or [])
     )
+    # Contract-filtered metric picker — same mechanism as the LB
+    # creation page, but built against this LB's effective contract
+    # (attached-dataset fields + per-LB role overrides + required
+    # pred fields). Unsatisfiable metrics still appear so the
+    # picker can show them disabled with a "(needs …)" hint.
+    available_metrics_for_lb, gt_field_options, dataset_field_options = (
+        _build_lb_picker_context(leaderboard)
+    )
     return render_template('edit_leaderboard.html',
                            leaderboard=leaderboard,
                            dataset_fields=dataset_fields,
@@ -2883,6 +2891,9 @@ def edit_leaderboard(leaderboard_id):
                            known_categories=known_categories,
                            pred_fields_schema=pred_fields_schema,
                            pred_fields_editable=not has_verified_subs,
+                           available_metrics_for_lb=available_metrics_for_lb,
+                           gt_field_options=gt_field_options,
+                           dataset_field_options=dataset_field_options,
                            all_datasets=Dataset.query.all())
                            
 
@@ -3997,6 +4008,170 @@ def _build_lb_creation_context(dataset):
     return available_metrics_for_lb, gt_field_options, dataset_field_options
 
 
+def _can_edit_lb_preds(leaderboard, user):
+    """Return True iff `user` is allowed to edit this LB's
+    pred-field schema. Admins always; LB owner always; any
+    attached-dataset owner also (the dataset creator authors the
+    contract the LB rides on)."""
+    if user is None:
+        return False
+    if is_admin(user):
+        return True
+    if getattr(leaderboard, 'owner_user_id', None) == user.id:
+        return True
+    for ds in (leaderboard.datasets or []):
+        if getattr(ds, 'owner_user_id', None) == user.id:
+            return True
+    return False
+
+
+def _build_lb_picker_context(leaderboard):
+    """Same shape as `_build_lb_creation_context` but driven by an
+    existing leaderboard's effective contract.
+
+    Aggregates fields from EVERY attached Dataset, then layers on:
+      - `Leaderboard.field_roles_json` overrides — per-LB role swap
+        (input/gt/skip) for individual dataset fields;
+      - `Leaderboard.required_pred_fields_json` — synthesises virtual
+        `role=pred` entries so metric arg specs marked `role=pred`
+        can be matched against the LB's declared submission contract.
+
+    The result drives the contract-filtered metric picker on the
+    LB settings page — same UX as the creation picker, but against
+    the LB's actual (multi-dataset, post-override) contract.
+    """
+    # Step 1: collect fields across every attached Dataset.
+    raw_fields: list[dict] = []
+    for ds in leaderboard.datasets:
+        for df in ds.fields:
+            raw_fields.append({
+                'name': df.name,
+                'kind': df.kind,
+                'role': (df.role or 'gt').lower(),
+            })
+    # If two datasets declare the same field name with conflicting
+    # roles, the later one wins — same precedence as runtime context
+    # merging, which uses the GT-source dataset's value last.
+    fields_by_name: dict[str, dict] = {f['name']: f for f in raw_fields}
+
+    # Step 2: per-LB role overrides.
+    try:
+        overrides = json.loads(leaderboard.field_roles_json or '{}')
+        if not isinstance(overrides, dict):
+            overrides = {}
+    except (TypeError, ValueError):
+        overrides = {}
+    for name, role in overrides.items():
+        if name in fields_by_name and isinstance(role, str):
+            r = role.lower().strip()
+            if r in ('input', 'gt', 'skip', 'pred'):
+                fields_by_name[name]['role'] = r
+
+    # Step 3: required pred fields → virtual role=pred entries so a
+    # metric whose arg spec is (kind=X, role=pred) can resolve.
+    try:
+        pred_decls = json.loads(leaderboard.required_pred_fields_json or '[]')
+        if not isinstance(pred_decls, list):
+            pred_decls = []
+    except (TypeError, ValueError):
+        pred_decls = []
+    for entry in pred_decls:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get('name')
+        kind = entry.get('kind')
+        if not name or not kind:
+            continue
+        fields_by_name[name] = {
+            'name': name, 'kind': kind, 'role': 'pred',
+        }
+
+    dataset_field_options = list(fields_by_name.values())
+    # Drop role=skip when computing satisfiability — a skipped field
+    # is intentionally not part of this LB's contract.
+    live_fields = [f for f in dataset_field_options if f['role'] != 'skip']
+
+    fields_by_kind_role: dict[tuple[str, str], list[str]] = {}
+    fields_by_kind: dict[str, list[str]] = {}
+    for f in live_fields:
+        fields_by_kind_role.setdefault((f['kind'], f['role']), []).append(f['name'])
+        fields_by_kind.setdefault(f['kind'], []).append(f['name'])
+
+    def _arg_specs(args, kinds, roles):
+        return [
+            {
+                'name': name,
+                'kind': kinds[i] if i < len(kinds) else None,
+                'role': roles[i] if i < len(roles) else None,
+            }
+            for i, name in enumerate(args)
+        ]
+
+    def _metric_satisfiability(arg_specs):
+        missing = []
+        for spec in arg_specs:
+            k = spec.get('kind')
+            r = spec.get('role')
+            if not k:
+                continue
+            members = [m for m in k.split('|') if m]
+            if r:
+                if not any(fields_by_kind_role.get((m, r)) for m in members):
+                    missing.append(spec)
+            else:
+                if not any(fields_by_kind.get(m) for m in members):
+                    missing.append(spec)
+        return (not missing, missing)
+
+    def _missing_reason(missing_specs):
+        parts = []
+        for s in missing_specs:
+            bits = []
+            if s.get('kind'):
+                bits.append(f"kind={s['kind']}")
+            if s.get('role'):
+                bits.append(f"role={s['role']}")
+            parts.append(f"{s.get('name') or '?'}: needs " + ' '.join(bits))
+        return '; '.join(parts)
+
+    available_metrics_for_lb = []
+    for gm in (
+        GlobalMetric.query
+        .filter(visible_in_list(GlobalMetric, getattr(g, 'current_user', None)))
+        .order_by(GlobalMetric.name)
+        .all()
+    ):
+        args = _extract_metric_arg_names(gm.python_code or '')
+        try:
+            kinds = json.loads(gm.input_kinds) if gm.input_kinds else []
+            if not isinstance(kinds, list):
+                kinds = []
+        except (TypeError, ValueError):
+            kinds = []
+        try:
+            roles = json.loads(gm.input_roles) if gm.input_roles else []
+            if not isinstance(roles, list):
+                roles = []
+        except (TypeError, ValueError):
+            roles = []
+        specs = _arg_specs(args, kinds, roles)
+        ok, missing = _metric_satisfiability(specs)
+        available_metrics_for_lb.append({
+            'id': gm.id,
+            'name': gm.name,
+            'description': (gm.description or '').strip(),
+            'args': args,
+            'arg_specs': specs,
+            'satisfiable': ok,
+            'missing_reason': '' if ok else _missing_reason(missing),
+        })
+
+    gt_field_options = sorted({
+        f['name'] for f in live_fields if f['role'] == 'gt'
+    })
+    return available_metrics_for_lb, gt_field_options, dataset_field_options
+
+
 def _suggest_free_lb_name(base: str) -> str:
     """Return an LB name that doesn't collide with an existing
     Leaderboard. Starts from `<base>_benchmark`; if that's taken,
@@ -4363,12 +4538,16 @@ def edit_lb_field_roles(leaderboard_id):
 
 @app.route('/leaderboard/<int:leaderboard_id>/pred_fields', methods=['POST'])
 @login_required
-@owner_required(Leaderboard, 'leaderboard_id')
 def edit_lb_pred_fields(leaderboard_id):
     """Editable pred-field schema for an LB. Allowed only while the
     LB has no verified submissions — once people have uploaded
     predictions, the contract is frozen so existing submissions don't
     silently re-interpret their files.
+
+    Gating: admin, OR the LB owner, OR the owner of any attached
+    Dataset. The dataset creator is included because they author the
+    canonical contract the LB rides on; an LB owner who isn't the
+    dataset author can still tune the pred schema for their own LB.
 
     Form payload shape:
       name_N           — pred-field name (must end `_pred`)
@@ -4376,6 +4555,9 @@ def edit_lb_pred_fields(leaderboard_id):
       description_N    — free-form text (optional)
     (N is a per-row index used only to collate; we don't trust ordering.)"""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if not _can_edit_lb_preds(lb, user):
+        abort(403)
     # Refuse on LBs with real (non-mirrored) submissions: changing kinds
     # would silently re-route existing CFs through the wrong decoder.
     has_verified = any(
