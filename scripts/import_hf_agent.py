@@ -436,14 +436,17 @@ def _kind_for(modality: str, paths: list[str]) -> str:
     if ext in _IMAGE_EXTS:
         # Mask promotion is safe because `bh.Mask.file_ext` is also
         # `.png`, so the typed-manifest importer accepts our PNG
-        # bytes for a mask field. Depth promotion is NOT safe —
-        # `bh.Depth.file_ext` is `.npz`, and a PNG file in a depth
-        # field fails the importer's per-sample existence check.
-        # So depth-named PNGs (e.g. PanoCity's `pano_depth`) stay
-        # as `image`; we lose the colormap palette but the import
-        # actually completes.
+        # bytes for a mask field.
         if _MASK_NAME_TOKENS.search(modality):
             return "mask"
+        # Depth-named PNGs/TIFFs (PanoCity's `pano_depth`,
+        # IntuitivePhysics's depth tiff) get promoted to depth so
+        # the catalog applies the colormap palette + colorbar.
+        # `bh.Depth.file_ext` is `.npz`, so `_stage_dataset` runs
+        # a PIL → npz conversion before the typed-manifest importer
+        # sees the staged files.
+        if _DEPTH_NAME_TOKENS.search(modality):
+            return "depth"
         return "image"
     return "json"
 
@@ -462,6 +465,36 @@ def _download(url: str, dest: Path, *, timeout: int = 120):
     req = urllib.request.Request(url, headers={"User-Agent": "benchhub-agent/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as out:
         shutil.copyfileobj(r, out)
+
+
+def _png_depth_to_npz(src: Path, dst: Path) -> None:
+    """Decode a depth map shipped as PNG/TIFF/etc. and save it as
+    `.npz` with key `depth`, the shape `bh.Depth.decode` expects.
+
+    Handles the common encodings:
+      - 16-bit grayscale (PIL modes I, I;16, I;16L, I;16B) — direct uint16
+      - 32-bit float (mode F) — direct float32
+      - 8-bit grayscale (mode L, P) — promote to float32 for headroom
+      - RGB / RGBA with packed depth — take the first channel.
+        (More exotic packings — 24-bit packed across R/G/B — would
+        need per-dataset code; this baseline at least produces a
+        decodable depth that renders sensibly via the colormap.)
+    """
+    from PIL import Image
+    import numpy as np
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(src) as im:
+        mode = im.mode
+        if mode in ("I", "I;16", "I;16L", "I;16B"):
+            arr = np.array(im, dtype=np.uint16)
+        elif mode == "F":
+            arr = np.array(im, dtype=np.float32)
+        elif mode in ("L", "P"):
+            arr = np.array(im.convert("L"), dtype=np.uint8).astype(np.float32)
+        else:
+            # RGB / RGBA / other — pull the first channel.
+            arr = np.array(im.convert("RGB"), dtype=np.uint8)[..., 0].astype(np.float32)
+    np.savez_compressed(dst, depth=arr)
 
 
 def _build_manifest(repo_id: str, layout: DetectedLayout, *,
@@ -549,20 +582,44 @@ def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
         src_ext = src_in_repo.suffix
         canonical = field_canonical.get(field, "")
         kind = field_kinds.get(field, "")
+
+        # Decide destination extension + whether the bytes need a
+        # format conversion at staging time.
+        convert_to_depth_npz = False
         if kind in sniffable_kinds and canonical:
+            # image/mask: rename to canonical .png; PIL sniffs magic.
             dest_ext = canonical
+        elif kind == "depth" and src_ext.lower() in {
+            ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
+        }:
+            # PNG / TIFF depth maps → decode + repack as .npz so the
+            # typed-manifest pipeline (and the catalog's depth
+            # render path) receive the array shape they expect.
+            dest_ext = canonical or ".npz"
+            convert_to_depth_npz = True
         elif canonical and src_ext.lower() != canonical.lower():
-            # Binary-incompatible mismatch — skip rather than store
-            # bytes the runtime decoder can't read.
             if progress and (i % 25 == 0 or i == total - 1):
                 progress(i + 1, total)
             continue
         else:
             dest_ext = src_ext or canonical
+
         dest = staging / field / f"{sid}{dest_ext}"
         try:
-            _download(_raw_url(repo_id, str(src_in_repo)), dest)
-            staged.add((field, sid))
+            if convert_to_depth_npz:
+                # Download to a temp file, decode, re-pack as npz.
+                with tempfile.NamedTemporaryFile(suffix=src_ext, delete=False) as tmp:
+                    tmp_path = tmp.name
+                try:
+                    _download(_raw_url(repo_id, str(src_in_repo)), Path(tmp_path))
+                    _png_depth_to_npz(Path(tmp_path), dest)
+                    staged.add((field, sid))
+                finally:
+                    try: os.unlink(tmp_path)
+                    except OSError: pass
+            else:
+                _download(_raw_url(repo_id, str(src_in_repo)), dest)
+                staged.add((field, sid))
         except Exception as e:
             print(f"    [warn] download failed {src_in_repo}: {e}",
                   file=sys.stderr)
