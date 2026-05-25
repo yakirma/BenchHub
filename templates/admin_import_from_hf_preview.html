@@ -274,7 +274,7 @@
                                     <button type="button"
                                             class="btn btn-sm btn-link p-0 sample-name-toggle small text-decoration-none"
                                             data-source-column="{{ _src_col }}"
-                                            {% if f.kind != 'text' %}hidden{% endif %}
+                                            {% if f.kind not in ('text', 'scalar') %}hidden{% endif %}
                                             title="Use this column's values as the sample name.">
                                         <i class="bi bi-tag-fill"></i>
                                         <span class="sample-name-toggle-label">use as name</span>
@@ -681,18 +681,22 @@
         document.querySelectorAll('.sample-name-toggle').forEach(refreshBadge);
     }
     function refreshEligibility() {
-        // Show the badge only on text-kind rows; hide elsewhere.
-        // If the currently-selected source column is no longer
-        // text-kind, clear the selection so submit doesn't ship a
-        // stale value.
+        // Show the badge only on text/scalar-kind rows; hide elsewhere.
+        // Scalar columns are usually integer ids (`image_id`,
+        // `frame_index`) which make perfectly good sample names —
+        // _sanitize_sample_name str()'s the value so int/float
+        // payloads go through fine. If the currently-selected source
+        // column is no longer eligible, clear the selection so
+        // submit doesn't ship a stale value.
+        const ELIGIBLE_KINDS = new Set(['text', 'scalar']);
         let stillEligible = !hidden.value;
         document.querySelectorAll('tr.field-row').forEach((row) => {
             const kind = row.querySelector('select.field-kind')?.value;
             const btn = row.querySelector('.sample-name-toggle');
             if (!btn) return;
-            const isText = (kind === 'text');
-            btn.hidden = !isText;
-            if (isText && btn.dataset.sourceColumn === hidden.value) {
+            const eligible = ELIGIBLE_KINDS.has(kind);
+            btn.hidden = !eligible;
+            if (eligible && btn.dataset.sourceColumn === hidden.value) {
                 stillEligible = true;
             }
         });

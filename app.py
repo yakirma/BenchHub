@@ -10718,6 +10718,13 @@ def dataset_settings(dataset_id):
     # state in the UI with the list of leaderboards so the owner can
     # detach them if they really need to edit.
     lbs_using = _lbs_using_dataset(dataset)
+    # Candidates for the "use field X as sample name" control —
+    # scalar / text / label are the only kinds whose value IS the
+    # signal (file-backed kinds would need an extra decode step
+    # we don't bother with here).
+    name_source_candidates = sorted(
+        f.name for f in dataset.fields if f.kind in ('scalar', 'text', 'label')
+    )
     return render_template(
         'dataset_settings.html',
         dataset=dataset,
@@ -10727,6 +10734,7 @@ def dataset_settings(dataset_id):
         known_categories=known_categories,
         lbs_using=lbs_using,
         schema_editable=(not lbs_using),
+        name_source_candidates=name_source_candidates,
     )
 
 
@@ -10897,6 +10905,151 @@ def update_dataset_field_role(dataset_id, field_name):
     df.role = new_role
     db.session.commit()
     flash(f"'{field_name}' is now role={new_role}.", "success")
+    return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+
+@app.route('/dataset/<int:dataset_id>/rename_samples_by_field', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def rename_samples_by_field(dataset_id):
+    """Rename every Sample on this dataset using one of its scalar /
+    text custom-field values. Picks files on disk along for the ride
+    — every CustomField stored as a relative path gets its file
+    renamed and its `value_text` updated to match.
+
+    The original-name → new-name mapping is built first; collisions
+    after sanitisation get `_2`, `_3`, …, so the resulting Sample.name
+    set stays unique. Empty / null source values fall back to the
+    original sample name (no-op for that row).
+
+    Form: `field_name=<existing field>`. Locked when an LB binds
+    this dataset (same gate as schema edits) since file-path
+    rewrites would break submissions already scored against the old
+    sample names.
+    """
+    import re as _re
+    import shutil as _shutil
+    dataset = Dataset.query.get_or_404(dataset_id)
+    lbs = _lbs_using_dataset(dataset)
+    if lbs:
+        flash(
+            f"Can't rename samples — {len(lbs)} leaderboard"
+            f"{'' if len(lbs) == 1 else 's'} use this dataset. Detach "
+            "them first.",
+            "warning",
+        )
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    field_name = (request.form.get('field_name') or '').strip()
+    if not field_name:
+        flash("Pick a field first.", "danger")
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    # Source field must be scalar or text — those are the only ones
+    # whose value is the entire signal (no file decoding needed).
+    src_df = DatasetField.query.filter_by(
+        dataset_id=dataset.id, name=field_name,
+    ).first()
+    if src_df is None or src_df.kind not in ('scalar', 'text', 'label'):
+        flash(
+            f"'{field_name}' must be scalar / text / label "
+            f"(got {src_df.kind if src_df else 'missing'}).",
+            "danger",
+        )
+        return redirect(url_for('dataset_settings', dataset_id=dataset_id))
+
+    samples = Sample.query.filter_by(dataset_id=dataset.id).all()
+    # Pull the source values per sample in one query.
+    src_cfs = (
+        CustomField.query
+        .filter(CustomField.name == field_name,
+                CustomField.sample_id.in_([s.id for s in samples]))
+        .all()
+    )
+    src_by_sample = {cf.sample_id: cf for cf in src_cfs}
+
+    safe_re = _re.compile(r"[^A-Za-z0-9._-]+")
+
+    def _sanitize(raw) -> str:
+        s = safe_re.sub("_", str(raw)).strip("._ \t\r\n")
+        return s[:80]
+
+    # Build the desired-name map, deduplicating with `_<n>` suffixes.
+    proposed: dict[int, str] = {}
+    used: set[str] = set()
+    for s in samples:
+        cf = src_by_sample.get(s.id)
+        if cf is None:
+            proposed[s.id] = s.name
+            used.add(s.name)
+            continue
+        raw = cf.value_text if cf.value_text is not None else cf.value_float
+        if raw is None or str(raw).strip() == '':
+            proposed[s.id] = s.name
+            used.add(s.name)
+            continue
+        cand = _sanitize(raw)
+        if not cand:
+            proposed[s.id] = s.name
+            used.add(s.name)
+            continue
+        # Dedupe collisions among NEW names. Don't let a renamed
+        # sample collide with another sample's old name either —
+        # we apply renames in a single batch, but file-system safety
+        # means treating any prior name as occupied.
+        existing_taken = {x.name for x in samples}
+        base = cand; i = 2
+        while cand in used or (cand in existing_taken and
+                                cand != next((x.name for x in samples if x.id == s.id), None)):
+            cand = f"{base}_{i}"; i += 1
+        proposed[s.id] = cand
+        used.add(cand)
+
+    # Apply: walk every sample, do the rename in two steps —
+    # first move files on disk + update CustomField paths, then
+    # update Sample.name. Errors short-circuit + rollback the
+    # session, but partially-renamed disk files stay where they
+    # landed (better than half-committed DB state diverging from
+    # disk).
+    upload = app.config['UPLOAD_FOLDER']
+    renamed = 0
+    for s in samples:
+        new_name = proposed[s.id]
+        if new_name == s.name:
+            continue
+        # Per-CustomField file rename for file-backed rows on this
+        # sample. value_text is `datasets/<id>/<field>/<old>.<ext>`.
+        for cf in s.custom_fields:
+            v = cf.value_text or ''
+            if not (v.startswith('datasets/') or v.startswith('submissions/')):
+                continue
+            old_full = os.path.join(upload, v)
+            if not os.path.isfile(old_full):
+                continue
+            # Keep the parent dir + extension; swap the basename's stem.
+            parent, base = os.path.split(v)
+            stem, ext = os.path.splitext(base)
+            if stem != s.name:
+                # Filename doesn't match Sample.name — this happens
+                # for datasets the agent-mode importer namespaced
+                # ids differently. Leave that field alone; the
+                # mismatch is intentional.
+                continue
+            new_rel = os.path.join(parent, f"{new_name}{ext}")
+            new_full = os.path.join(upload, new_rel)
+            try:
+                _shutil.move(old_full, new_full)
+            except OSError:
+                continue
+            cf.value_text = new_rel
+        s.name = new_name
+        renamed += 1
+
+    db.session.commit()
+    flash(
+        f"Renamed {renamed} sample(s) using '{field_name}'.",
+        "success",
+    )
     return redirect(url_for('dataset_settings', dataset_id=dataset_id))
 
 

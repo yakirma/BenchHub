@@ -74,6 +74,53 @@
         </div>
     </div>
 
+    {# ---- Sample-name source — use a scalar / text / label field's
+           per-sample value as the on-disk sample name. Same gate as
+           the field editors (no LB attached) since the rename
+           rewrites every file under uploads/datasets/<id>/. #}
+    {% if name_source_candidates %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-2">
+                <i class="bi bi-tag-fill me-1"></i>Sample names
+            </h5>
+            <p class="text-body-secondary small mb-3">
+                Pick a field whose per-sample value should become
+                the sample name on disk. Useful when an HF import
+                landed with enumerated names (<code>s000000</code>,
+                <code>s000001</code>, …) and you'd rather see the
+                human-readable identifier the source dataset
+                provides (image filename, scan ID, etc.). Collisions
+                get <code>_2</code>, <code>_3</code>, … so the
+                resulting names stay unique.
+            </p>
+            {% if not schema_editable %}
+            <div class="alert alert-info small mb-0">
+                <i class="bi bi-lock me-1"></i>
+                Locked while leaderboards reference this dataset —
+                renaming would invalidate any submission whose
+                sample-name keys it.
+            </div>
+            {% else %}
+            <form method="post"
+                  action="{{ url_for('rename_samples_by_field', dataset_id=dataset.id) }}"
+                  class="d-flex gap-2 align-items-center flex-wrap"
+                  onsubmit="return confirm('Rename every sample using values from this field? Files on disk will be moved to the new names.');">
+                <select name="field_name" class="form-select" style="max-width: 280px;">
+                    <option value="">— pick a field —</option>
+                    {% for n in name_source_candidates %}
+                    <option value="{{ n }}">{{ n }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn btn-primary">
+                    Rename samples
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     {# ---- Fields (kind + role) — both editable only while no LB
            references this dataset, since changing them after an LB
            binds metrics would silently re-route the data those
