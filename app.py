@@ -2092,7 +2092,14 @@ def admin_cache_stats():
     total_sub_folder_bytes = sum(r['bytes'] for r in sub_folders)
     top_sub_folders = sub_folders[:20]
 
-    # 4. Datasets — already track a counter via Dataset.storage_bytes.
+    # 4. Datasets — Dataset.storage_bytes is the cached counter,
+    # joined here with a Sample COUNT so admins can spot e.g.
+    # "huge bytes / 0 samples" (broken import) or "tiny bytes / many
+    # samples" (something compressed unusually well).
+    sample_counts = dict(
+        db.session.query(Sample.dataset_id, func.count(Sample.id))
+        .group_by(Sample.dataset_id).all()
+    )
     dataset_rows = (
         Dataset.query.with_entities(
             Dataset.id, Dataset.name, Dataset.storage_bytes,
@@ -2101,7 +2108,11 @@ def admin_cache_stats():
         .all()
     )
     datasets_summary = [
-        {'id': did, 'name': dname, 'bytes': int(dsize or 0)}
+        {
+            'id': did, 'name': dname,
+            'bytes': int(dsize or 0),
+            'samples': int(sample_counts.get(did, 0)),
+        }
         for did, dname, dsize in dataset_rows
     ]
     total_dataset_bytes = sum(r['bytes'] for r in datasets_summary)

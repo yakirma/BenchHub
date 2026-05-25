@@ -257,6 +257,7 @@
                     <thead class="table-light">
                         <tr>
                             <th>Dataset</th>
+                            <th class="text-end">Samples</th>
                             <th class="text-end">Size</th>
                         </tr>
                     </thead>
@@ -268,6 +269,7 @@
                                    class="text-decoration-none">{{ d.name }}</a>
                                 <span class="small text-body-secondary ms-1">id={{ d.id }}</span>
                             </td>
+                            <td class="text-end font-monospace">{{ '{:,}'.format(d.samples) }}</td>
                             <td class="text-end font-monospace">{{ fmt_bytes(d.bytes) }}</td>
                         </tr>
                         {% endfor %}
