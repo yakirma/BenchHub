@@ -11968,22 +11968,38 @@ def serve_custom_field_depth_meta(field_id):
 
 @app.route('/api/custom_field_json/<int:field_id>')
 def serve_custom_field_json(field_id):
-    """Serve JSON data for a custom field."""
+    """Serve JSON data for a custom field.
+
+    Two storage shapes are accepted, in order:
+      1. Inline JSON content in `value_text` (what the typed-manifest
+         importer writes since commit 4f15907 so the comparison
+         text/json scrollbox renders content directly).
+      2. Relative path to a `.json` file under UPLOAD_FOLDER
+         (legacy + back-compat).
+    """
     custom_field = CustomField.query.get_or_404(field_id)
-    
     if custom_field.data_type != 'json':
         return abort(400, description="Not a JSON field")
-    
-    # value_text contains the relative path from uploads folder
-    json_path = os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text)
-    
+
+    raw = custom_field.value_text or ''
+    if not raw:
+        return abort(404, description="No JSON content")
+
+    # Try inline first — value_text holds the JSON content directly.
+    stripped = raw.lstrip()
+    if stripped[:1] in ('{', '[', '"'):
+        try:
+            return jsonify(json.loads(raw))
+        except (TypeError, ValueError):
+            pass  # fall through to path lookup
+
+    # Fall back to the legacy path-in-value_text shape.
+    json_path = os.path.join(app.config['UPLOAD_FOLDER'], raw)
     if not os.path.exists(json_path):
         return abort(404, description="JSON file not found")
-    
     try:
         with open(json_path, 'r') as f:
-            json_data = json.load(f)
-        return jsonify(json_data)
+            return jsonify(json.load(f))
     except Exception as e:
         return abort(500, description=f"Error reading JSON file: {str(e)}")
 
