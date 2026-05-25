@@ -486,6 +486,7 @@ def _build_manifest(repo_id: str, layout: DetectedLayout, *,
     fields = []
     rows = []
     seen_modality_names: dict[str, str] = {}
+    field_kinds: dict[str, str] = {}
     for modality, items in by_cov:
         # Pick a canonical kind from the modality's actual files.
         paths_in_use = [p for s, p in items if s in sample_set]
@@ -498,6 +499,7 @@ def _build_manifest(repo_id: str, layout: DetectedLayout, *,
         while n in seen_modality_names:
             n = f"{safe_name}_{i}"; i += 1
         seen_modality_names[n] = modality
+        field_kinds[n] = kind
         fields.append({"name": n, "kind": kind, "role": "gt", "params": {}})
         for sid, path in items:
             if sid in sample_set:
@@ -521,18 +523,68 @@ def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     # Stage each field's files under <staging>/<field>/<sample_id>.<ext>
-    # — the layout `import_typed_dataset` expects.
+    # — the layout `import_typed_dataset` expects. The on-disk
+    # extension MUST match the canonical extension for the field's
+    # kind (e.g. `bh.Image.file_ext == ".png"`), otherwise the
+    # importer's per-sample existence check fails. PIL sniffs magic
+    # bytes regardless of filename, so renaming a `.tiff` to `.png`
+    # for an image-kind field still decodes correctly. For binary
+    # formats with their own header (`depth → .npz`,
+    # `audio → .wav`), we can't lie — if source ext mismatches we
+    # skip the file (and any sample that becomes incomplete drops
+    # out of the manifest later).
+    from benchhub.types import DTYPES as _DTYPES
+    field_canonical: dict[str, str] = {}
+    field_kinds: dict[str, str] = {}
+    for f in manifest.get("fields", []):
+        k = f["kind"]
+        field_kinds[f["name"]] = k
+        cls = _DTYPES.get(k)
+        field_canonical[f["name"]] = cls.file_ext if cls and cls.file_ext else ""
+    sniffable_kinds = {"image", "mask"}
+
+    staged: set[tuple[str, str]] = set()   # (field, sample_id) actually on disk
     total = len(rows)
     for i, (field, sid, src_in_repo) in enumerate(rows):
-        ext = src_in_repo.suffix
-        dest = staging / field / f"{sid}{ext}"
+        src_ext = src_in_repo.suffix
+        canonical = field_canonical.get(field, "")
+        kind = field_kinds.get(field, "")
+        if kind in sniffable_kinds and canonical:
+            dest_ext = canonical
+        elif canonical and src_ext.lower() != canonical.lower():
+            # Binary-incompatible mismatch — skip rather than store
+            # bytes the runtime decoder can't read.
+            if progress and (i % 25 == 0 or i == total - 1):
+                progress(i + 1, total)
+            continue
+        else:
+            dest_ext = src_ext or canonical
+        dest = staging / field / f"{sid}{dest_ext}"
         try:
             _download(_raw_url(repo_id, str(src_in_repo)), dest)
+            staged.add((field, sid))
         except Exception as e:
             print(f"    [warn] download failed {src_in_repo}: {e}",
                   file=sys.stderr)
         if progress and (i % 25 == 0 or i == total - 1):
             progress(i + 1, total)
+
+    # Prune manifest samples to only those with every field staged.
+    # Otherwise the importer bails on the first missing file.
+    if staged:
+        per_sample_fields: dict[str, set[str]] = {}
+        for fld, sid in staged:
+            per_sample_fields.setdefault(sid, set()).add(fld)
+        required_fields = {f["name"] for f in manifest["fields"]}
+        kept = [sid for sid in manifest["samples"]
+                if per_sample_fields.get(sid) == required_fields]
+        if len(kept) != len(manifest["samples"]):
+            print(f"    pruning manifest: {len(manifest['samples'])} → "
+                  f"{len(kept)} samples after field-completeness check")
+            manifest["samples"] = kept
+        if not kept:
+            return None
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
 
 
