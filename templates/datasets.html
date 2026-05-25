@@ -18,7 +18,7 @@
 
     <div class="row g-5">
         <!-- Datasets List -->
-        <div class="col-lg-7">
+        <div class="col-lg-6">
             <h2 class="h4 mb-3 text-body-emphasis">
                 Available Datasets
                 <span class="badge bg-secondary fs-6 align-middle ms-2">{{ entries|length }}</span>
@@ -255,7 +255,7 @@
             {% endif %}
         </div>
 
-        <div class="col-lg-5">
+        <div class="col-lg-6">
             <div class="sticky-top" style="top: 100px; z-index: 900;">
 
             {# Storage gauge (logged-in users only). Admins bypass the
@@ -337,8 +337,7 @@
                     {# Fixed max-height so the rest of the page fits on
                        one screen — the snippet scrolls inside the box,
                        same vibe as a docs codeblock. #}
-                    <pre id="creator-snippet" class="small mb-0 font-monospace"
-                         style="max-height: 180px; overflow: auto;"><code>import benchhub as bh
+                    <pre id="creator-snippet" class="small mb-0 font-monospace"><code class="language-python">import benchhub as bh
 import numpy as np
 
 client  = bh.Client()                  # env: BENCHHUB_API_TOKEN + BENCHHUB_BASE_URL

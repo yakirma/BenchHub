@@ -71,7 +71,7 @@
         validation, and the submission-contract widget on the leaderboard
         page.
     </p>
-    <pre class="font-monospace small mb-3 p-3 rounded"><code>{
+    <pre class="font-monospace small mb-3 p-3 rounded"><code class="language-json">{
   "inputs": [
     {"name": "image", "kind": "image", "params": {}}
   ],
@@ -84,7 +84,7 @@
 }</code></pre>
 
     <h2 class="h4 fw-semibold mt-5">Submitting predictions</h2>
-    <pre class="font-monospace small mb-3 p-3 rounded"><code>import benchhub as bh, numpy as np
+    <pre class="font-monospace small mb-3 p-3 rounded"><code class="language-python">import benchhub as bh, numpy as np
 
 client = bh.Client()                       # reads BENCHHUB_API_TOKEN
 lb = client.leaderboard("nyu-depth-v2")

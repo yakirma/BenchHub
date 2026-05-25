@@ -508,6 +508,40 @@
             border-color: var(--bs-primary) !important;
         }
     </style>
+
+    {# Syntax highlighting for <pre><code class="language-..."> blocks.
+       highlight.js is ~30KB gzipped + auto-detects, so we don't need
+       to wire per-language packs. The atom-one-dark stylesheet pairs
+       with our deep-violet pre slab. We override its background to
+       transparent so our `pre` rule keeps owning the color. #}
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+    <style>
+        /* Let our `pre` background show through; only let HLJS paint
+           the token colors. */
+        .hljs { background: transparent !important; padding: 0 !important; }
+    </style>
+    <script defer
+            src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <script defer
+            src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/python.min.js"></script>
+    <script defer
+            src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/bash.min.js"></script>
+    <script>
+        // Highlight everything on DOMContentLoaded. Idempotent so it
+        // works when other scripts inject <pre><code> blocks later.
+        document.addEventListener('DOMContentLoaded', function () {
+            if (window.hljs) {
+                document.querySelectorAll('pre code').forEach(function (el) {
+                    if (!el.dataset.highlighted) {
+                        window.hljs.highlightElement(el);
+                        el.dataset.highlighted = 'yes';
+                    }
+                });
+            }
+        });
+    </script>
+
     {# Per-page <head> additions (extra meta tags, refresh hints, etc). #}
     {% block head_extra %}{% endblock %}
 </head>
