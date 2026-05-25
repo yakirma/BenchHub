@@ -527,19 +527,121 @@
             src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/python.min.js"></script>
     <script defer
             src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/languages/bash.min.js"></script>
+    <style>
+        /* Wrapper so we can absolutely-position a copy button in the
+           top-right of every <pre>. Set on .bh-codeblock (added by
+           the script below) so non-code <pre> blocks aren't touched. */
+        .bh-codeblock {
+            position: relative;
+        }
+        .bh-copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            padding: 0.2rem 0.55rem;
+            font-size: 0.72rem;
+            font-family: var(--bs-body-font-family);
+            font-weight: 500;
+            color: #cdc1ff;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 0.45rem;
+            cursor: pointer;
+            transition: opacity .15s ease, background-color .15s ease, color .15s ease;
+            opacity: 0;
+        }
+        .bh-codeblock:hover .bh-copy-btn,
+        .bh-copy-btn:focus { opacity: 1; }
+        .bh-copy-btn:hover {
+            background: rgba(255, 255, 255, 0.12);
+            color: #fff;
+        }
+        .bh-copy-btn.copied {
+            opacity: 1;
+            background: rgba(34, 197, 94, 0.18);
+            border-color: rgba(34, 197, 94, 0.35);
+            color: #86efac;
+        }
+
+        /* Project-specific syntax tint: `bh.Image`, `bh.Depth`, etc.
+           get coloured as a class name. HLJS's python lexer tags
+           attribute-access tokens generically, so we paint these
+           explicitly via the wrapping span the post-highlight pass
+           adds below. */
+        .hljs .bh-type { color: #e5c07b; font-weight: 500; }
+    </style>
     <script>
         // Highlight everything on DOMContentLoaded. Idempotent so it
         // works when other scripts inject <pre><code> blocks later.
-        document.addEventListener('DOMContentLoaded', function () {
-            if (window.hljs) {
-                document.querySelectorAll('pre code').forEach(function (el) {
-                    if (!el.dataset.highlighted) {
-                        window.hljs.highlightElement(el);
-                        el.dataset.highlighted = 'yes';
+        // Also adds the universal copy gadget + the BenchHub-type
+        // tinting pass.
+        (function () {
+            const BH_TYPE_RE = /\b(bh|benchhub)\.(Image|Mask|Depth|Audio|Text|BBoxes|Label|LabelList|Scalar|Json|DataType|Client|Submission|Leaderboard|Dataset|SubmissionBuilder|BHDatasetCreator)\b/g;
+
+            function decorateBhTypes(codeEl) {
+                // Walk text nodes inside the highlighted block and
+                // wrap matching `bh.<Name>` tokens in a span. Skip
+                // anchors / existing spans we already touched.
+                const walker = document.createTreeWalker(
+                    codeEl, NodeFilter.SHOW_TEXT, null,
+                );
+                const targets = [];
+                let node;
+                while ((node = walker.nextNode())) {
+                    if (node.nodeValue && BH_TYPE_RE.test(node.nodeValue)) {
+                        BH_TYPE_RE.lastIndex = 0;
+                        targets.push(node);
                     }
+                }
+                targets.forEach(function (textNode) {
+                    const html = textNode.nodeValue.replace(
+                        BH_TYPE_RE,
+                        '$1.<span class="bh-type">$2</span>',
+                    );
+                    const wrapper = document.createElement('span');
+                    wrapper.innerHTML = html;
+                    textNode.replaceWith(...wrapper.childNodes);
                 });
             }
-        });
+
+            function attachCopyButton(preEl) {
+                if (preEl.dataset.copyAttached) return;
+                preEl.dataset.copyAttached = 'yes';
+                preEl.classList.add('bh-codeblock');
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'bh-copy-btn';
+                btn.textContent = 'copy';
+                btn.setAttribute('aria-label', 'Copy code');
+                btn.addEventListener('click', async function () {
+                    const code = preEl.querySelector('code') || preEl;
+                    try {
+                        await navigator.clipboard.writeText(code.innerText);
+                        btn.textContent = '✓ copied';
+                        btn.classList.add('copied');
+                        setTimeout(function () {
+                            btn.textContent = 'copy';
+                            btn.classList.remove('copied');
+                        }, 1500);
+                    } catch (_) {
+                        btn.textContent = 'copy failed';
+                    }
+                });
+                preEl.appendChild(btn);
+            }
+
+            document.addEventListener('DOMContentLoaded', function () {
+                document.querySelectorAll('pre').forEach(function (preEl) {
+                    const codeEl = preEl.querySelector('code');
+                    if (codeEl && window.hljs && !codeEl.dataset.highlighted) {
+                        window.hljs.highlightElement(codeEl);
+                        codeEl.dataset.highlighted = 'yes';
+                        decorateBhTypes(codeEl);
+                    }
+                    attachCopyButton(preEl);
+                });
+            });
+        })();
     </script>
 
     {# Per-page <head> additions (extra meta tags, refresh hints, etc). #}
