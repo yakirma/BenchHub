@@ -546,6 +546,14 @@ def _png_depth_to_npz(src: Path, dst: Path) -> None:
     np.savez_compressed(dst, depth=arr)
 
 
+def _npy_to_npz(src: Path, dst: Path) -> None:
+    """Rewrap a single `.npy` array as `.npz` with key `depth`."""
+    import numpy as np
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.load(src, allow_pickle=False)
+    np.savez_compressed(dst, depth=arr)
+
+
 def _build_manifest(repo_id: str, layout: DetectedLayout, *,
                     max_samples: int) -> tuple[dict, list[tuple[str, str, Path]]]:
     """Return (manifest_dict, [(modality, sample_id, source_path_in_repo)])
@@ -633,8 +641,11 @@ def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
         kind = field_kinds.get(field, "")
 
         # Decide destination extension + whether the bytes need a
-        # format conversion at staging time.
-        convert_to_depth_npz = False
+        # format conversion at staging time. `depth_conv_mode` ∈
+        # {'image', 'npy', None}: 'image' means decode pixels →
+        # npz; 'npy' means rewrap a raw-array file as npz; None
+        # means write the downloaded bytes verbatim.
+        depth_conv_mode: str | None = None
         if kind in sniffable_kinds and canonical:
             # image/mask: rename to canonical .png; PIL sniffs magic.
             dest_ext = canonical
@@ -645,7 +656,12 @@ def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
             # typed-manifest pipeline (and the catalog's depth
             # render path) receive the array shape they expect.
             dest_ext = canonical or ".npz"
-            convert_to_depth_npz = True
+            depth_conv_mode = "image"
+        elif kind == "depth" and src_ext.lower() == ".npy":
+            # Raw `.npy` is the array-without-zip sibling of `.npz`.
+            # bh.Depth only loads `.npz`, so rewrap at staging time.
+            dest_ext = canonical or ".npz"
+            depth_conv_mode = "npy"
         elif canonical and src_ext.lower() != canonical.lower():
             if progress and (i % 25 == 0 or i == total - 1):
                 progress(i + 1, total)
@@ -655,13 +671,16 @@ def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
 
         dest = staging / field / f"{sid}{dest_ext}"
         try:
-            if convert_to_depth_npz:
-                # Download to a temp file, decode, re-pack as npz.
+            if depth_conv_mode is not None:
+                # Download to a temp file, then convert.
                 with tempfile.NamedTemporaryFile(suffix=src_ext, delete=False) as tmp:
                     tmp_path = tmp.name
                 try:
                     _download(_raw_url(repo_id, str(src_in_repo)), Path(tmp_path))
-                    _png_depth_to_npz(Path(tmp_path), dest)
+                    if depth_conv_mode == "image":
+                        _png_depth_to_npz(Path(tmp_path), dest)
+                    else:  # 'npy'
+                        _npy_to_npz(Path(tmp_path), dest)
                     staged.add((field, sid))
                 finally:
                     try: os.unlink(tmp_path)
