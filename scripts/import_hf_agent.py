@@ -189,7 +189,8 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         a_mods[modality].append((stem, path))
 
     if _has_paired_modalities(a_mods):
-        return DetectedLayout(kind="A", modalities=dict(a_mods),
+        collapsed = _collapse_modalities(dict(a_mods))
+        return DetectedLayout(kind="A", modalities=collapsed,
                                note="<modality>/<id>.<ext>")
 
     # --- Layout B: <modality>_<id>.<ext> at ANY depth. The full
@@ -217,7 +218,8 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         full_mod = f"{parent}/{mod_prefix}" if parent else mod_prefix
         b_mods[full_mod].append((sid, path))
     if _has_paired_modalities(b_mods):
-        return DetectedLayout(kind="B", modalities=dict(b_mods),
+        collapsed = _collapse_modalities(dict(b_mods))
+        return DetectedLayout(kind="B", modalities=collapsed,
                                note="<...>/<modality>_<id>.<ext>")
 
     # --- Layout C: <split>/<modality>/<id>.<ext>. Walks one level
@@ -250,9 +252,53 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
     if chosen_split:
         chosen = {mod: rows for (s, mod), rows in c_mods.items() if s == chosen_split}
         if _has_paired_modalities(chosen):
-            return DetectedLayout(kind="C", modalities=chosen,
+            collapsed = _collapse_modalities(chosen)
+            return DetectedLayout(kind="C", modalities=collapsed,
                                    note=f"{chosen_split}/<modality>/<id>.<ext>")
     return None
+
+
+def _collapse_modalities(
+    mods: dict[str, list[tuple[str, str]]],
+) -> dict[str, list[tuple[str, str]]]:
+    """Collapse modalities whose names share a common path suffix.
+
+    Datasets like PanoCity ship one `<city>/<block>/pano_images/pano`
+    + `<city>/<block>/panodepth_images/pano_depth` PAIR per city
+    block, giving us 100+ modalities that are really just `pano` and
+    `pano_depth` repeated. Field-explosion makes the LB unusable.
+
+    This pass groups modalities by their FINAL path component
+    (which is the actual modality token after the prefix-stem regex
+    strips `_<id>`) and merges sample-id lists. Sample ids stay
+    namespaced by their original parent path so collisions across
+    blocks don't overwrite each other on disk.
+
+    Returns the collapsed dict, or the original if collapsing
+    wouldn't reduce the count (no repeated suffix).
+    """
+    by_suffix: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for full_name, items in mods.items():
+        suffix = full_name.rsplit("/", 1)[-1]
+        # Prefix sample id with the parent path slug so e.g. block1/`5`
+        # and block2/`5` don't collide on disk.
+        parent_slug = full_name.rsplit("/", 1)[0] if "/" in full_name else ""
+        ns_items = []
+        for sid, path in items:
+            if parent_slug:
+                ns_sid = (re.sub(r"[^A-Za-z0-9_]+", "_", parent_slug).strip("_")
+                          + "_" + sid)
+            else:
+                ns_sid = sid
+            ns_items.append((ns_sid, path))
+        by_suffix[suffix].extend(ns_items)
+    # Only collapse when the result is meaningfully smaller. If every
+    # modality already has a unique suffix we'd just rename them to
+    # themselves — keep the original (full path) name in that case
+    # since it's more informative.
+    if len(by_suffix) >= len(mods):
+        return mods
+    return dict(by_suffix)
 
 
 def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
