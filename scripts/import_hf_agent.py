@@ -190,8 +190,13 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
 
     if _has_paired_modalities(a_mods):
         collapsed = _collapse_modalities(dict(a_mods))
-        return DetectedLayout(kind="A", modalities=collapsed,
-                               note="<modality>/<id>.<ext>")
+        # Collapse can fold N variants of "the same modality" into 1,
+        # which would invalidate the pairing. Re-check on the
+        # collapsed dict so we only return a layout the import
+        # pipeline can actually act on.
+        if _has_paired_modalities(collapsed):
+            return DetectedLayout(kind="A", modalities=collapsed,
+                                   note="<modality>/<id>.<ext>")
 
     # --- Layout B: <modality>_<id>.<ext> at ANY depth. The full
     # modality name picks up the parent path so different deeply-
@@ -219,8 +224,9 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         b_mods[full_mod].append((sid, path))
     if _has_paired_modalities(b_mods):
         collapsed = _collapse_modalities(dict(b_mods))
-        return DetectedLayout(kind="B", modalities=collapsed,
-                               note="<...>/<modality>_<id>.<ext>")
+        if _has_paired_modalities(collapsed):
+            return DetectedLayout(kind="B", modalities=collapsed,
+                                   note="<...>/<modality>_<id>.<ext>")
 
     # --- Layout C: <split>/<modality>/<id>.<ext>. Walks one level
     # deeper than A and prefers a `test`/`val` split branch.
@@ -253,8 +259,9 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         chosen = {mod: rows for (s, mod), rows in c_mods.items() if s == chosen_split}
         if _has_paired_modalities(chosen):
             collapsed = _collapse_modalities(chosen)
-            return DetectedLayout(kind="C", modalities=collapsed,
-                                   note=f"{chosen_split}/<modality>/<id>.<ext>")
+            if _has_paired_modalities(collapsed):
+                return DetectedLayout(kind="C", modalities=collapsed,
+                                       note=f"{chosen_split}/<modality>/<id>.<ext>")
     return None
 
 
