@@ -57,7 +57,7 @@
                 <span class="text-body-secondary small ms-auto font-monospace">{{ t.storage }}</span>
             </div>
             <div class="font-monospace small mb-1">{{ t.signature }}</div>
-            <pre class="font-monospace small mb-0 mt-1 p-2 rounded" style="background:#fcf9f4;border:1px solid #e8dfc8;"><code>{{ t.example }}</code></pre>
+            <pre class="font-monospace small mb-0 mt-1 p-2 rounded"><code>{{ t.example }}</code></pre>
         </div>
     </div>
     {% endfor %}
@@ -71,7 +71,7 @@
         validation, and the submission-contract widget on the leaderboard
         page.
     </p>
-    <pre class="font-monospace small mb-3 p-3 rounded" style="background:#f5efe2;border:1px solid #e8dfc8;"><code>{
+    <pre class="font-monospace small mb-3 p-3 rounded"><code>{
   "inputs": [
     {"name": "image", "kind": "image", "params": {}}
   ],
@@ -84,7 +84,7 @@
 }</code></pre>
 
     <h2 class="h4 fw-semibold mt-5">Submitting predictions</h2>
-    <pre class="font-monospace small mb-3 p-3 rounded" style="background:#f5efe2;border:1px solid #e8dfc8;"><code>import benchhub as bh, numpy as np
+    <pre class="font-monospace small mb-3 p-3 rounded"><code>import benchhub as bh, numpy as np
 
 client = bh.Client()                       # reads BENCHHUB_API_TOKEN
 lb = client.leaderboard("nyu-depth-v2")
