@@ -270,35 +270,27 @@ def _collapse_modalities(
 
     This pass groups modalities by their FINAL path component
     (which is the actual modality token after the prefix-stem regex
-    strips `_<id>`) and merges sample-id lists. Sample ids stay
-    namespaced by their original parent path so collisions across
-    blocks don't overwrite each other on disk.
+    strips `_<id>`) and dedupes sample ids: first occurrence wins.
+    The reason for the dedupe rather than namespacing-by-parent is
+    that across pano / pano_depth we WANT the same `0001` id to
+    line up (so the modalities can be intersected and paired). If
+    block1 and block2 both expose a sample called `0001`, we keep
+    block1's — losing data, but preserving the cross-modality
+    pairing that makes the dataset useful at all.
 
     Returns the collapsed dict, or the original if collapsing
-    wouldn't reduce the count (no repeated suffix).
+    wouldn't reduce the modality count.
     """
-    by_suffix: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    by_suffix: dict[str, dict[str, str]] = defaultdict(dict)
     for full_name, items in mods.items():
         suffix = full_name.rsplit("/", 1)[-1]
-        # Prefix sample id with the parent path slug so e.g. block1/`5`
-        # and block2/`5` don't collide on disk.
-        parent_slug = full_name.rsplit("/", 1)[0] if "/" in full_name else ""
-        ns_items = []
         for sid, path in items:
-            if parent_slug:
-                ns_sid = (re.sub(r"[^A-Za-z0-9_]+", "_", parent_slug).strip("_")
-                          + "_" + sid)
-            else:
-                ns_sid = sid
-            ns_items.append((ns_sid, path))
-        by_suffix[suffix].extend(ns_items)
-    # Only collapse when the result is meaningfully smaller. If every
-    # modality already has a unique suffix we'd just rename them to
-    # themselves — keep the original (full path) name in that case
-    # since it's more informative.
+            # `setdefault` semantics: first occurrence wins. Stable
+            # because dict insertion order is preserved.
+            by_suffix[suffix].setdefault(sid, path)
     if len(by_suffix) >= len(mods):
         return mods
-    return dict(by_suffix)
+    return {name: list(d.items()) for name, d in by_suffix.items()}
 
 
 def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
@@ -336,7 +328,10 @@ def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
 # segments are typically separated by `/`, `_`, or `-`; treat all
 # three as word boundaries so `pano_depth` and `sem-seg` still match.
 _MASK_NAME_TOKENS = re.compile(
-    r"(?:^|[/_\-])(mask|masks|seg|semantic|panopt|annotation|label_map)(?:$|[/_\-])",
+    r"(?:^|[/_\-])"
+    r"(mask|masks|seg|segmentation|semantic|panopt|panoptic|"
+    r"annotation|annotations|label_map|sem_seg|instance_seg)"
+    r"(?:$|[/_\-])",
     re.I,
 )
 _DEPTH_NAME_TOKENS = re.compile(
