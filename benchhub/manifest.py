@@ -257,6 +257,24 @@ def import_typed_dataset(
                 shutil.copy2(src, dst)
                 cf.value_text = str(dst.relative_to(upload_folder))
                 n_files_copied += 1
+                # `text` / `json` are file-backed for layout
+                # symmetry, but every code path that renders them
+                # (comparison view, dataset view's text scrollbox)
+                # reads CustomField.value_text directly as the
+                # CONTENT. Without this override, value_text holds
+                # the file path instead and users see e.g.
+                # "datasets/9/shelfmark/00000.txt" rendered as the
+                # shelfmark.
+                if kind in ("text", "json"):
+                    try:
+                        cf.value_text = (
+                            dst.read_text(encoding="utf-8").rstrip("\n")
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        # Leave the path as a fallback if the file
+                        # isn't decodable — better something than a
+                        # crashed import.
+                        pass
             db_session.add(cf)
             n_field_rows += 1
 
@@ -583,6 +601,18 @@ def import_typed_submission(
                 shutil.copy2(src, dst)
                 cf.value_text = str(dst.relative_to(upload_folder))
                 n_files_copied += 1
+                # See the dataset-import counterpart: text/json are
+                # file-backed but the comparison view renders
+                # value_text as content. Override with the file's
+                # actual content so we don't show submitters the
+                # file path as their prediction.
+                if kind in ("text", "json"):
+                    try:
+                        cf.value_text = (
+                            dst.read_text(encoding="utf-8").rstrip("\n")
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        pass
             db_session.add(cf)
             n_pred_rows += 1
 
