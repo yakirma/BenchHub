@@ -214,6 +214,7 @@ def materialize_hf_to_typed_dir(
     sampling: str = "head",
     seed: int = 42,
     sample_name_from: str | None = None,
+    config_name: str | None = None,
     progress_cb=None,
 ) -> dict:
     """Download up to `sample_cap` rows of `repo_id[:split]` and lay
@@ -247,6 +248,8 @@ def materialize_hf_to_typed_dir(
     from datasets import load_dataset  # heavy import — gate to call time.
 
     ds_kwargs: dict[str, Any] = {"trust_remote_code": False}
+    if config_name:
+        ds_kwargs["name"] = config_name
     if revision:
         ds_kwargs["revision"] = revision
     if hf_token:
