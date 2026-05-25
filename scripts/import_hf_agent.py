@@ -293,18 +293,89 @@ def _collapse_modalities(
     return {name: list(d.items()) for name, d in by_suffix.items()}
 
 
+_SEMANTIC_CATEGORY_TOKENS = {
+    # token (case-insensitive substring of any modality path
+    # component) → coarse semantic category. Catches the case
+    # where multiple modalities ship as PNGs (so file-ext-based
+    # `_kind_for` collapses them all to 'image') but the NAMES
+    # clearly mean different things: PanoCity's pano + pano_depth
+    # are both PNG but obviously a paired modality dataset.
+    "depth":         "depth-like",
+    "disparity":     "depth-like",
+    "normal":        "normal-like",
+    "normals":       "normal-like",
+    "mask":          "mask-like",
+    "masks":         "mask-like",
+    "seg":           "mask-like",
+    "segmentation":  "mask-like",
+    "panopt":        "mask-like",
+    "panoptic":      "mask-like",
+    "semantic":      "mask-like",
+    "annotation":    "mask-like",
+    "annotations":   "mask-like",
+    "rgb":           "image-like",
+    "rgba":          "image-like",
+    "color":         "image-like",
+    "image":         "image-like",
+    "images":        "image-like",
+    "photo":         "image-like",
+    "photos":        "image-like",
+    "pano":          "image-like",
+    "panorama":      "image-like",
+    "panoramas":     "image-like",
+    "pose":          "pose-like",
+    "poses":         "pose-like",
+    "keypoint":      "pose-like",
+    "keypoints":     "pose-like",
+    "flow":          "flow-like",
+    "optical_flow":  "flow-like",
+    "forward_flow":  "flow-like",
+    "bbox":          "bbox-like",
+    "bboxes":        "bbox-like",
+    "boxes":         "bbox-like",
+    "caption":       "text-like",
+    "captions":      "text-like",
+    "text":          "text-like",
+    "audio":         "audio-like",
+}
+
+
+def _semantic_category(modality: str) -> str | None:
+    """Coarse semantic bucket for a modality name.
+
+    Splits on `/`, `_`, `-` and checks each segment against
+    `_SEMANTIC_CATEGORY_TOKENS`. Returns the LAST match, because
+    modality names tend to be `<container>_<actual-thing>`
+    (`pano_depth`, `front_normal`, `cam_1_segmentation`); the
+    rightmost token is usually the modality itself, the earlier
+    ones are containers / camera indices / etc.
+    """
+    parts = re.split(r"[/_\-]+", modality.lower())
+    last: str | None = None
+    for p in parts:
+        cat = _SEMANTIC_CATEGORY_TOKENS.get(p)
+        if cat:
+            last = cat
+    return last
+
+
 def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
     """A layout pairs up when:
       - ≥ 2 modalities exist
       - the two biggest share ≥ 20 sample ids
-      - those modalities span ≥ 2 *distinct BH kinds*
+      - those modalities span ≥ 2 *distinct semantic categories*
 
-    The last condition is what kills the false-positive case of a
-    flat classification tree (e.g. LFW: `train/images/000/AJ_Cook`,
-    `…/AJ_Lamas`, …) where every "modality" is just another folder
-    of images. We only want real multi-modality benchmarks here
-    (image + depth, rgb + mask, etc.), not class-per-folder
-    layouts.
+    The semantic-category check is what kills the false-positive
+    case of a flat classification tree (LFW: one folder per person,
+    all PNGs) — every "modality" name is a person name with no
+    `depth`/`mask`/`pose`/etc. token in it, so they all map to the
+    same `None` bucket and fail the diversity check.
+
+    We use semantic name buckets rather than the file-extension-
+    derived BH `kind` so that legit multi-modality datasets where
+    every modality ships as PNG (PanoCity: `pano` + `pano_depth`
+    are both PNG → both kind=image, but `pano` and `pano_depth`
+    are obviously different semantic categories) still match.
     """
     if len(mods) < 2:
         return False
@@ -314,8 +385,9 @@ def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
     big_sets = [{sid for sid, _ in v} for _, v in pop[:2]]
     if len(big_sets[0] & big_sets[1]) < 20:
         return False
-    kinds_seen = {_kind_for(name, [p for _, p in items]) for name, items in mods.items()}
-    return len(kinds_seen) >= 2
+    cats_seen = {_semantic_category(name) for name in mods}
+    cats_seen.discard(None)
+    return len(cats_seen) >= 2
 
 
 # ---------------------------------------------------------------------------
