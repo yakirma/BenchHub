@@ -186,6 +186,23 @@ _JSON_EXTS = {"json"}
 _ALL_DATA_EXTS = _IMAGE_EXTS | _DEPTH_EXTS | _AUDIO_EXTS | _TEXT_EXTS | _JSON_EXTS
 
 
+def _is_junk_filename(leaf: str) -> bool:
+    """Skip hidden / metadata files that pollute layout detection.
+
+    `._<name>` is AppleDouble metadata that macOS Finder inserts when
+    zipping; `.DS_Store` is the Finder index. Both show up in HF
+    repos that were prepared on Macs and end up surfacing as fake
+    modalities (`._panorama`, `._pose`) that pair with nothing.
+    Also skip `Thumbs.db` and any plain `.<name>` dotfile.
+    """
+    return (
+        leaf.startswith("._")
+        or leaf == ".DS_Store"
+        or leaf == "Thumbs.db"
+        or leaf.startswith(".")
+    )
+
+
 def _detect_layout(files: list[dict]) -> DetectedLayout | None:
     """Try layouts A → C in order, return the first that pairs up.
 
@@ -204,6 +221,8 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
             continue
         modality = parts[0]
         leaf = parts[-1]
+        if _is_junk_filename(leaf):
+            continue
         m = _FILE_RE.match(leaf)
         if not m:
             continue
@@ -235,6 +254,8 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         path = f.get("path", "")
         parts = path.split("/")
         leaf = parts[-1]
+        if _is_junk_filename(leaf):
+            continue
         m = _FILE_RE.match(leaf)
         if not m:
             continue
@@ -264,6 +285,8 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
             continue
         split, modality = parts[0], parts[1]
         leaf = parts[-1]
+        if _is_junk_filename(leaf):
+            continue
         m = _FILE_RE.match(leaf)
         if not m:
             continue
