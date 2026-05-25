@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""Agent-mode HF importer: works directly from the file tree.
+
+The Croissant-based importer only sees columns that the dataset
+uploader explicitly exposed in `dataset_info`. Many real benchmark
+datasets ship as a folder of paired files (RGB + depth + mask, etc.)
+with no Croissant doc at all. This script peeks at the repo's tree,
+groups files by a shared sample-id stem, and imports each modality
+as a typed field — no Croissant required.
+
+Supported file layouts (auto-detected per repo):
+
+  A. `<modality>/<sample_id>.<ext>`          (KITTI eval, NYUv2, …)
+  B. `<modality>_<sample_id>.<ext>` at root  (the modality-prefix shape)
+  C. `<split>/<modality>/<sample_id>.<ext>`  (test/depth/foo.png, …)
+
+For each modality, the file extension picks the BH kind:
+   .png/.jpg/.jpeg/.bmp/.tiff   → image (or mask if name hints at one)
+   .npz/.npy/.exr/.tif/.tiff    → depth (heuristic — see _kind_for_ext)
+   .json                        → json
+   .txt                         → text
+   .wav/.mp3/.flac              → audio
+
+Single-dataset usage:
+    BENCHHUB_DATA_DIR=$HOME/.dtofbenchmarking \\
+        ~/benchhub/.venv/bin/python scripts/import_hf_agent.py \\
+        --repo Kai-Yin-UoA/Monocular_Depth_Essentials \\
+        --i-know-what-im-doing
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
+_HF_API_BASE = "https://huggingface.co/api/datasets"
+_HF_RAW_BASE = "https://huggingface.co/datasets"
+
+
+# ---------------------------------------------------------------------------
+# HF tree walking
+# ---------------------------------------------------------------------------
+
+
+def _walk_tree(repo_id: str, *, timeout: int = 60,
+               max_files: int = 0, max_pages: int = 100) -> list[dict]:
+    """Return file entries under <repo>/main, paginating through HF's
+    `?cursor=` continuation tokens (1000/page).
+
+    `max_files`: stop once we have at least that many file entries.
+    Used by the layout probe — paired-modality structure shows up in
+    the first few thousand entries because the API returns paths in
+    a stable order, so we don't need to walk a 100k-entry tree just
+    to decide "no, this one doesn't pair".
+    """
+    base = f"{_HF_API_BASE}/{urllib.parse.quote(repo_id, safe='/')}/tree/main?recursive=1"
+    out: list[dict] = []
+    cursor = None
+    pages = 0
+    while pages < max_pages:
+        url = base + (f"&cursor={cursor}" if cursor else "")
+        req = urllib.request.Request(url, headers={"User-Agent": "benchhub-agent/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                rows = json.loads(resp.read())
+                link = resp.headers.get("Link") or ""
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            print(f"  tree fetch error: {e}", file=sys.stderr)
+            break
+        out.extend(r for r in rows if isinstance(r, dict) and r.get("type") == "file")
+        pages += 1
+        if max_files and len(out) >= max_files:
+            break
+        nxt = None
+        for part in link.split(","):
+            if 'rel="next"' in part:
+                m = re.search(r"[?&]cursor=([^&>]+)", part)
+                if m:
+                    nxt = urllib.parse.unquote(m.group(1))
+        if not nxt:
+            break
+        cursor = nxt
+    return out
+
+
+def _fetch_dataset_info(repo_id: str, *, timeout: int = 20) -> dict | None:
+    url = f"{_HF_API_BASE}/{urllib.parse.quote(repo_id, safe='/')}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            doc = json.loads(r.read())
+    except Exception:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _list_top_for_task(task: str, *, limit: int = 30) -> list[dict]:
+    params = urllib.parse.urlencode({
+        "filter": f"task_categories:{task}",
+        "sort": "downloads", "direction": "-1", "limit": str(limit),
+    })
+    url = f"{_HF_API_BASE}?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            return [d for d in json.loads(r.read()) if isinstance(d, dict)]
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Layout detection
+# ---------------------------------------------------------------------------
+
+
+_FILE_RE = re.compile(r"^(?P<stem>.+)\.(?P<ext>[A-Za-z0-9]+)$")
+_NUMERIC_STEM_RE = re.compile(r"^\d{3,}$")          # eg "00042", "00000123"
+# Match `<modality>_<numeric_id>` greedily from the end, so
+# `cam_1_10002434` parses as modality=`cam_1`, id=`10002434` rather
+# than modality=`cam`, id=`1_10002434`.
+_PREFIX_STEM_RE = re.compile(r"^(?P<modality>.+?)_(?P<id>\d{3,})$")
+
+
+@dataclass
+class DetectedLayout:
+    """How a repo's files pair up into (sample, modality)."""
+    kind: str                   # 'A_<modality>/<id>' | 'B_<modality>_<id>' | 'C_<split>/<modality>/<id>'
+    modalities: dict[str, list[tuple[str, str]]]   # modality → [(sample_id, file_path)]
+    note: str = ""
+
+    @property
+    def sample_ids(self) -> set[str]:
+        s: set[str] = set()
+        for items in self.modalities.values():
+            for sid, _ in items:
+                s.add(sid)
+        return s
+
+
+_IMAGE_EXTS = {"png", "jpg", "jpeg", "bmp", "tiff", "tif", "webp"}
+_DEPTH_EXTS = {"npz", "npy", "exr", "pfm"}
+_AUDIO_EXTS = {"wav", "mp3", "flac", "ogg"}
+_TEXT_EXTS = {"txt"}
+_JSON_EXTS = {"json"}
+_ALL_DATA_EXTS = _IMAGE_EXTS | _DEPTH_EXTS | _AUDIO_EXTS | _TEXT_EXTS | _JSON_EXTS
+
+
+def _detect_layout(files: list[dict]) -> DetectedLayout | None:
+    """Try layouts A → C in order, return the first that pairs up.
+
+    Heuristic: a layout 'pairs up' when at least 2 modalities share
+    ≥ 20 sample ids, ie the dataset actually has multi-modality
+    structure rather than one folder of unrelated images."""
+    # --- Layout A: <modality>/<id>.<ext> (possibly with deeper subdirs;
+    # we treat the FIRST path component as the modality and the last
+    # segment's stem as the id). Drops everything not in a recognised
+    # ext set so README.md / .gitattributes / configs don't pollute.
+    a_mods: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for f in files:
+        path = f.get("path", "")
+        parts = path.split("/")
+        if len(parts) < 2:
+            continue
+        modality = parts[0]
+        leaf = parts[-1]
+        m = _FILE_RE.match(leaf)
+        if not m:
+            continue
+        ext = m.group("ext").lower()
+        if ext not in _ALL_DATA_EXTS:
+            continue
+        stem = m.group("stem")
+        if not _NUMERIC_STEM_RE.match(stem):
+            continue
+        a_mods[modality].append((stem, path))
+
+    if _has_paired_modalities(a_mods):
+        return DetectedLayout(kind="A", modalities=dict(a_mods),
+                               note="<modality>/<id>.<ext>")
+
+    # --- Layout B: <modality>_<id>.<ext> at ANY depth. The full
+    # modality name picks up the parent path so different deeply-
+    # nested branches (e.g. `germany_batch3/Ingol1/agg_depth/cam_1`
+    # vs `…/rgb/cam_1`) get separate field names instead of
+    # collapsing into one bucket.
+    b_mods: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for f in files:
+        path = f.get("path", "")
+        parts = path.split("/")
+        leaf = parts[-1]
+        m = _FILE_RE.match(leaf)
+        if not m:
+            continue
+        ext = m.group("ext").lower()
+        if ext not in _ALL_DATA_EXTS:
+            continue
+        prefix_m = _PREFIX_STEM_RE.match(m.group("stem"))
+        if not prefix_m:
+            continue
+        sid = prefix_m.group("id")
+        mod_prefix = prefix_m.group("modality")
+        parent = "/".join(parts[:-1])
+        full_mod = f"{parent}/{mod_prefix}" if parent else mod_prefix
+        b_mods[full_mod].append((sid, path))
+    if _has_paired_modalities(b_mods):
+        return DetectedLayout(kind="B", modalities=dict(b_mods),
+                               note="<...>/<modality>_<id>.<ext>")
+
+    # --- Layout C: <split>/<modality>/<id>.<ext>. Walks one level
+    # deeper than A and prefers a `test`/`val` split branch.
+    c_mods: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    for f in files:
+        path = f.get("path", "")
+        parts = path.split("/")
+        if len(parts) < 3:
+            continue
+        split, modality = parts[0], parts[1]
+        leaf = parts[-1]
+        m = _FILE_RE.match(leaf)
+        if not m:
+            continue
+        ext = m.group("ext").lower()
+        if ext not in _ALL_DATA_EXTS:
+            continue
+        stem = m.group("stem")
+        if not _NUMERIC_STEM_RE.match(stem):
+            continue
+        c_mods[(split, modality)].append((stem, path))
+
+    # Prefer a non-train split
+    splits = {s for (s, _) in c_mods}
+    chosen_split = next(
+        (s for s in ("test", "validation", "val") if s in splits),
+        None,
+    )
+    if chosen_split:
+        chosen = {mod: rows for (s, mod), rows in c_mods.items() if s == chosen_split}
+        if _has_paired_modalities(chosen):
+            return DetectedLayout(kind="C", modalities=chosen,
+                                   note=f"{chosen_split}/<modality>/<id>.<ext>")
+    return None
+
+
+def _has_paired_modalities(mods: dict[str, list[tuple[str, str]]]) -> bool:
+    """A layout pairs up when:
+      - ≥ 2 modalities exist
+      - the two biggest share ≥ 20 sample ids
+      - those modalities span ≥ 2 *distinct BH kinds*
+
+    The last condition is what kills the false-positive case of a
+    flat classification tree (e.g. LFW: `train/images/000/AJ_Cook`,
+    `…/AJ_Lamas`, …) where every "modality" is just another folder
+    of images. We only want real multi-modality benchmarks here
+    (image + depth, rgb + mask, etc.), not class-per-folder
+    layouts.
+    """
+    if len(mods) < 2:
+        return False
+    pop = sorted(mods.items(),
+                 key=lambda kv: len({sid for sid, _ in kv[1]}),
+                 reverse=True)
+    big_sets = [{sid for sid, _ in v} for _, v in pop[:2]]
+    if len(big_sets[0] & big_sets[1]) < 20:
+        return False
+    kinds_seen = {_kind_for(name, [p for _, p in items]) for name, items in mods.items()}
+    return len(kinds_seen) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Kind inference per modality
+# ---------------------------------------------------------------------------
+
+
+# Word-boundary anchors so we don't false-match `seg` inside
+# `Bernardo_Segura` or `depth` inside some person name. Modality
+# segments are typically separated by `/`, `_`, or `-`; treat all
+# three as word boundaries so `pano_depth` and `sem-seg` still match.
+_MASK_NAME_TOKENS = re.compile(
+    r"(?:^|[/_\-])(mask|masks|seg|semantic|panopt|annotation|label_map)(?:$|[/_\-])",
+    re.I,
+)
+_DEPTH_NAME_TOKENS = re.compile(
+    r"(?:^|[/_\-])(depth|disparity|normal|normals)(?:$|[/_\-])",
+    re.I,
+)
+
+
+def _kind_for(modality: str, paths: list[str]) -> str:
+    """Pick a BH `kind` for a modality, given its name + file ext."""
+    if not paths:
+        return "json"
+    exts = Counter(p.rsplit(".", 1)[-1].lower() for p in paths if "." in p)
+    ext = exts.most_common(1)[0][0]
+    if ext in _DEPTH_EXTS:
+        return "depth"
+    if ext in _AUDIO_EXTS:
+        return "audio"
+    if ext in _JSON_EXTS:
+        return "json"
+    if ext in _TEXT_EXTS:
+        return "text"
+    if ext in _IMAGE_EXTS:
+        # Name hint promotes generic image → mask / depth. The
+        # runtime decoder treats them all as PNG bytes; the kind
+        # drives palette rendering + colorbar handling on the
+        # catalog views.
+        if _MASK_NAME_TOKENS.search(modality):
+            return "mask"
+        if _DEPTH_NAME_TOKENS.search(modality):
+            return "depth"
+        return "image"
+    return "json"
+
+
+# ---------------------------------------------------------------------------
+# Download + import
+# ---------------------------------------------------------------------------
+
+
+def _raw_url(repo_id: str, path: str) -> str:
+    return f"{_HF_RAW_BASE}/{urllib.parse.quote(repo_id, safe='/')}/resolve/main/{urllib.parse.quote(path)}"
+
+
+def _download(url: str, dest: Path, *, timeout: int = 120):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(url, headers={"User-Agent": "benchhub-agent/0.1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as out:
+        shutil.copyfileobj(r, out)
+
+
+def _build_manifest(repo_id: str, layout: DetectedLayout, *,
+                    max_samples: int) -> tuple[dict, list[tuple[str, str, Path]]]:
+    """Return (manifest_dict, [(modality, sample_id, source_path_in_repo)])
+    capped at `max_samples` shared sample ids."""
+    # Order modalities by coverage (biggest first) so we don't lose
+    # the most-populated one to capping.
+    by_cov = sorted(layout.modalities.items(),
+                    key=lambda kv: len({s for s, _ in kv[1]}),
+                    reverse=True)
+    # Build the shared-sample set: intersect the two biggest modalities
+    big_sets = [{sid for sid, _ in v} for _, v in by_cov[:2]]
+    shared = big_sets[0] & big_sets[1] if len(big_sets) > 1 else set()
+    if not shared:
+        return ({}, [])
+    sample_ids = sorted(shared)
+    if max_samples > 0:
+        sample_ids = sample_ids[:max_samples]
+    sample_set = set(sample_ids)
+
+    fields = []
+    rows = []
+    seen_modality_names: dict[str, str] = {}
+    for modality, items in by_cov:
+        # Pick a canonical kind from the modality's actual files.
+        paths_in_use = [p for s, p in items if s in sample_set]
+        if not paths_in_use:
+            continue
+        kind = _kind_for(modality, paths_in_use)
+        safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", modality).strip("_") or "field"
+        # Avoid name collisions across modalities that sanitise to the same string
+        n = safe_name; i = 2
+        while n in seen_modality_names:
+            n = f"{safe_name}_{i}"; i += 1
+        seen_modality_names[n] = modality
+        fields.append({"name": n, "kind": kind, "role": "gt", "params": {}})
+        for sid, path in items:
+            if sid in sample_set:
+                rows.append((n, sid, Path(path)))
+
+    return ({
+        "name": repo_id.replace("/", "__"),
+        "version": "1.0",
+        "fields": fields,
+        "samples": sample_ids,
+    }, rows)
+
+
+def _stage_dataset(repo_id: str, layout: DetectedLayout, *,
+                   max_samples: int, staging: Path,
+                   progress=None) -> dict | None:
+    manifest, rows = _build_manifest(repo_id, layout, max_samples=max_samples)
+    if not manifest:
+        return None
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    # Stage each field's files under <staging>/<field>/<sample_id>.<ext>
+    # — the layout `import_typed_dataset` expects.
+    total = len(rows)
+    for i, (field, sid, src_in_repo) in enumerate(rows):
+        ext = src_in_repo.suffix
+        dest = staging / field / f"{sid}{ext}"
+        try:
+            _download(_raw_url(repo_id, str(src_in_repo)), dest)
+        except Exception as e:
+            print(f"    [warn] download failed {src_in_repo}: {e}",
+                  file=sys.stderr)
+        if progress and (i % 25 == 0 or i == total - 1):
+            progress(i + 1, total)
+    return manifest
+
+
+def _import_staged(repo_id: str, staging: Path, *, owner_user_id: int,
+                   task_label: str | None, dataset_card: dict | None) -> dict:
+    from app import (
+        Dataset, DatasetField, Sample, CustomField, app, db,
+        _hf_tags_to_category,
+    )
+    from benchhub.manifest import import_typed_dataset
+
+    with app.app_context():
+        # Pre-create the row so it shows on /datasets with status='importing'
+        ds_row = Dataset(
+            name=repo_id.replace("/", "__"),
+            owner_user_id=owner_user_id,
+            visibility="public",
+            import_status="importing",
+            import_progress_json=json.dumps({
+                "phase": "agent-import", "message": f"agent-mode: {repo_id}",
+            }),
+        )
+        db.session.add(ds_row); db.session.commit()
+        ds_id = ds_row.id
+
+        existing = Dataset.query.get(ds_id)
+        try:
+            _, summary = import_typed_dataset(
+                str(staging),
+                db_session=db.session,
+                Dataset=Dataset, Sample=Sample,
+                CustomField=CustomField, DatasetField=DatasetField,
+                upload_folder=app.config["UPLOAD_FOLDER"],
+                existing_dataset=existing,
+            )
+            existing.source_kind = "hf"
+            existing.source_url = f"https://huggingface.co/datasets/{repo_id}"
+            existing.source_metadata = json.dumps({
+                "repo_id": repo_id,
+                "split": None,
+                "agent_mode": True,
+                "samples_imported": summary.get("samples"),
+            })
+            existing.import_status = "ready"
+            existing.import_error = None
+            existing.import_progress_json = None
+            tags = (dataset_card or {}).get("tags") or []
+            cat = _hf_tags_to_category(tags)
+            if cat:
+                existing.category = cat
+            db.session.commit()
+            return {"dataset_id": ds_id, **summary}
+        except Exception as e:
+            db.session.rollback()
+            row = Dataset.query.get(ds_id)
+            if row is not None:
+                row.import_status = "failed"
+                row.import_error = str(e)
+                db.session.commit()
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Top-level: import one repo
+# ---------------------------------------------------------------------------
+
+
+def _admin_user_id() -> int | None:
+    from app import User
+    u = User.query.filter_by(is_admin=True).order_by(User.id).first()
+    return u.id if u else None
+
+
+def import_one(repo_id: str, *, max_samples: int = 200, dry_run: bool = False,
+               task_label: str | None = None) -> dict:
+    print(f"  → walking tree of {repo_id}…", flush=True)
+    files = _walk_tree(repo_id)
+    print(f"    {len(files)} files")
+    if not files:
+        return {"status": "skipped", "reason": "empty tree"}
+    layout = _detect_layout(files)
+    if not layout:
+        return {"status": "skipped", "reason": "no recognised paired layout"}
+    print(f"    layout {layout.kind}: {layout.note}")
+    print(f"    modalities: { {m: len({sid for sid,_ in v}) for m, v in layout.modalities.items()} }")
+    shared = layout.sample_ids
+    print(f"    shared samples (intersection of biggest two): {len(shared)}")
+    if dry_run:
+        return {"status": "would-import",
+                "layout": layout.kind, "modalities": list(layout.modalities)}
+    from app import app
+    with app.app_context():
+        owner = _admin_user_id()
+    if owner is None:
+        return {"status": "failed", "reason": "no admin user"}
+    card = _fetch_dataset_info(repo_id)
+    with tempfile.TemporaryDirectory(prefix="bh_agent_") as staging:
+        manifest = _stage_dataset(
+            repo_id, layout, max_samples=max_samples, staging=Path(staging),
+            progress=lambda i, total: print(f"    download {i}/{total}", flush=True),
+        )
+        if not manifest:
+            return {"status": "skipped", "reason": "no shared samples after capping"}
+        result = _import_staged(
+            repo_id, Path(staging), owner_user_id=owner,
+            task_label=task_label, dataset_card=card,
+        )
+    return {"status": "imported", **result}
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--repo", type=str, help="single repo_id to import")
+    p.add_argument("--max-samples", type=int, default=200)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--i-know-what-im-doing", action="store_true",
+                   help="confirm writes to the production data dir")
+    args = p.parse_args(argv)
+
+    dd = os.environ.get("BENCHHUB_DATA_DIR") or os.path.expanduser("~/.dtofbenchmarking")
+    if dd == os.path.expanduser("~/.dtofbenchmarking") and not args.i_know_what_im_doing:
+        print("fatal: production data dir. pass --i-know-what-im-doing",
+              file=sys.stderr)
+        return 2
+    os.environ.setdefault("BENCHHUB_DATA_DIR", dd)
+
+    if not args.repo:
+        print("--repo required for single-import mode", file=sys.stderr)
+        return 2
+
+    t0 = time.monotonic()
+    r = import_one(args.repo, max_samples=args.max_samples, dry_run=args.dry_run)
+    print(f"\n[{time.monotonic()-t0:.1f}s] {args.repo}: {r}")
+    return 0 if r.get("status") in ("imported", "would-import") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
