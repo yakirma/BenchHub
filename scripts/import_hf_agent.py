@@ -129,10 +129,37 @@ def _list_top_for_task(task: str, *, limit: int = 30) -> list[dict]:
 
 _FILE_RE = re.compile(r"^(?P<stem>.+)\.(?P<ext>[A-Za-z0-9]+)$")
 _NUMERIC_STEM_RE = re.compile(r"^\d{3,}$")          # eg "00042", "00000123"
-# Match `<modality>_<numeric_id>` greedily from the end, so
-# `cam_1_10002434` parses as modality=`cam_1`, id=`10002434` rather
-# than modality=`cam`, id=`1_10002434`.
-_PREFIX_STEM_RE = re.compile(r"^(?P<modality>.+?)_(?P<id>\d{3,})$")
+# Locate the numeric sample-id segment of a filename stem, possibly
+# followed by a sub-modality suffix:
+#   `cam_1_10002434`           → id=10002434, before=`cam_1`, after=
+#   `panorama_0000`            → id=0000,     before=`panorama`, after=
+#   `panorama_0000_depth`      → id=0000,     before=`panorama`, after=`depth`
+#   `scene12_0123_rgb`         → id=0123,     before=`scene12`,  after=`rgb`
+# The id pattern requires ≥3 digits so 2-digit camera indices
+# (`cam_1`, `image_02`) aren't mistaken for ids. The suffix is
+# optional; modality buckets are then `before` (no suffix) or
+# `before/after` (with suffix).
+_ID_RE = re.compile(
+    r"_(?P<id>\d{3,})(?:_(?P<suffix>[A-Za-z][A-Za-z0-9]*))?$"
+)
+
+
+def _parse_stem(stem: str) -> tuple[str, str] | None:
+    """Return `(modality, sample_id)` parsed from a filename stem, or
+    None when no `_<digits>` segment exists. The `modality` includes
+    a `/` separator between the pre-id and post-id portions, so e.g.
+    `panorama_0000_depth` → ('panorama/depth', '0000'). Different
+    sub-modalities end up in different buckets in the layout-B
+    detector."""
+    m = _ID_RE.search(stem)
+    if not m:
+        return None
+    before = stem[:m.start()]
+    suffix = m.group("suffix") or ""
+    if not before:
+        return None
+    modality = f"{before}/{suffix}" if suffix else before
+    return (modality, m.group("id"))
 
 
 @dataclass
@@ -214,11 +241,10 @@ def _detect_layout(files: list[dict]) -> DetectedLayout | None:
         ext = m.group("ext").lower()
         if ext not in _ALL_DATA_EXTS:
             continue
-        prefix_m = _PREFIX_STEM_RE.match(m.group("stem"))
-        if not prefix_m:
+        parsed = _parse_stem(m.group("stem"))
+        if not parsed:
             continue
-        sid = prefix_m.group("id")
-        mod_prefix = prefix_m.group("modality")
+        mod_prefix, sid = parsed
         parent = "/".join(parts[:-1])
         full_mod = f"{parent}/{mod_prefix}" if parent else mod_prefix
         b_mods[full_mod].append((sid, path))
