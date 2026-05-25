@@ -396,6 +396,25 @@ _SEMANTIC_CATEGORY_TOKENS = {
 }
 
 
+def _guess_role(modality: str, kind: str) -> str:
+    """Default per-field role for an auto-imported dataset.
+
+    Convention for multi-modality vision benchmarks:
+      - RGB-like image (rgb, rgba, photo, pano, panorama, image) is
+        the model INPUT — what the submitter sees at inference time.
+      - Everything else (depth, mask, segmentation, normal, pose,
+        label, caption, …) is GT — what gets scored against.
+
+    The LB owner can flip any of these on /dataset/<id>/settings or
+    override per-LB on the LB settings page if the convention
+    doesn't fit a specific benchmark.
+    """
+    sem = _semantic_category(modality)
+    if sem == "image-like" and kind == "image":
+        return "input"
+    return "gt"
+
+
 def _semantic_category(modality: str) -> str | None:
     """Coarse semantic bucket for a modality name.
 
@@ -590,7 +609,8 @@ def _build_manifest(repo_id: str, layout: DetectedLayout, *,
             n = f"{safe_name}_{i}"; i += 1
         seen_modality_names[n] = modality
         field_kinds[n] = kind
-        fields.append({"name": n, "kind": kind, "role": "gt", "params": {}})
+        role = _guess_role(modality, kind)
+        fields.append({"name": n, "kind": kind, "role": role, "params": {}})
         for sid, path in items:
             if sid in sample_set:
                 rows.append((n, sid, Path(path)))
