@@ -290,6 +290,18 @@
             margin-bottom: 0.5rem;
             overflow: hidden;
         }
+        /* The .stretched-link anchor that makes the whole row
+           clickable sits at z-index 1. Lift every OTHER link or
+           clickable element inside the row above it so deep links
+           (tags → /leaderboards?tag=…, avatar → owner profile,
+           "Used by <lb>" anchors) still navigate to their own
+           targets instead of the wrapping row link. */
+        .catalog-row a:not(.stretched-link),
+        .catalog-row button,
+        .catalog-row form {
+            position: relative;
+            z-index: 2;
+        }
         .catalog-row::before {
             content: '';
             position: absolute;
