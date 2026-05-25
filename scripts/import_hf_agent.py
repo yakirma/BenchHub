@@ -355,14 +355,16 @@ def _kind_for(modality: str, paths: list[str]) -> str:
     if ext in _TEXT_EXTS:
         return "text"
     if ext in _IMAGE_EXTS:
-        # Name hint promotes generic image → mask / depth. The
-        # runtime decoder treats them all as PNG bytes; the kind
-        # drives palette rendering + colorbar handling on the
-        # catalog views.
+        # Mask promotion is safe because `bh.Mask.file_ext` is also
+        # `.png`, so the typed-manifest importer accepts our PNG
+        # bytes for a mask field. Depth promotion is NOT safe —
+        # `bh.Depth.file_ext` is `.npz`, and a PNG file in a depth
+        # field fails the importer's per-sample existence check.
+        # So depth-named PNGs (e.g. PanoCity's `pano_depth`) stay
+        # as `image`; we lose the colormap palette but the import
+        # actually completes.
         if _MASK_NAME_TOKENS.search(modality):
             return "mask"
-        if _DEPTH_NAME_TOKENS.search(modality):
-            return "depth"
         return "image"
     return "json"
 
