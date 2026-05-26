@@ -22,7 +22,42 @@ The legacy folder-name ZIP path is gone; the strict typed contract is the spine 
 - `scripts/seed_reference_metrics.py` — idempotent typed-metric seed.
 - `metric_engine.py:_typed_for_cf` / `_stash_typed` / `_metric_wants_typed` — the typed-instance plumbing.
 
-**End-to-end verification:** `tests/test_phase_b_end_to_end.py` exercises the whole loop (typed import → client → typed submit → typed-instance metric eval → asserted MetricResult). 572 passing tests, 0 failures.
+**End-to-end verification:** `tests/test_phase_b_end_to_end.py` exercises the whole loop (typed import → client → typed submit → typed-instance metric eval → asserted MetricResult). 924 passing tests, 0 failures.
+
+## Hybrid storage (Stages A–C shipped)
+
+The catalog now defaults to a lightweight preview tier; full-resolution bytes only land on disk for leaderboards that bind a subset and materialise.
+
+**Two-tier storage:**
+- **Preview** (always present): `uploads/datasets/<id>/<field>/<sample>.<ext>` — downscaled+JPG-encoded image/mask/depth (max 512px, q85), waveform PNG for audio, inline content for text/json/scalar/label. Marked `Dataset.preview_only=True`. ~30–50 KB per visual sample. The dataset_view samples table renders directly from here; users can't tell visually it's not full-resolution.
+- **Materialised** (per-LB): `uploads/lb_materializations/<lb_id>/<field>/<sample>.<ext>` — full-resolution bytes for the subset the LB chose. Counts against the LB owner's quota.
+
+**Per-LB sample selection:**
+- The `/create_lb_for_dataset` page (and `/create_lb_chooser`) carries a wizard: `sample_cap`, `sampling` (head / random / stratified), `stratify_field`, `sampling_seed`.
+- Random is default; stratified is auto-default when the dataset has a `label`-kind field.
+- POST to `/create_leaderboard` writes a `LeaderboardMaterialization` row + `.delay()`s `tasks.materialize_leaderboard`.
+- The Celery task runs `benchhub.lb_materialize.materialize_for_lb` — picks samples via `pick_samples()`, re-runs `materialize_hf_to_typed_dir` at full resolution into a temp dir, copies the chosen subset into `uploads/lb_materializations/<lb_id>/`, sets status `ready`. Failures stay in `status='failed'` with `error_message` and surface a Retry button on the LB page (`/leaderboard/<id>/materialize/retry`).
+
+**Path resolution at scoring time:**
+- `extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)` for file-backed `gt_<field>` lookups consults `benchhub.lb_materialize.materialized_or_preview_path()`. Materialised file wins when present; preview fallback otherwise. Inline kinds (scalar/label/text/json) unaffected.
+- `execute_visualization` route passes `leaderboard_id=lv.leaderboard_id`, so the COCO overlay viz on an LB renders against full-resolution images even though the dataset row itself is preview-only.
+
+**Quotas:**
+- Default per-user storage: **10 GB** (was 50 MB). Migration in `check_and_migrate_db` bumps any existing user still on the old default.
+- Admins still bypass via `is_admin()`.
+- Quota is post-flight (warning, no refusal) — chose this over preflight in the wizard answers.
+
+**Key files:**
+- `benchhub/preview.py` — `image_preview`, `depth_preview` (turbo colormap), `mask_preview` (deterministic palette), `audio_preview` (waveform PNG), single dispatch via `render_preview(kind, payload)`.
+- `benchhub/manifest.py:import_typed_dataset(..., preview_only=True)` — routes vis modalities through the preview helpers, writes `.jpg`/`.png` instead of canonical extensions, sets `Dataset.preview_only = True`.
+- `benchhub/lb_materialize.py` — `pick_samples()` (head/random/stratified) + `materialize_for_lb()` (re-fetches full bytes for the subset) + `materialized_or_preview_path()` (the resolver).
+- `tasks.py:materialize_leaderboard` — Celery wrapper around `materialize_for_lb` so big imports don't block the request handler.
+
+**Migration notes:**
+- `Dataset.preview_only` column added in `check_and_migrate_db`.
+- `leaderboard_materialization` table created in `check_and_migrate_db`.
+- A one-shot at `/tmp/migrate_to_preview.py` converted all 25 pre-existing full-storage datasets in place (18 GB → 1.8 GB on disk, no failed renders, all 26 datasets are now preview-only). Refuses to migrate any dataset whose bound LBs have non-zero submissions — that case needs Stage C materialisation first.
+- `tasks.run_hf_import` (admin /import_from_hf path) currently does NOT set `preview_only=True` — the bulk LLM loop does. Consider unifying.
 
 ## ⚠️ Pre-existing deletions (Phase A delete pile)
 
