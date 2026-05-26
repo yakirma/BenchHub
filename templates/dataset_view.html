@@ -160,15 +160,23 @@
             <strong>all {{ '{:,}'.format(_total or _imported) }}</strong>
             rows from the
             <code>{{ src.split or 'default' }}</code> split.
-            {% else %}
+            {% elif _total > 0 %}
             Imported
             <strong>{{ '{:,}'.format(_imported) }}</strong>
             of
             <strong>{{ '{:,}'.format(_total) }}</strong>
             rows from the
             <code>{{ src.split or 'default' }}</code> split
-            via <code>{{ src.sampling or 'head' }}</code> sampling
-            (seed&nbsp;<code>{{ src.sampling_seed }}</code>).
+            {% if src.sampling %}via <code>{{ src.sampling }}</code> sampling{% endif %}
+            {% if src.sampling_seed is not none %}(seed&nbsp;<code>{{ src.sampling_seed }}</code>){% endif %}.
+            {% else %}
+            {# total split size wasn't recorded at import time — happens
+               for agent-mode imports that don't probe the full split.
+               Drop the "of N" phrase rather than print "of 0". #}
+            Imported
+            <strong>{{ '{:,}'.format(_imported) }}</strong>
+            rows from the
+            <code>{{ src.split or 'default' }}</code> split.
             {% endif %}
             {% if src.rows_skipped %}
             <span class="text-warning-emphasis">
