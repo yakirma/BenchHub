@@ -92,6 +92,10 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                 _persist_progress({'phase': 'importing', 'current': 0, 'total': 0,
                                    'message': 'Writing rows to the database…'})
                 existing = Dataset.query.get(dataset_id)
+                # All HF imports default to preview-only now (Stage B):
+                # vis modalities land as downscaled JPGs / waveform
+                # PNGs; full bytes get materialised per-LB on demand
+                # via tasks.materialize_leaderboard.
                 _, summary = import_typed_dataset(
                     staging,
                     db_session=db.session,
@@ -99,7 +103,9 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                     DatasetField=DatasetField,
                     upload_folder=app.config['UPLOAD_FOLDER'],
                     existing_dataset=existing,
+                    preview_only=True,
                 )
+                existing.preview_only = True
                 existing.source_kind = 'hf'
                 existing.source_url = f'https://huggingface.co/datasets/{repo_id}'
                 existing.source_metadata = json.dumps({
@@ -753,12 +759,21 @@ def materialize_leaderboard(self, leaderboard_id: int):
             matrow.error_message = 'no backing dataset'
             db.session.commit()
             return
+        def _publish(state):
+            # Push to Celery's task meta so any AsyncResult poller
+            # also sees the progress. The DB write is done inside
+            # materialize_for_lb's progress callback already.
+            try:
+                self.update_state(state='PROGRESS', meta=state)
+            except Exception:
+                pass
         try:
             summary = materialize_for_lb(
                 leaderboard=lb, dataset=ds, db_session=db.session,
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 CustomField=CustomField,
                 LeaderboardMaterialization=LeaderboardMaterialization,
+                progress_cb=_publish,
             )
             logger.info(f'materialize: LB {leaderboard_id} → {summary}')
         except Exception as e:

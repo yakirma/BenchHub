@@ -747,6 +747,10 @@ class LeaderboardMaterialization(db.Model):
         default='pending', server_default='pending',
     )  # 'pending' | 'running' | 'ready' | 'failed'
     error_message = db.Column(db.Text, nullable=True)
+    # Live progress payload; same shape as Dataset.import_progress_json:
+    # {'phase': str, 'current': int, 'total': int, 'message': str}.
+    # Updated by the Celery worker; polled by the LB page's JS.
+    progress_json = db.Column(db.Text, nullable=True)
     leaderboard = db.relationship('Leaderboard', backref=db.backref(
         'materialization', lazy=True, uselist=False, cascade='all, delete-orphan',
     ))
@@ -10960,6 +10964,93 @@ def _parse_hf_repo_id(raw: str) -> str | None:
     return raw if _HF_REPO_RE.match(raw) else None
 
 
+@app.route('/leaderboard/<int:leaderboard_id>/materialize/status')
+def lb_materialization_status(leaderboard_id: int):
+    """JSON status endpoint polled by the LB page while a
+    materialization is pending/running. Returns the row's status
+    + progress payload + storage size."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    m = lb.materialization
+    if m is None:
+        return jsonify({'status': 'none'})
+    try:
+        progress = json.loads(m.progress_json) if m.progress_json else None
+    except Exception:
+        progress = None
+    return jsonify({
+        'status': m.status,
+        'sample_cap': m.sample_cap,
+        'sampling': m.sampling,
+        'sampling_seed': m.sampling_seed,
+        'stratify_field': m.stratify_field,
+        'storage_bytes': m.storage_bytes,
+        'error_message': m.error_message,
+        'progress': progress,
+    })
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/materialize/edit', methods=['POST'])
+@login_required
+def edit_lb_materialization(leaderboard_id: int):
+    """Update materialization params (sample_cap, sampling, seed,
+    stratify_field) and re-queue. Wipes the existing materialised
+    files since the new params will pick a different subset.
+    Owner/admin only.
+    """
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    if not (g.current_user and (
+            g.current_user.id == lb.owner_user_id or is_admin(g.current_user))):
+        abort(403)
+    matrow = lb.materialization
+    if matrow is None:
+        flash('No materialization configured for this LB.', 'warning')
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+    try:
+        sample_cap = int(request.form.get('sample_cap') or matrow.sample_cap)
+    except (TypeError, ValueError):
+        sample_cap = matrow.sample_cap
+    sampling = (request.form.get('sampling') or matrow.sampling).strip()
+    if sampling not in ('head', 'random', 'stratified'):
+        sampling = matrow.sampling
+    try:
+        sampling_seed = int(request.form.get('sampling_seed') or matrow.sampling_seed)
+    except (TypeError, ValueError):
+        sampling_seed = matrow.sampling_seed
+    stratify_field = (request.form.get('stratify_field') or '').strip() or None
+
+    # Wipe the previous materialisation on disk — new sample set =
+    # different files. Storage bytes get reset on re-materialise.
+    from benchhub.lb_materialize import materialization_dir
+    mat_dir = materialization_dir(app.config['UPLOAD_FOLDER'], lb.id)
+    if mat_dir.is_dir():
+        shutil.rmtree(mat_dir, ignore_errors=True)
+
+    matrow.sample_cap = sample_cap
+    matrow.sampling = sampling
+    matrow.sampling_seed = sampling_seed
+    matrow.stratify_field = stratify_field
+    matrow.status = 'pending'
+    matrow.error_message = None
+    matrow.progress_json = None
+    matrow.storage_bytes = None
+    db.session.commit()
+    try:
+        import tasks as _tasks
+        _tasks.materialize_leaderboard.delay(lb.id)
+        flash(
+            f'Re-materializing with new params '
+            f'({sample_cap} samples, {sampling} sampling).',
+            'info',
+        )
+    except Exception as e:
+        matrow.status = 'failed'
+        matrow.error_message = f'enqueue: {e}'
+        db.session.commit()
+        flash(f'Couldn\'t queue: {e}', 'warning')
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/materialize/retry', methods=['POST'])
 @login_required
 def retry_lb_materialization(leaderboard_id: int):
@@ -14619,13 +14710,23 @@ def check_and_migrate_db():
                         "  materialized_at DATETIME,"
                         "  storage_bytes BIGINT,"
                         "  status VARCHAR(20) NOT NULL DEFAULT 'pending',"
-                        "  error_message TEXT"
+                        "  error_message TEXT,"
+                        "  progress_json TEXT"
                         ")"
                     )
                     cursor.execute(
                         "CREATE INDEX IF NOT EXISTS ix_leaderboard_materialization_leaderboard_id "
                         "ON leaderboard_materialization (leaderboard_id)"
                     )
+                    # progress_json was added after the initial table —
+                    # back-fill on existing rows for the ALTER path.
+                    cursor.execute("PRAGMA table_info(leaderboard_materialization)")
+                    cols = [r[1] for r in cursor.fetchall()]
+                    if 'progress_json' not in cols:
+                        cursor.execute(
+                            "ALTER TABLE leaderboard_materialization "
+                            "ADD COLUMN progress_json TEXT"
+                        )
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (leaderboard_materialization): {e}")

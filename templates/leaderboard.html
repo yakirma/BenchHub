@@ -334,49 +334,152 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {% endif %}
             </h1>
 
-            {# Materialization status bar — shown when a row exists.
-               Surfaces sample count + sampling strategy + a retry
-               button for failed runs. #}
+            {# Materialization status panel — collapsible. Shows
+               status + a live progress bar (polled by JS) when the
+               worker is running, plus an Edit form to re-materialize
+               with different sample_cap/sampling without recreating
+               the LB. #}
             {% if materialization %}
-            <div class="alert alert-{{ 'success' if materialization.status == 'ready'
+            <div id="lb-materialization-panel"
+                 class="alert alert-{{ 'success' if materialization.status == 'ready'
                                        else 'warning' if materialization.status in ('pending','running')
                                        else 'danger' if materialization.status == 'failed'
-                                       else 'secondary' }} py-2 px-3 small mb-2 d-flex align-items-center gap-2 flex-wrap">
-                <i class="bi {{ 'bi-hdd-check' if materialization.status == 'ready'
+                                       else 'secondary' }} py-2 px-3 small mb-2">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <i id="lb-mat-icon" class="bi {{ 'bi-hdd-check' if materialization.status == 'ready'
                                 else 'bi-arrow-repeat' if materialization.status in ('pending','running')
                                 else 'bi-x-octagon' }}"></i>
-                <span>
-                    {% if materialization.status == 'ready' %}
-                        <strong>Materialized.</strong>
-                        {{ '{:,}'.format(materialization.sample_cap) }} samples,
-                        {{ materialization.sampling }} sampling, seed
-                        {{ materialization.sampling_seed }}.
-                        {% if materialization.storage_bytes %}
-                        Disk usage: {{ (materialization.storage_bytes / 1024 / 1024)|round(1) }} MB.
+                    <span id="lb-mat-summary">
+                        {% if materialization.status == 'ready' %}
+                            <strong>Materialized.</strong>
+                            {{ '{:,}'.format(materialization.sample_cap) }} samples,
+                            {{ materialization.sampling }} sampling, seed
+                            {{ materialization.sampling_seed }}.
+                            {% if materialization.storage_bytes %}
+                            Disk usage: {{ (materialization.storage_bytes / 1024 / 1024)|round(1) }} MB.
+                            {% endif %}
+                        {% elif materialization.status == 'running' %}
+                            <strong>Materializing…</strong>
+                            Re-fetching {{ '{:,}'.format(materialization.sample_cap) }} samples
+                            at full resolution.
+                        {% elif materialization.status == 'pending' %}
+                            <strong>Queued for materialization.</strong>
+                        {% elif materialization.status == 'failed' %}
+                            <strong>Materialization failed.</strong>
+                            <code class="small">{{ materialization.error_message or 'unknown error' }}</code>
                         {% endif %}
-                    {% elif materialization.status == 'running' %}
-                        <strong>Materializing…</strong>
-                        Re-fetching {{ '{:,}'.format(materialization.sample_cap) }} samples
-                        from HuggingFace at full resolution. Refresh to check.
-                    {% elif materialization.status == 'pending' %}
-                        <strong>Queued for materialization.</strong>
-                        Worker should pick this up momentarily.
-                    {% elif materialization.status == 'failed' %}
-                        <strong>Materialization failed.</strong>
-                        <code class="small">{{ materialization.error_message or 'unknown error' }}</code>
+                    </span>
+                    {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin) %}
+                    <div class="ms-auto d-flex gap-1">
+                        {% if materialization.status == 'failed' %}
+                        <form method="post"
+                              action="{{ url_for('retry_lb_materialization', leaderboard_id=leaderboard.id) }}"
+                              class="m-0">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Retry
+                            </button>
+                        </form>
+                        {% endif %}
+                        <button type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#lb-mat-edit-pane">
+                            <i class="bi bi-pencil me-1"></i>Edit
+                        </button>
+                    </div>
                     {% endif %}
-                </span>
-                {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin)
-                      and materialization.status in ('failed',) %}
-                <form method="post"
-                      action="{{ url_for('retry_lb_materialization', leaderboard_id=leaderboard.id) }}"
-                      class="ms-auto m-0">
-                    <button type="submit" class="btn btn-sm btn-outline-danger">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Retry
-                    </button>
-                </form>
+                </div>
+
+                {# Progress bar — only renders during pending/running.
+                   The JS poller toggles its visibility + width. #}
+                <div id="lb-mat-progress" class="mt-2"
+                     style="{% if materialization.status not in ('pending','running') %}display:none;{% endif %}">
+                    <div class="progress" style="height: 6px;">
+                        <div id="lb-mat-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                             role="progressbar" style="width: 0%;"></div>
+                    </div>
+                    <div id="lb-mat-msg" class="small text-body-secondary mt-1"></div>
+                </div>
+
+                {# Edit-params form. Owner/admin only. POSTs to a route
+                   that wipes the existing materialised bytes + re-queues
+                   with the new sample_cap / sampling / seed. #}
+                {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin) %}
+                <div class="collapse mt-2" id="lb-mat-edit-pane">
+                    <form method="post"
+                          action="{{ url_for('edit_lb_materialization', leaderboard_id=leaderboard.id) }}"
+                          class="row g-2 align-items-end border rounded p-2"
+                          style="background: var(--bs-body-bg);">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Sample count</label>
+                            <input type="number" name="sample_cap" min="1"
+                                   class="form-control form-control-sm"
+                                   value="{{ materialization.sample_cap }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Sampling</label>
+                            <select name="sampling" class="form-select form-select-sm">
+                                <option value="random" {{ 'selected' if materialization.sampling == 'random' }}>random</option>
+                                <option value="stratified" {{ 'selected' if materialization.sampling == 'stratified' }}>stratified</option>
+                                <option value="head" {{ 'selected' if materialization.sampling == 'head' }}>head</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Seed</label>
+                            <input type="number" name="sampling_seed"
+                                   class="form-control form-control-sm"
+                                   value="{{ materialization.sampling_seed }}">
+                        </div>
+                        <div class="col-md-3">
+                            <button type="submit" class="btn btn-sm btn-primary w-100"
+                                    onclick="return confirm('Re-materialize with new params? Existing files will be deleted.');">
+                                <i class="bi bi-arrow-repeat me-1"></i>Re-materialize
+                            </button>
+                        </div>
+                        <div class="col-12 form-text small">
+                            Re-materializing wipes the existing materialised files for this LB,
+                            re-picks the subset using your new params, and downloads full
+                            bytes again. Counts against your storage quota.
+                        </div>
+                    </form>
+                </div>
                 {% endif %}
             </div>
+
+            {# JS poller — fires only while status is pending/running. #}
+            {% if materialization.status in ('pending', 'running') %}
+            <script>
+            (function () {
+                const url = "{{ url_for('lb_materialization_status', leaderboard_id=leaderboard.id) }}";
+                const panel = document.getElementById('lb-materialization-panel');
+                const summary = document.getElementById('lb-mat-summary');
+                const icon = document.getElementById('lb-mat-icon');
+                const progBox = document.getElementById('lb-mat-progress');
+                const bar = document.getElementById('lb-mat-bar');
+                const msg = document.getElementById('lb-mat-msg');
+                async function tick() {
+                    try {
+                        const r = await fetch(url, {cache: 'no-store'});
+                        if (!r.ok) return;
+                        const data = await r.json();
+                        const status = data.status;
+                        const p = data.progress || {};
+                        const cur = p.current || 0, tot = p.total || 0;
+                        const pct = tot ? Math.min(100, Math.round(100 * cur / tot)) : 0;
+                        if (bar) bar.style.width = pct + '%';
+                        if (msg) msg.textContent = (p.phase ? '[' + p.phase + '] ' : '') + (p.message || '');
+                        if (status === 'ready' || status === 'failed') {
+                            // Reload to render the final state cleanly.
+                            window.location.reload();
+                            return;
+                        }
+                    } catch (e) { /* network blips are fine */ }
+                }
+                tick();
+                setInterval(tick, 2000);
+            })();
+            </script>
+            {% endif %}
             {% endif %}
             <p class="text-muted mb-0 small">
                 <i class="bi bi-clock me-1"></i>Created

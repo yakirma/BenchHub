@@ -134,6 +134,7 @@ def materialize_for_lb(
     upload_folder: str | os.PathLike,
     CustomField,
     LeaderboardMaterialization,
+    progress_cb=None,
 ) -> dict:
     """Run materialisation for the given LB. Reads its
     `LeaderboardMaterialization` row, picks samples, re-fetches full
@@ -171,6 +172,22 @@ def materialize_for_lb(
 
     matrow.status = 'running'
     db_session.commit()
+
+    def _progress(phase: str, current: int = 0, total: int = 0, message: str = ''):
+        """Persist progress on the matrow + delegate to the optional
+        external callback (used by the Celery task to publish state)."""
+        payload = {'phase': phase, 'current': current,
+                   'total': total, 'message': message}
+        matrow.progress_json = json.dumps(payload)
+        db_session.commit()
+        if progress_cb is not None:
+            try:
+                progress_cb(payload)
+            except Exception:
+                pass  # progress reporting is best-effort
+
+    _progress('starting', 0, matrow.sample_cap,
+              'Resolving sample subset…')
 
     # Resolve stratify groups from the dataset's existing CustomField rows.
     sample_objs = sorted(dataset.samples, key=lambda s: s.name)
@@ -221,7 +238,20 @@ def materialize_for_lb(
     out_dir = materialization_dir(upload_folder, leaderboard.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    _progress('downloading', 0, matrow.sample_cap,
+              f'Re-fetching {len(chosen_idx)} samples from HuggingFace…')
     with tempfile.TemporaryDirectory(prefix='bh_lbmat_') as staging:
+        def _stage_progress(state: dict):
+            # The HF materializer's own progress_cb fires per-row with
+            # {current, total, message}. Bubble it up under the
+            # "downloading" phase so the LB-page progress bar moves.
+            _progress(
+                state.get('phase') or 'downloading',
+                current=state.get('current') or 0,
+                total=state.get('total') or matrow.sample_cap,
+                message=state.get('message') or '',
+            )
+
         mat = materialize_hf_to_typed_dir(
             repo_id=repo_id, split=split,
             sample_cap=-1,   # full split — we filter locally
@@ -229,14 +259,17 @@ def materialize_for_lb(
             dataset_name=dataset.name,
             fields=fields, hf_token=None,
             sampling='head', seed=42, sample_name_from=None,
+            progress_cb=_stage_progress,
             # IMPORTANT: do NOT pass preview_only=True here. Stage C
             # materialisations are full-resolution.
         )
 
         # Copy chosen samples' files into uploads/lb_materializations/<lb_id>/.
+        _progress('copying', 0, len(chosen_names),
+                  f'Copying {len(chosen_names)} chosen samples to disk…')
         staging_path = Path(staging)
         copied = 0
-        for f in fields:
+        for fi, f in enumerate(fields):
             field_dir = out_dir / f['name']
             src_field_dir = staging_path / f['name']
             if not src_field_dir.is_dir():
@@ -249,6 +282,8 @@ def materialize_for_lb(
                 dst = field_dir / src.name
                 dst.write_bytes(src.read_bytes())
                 copied += 1
+            _progress('copying', fi + 1, len(fields),
+                      f'Copied field {fi+1}/{len(fields)}: {f["name"]}')
 
         # Tally bytes on disk
         total_bytes = sum(p.stat().st_size for p in out_dir.rglob('*') if p.is_file())
@@ -256,6 +291,8 @@ def materialize_for_lb(
     matrow.status = 'ready'
     matrow.materialized_at = datetime.utcnow()
     matrow.storage_bytes = total_bytes
+    _progress('done', copied, copied,
+              f'Materialised {copied} files for {len(chosen_names)} samples.')
     db_session.commit()
     return {
         'status': 'ready',
