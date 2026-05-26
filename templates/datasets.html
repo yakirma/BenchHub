@@ -4,57 +4,151 @@
 {% block title %}Datasets - Bench-Hub{% endblock %}
 
 {% block content %}
-<div class="container">
-    <div class="text-center py-4">
-        <h1 class="display-5 fw-bold mb-3 text-body-emphasis">
+{# HF-style catalog: faceted left sidebar + main feed.
+   Inspired by huggingface.co/datasets — facets and "add" actions on
+   the left, the actual list of datasets dominates the right. #}
+<div class="container-fluid px-lg-4">
+
+    <div class="d-flex align-items-baseline flex-wrap gap-2 mb-3">
+        <h1 class="h3 fw-bold mb-0 text-body-emphasis">
             <i class="bi bi-database text-info me-2"></i>Datasets
         </h1>
-        <p class="lead text-body-secondary">
-            Browse and upload datasets. Each dataset can back one or more leaderboards.
-        </p>
+        <span class="text-body-secondary small">{{ entries|length }} total</span>
     </div>
 
-    <hr class="mb-5 border-secondary">
+    {# Full-width search row, HF-style. #}
+    <div class="mb-3 position-relative">
+        <i class="bi bi-search position-absolute"
+           style="left: 14px; top: 50%; transform: translateY(-50%); color: var(--bs-body-secondary);"></i>
+        <input type="search" id="ds-search" class="form-control form-control-lg ps-5"
+               placeholder="Filter by name, repo id, tag, or category…"
+               autocomplete="off">
+    </div>
 
-    <div class="row g-5">
-        <!-- Datasets List -->
-        <div class="col-lg-6">
-            <h2 class="h4 mb-3 text-body-emphasis">
-                Available Datasets
-                <span class="badge bg-secondary fs-6 align-middle ms-2">{{ entries|length }}</span>
-            </h2>
-            <p class="text-body-secondary small mb-3">
-                Benchmark datasets you can attach to a leaderboard.
-            </p>
+    <div class="row g-4">
+        {# ── Left sidebar: facets + actions ── #}
+        <aside class="col-lg-3">
+            <div class="sticky-top" style="top: 90px;">
 
-            {# Client-side search across BH + HF entries via the
-               .ds-search-row data-search="..." attribute. #}
-            <div class="mb-3">
-                <input type="search" id="ds-search" class="form-control form-control-lg"
-                       placeholder="Search datasets by name, repo, or tag…"
-                       autocomplete="off">
-                <div id="ds-search-empty" class="alert alert-secondary mt-3 d-none" role="alert">
-                    <i class="bi bi-search me-2"></i>No datasets match that search.
+                {# "Add a dataset" — compact, sidebar-sized #}
+                {% if current_user %}
+                <div class="card border-0 shadow-sm mb-3 dataset-add-card">
+                    <div class="card-body p-3">
+                        <div class="small fw-semibold text-body-secondary text-uppercase mb-2"
+                             style="letter-spacing: 0.04em;">
+                            Add a dataset
+                        </div>
+                        {% if current_user_is_admin %}
+                        <a href="{{ url_for('admin_import_from_hf') }}"
+                           class="btn btn-sm btn-outline-primary w-100 mb-2">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>Import from HuggingFace
+                        </a>
+                        {% endif %}
+                        <button class="btn btn-sm btn-outline-secondary w-100"
+                                type="button" data-bs-toggle="collapse"
+                                data-bs-target="#py-snippet-pane">
+                            <i class="bi bi-code-slash me-1"></i>Build from Python
+                        </button>
+                        <div class="collapse mt-2" id="py-snippet-pane">
+                            <p class="small text-body-secondary mb-2">
+                                Stage samples in Python, upload in one call.
+                                Grab a token from the
+                                <a href="{{ url_for('api_tokens') }}">tokens page</a>.
+                            </p>
+                            <pre class="small mb-0 font-monospace" style="max-height: 280px; overflow:auto;"><code class="language-python">import benchhub as bh
+import numpy as np
+
+client  = bh.Client()
+creator = client.create_dataset(&quot;my-tiny-dataset&quot;)
+
+creator.add_field(&quot;image&quot;, bh.Image, role=&quot;input&quot;)
+creator.add_field(&quot;label&quot;, bh.Label, role=&quot;gt&quot;,
+                  params={&quot;vocab&quot;: [&quot;cat&quot;, &quot;dog&quot;]})
+
+for sid, img, lbl in iter_my_data():
+    creator.add_sample(
+        sid,
+        image = bh.Image(img),
+        label = bh.Label(lbl),
+    )
+
+result = creator.create()
+print(result[&quot;dataset_id&quot;])</code></pre>
+                        </div>
+                    </div>
                 </div>
-            </div>
+                {% endif %}
 
-            {% if category_tree and category_tree|length > 1 %}
-            <div class="d-flex flex-wrap gap-1 mb-3">
-                <a href="{{ url_for('datasets_list') }}"
-                   class="badge text-decoration-none {{ 'text-bg-primary' if not active_category else 'text-bg-light border text-body' }}">
-                    All
-                    <span class="ms-1 opacity-75">{{ entries|length if not active_category else (category_tree|sum(attribute='count')) }}</span>
-                </a>
-                {% for area in category_tree %}
-                <a href="{{ url_for('datasets_list', category=area.area) }}"
-                   class="badge text-decoration-none {{ 'text-bg-primary' if active_category == area.area else 'text-bg-light border text-body' }}"
-                   title="{{ area.count }} dataset{{ '' if area.count == 1 else 's' }} in {{ area.area }}">
-                    <i class="bi bi-diagram-3 me-1"></i>{{ area.area }}
-                    <span class="ms-1 opacity-75">{{ area.count }}</span>
-                </a>
-                {% endfor %}
+                {# Storage gauge — sidebar-sized #}
+                {% if current_user and current_user_is_admin %}
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3 small">
+                        <div class="fw-semibold mb-1">Your storage</div>
+                        <div class="text-body-secondary">
+                            {{ format_bytes(storage_used) }}
+                            <span class="opacity-75">/ unlimited (admin)</span>
+                        </div>
+                    </div>
+                </div>
+                {% elif current_user and storage_cap %}
+                {% set pct = (storage_used * 100 // storage_cap) if storage_cap else 0 %}
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3">
+                        <div class="small fw-semibold mb-1">Your storage</div>
+                        <div class="d-flex justify-content-between align-items-baseline small mb-1">
+                            <span class="text-body-secondary">{{ format_bytes(storage_used) }}</span>
+                            <span class="text-body-secondary">{{ format_bytes(storage_cap) }}</span>
+                        </div>
+                        <div class="progress" style="height: 5px;">
+                            <div class="progress-bar {{ 'bg-danger' if pct >= 90 else 'bg-warning' if pct >= 75 else 'bg-primary' }}"
+                                 role="progressbar" style="width: {{ pct }}%;"></div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {# Faceted category navigation — HF puts these as a vertical
+                   list of links in the left rail, one section per facet
+                   type. We only have one facet (Category) so a single
+                   block is fine. #}
+                {% if category_tree and category_tree|length > 1 %}
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3">
+                        <div class="small fw-semibold text-body-secondary text-uppercase mb-2"
+                             style="letter-spacing: 0.04em;">
+                            Category
+                        </div>
+                        <div class="d-flex flex-column gap-1">
+                            <a href="{{ url_for('datasets_list') }}"
+                               class="d-flex justify-content-between align-items-center px-2 py-1 rounded text-decoration-none small {{ 'bg-primary-subtle text-primary-emphasis fw-semibold' if not active_category else 'text-body hover-bg' }}">
+                                <span><i class="bi bi-grid me-1"></i>All</span>
+                                <span class="badge text-bg-light border small fw-normal">
+                                    {{ entries|length if not active_category else (category_tree|sum(attribute='count')) }}
+                                </span>
+                            </a>
+                            {% for area in category_tree %}
+                            <a href="{{ url_for('datasets_list', category=area.area) }}"
+                               class="d-flex justify-content-between align-items-center px-2 py-1 rounded text-decoration-none small {{ 'bg-primary-subtle text-primary-emphasis fw-semibold' if active_category == area.area else 'text-body hover-bg' }}"
+                               title="{{ area.count }} dataset{{ '' if area.count == 1 else 's' }} in {{ area.area }}">
+                                <span class="text-truncate" style="max-width: 180px;">
+                                    <i class="bi bi-diagram-3 me-1"></i>{{ area.area }}
+                                </span>
+                                <span class="badge text-bg-light border small fw-normal flex-shrink-0">{{ area.count }}</span>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
             </div>
-            {% endif %}
+        </aside>
+
+        {# ── Main feed ── #}
+        <div class="col-lg-9">
+            <div id="ds-search-empty" class="alert alert-secondary d-none" role="alert">
+                <i class="bi bi-search me-2"></i>No datasets match that search.
+            </div>
 
             {% if entries %}
             {# Single grouped list across both kinds. Each entry is one
@@ -63,7 +157,7 @@
                specific bits (visibility / owner / HF split badges). #}
             {% set _last_area = namespace(v=None) %}
             {% set _last_task = namespace(v=None) %}
-            <div class="list-group mb-4 shadow-sm">
+            <div class="list-group shadow-sm">
                 {% for e in entries %}
                 {% if e.area != _last_area.v %}
                 <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
@@ -172,12 +266,6 @@
                         </div>
                         {% endif %}
                     </div>
-                    {# Stretched link makes the whole row clickable.
-                       Other anchors inside the row (tags, avatar)
-                       still navigate to their own targets because
-                       they sit above this in the stacking context
-                       (see .catalog-row > a:not(.stretched-link)
-                       rule in base.html). #}
                     <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
                        class="stretched-link"
                        aria-label="Open {{ dataset.name }}"></a>
@@ -253,120 +341,14 @@
             </div>
             {% endif %}
         </div>
-
-        <div class="col-lg-6">
-            <div class="sticky-top" style="top: 100px; z-index: 900;">
-
-            {# Storage gauge (logged-in users only). Admins bypass the
-               cap inside check_quota, so the progress bar would just
-               be misleading — show a plain "unlimited" line instead. #}
-            {% if current_user and current_user_is_admin %}
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-body p-3 d-flex justify-content-between align-items-baseline small">
-                    <span class="fw-semibold">Your dataset storage</span>
-                    <span class="text-body-secondary">
-                        {{ format_bytes(storage_used) }} <span class="opacity-75">/ unlimited (admin)</span>
-                    </span>
-                </div>
-            </div>
-            {% elif current_user and storage_cap %}
-            {% set pct = (storage_used * 100 // storage_cap) if storage_cap else 0 %}
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-body p-3">
-                    <div class="d-flex justify-content-between align-items-baseline small mb-1">
-                        <span class="fw-semibold">Your dataset storage</span>
-                        <span class="text-body-secondary">
-                            {{ format_bytes(storage_used) }} / {{ format_bytes(storage_cap) }}
-                        </span>
-                    </div>
-                    <div class="progress" style="height: 6px;">
-                        <div class="progress-bar {{ 'bg-danger' if pct >= 90 else 'bg-warning' if pct >= 75 else 'bg-primary' }}"
-                             role="progressbar" style="width: {{ pct }}%;"
-                             aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100"></div>
-                    </div>
-                </div>
-            </div>
-            {% endif %}
-
-            {% if current_user %}
-            {# Two stacked "add a dataset" entry points. HF on top (admin
-               only, single-button card so it stays small), Python
-               builder below. The Python card's code box is capped at a
-               fixed height so both cards stay in one viewport — the
-               snippet scrolls inside that box. #}
-            {% if current_user_is_admin %}
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-body p-3 d-flex flex-wrap align-items-center gap-3">
-                    <div class="flex-grow-1">
-                        <h5 class="fw-bold mb-1">
-                            <i class="bi bi-cloud-arrow-down me-1 text-primary"></i>
-                            Import from HuggingFace
-                        </h5>
-                        <p class="small text-body-secondary mb-0">
-                            Reads the repo's Croissant metadata, infers
-                            field kinds, lets you complete roles + params
-                            before materialising the data locally.
-                        </p>
-                    </div>
-                    <a href="{{ url_for('admin_import_from_hf') }}"
-                       class="btn btn-outline-primary">
-                        Import a HuggingFace dataset
-                    </a>
-                </div>
-            </div>
-            {% endif %}
-
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-body p-3">
-                    <h5 class="fw-bold mb-1">
-                        <i class="bi bi-code-slash me-1 text-primary"></i>
-                        Build from Python
-                    </h5>
-                    <p class="small text-body-secondary mb-2">
-                        Stage samples in Python, then upload in one call.
-                        Grab your token from the
-                        <a href="{{ url_for('api_tokens') }}">tokens page</a>.
-                    </p>
-                    {# Fixed max-height so the rest of the page fits on
-                       one screen — the snippet scrolls inside the box,
-                       same vibe as a docs codeblock. #}
-                    <pre id="creator-snippet" class="small mb-0 font-monospace"><code class="language-python">import benchhub as bh
-import numpy as np
-
-client  = bh.Client()                  # env: BENCHHUB_API_TOKEN + BENCHHUB_BASE_URL
-creator = client.create_dataset(&quot;my-tiny-dataset&quot;)
-
-creator.add_field(&quot;image&quot;,    bh.Image, role=&quot;input&quot;)
-creator.add_field(&quot;label&quot;,    bh.Label, role=&quot;gt&quot;,
-                  params={&quot;vocab&quot;: [&quot;cat&quot;, &quot;dog&quot;]})
-
-for sid, img, lbl in iter_my_data():   # your generator
-    creator.add_sample(
-        sid,
-        image = bh.Image(img),         # uint8 (H,W,3)
-        label = bh.Label(lbl),
-    )
-
-result = creator.create()              # POSTs the ZIP, returns the summary
-print(result[&quot;dataset_id&quot;])</code></pre>
-                </div>
-            </div>
-            {% else %}
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-body p-4">
-                    <h5 class="fw-bold mb-1">Add a dataset</h5>
-                    <p class="small text-body-secondary mb-0">
-                        <a href="{{ url_for('login') }}">Log in</a> to add
-                        your own datasets.
-                    </p>
-                </div>
-            </div>
-            {% endif %}
-
-            </div>
-        </div>
     </div>
 </div>
+
+<style>
+/* HF-style facet links: subtle hover to signal interactivity without
+   the heavy list-group chrome. */
+.hover-bg:hover { background-color: var(--bs-tertiary-bg); }
+</style>
 {% endblock %}
 
 {% block scripts %}
