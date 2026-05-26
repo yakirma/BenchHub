@@ -7,89 +7,168 @@
 {% set meta_description = 'BenchHub dataset "' ~ dataset.name ~ '". ' ~ ((dataset.git_message or '')[:160]) %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
-    <div class="d-flex align-items-center gap-3 flex-grow-1" style="min-width: 0;">
-        {{ user_avatar(dataset.owner, size=53) }}
-        <div>
-            <h1 class="d-flex align-items-center gap-2 flex-wrap">
-                Dataset: {{ dataset.name }}
-                {# HF source badge — visible to everyone, deep-links back
-                   to the upstream HuggingFace repo. #}
-                {% set hf = dataset.source_metadata_parsed %}
-                {% if dataset.source_kind and dataset.source_kind.startswith('hf-') and hf.repo_id %}
-                <a href="https://huggingface.co/datasets/{{ hf.repo_id }}{% if hf.revision %}/tree/{{ hf.revision }}{% endif %}"
-                    target="_blank" rel="noopener"
-                    class="badge text-bg-light border text-decoration-none align-middle"
-                    style="font-size: 0.55em;"
-                    title="Imported from HuggingFace — click to view the source repo">
-                    <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg"
-                        alt="HF" width="14" height="14" class="me-1">
-                    HF: {{ hf.repo_id }}
-                </a>
-                {% endif %}
-            </h1>
-            <p class="text-muted mb-0">
-                Uploaded on: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}
-                {% if dataset.source_url %}
-                <span class="mx-2 opacity-50">|</span>
-                <a href="{{ dataset.source_url }}" target="_blank" rel="noopener"
-                   class="link-secondary text-decoration-none small"
-                   title="Original source of these bytes">
-                    <i class="bi bi-box-arrow-up-right me-1"></i>Source: {{ dataset.source_url }}
-                </a>
-                {% endif %}
-            </p>
-            {% if dataset.git_commit %}
-            <p class="text-muted">
-                <small>{{ dataset.git_branch or 'N/A' }} @ {{ dataset.git_commit[:7] }}: {{ dataset.git_message or 'N/A'
-                    }}{% if dataset.git_author %} by {{ dataset.git_author }}{% endif %}</small>
-            </p>
-            {% endif %}
+{# HF-style two-column dataset page: compact title row up top,
+   then a sticky metadata sidebar alongside the main content. #}
+{% set hf = dataset.source_metadata_parsed %}
+{% set _n_samples = dataset.samples|length %}
+{% set _lbs_list = dataset.leaderboards.all() if dataset.leaderboards.__class__.__name__ == 'AppenderQuery' else (dataset.leaderboards|list) %}
+{% set _n_lbs = _lbs_list|length %}
 
-            {# Tags: read-only view for visitors, inline edit for the owner.
-               Prominent — sits right under the title, badges sized like the
-               adjacent visibility/HF badges so they read as primary metadata. #}
-            <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
-                {% if dataset.tags %}
-                {% for t in dataset.tags %}
-                <a href="{{ url_for('leaderboards', tag=t.name) }}"
-                    class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
-                    <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
-                </a>
-                {% endfor %}
-                {% elif current_user and dataset.owner_user_id == current_user.id %}
-                <span class="text-body-secondary small fst-italic">No tags yet —</span>
-                {% endif %}
-                {% if current_user and dataset.owner_user_id == current_user.id %}
-                <button class="btn btn-sm btn-outline-secondary py-0 px-2"
-                    type="button" data-bs-toggle="collapse" data-bs-target="#dataset-tags-edit">
-                    <i class="bi bi-pencil me-1"></i>{{ 'Edit tags' if dataset.tags else 'Add tags' }}
-                </button>
-                <div class="collapse mt-2 w-100" id="dataset-tags-edit">
-                    <form method="post"
-                        action="{{ url_for('update_dataset_tags', dataset_id=dataset.id) }}"
-                        class="d-flex gap-2 align-items-center">
-                        <input type="text" name="tags" class="form-control form-control-sm"
-                            value="{{ dataset.tags|map(attribute='name')|join(', ') }}"
-                            placeholder="depth, segmentation, indoor"
-                            style="max-width: 480px;">
-                        <button type="submit" class="btn btn-sm btn-primary">Save</button>
-                    </form>
-                    <div class="form-text small">Comma-separated. Click any tag to find datasets/leaderboards with the same tag.</div>
-                </div>
-                {% endif %}
+<div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+    <div style="min-width: 0;">
+        <h1 class="d-flex align-items-center gap-2 flex-wrap mb-1">
+            <i class="bi bi-database text-primary"></i>
+            <span class="font-monospace">{{ dataset.name }}</span>
+            {% if dataset.source_kind and dataset.source_kind.startswith('hf') and hf.repo_id %}
+            <a href="https://huggingface.co/datasets/{{ hf.repo_id }}{% if hf.revision %}/tree/{{ hf.revision }}{% endif %}"
+               target="_blank" rel="noopener"
+               class="badge text-bg-light border text-decoration-none align-middle"
+               style="font-size: 0.55em;"
+               title="Imported from HuggingFace">
+                <img src="https://huggingface.co/front/assets/huggingface_logo-noborder.svg"
+                     alt="HF" width="14" height="14" class="me-1">{{ hf.repo_id }}
+            </a>
+            {% endif %}
+        </h1>
+        {# Tags row directly under the title, HF-style. #}
+        <div class="d-flex flex-wrap align-items-center gap-1 mt-2">
+            {% if dataset.category %}
+            <a href="{{ url_for('datasets_list', category=dataset.category) }}"
+               class="badge text-bg-light border text-decoration-none">
+                <i class="bi bi-diagram-3 me-1"></i>{{ dataset.category }}
+            </a>
+            {% endif %}
+            {% for t in dataset.tags %}
+            <a href="{{ url_for('leaderboards', tag=t.name) }}"
+               class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none">
+                <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
+            </a>
+            {% endfor %}
+            {% if current_user and dataset.owner_user_id == current_user.id %}
+            <button class="btn btn-sm btn-link p-0 text-body-secondary small ms-1"
+                    type="button" data-bs-toggle="collapse" data-bs-target="#dataset-tags-edit"
+                    title="Edit tags">
+                <i class="bi bi-pencil"></i>
+            </button>
+            <div class="collapse mt-2 w-100" id="dataset-tags-edit">
+                <form method="post"
+                      action="{{ url_for('update_dataset_tags', dataset_id=dataset.id) }}"
+                      class="d-flex gap-2 align-items-center">
+                    <input type="text" name="tags" class="form-control form-control-sm"
+                           value="{{ dataset.tags|map(attribute='name')|join(', ') }}"
+                           placeholder="depth, segmentation, indoor"
+                           style="max-width: 480px;">
+                    <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                </form>
+                <div class="form-text small">Comma-separated. Click any tag to find more like it.</div>
             </div>
+            {% endif %}
         </div>
     </div>
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center gap-2 flex-shrink-0">
         {% if current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
         <a href="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
-            class="btn btn-outline-secondary">
+           class="btn btn-outline-secondary">
             <i class="bi bi-gear me-1"></i>Settings
         </a>
         {% endif %}
     </div>
 </div>
+
+<div class="row g-4">
+    {# ── Sticky metadata sidebar (right on desktop, top on mobile) ── #}
+    <aside class="col-lg-3 order-lg-2">
+        <div class="card border-0 shadow-sm dataset-meta-card"
+             style="position: sticky; top: 85px;">
+            <div class="card-body p-3">
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    {{ user_avatar(dataset.owner, size=36) }}
+                    <div class="min-w-0">
+                        <div class="small text-body-secondary">owned by</div>
+                        <div class="fw-semibold text-truncate" style="max-width: 180px;">
+                            {{ dataset.owner.display_name if dataset.owner else 'unknown' }}
+                        </div>
+                    </div>
+                </div>
+                <dl class="row mb-0 small g-0" style="row-gap: 0.5rem;">
+                    <dt class="col-5 text-body-secondary fw-normal">Samples</dt>
+                    <dd class="col-7 mb-0 fw-semibold">{{ '{:,}'.format(_n_samples) }}</dd>
+
+                    <dt class="col-5 text-body-secondary fw-normal">Fields</dt>
+                    <dd class="col-7 mb-0 fw-semibold">{{ dataset.dataset_fields|length }}</dd>
+
+                    <dt class="col-5 text-body-secondary fw-normal">Size</dt>
+                    <dd class="col-7 mb-0 fw-semibold">
+                        {% set b = dataset.storage_bytes or 0 %}
+                        {% if b >= 1024**3 %}{{ '%.1f GB'|format(b / 1024**3) }}
+                        {% elif b >= 1024**2 %}{{ '%.0f MB'|format(b / 1024**2) }}
+                        {% elif b > 0 %}{{ '%.0f KB'|format(b / 1024) }}
+                        {% else %}—{% endif %}
+                    </dd>
+
+                    <dt class="col-5 text-body-secondary fw-normal">Visibility</dt>
+                    <dd class="col-7 mb-0">
+                        {% if dataset.visibility == 'public' %}
+                        <span class="badge text-bg-success-subtle text-success border small">
+                            <i class="bi bi-globe me-1"></i>public</span>
+                        {% elif dataset.visibility == 'private' %}
+                        <span class="badge text-bg-danger-subtle text-danger border small">
+                            <i class="bi bi-lock me-1"></i>private</span>
+                        {% else %}
+                        <span class="badge text-bg-warning-subtle text-warning-emphasis border small">
+                            <i class="bi bi-link-45deg me-1"></i>unlisted</span>
+                        {% endif %}
+                    </dd>
+
+                    <dt class="col-5 text-body-secondary fw-normal">Uploaded</dt>
+                    <dd class="col-7 mb-0">{{ dataset.upload_date.strftime('%Y-%m-%d') }}</dd>
+
+                    {% if hf and hf.repo_id %}
+                    <dt class="col-5 text-body-secondary fw-normal">Source</dt>
+                    <dd class="col-7 mb-0">
+                        <a href="https://huggingface.co/datasets/{{ hf.repo_id }}"
+                           target="_blank" rel="noopener"
+                           class="font-monospace small text-decoration-none">
+                            {{ hf.repo_id }}
+                            <i class="bi bi-box-arrow-up-right small"></i>
+                        </a>
+                    </dd>
+                    {% endif %}
+
+                    {% if hf and hf.split %}
+                    <dt class="col-5 text-body-secondary fw-normal">Split</dt>
+                    <dd class="col-7 mb-0"><code class="small">{{ hf.split }}</code></dd>
+                    {% endif %}
+                </dl>
+
+                {% if _n_lbs %}
+                <hr class="my-3">
+                <div class="small fw-semibold text-body-secondary mb-2">
+                    <i class="bi bi-trophy me-1"></i>Used by {{ _n_lbs }} LB{{ '' if _n_lbs == 1 else 's' }}
+                </div>
+                <div class="d-flex flex-wrap gap-1">
+                    {% for lb in _lbs_list[:6] %}
+                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                       class="badge text-bg-light border text-decoration-none small text-truncate"
+                       style="max-width: 100%;"
+                       title="{{ lb.name }}">{{ lb.name }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% if current_user %}
+                <hr class="my-3">
+                <a href="{{ url_for('create_lb_for_dataset', dataset_id=dataset.id) }}"
+                   class="btn btn-sm btn-primary w-100">
+                    <i class="bi bi-plus-lg me-1"></i>New leaderboard
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </aside>
+
+    {# ── Main pane ── #}
+    <div class="col-lg-9 order-lg-1 dataset-main-pane">
 
 {# Leaderboards section: existing list + a "New leaderboard" affordance
    (signed-in users only — anyone can build a benchmark on a visible dataset). #}
@@ -1159,6 +1238,8 @@
 
 {# Sharing + Danger zone moved to /dataset/<id>/settings; reachable
    from the Settings button in the page header. #}
+    </div>{# /col-lg-9 main pane #}
+</div>{# /row #}
 {% endblock %}
 
 {% block scripts %}
