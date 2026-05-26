@@ -53,22 +53,52 @@
             </p>
             {% endif %}
 
-            {# Category + tags row: category first (single, links to the
-               filtered catalog), then user tags. Editing the category
-               happens in /dataset/<id>/settings. #}
+            {# Category + tags row: one badge per category (multi-cat
+               supported, comma-separated in Dataset.category). Owner/
+               admin can edit them in place via the inline form below. #}
             <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
-                {% if dataset.category %}
-                <a href="{{ url_for('datasets_list', category=dataset.category) }}"
+                {% set _cats = dataset.category_list %}
+                {% if _cats %}
+                {% for c in _cats %}
+                <a href="{{ url_for('datasets_list', category=c) }}"
                    class="badge text-bg-light border text-decoration-none"
-                   title="Browse datasets in {{ dataset.category }}">
-                    <i class="bi bi-diagram-3 me-1"></i>{{ dataset.category }}
+                   title="Browse datasets in {{ c }}">
+                    <i class="bi bi-diagram-3 me-1"></i>{{ c }}
                 </a>
+                {% endfor %}
                 {% elif current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
-                <a href="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
-                   class="badge text-bg-warning-subtle text-warning-emphasis border text-decoration-none small fst-italic"
-                   title="No category set — click to add one">
-                    <i class="bi bi-diagram-3 me-1"></i>No category — set one
-                </a>
+                <span class="badge text-bg-warning-subtle text-warning-emphasis border small fst-italic">
+                    <i class="bi bi-diagram-3 me-1"></i>No category yet
+                </span>
+                {% endif %}
+                {% if current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
+                <button class="btn btn-sm btn-link p-0 px-1 text-body-secondary small"
+                        type="button" data-bs-toggle="collapse"
+                        data-bs-target="#dataset-cats-edit"
+                        title="{{ 'Edit categories' if _cats else 'Add category' }}">
+                    <i class="bi bi-pencil"></i>
+                </button>
+                <div class="collapse mt-2 w-100" id="dataset-cats-edit">
+                    <form method="post"
+                        action="{{ url_for('update_dataset_categories', dataset_id=dataset.id) }}"
+                        class="d-flex gap-2 align-items-center flex-wrap">
+                        <input type="text" name="categories" class="form-control form-control-sm"
+                            value="{{ dataset.category or '' }}"
+                            placeholder="Vision/Depth Estimation, Vision/Image Segmentation"
+                            style="max-width: 560px;"
+                            list="categories-suggestions">
+                        <datalist id="categories-suggestions">
+                            {% for kc in (known_categories or []) %}
+                            <option value="{{ kc }}"></option>
+                            {% endfor %}
+                        </datalist>
+                        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                    </form>
+                    <div class="form-text small">
+                        Comma-separated <code>Area/Task</code> paths.
+                        First one is the primary (sorts under it in /datasets).
+                    </div>
+                </div>
                 {% endif %}
                 {% if dataset.tags %}
                 {% for t in dataset.tags %}

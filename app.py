@@ -493,6 +493,25 @@ class Dataset(db.Model):
         shortcut so we don't have to expose the model class to Jinja."""
         return list(self.dataset_fields or [])
 
+    @property
+    def category_list(self) -> list[str]:
+        """Multi-category support: Dataset.category is stored as a
+        CSV string so a dataset can declare itself relevant to several
+        Area/Task buckets (e.g. an image-segmentation dataset that
+        ALSO has depth gt → ['Vision/Image Segmentation',
+        'Vision/Depth Estimation']). Returns [] when category is
+        unset; otherwise the trimmed, deduped list in declared order."""
+        raw = (self.category or '').strip()
+        if not raw:
+            return []
+        seen, out = set(), []
+        for c in raw.split(','):
+            c = c.strip()
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
+
 
 class DatasetField(db.Model):
     """One row of typed schema per (dataset, field name).
@@ -10826,12 +10845,14 @@ def datasets_list():
     # etc.) while sharing the Area/Task header rendering.
     entries = []
     for ds in datasets:
-        cat = ds.category or ''
-        area = cat.split('/', 1)[0] if cat else 'Uncategorized'
-        task = cat.split('/', 1)[1] if '/' in cat else None
+        cats = ds.category_list  # multi-cat; primary cat = cats[0]
+        primary = cats[0] if cats else None
+        area = primary.split('/', 1)[0] if primary else 'Uncategorized'
+        task = primary.split('/', 1)[1] if (primary and '/' in primary) else None
         entries.append({
             'kind': 'bh',
-            'category': cat or None,
+            'category': primary,
+            'categories': cats,         # full list for filter/match
             'area': area,
             'task': task,
             'bh': ds,
@@ -10860,15 +10881,23 @@ def datasets_list():
         e['name'].lower(),
     ))
 
-    # Category tree built from the combined entry list.
+    # Category tree built from the combined entry list. For multi-
+    # category BH datasets, the dataset counts under EACH of its
+    # declared categories (not just the primary) so the area / task
+    # counts on the sidebar match what users will see when they
+    # click a filter.
     category_tree_dict = {}
     for e in entries:
-        area = e['area']
-        task = e['task'] or ''
-        node = category_tree_dict.setdefault(area, {'count': 0, 'tasks': {}})
-        node['count'] += 1
-        if task:
-            node['tasks'][task] = node['tasks'].get(task, 0) + 1
+        for cat in (e.get('categories') or [e['category']] if e.get('category') else ['']):
+            if not cat:
+                area = 'Uncategorized'; task = ''
+            else:
+                area = cat.split('/', 1)[0]
+                task = cat.split('/', 1)[1] if '/' in cat else ''
+            node = category_tree_dict.setdefault(area, {'count': 0, 'tasks': {}})
+            node['count'] += 1
+            if task:
+                node['tasks'][task] = node['tasks'].get(task, 0) + 1
     category_tree = [
         {
             'area': area,
@@ -10884,9 +10913,19 @@ def datasets_list():
     active_category = (request.args.get('category') or '').strip()
     if active_category:
         if '/' in active_category:
-            entries = [e for e in entries if e['category'] == active_category]
+            # Full Area/Task filter — match against any of the dataset's
+            # categories (so a multi-cat dataset shows up under every
+            # category it declares).
+            entries = [
+                e for e in entries
+                if active_category in (e.get('categories') or [e['category']])
+            ]
         else:
-            entries = [e for e in entries if e['area'] == active_category]
+            # Area-level filter — match against the area of any cat.
+            def _has_area(e):
+                cats = e.get('categories') or ([e['category']] if e.get('category') else [])
+                return any(c and c.split('/', 1)[0] == active_category for c in cats)
+            entries = [e for e in entries if _has_area(e)]
 
     # Datalist suggestions for the upload form. Categories already in
     # use anywhere on the site (BH dataset OR LB), distinct.
@@ -12153,8 +12192,26 @@ def dataset_view(dataset_id):
         _build_lb_creation_context(dataset)
     )
 
+    # Category datalist used by the inline category editor in the
+    # dataset_view header — union of existing dataset + LB
+    # categories already in use elsewhere on the site, exploded over
+    # the CSV separator so multi-category values surface each one.
+    _known_cats_raw = sorted({
+        row[0] for row in (
+            db.session.query(Dataset.category)
+            .filter(Dataset.category.isnot(None)).distinct().all()
+        ) + (
+            db.session.query(Leaderboard.category)
+            .filter(Leaderboard.category.isnot(None)).distinct().all()
+        ) if row[0]
+    })
+    known_categories = sorted({
+        c.strip() for raw in _known_cats_raw for c in raw.split(',') if c.strip()
+    })
+
     return render_template('dataset_view.html',
-                           dataset=dataset, 
+                           known_categories=known_categories,
+                           dataset=dataset,
                            paginated_samples=paginated_samples, 
                            samples_data_for_charts=samples_data_for_charts, 
                            dataset_display_options=sorted_display_options, 
@@ -12249,6 +12306,32 @@ def update_dataset_tags(dataset_id):
     dataset.tags = _resolve_tags(request.form.get('tags', ''))
     db.session.commit()
     flash("Tags updated.", "success")
+    return redirect(request.referrer or url_for('dataset_view', dataset_id=dataset_id))
+
+
+@app.route('/dataset/<int:dataset_id>/update_categories', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def update_dataset_categories(dataset_id):
+    """Inline edit of a dataset's category list from /dataset/<id>.
+
+    Accepts a comma-separated list of `Area/Task` paths. Each entry
+    is normalised (strip whitespace, collapse internal double-slashes,
+    drop blanks); dupes removed. Stored as a CSV in Dataset.category;
+    the `category_list` property splits it back to a Python list at
+    read time.
+    """
+    dataset = Dataset.query.get_or_404(dataset_id)
+    raw = request.form.get('categories', '')
+    out, seen = [], set()
+    for chunk in raw.split(','):
+        c = '/'.join(seg.strip() for seg in chunk.split('/') if seg.strip())
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    dataset.category = ', '.join(out) if out else None
+    db.session.commit()
+    flash(f'Categories: {dataset.category or "(none)"}', 'success')
     return redirect(request.referrer or url_for('dataset_view', dataset_id=dataset_id))
 
 
