@@ -1052,31 +1052,25 @@
                         {{ "%.4f"|format(field_data.value) if field_data.value is not none else 'N/A' }}
                     </div>
                     {% elif field_data.type in ('json', 'coco_detections') %}
-                    {# Fixed-width preview box; click opens a full
-                       modal for reading. coco_detections shares the
-                       same wire format (JSON list of detections) so
-                       it uses the same cell. The pre's content gets
-                       lazy-fetched + filled in on first paint AND
-                       used as the modal source on click. #}
+                    {# Compact preview inline (first 200 chars) — full
+                       content fetched lazily when the modal opens.
+                       Two prior approaches were both bad: the original
+                       fired N parallel fetches per page (slow on
+                       medieval-seg's 22-KB-per-sample json),  and
+                       inlining the full JSON bloated the page to 6 MB.
+                       This middle ground keeps initial HTML cheap +
+                       opens the full payload in one shot on demand.
+                       #}
+                    {% set _raw = field_data.value or '' %}
+                    {% set _short = _raw[:200] %}
                     <div class="json-display border rounded text-start json-cell"
                          data-json-url="{{ url_for('serve_custom_field_json', field_id=field_data.field_id) }}"
                          data-json-label="{{ sample.name }} / {{ col_key }}"
+                         data-truncated="{{ '1' if _raw|length > 200 else '0' }}"
                          style="width: 160px; max-height: 140px; overflow-y: auto; background: var(--bs-body-tertiary); margin-right: auto; margin-left: 0; text-align: left !important; cursor: pointer;"
                          title="Click to open in a larger window">
-                        <pre style="font-size: 0.7rem; margin: 0; padding: 4px; white-space: pre-wrap; word-break: break-word; text-align: left;"
-                            id="json-preview-{{ sample.id }}-{{ col_key }}">Loading…</pre>
+                        <pre style="font-size: 0.7rem; margin: 0; padding: 4px; white-space: pre-wrap; word-break: break-word; text-align: left;">{{ _short }}{% if _raw|length > 200 %}…{% endif %}</pre>
                     </div>
-                    <script>
-                        // Load JSON content via API
-                        fetch('{{ url_for("serve_custom_field_json", field_id=field_data.field_id) }}')
-                            .then(response => response.json())
-                            .then(data => {
-                                document.getElementById('json-preview-{{ sample.id }}-{{ col_key }}').textContent = JSON.stringify(data, null, 2);
-                            })
-                            .catch(err => {
-                                document.getElementById('json-preview-{{ sample.id }}-{{ col_key }}').textContent = 'Error loading JSON';
-                            });
-                    </script>
                     {% elif field_data.type == 'text' %}
                     <div class="text-start p-2 border rounded text-cell"
                         data-text-label="{{ sample.name }} / {{ col_key }}"
@@ -1197,16 +1191,39 @@
         labelEl.textContent = label;
         bodyEl.textContent = content;
         iconEl.className = (kind === 'text' ? 'bi bi-textarea-t' : 'bi bi-braces')
-            + ' me-1 text-primary';
+            + ' me-1';
         ensureModal().show();
     }
-    document.addEventListener('click', (ev) => {
+    function prettify(raw) {
+        try {
+            return JSON.stringify(JSON.parse(raw), null, 2);
+        } catch (e) { return raw; }
+    }
+    document.addEventListener('click', async (ev) => {
         const jsonCell = ev.target.closest('.json-cell');
         if (jsonCell) {
             ev.preventDefault();
-            const pre = jsonCell.querySelector('pre');
             const label = jsonCell.getAttribute('data-json-label') || 'JSON';
-            openWith(label, pre ? pre.textContent : '(empty)', 'json');
+            const truncated = jsonCell.getAttribute('data-truncated') === '1';
+            const url = jsonCell.getAttribute('data-json-url');
+            // Open the modal immediately with a placeholder, then
+            // populate. Two paths: truncated cells need a one-shot
+            // HTTP fetch for the full payload; short cells use the
+            // inline pre content directly.
+            if (truncated && url) {
+                openWith(label, 'Loading…', 'json');
+                try {
+                    const r = await fetch(url);
+                    const data = await r.json();
+                    bodyEl.textContent = JSON.stringify(data, null, 2);
+                } catch (e) {
+                    bodyEl.textContent = 'Error loading JSON';
+                }
+            } else {
+                const pre = jsonCell.querySelector('pre');
+                const raw = pre ? pre.textContent : '';
+                openWith(label, prettify(raw) || '(empty)', 'json');
+            }
             return;
         }
         const textCell = ev.target.closest('.text-cell');
@@ -1226,6 +1243,7 @@
             }, 1500);
         } catch (e) { /* ignore */ }
     });
+
 })();
 </script>
 
