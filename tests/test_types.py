@@ -20,7 +20,8 @@ from benchhub.types import DTYPES, get_type
 
 def test_registry_lists_all_mvp_types():
     expected = {"image", "mask", "depth", "audio", "text", "bboxes",
-                "label", "label_list", "scalar", "json"}
+                "label", "label_list", "scalar", "json",
+                "coco_detections"}
     assert set(DTYPES) == expected
 
 

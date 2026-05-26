@@ -970,6 +970,28 @@
                     <div class="sample-metrics-chart-container">
                         <canvas id="sample-metrics-chart-{{ sample.id }}"></canvas>
                     </div>
+                    {% elif col_key.startswith('coco_overlay::') %}
+                    {# Virtual overlay column: render the image with
+                       polygons + bboxes from the paired coco_detections
+                       field via /api/coco_overlay. Both source fields
+                       must exist on this sample. #}
+                    {% set _opt = dataset_display_options[col_key] %}
+                    {% set _img_cf = custom_fields_map[sample.id].get(_opt.image_field) %}
+                    {% set _coco_cf = custom_fields_map[sample.id].get(_opt.coco_field) %}
+                    {% if _img_cf and _coco_cf %}
+                    {% set _ov_src = url_for('serve_coco_overlay', image_field_id=_img_cf.field_id, coco_field_id=_coco_cf.field_id) %}
+                    <div class="text-center" style="display: inline-block;">
+                        <img src="{{ _ov_src }}"
+                             class="border rounded shadow-sm clickable-vis"
+                             style="width: 160px !important; min-width: 160px !important; height: 140px !important; object-fit: contain; cursor: pointer;"
+                             data-bs-toggle="modal" data-bs-target="#custom-field-modal"
+                             data-img-url="{{ _ov_src }}"
+                             data-sample-name="{{ sample.name }}" data-vis-type="coco_overlay"
+                             alt="{{ col_key }}">
+                    </div>
+                    {% else %}
+                    <span class="text-muted">N/A</span>
+                    {% endif %}
                     {% elif col_key in custom_fields_map[sample.id] %}
                     {% set field_data = custom_fields_map[sample.id][col_key] %}
                     {% if field_data.type in ['image', 'depth', 'mask', 'audio'] %}

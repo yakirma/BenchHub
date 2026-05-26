@@ -581,6 +581,74 @@ class Json(DataType):
             raise ValueError(f"Json data must be JSON-serializable: {e}") from e
 
 
+class CocoDetections(DataType):
+    """COCO-style detection annotations for ONE image.
+
+    The wire JSON shape is a list of detection records:
+
+        [
+          {
+            "category_id": int,
+            "category_name": str | None,     # optional, for human reading
+            "bbox": [x, y, w, h],            # COCO standard: top-left + WH
+            "segmentation": [                # zero or more polygons
+                [x0, y0, x1, y1, ...],
+                ...
+            ],
+            "area": float | None,            # optional
+            "iscrowd": 0 | 1                 # optional
+          },
+          ...
+        ]
+
+    All fields except `category_id` and either `bbox` or `segmentation`
+    are optional. The visualisation requires the image as a separate
+    input — DataType.visualize() can't reach it, so the actual overlay
+    rendering lives in the dataset-view route (see `/api/coco_overlay`
+    in app.py)."""
+    kind = "coco_detections"
+    file_ext = ".json"
+    viz_mime = "image/png"
+
+    def __init__(self, detections: list[dict]):
+        if not isinstance(detections, list):
+            raise ValueError("CocoDetections data must be a list of detection dicts")
+        self.detections = detections
+
+    def encode(self) -> bytes:
+        return json.dumps(self.detections).encode("utf-8")
+
+    @classmethod
+    def decode(cls, blob: bytes, params: dict | None = None) -> "CocoDetections":
+        return cls(json.loads(blob.decode("utf-8")))
+
+    def validate(self) -> None:
+        for i, det in enumerate(self.detections):
+            if not isinstance(det, dict):
+                raise ValueError(f"detection {i} must be a dict, got {type(det).__name__}")
+            if "category_id" not in det:
+                raise ValueError(f"detection {i} missing required 'category_id'")
+            has_bbox = "bbox" in det and len(det["bbox"]) == 4
+            has_seg = "segmentation" in det and bool(det["segmentation"])
+            if not (has_bbox or has_seg):
+                raise ValueError(
+                    f"detection {i} must have either 'bbox' (length 4) or "
+                    f"'segmentation' (non-empty)"
+                )
+
+    def visualize(self, **_) -> tuple[bytes, str]:
+        """Standalone visualisation — text summary. Use the
+        image-overlay endpoint when the source Image is available."""
+        n = len(self.detections)
+        cats = {d.get("category_name") or d["category_id"] for d in self.detections}
+        body = (
+            f"COCO detections: {n} object{'' if n == 1 else 's'} across "
+            f"{len(cats)} categor{'y' if len(cats) == 1 else 'ies'}.\n"
+            f"Categories: {sorted(map(str, cats))[:12]}"
+        )
+        return body.encode("utf-8"), "text/plain"
+
+
 # ---------------------------------------------------------------------------
 # Registry helper.
 # ---------------------------------------------------------------------------
@@ -605,5 +673,6 @@ __all__ = [
     "LabelList",
     "Scalar",
     "Json",
+    "CocoDetections",
     "get_type",
 ]
