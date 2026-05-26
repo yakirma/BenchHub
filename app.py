@@ -13693,22 +13693,22 @@ def accent_bg_filter(s):
 @app.template_filter('display_name')
 def display_name_filter(s):
     """Render a dataset name for display: strip the owner/org prefix
-    (everything before the last '__'), replace underscores with
-    spaces, and title-case each word (hyphens treated as separators
-    too). The DB-canonical name stays `<owner>__<slug>`; this is
-    purely cosmetic.
+    (everything before the last '__'), replace both underscores AND
+    hyphens with spaces, and title-case each word. The DB-canonical
+    name stays `<owner>__<slug>`; this is purely cosmetic.
 
     Examples:
-      'tanganke__eurosat'               → 'Eurosat'
-      'COIN-Research-Group__sawhill-dataset' → 'Sawhill-Dataset'
-      'Lin-Chen__MMStar'                → 'Mmstar'
-      'gksriharsha__chitralekha'        → 'Chitralekha'
-      'cifar10'                         → 'Cifar10'
+      'tanganke__eurosat'                    → 'Eurosat'
+      'COIN-Research-Group__sawhill-dataset' → 'Sawhill Dataset'
+      'Lin-Chen__MMStar'                     → 'Mmstar'
+      'gksriharsha__chitralekha'             → 'Chitralekha'
+      'wahlinski__handwritten_cross-outs'    → 'Handwritten Cross Outs'
+      'cifar10'                              → 'Cifar10'
     """
     if not s:
         return s
     raw = s.rsplit('__', 1)[-1] if '__' in s else s
-    return raw.replace('_', ' ').title()
+    return raw.replace('_', ' ').replace('-', ' ').title()
 
 def check_and_migrate_db():
     """
