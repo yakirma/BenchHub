@@ -119,6 +119,42 @@ def _pick_indices(
     return sorted(out)
 
 
+def _to_jsonable(v):
+    """Recursive coercion of HF row values to JSON-serializable form.
+
+    HF parquet rows often carry PIL Image / bytes / numpy / pathlib
+    types inside a column we typed as 'json'. json.dumps() will choke
+    on those. This walker preserves structure, falls back to a small
+    placeholder dict for unknown opaque types, and stringifies the
+    common scalars (datetimes, paths)."""
+    import numpy as _np
+    try:
+        from PIL import Image as _PILImage
+    except Exception:
+        _PILImage = None
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, dict):
+        return {str(k): _to_jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple, set, frozenset)):
+        return [_to_jsonable(x) for x in v]
+    if isinstance(v, bytes):
+        return {"__bytes__": True, "len": len(v)}
+    if _PILImage is not None and isinstance(v, _PILImage.Image):
+        return {"__pil__": True, "mode": v.mode, "size": list(v.size)}
+    if isinstance(v, _np.ndarray):
+        return {"__ndarray__": True, "shape": list(v.shape),
+                "dtype": str(v.dtype)}
+    if isinstance(v, (_np.integer,)): return int(v)
+    if isinstance(v, (_np.floating,)): return float(v)
+    if isinstance(v, _np.bool_): return bool(v)
+    # Datetime, pathlib, anything else — stringify.
+    try:
+        return str(v)
+    except Exception:
+        return {"__opaque__": type(v).__name__}
+
+
 def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | None:
     """Coerce a single HF row value into a typed BH instance.
 
@@ -176,7 +212,15 @@ def _row_value_to_typed(value: Any, kind: str, params: dict) -> bh.DataType | No
         if kind == "scalar":
             return bh.Scalar(float(value))
         if kind == "json":
-            return bh.Json(value if isinstance(value, (dict, list)) else {"value": value})
+            # HF rows can land non-JSON-able values in a 'json' column —
+            # PIL Image instances when the row carries embedded images,
+            # raw bytes, numpy arrays, sets, etc. Recursively coerce
+            # them to JSON-friendly placeholders so the encode() doesn't
+            # crash mid-materialize. The placeholder preserves the kind
+            # so a downstream consumer can tell what got dropped.
+            return bh.Json(_to_jsonable(
+                value if isinstance(value, (dict, list)) else {"value": value}
+            ))
     except Exception as e:
         print(f"DEBUG: _row_value_to_typed kind={kind} failed: {e}")
         return None
