@@ -3607,21 +3607,40 @@ def delete_leaderboard_visualization(leaderboard_id, viz_id):
 
 # ==================== Visualization Execution Route ====================
 
-def extract_viz_arg_value(sample, submission, field_key):
-    """Helper to extract argument value for visualization from sample/submission."""
+def extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None):
+    """Helper to extract argument value for visualization from sample/submission.
+
+    When `leaderboard_id` is provided and the LB has a ready
+    LeaderboardMaterialization, file-backed gt_<field> lookups
+    return the FULL-resolution materialised path instead of the
+    dataset's preview path. Falls back to the preview file when no
+    materialisation exists. Inline kinds (scalar/label/text/json)
+    are not affected — their value_text already holds the content.
+    """
     import json
     if field_key:
         field_key = field_key.strip()
-    
+
     value = None
     if field_key.startswith('gt_'):
         field_name = field_key[3:]
         if not sample: return None
-        
+
         # Optimize: Preloaded custom fields would be better, but simple query for now
         cf = CustomField.query.filter_by(sample_id=sample.id, name=field_name).first()
         if cf:
             value = cf.get_value()
+            # File-backed kinds: swap in the materialised path when
+            # this LB has one. Inline kinds (text/json/scalar/label)
+            # have value_text = content, not a path — leave alone.
+            if (leaderboard_id is not None
+                    and cf.data_type in ('image', 'mask', 'depth', 'audio')
+                    and isinstance(value, str)):
+                from benchhub.lb_materialize import materialized_or_preview_path
+                value = materialized_or_preview_path(
+                    app.config['UPLOAD_FOLDER'],
+                    leaderboard_id, field_name, sample.name, value,
+                )
         elif field_name == 'histogram':
             value = None
         elif field_name == 'config':
@@ -3754,11 +3773,14 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
     try:
         # Parse arg mappings
         arg_mappings = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
-        
+
         # Build argument values from sample/submission data
         kwargs = {}
         for arg_name, field_key in arg_mappings.items():
-            kwargs[arg_name] = extract_viz_arg_value(sample, submission, field_key)
+            kwargs[arg_name] = extract_viz_arg_value(
+                sample, submission, field_key,
+                leaderboard_id=lv.leaderboard_id,
+            )
         
         # Execute visualization code
         exec_globals = {
@@ -8823,6 +8845,10 @@ def create_lb_for_dataset(dataset_id):
     available_metrics_for_lb, gt_field_options, dataset_field_options = (
         _build_lb_creation_context(dataset)
     )
+    # Stratified-sampling default kicks in when the dataset has a
+    # label-kind field — classification benchmarks want balanced
+    # subsets across classes.
+    _has_label_field = any(f.kind == 'label' for f in dataset.dataset_fields)
     return render_template(
         'create_lb_for_dataset.html',
         dataset=dataset,
@@ -8830,6 +8856,7 @@ def create_lb_for_dataset(dataset_id):
         available_metrics_for_lb=available_metrics_for_lb,
         gt_field_options=gt_field_options,
         dataset_field_options=dataset_field_options,
+        _has_label_field=_has_label_field,
     )
 
 
@@ -9091,6 +9118,79 @@ def create_leaderboard():
             )
             db.session.add(lv)
     db.session.commit()
+
+    # Stage C: persist a LeaderboardMaterialization row when any
+    # backing dataset is preview-only. The wizard fields on
+    # /create_lb_for_dataset post sample_cap + sampling + seed +
+    # stratify_field. Materialisation runs synchronously after
+    # commit so the LB has full bytes ready by the time the user
+    # lands on the LB page.
+    any_preview = any(_ds.preview_only for _ds in (new_leaderboard.datasets or []))
+    if any_preview:
+        try:
+            sample_cap = int(request.form.get('sample_cap') or 1000)
+        except (TypeError, ValueError):
+            sample_cap = 1000
+        sampling = (request.form.get('sampling') or 'random').strip()
+        if sampling not in ('head', 'random', 'stratified'):
+            sampling = 'random'
+        try:
+            sampling_seed = int(request.form.get('sampling_seed') or 42)
+        except (TypeError, ValueError):
+            sampling_seed = 42
+        stratify_field = (request.form.get('stratify_field') or '').strip() or None
+
+        matrow = LeaderboardMaterialization(
+            leaderboard_id=new_leaderboard.id,
+            sample_cap=sample_cap,
+            sampling=sampling,
+            sampling_seed=sampling_seed,
+            stratify_field=stratify_field,
+            status='pending',
+        )
+        db.session.add(matrow)
+        db.session.commit()
+        # Kick off the materialisation. Sync for now — Celery hand-
+        # off is a follow-up. Failures don't block LB creation; the
+        # row just stays in 'failed' status with the error message
+        # so the user can retry from the LB page later.
+        try:
+            from benchhub.lb_materialize import materialize_for_lb
+            _ds = (new_leaderboard.datasets or [None])[0]
+            if _ds is not None:
+                summary = materialize_for_lb(
+                    leaderboard=new_leaderboard, dataset=_ds,
+                    db_session=db.session,
+                    upload_folder=app.config['UPLOAD_FOLDER'],
+                    CustomField=CustomField,
+                    LeaderboardMaterialization=LeaderboardMaterialization,
+                )
+                if summary.get('status') == 'ready':
+                    flash(
+                        f'Materialised {summary.get("files_copied")} files '
+                        f'across {summary.get("samples_picked")} samples '
+                        f'({_format_bytes(summary.get("bytes", 0))}).',
+                        'info',
+                    )
+                # Post-flight quota warning (no enforcement; we said
+                # post-flight in the wizard answers).
+                owner_user = User.query.get(new_leaderboard.owner_user_id)
+                if owner_user and not is_admin(owner_user):
+                    used = storage_used_bytes(owner_user)
+                    cap = int(owner_user.quota_max_storage_bytes or 0)
+                    if cap and used > cap:
+                        flash(
+                            f'Storage over quota: {_format_bytes(used)} > '
+                            f'{_format_bytes(cap)}. Delete some materializations '
+                            f'or contact us for a higher cap.',
+                            'warning',
+                        )
+        except Exception as e:
+            matrow.status = 'failed'
+            matrow.error_message = str(e)[:500]
+            db.session.commit()
+            flash(f'Materialisation failed: {e}. Retry from the LB page.',
+                  'warning')
 
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
     return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))

@@ -42,6 +42,80 @@
                         placeholder="e.g. {{ dataset.name }} benchmark">
                 </div>
 
+                {# ---- Materialization wizard (preview-only datasets) -----------
+                   The dataset is stored as preview JPGs/PNGs to save disk.
+                   When you create this LB, BenchHub re-fetches FULL bytes for
+                   a chosen subset of samples from upstream HF and stores
+                   them under your quota. Submission scoring runs against
+                   those full bytes; the dataset's preview tier stays
+                   untouched. Skip this section if the dataset is already
+                   full-storage — no materialization is needed. #}
+                {% if dataset.preview_only %}
+                <div class="card border-info-subtle mb-3"
+                     style="background: var(--bs-body-tertiary);">
+                    <div class="card-body p-3">
+                        <h6 class="fw-semibold mb-2">
+                            <i class="bi bi-download me-1 text-info"></i>
+                            Sample selection
+                        </h6>
+                        <p class="form-text small mt-0 mb-3">
+                            <strong>{{ '{:,}'.format(dataset.samples|length) }}</strong>
+                            samples available in this dataset (stored as preview only).
+                            Pick how many to materialise at full resolution for scoring.
+                            Counts against your storage quota.
+                        </p>
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <label for="sample_cap" class="form-label small mb-1">Samples to materialise</label>
+                                <input type="number" id="sample_cap" name="sample_cap"
+                                       class="form-control form-control-sm"
+                                       min="1" max="{{ dataset.samples|length }}"
+                                       value="{{ [dataset.samples|length, 1000]|min }}">
+                                <div class="form-text small">
+                                    max {{ '{:,}'.format(dataset.samples|length) }}
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="sampling" class="form-label small mb-1">Sampling</label>
+                                <select id="sampling" name="sampling" class="form-select form-select-sm">
+                                    <option value="random" {{ 'selected' if not _has_label_field }}>random (default)</option>
+                                    <option value="stratified" {{ 'selected' if _has_label_field }}>stratified (balanced)</option>
+                                    <option value="head">head (first N)</option>
+                                </select>
+                                <div class="form-text small">
+                                    classification → stratified
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="stratify_field" class="form-label small mb-1">Stratify by</label>
+                                <select id="stratify_field" name="stratify_field"
+                                        class="form-select form-select-sm"
+                                        {% if not _has_label_field %}disabled{% endif %}>
+                                    {% if _has_label_field %}
+                                    {% for f in dataset.dataset_fields if f.kind == 'label' %}
+                                    <option value="{{ f.name }}">{{ f.name }}</option>
+                                    {% endfor %}
+                                    {% else %}
+                                    <option value="">(no label field)</option>
+                                    {% endif %}
+                                </select>
+                                <div class="form-text small">
+                                    only used with stratified sampling
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="sampling_seed" class="form-label small mb-1">Random seed</label>
+                                <input type="number" id="sampling_seed" name="sampling_seed"
+                                       class="form-control form-control-sm" value="42">
+                                <div class="form-text small">
+                                    deterministic — same seed = same subset
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
                 {# ---- Field roles -----------------------------------
                    The Dataset is role-neutral now. Each LB decides
                    how to use the same field: as `input` (given to the
