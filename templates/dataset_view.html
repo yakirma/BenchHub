@@ -46,10 +46,23 @@
             </p>
             {% endif %}
 
-            {# Tags: read-only view for visitors, inline edit for the owner.
-               Prominent — sits right under the title, badges sized like the
-               adjacent visibility/HF badges so they read as primary metadata. #}
+            {# Category + tags row: category first (single, links to the
+               filtered catalog), then user tags. Editing the category
+               happens in /dataset/<id>/settings. #}
             <div class="mt-2 d-flex flex-wrap align-items-center gap-1">
+                {% if dataset.category %}
+                <a href="{{ url_for('datasets_list', category=dataset.category) }}"
+                   class="badge text-bg-light border text-decoration-none"
+                   title="Browse datasets in {{ dataset.category }}">
+                    <i class="bi bi-diagram-3 me-1"></i>{{ dataset.category }}
+                </a>
+                {% elif current_user and (dataset.owner_user_id == current_user.id or current_user_is_admin) %}
+                <a href="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
+                   class="badge text-bg-warning-subtle text-warning-emphasis border text-decoration-none small fst-italic"
+                   title="No category set — click to add one">
+                    <i class="bi bi-diagram-3 me-1"></i>No category — set one
+                </a>
+                {% endif %}
                 {% if dataset.tags %}
                 {% for t in dataset.tags %}
                 <a href="{{ url_for('leaderboards', tag=t.name) }}"
