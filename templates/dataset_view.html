@@ -1147,19 +1147,21 @@
 <!-- JSON / text reader modal — opens when a json or text sample cell is clicked. -->
 <div class="modal fade" id="json-reader-modal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header py-2">
-                <h5 class="modal-title small">
-                    <i id="json-reader-icon" class="bi bi-braces me-1 text-primary"></i>
+        <div class="modal-content"
+             style="background-color: #1e1b2e; color: #e8e0ff; border: 1px solid #2c2740;">
+            <div class="modal-header py-2" style="border-bottom: 1px solid #2c2740;">
+                <h5 class="modal-title small" style="color: #e8e0ff;">
+                    <i id="json-reader-icon" class="bi bi-braces me-1" style="color: #a78bfa;"></i>
                     <span id="json-reader-label" class="font-monospace"></span>
                 </h5>
                 <div class="ms-auto d-flex gap-2 align-items-center">
                     <button type="button" id="json-reader-copy"
-                            class="btn btn-sm btn-outline-secondary"
+                            class="btn btn-sm"
+                            style="background-color: transparent; color: #e8e0ff; border: 1px solid #4a4360;"
                             title="Copy to clipboard">
                         <i class="bi bi-clipboard me-1"></i>Copy
                     </button>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
                             aria-label="Close"></button>
                 </div>
             </div>
@@ -1168,7 +1170,7 @@
                      style="margin: 0; padding: 16px; max-height: 70vh; overflow: auto;
                             white-space: pre-wrap; word-break: break-word;
                             font-size: 0.85rem; font-family: ui-monospace, monospace;
-                            background: var(--bs-body-tertiary);">Loading…</pre>
+                            background: #1e1b2e; color: #e8e0ff; border: 0;">Loading…</pre>
             </div>
         </div>
     </div>
