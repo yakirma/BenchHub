@@ -705,6 +705,50 @@ class GlobalVisualization(db.Model):
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
     owner = db.relationship('User', foreign_keys=[owner_user_id])
 
+class DatasetRequest(db.Model):
+    """Community wishlist row: "please import this HF dataset."
+
+    Anyone signed in can file one (just a repo_id + optional reason);
+    anyone signed in can upvote. Decoupled from any user's own
+    datasets — this is the queue admins triage when deciding which
+    HF repos to import next.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    repo_id = db.Column(db.String(200), nullable=False, index=True)
+    description = db.Column(db.Text, nullable=True)
+    requested_by_user_id = db.Column(
+        db.Integer, db.ForeignKey('user.id'), nullable=True
+    )
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    # 'pending' | 'imported' | 'rejected'. Filtering on the list page
+    # defaults to pending so the queue stays tractable.
+    status = db.Column(db.String(20), nullable=False,
+                       default='pending', server_default='pending')
+    admin_note = db.Column(db.Text, nullable=True)
+    requester = db.relationship('User', foreign_keys=[requested_by_user_id])
+
+
+class DatasetRequestVote(db.Model):
+    """One vote = (request, user) pair. Enforced unique so a user
+    can't double-vote. Deleting the row revokes the vote."""
+    id = db.Column(db.Integer, primary_key=True)
+    request_id = db.Column(
+        db.Integer, db.ForeignKey('dataset_request.id'),
+        nullable=False, index=True,
+    )
+    user_id = db.Column(
+        db.Integer, db.ForeignKey('user.id'), nullable=False, index=True,
+    )
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('request_id', 'user_id',
+                             name='uq_dataset_request_vote_user'),
+    )
+    request = db.relationship('DatasetRequest', backref=db.backref(
+        'votes', lazy='dynamic', cascade='all, delete-orphan',
+    ))
+
+
 class DatasetVisualization(db.Model):
     """Link table: Dataset ↔ GlobalVisualization.
 
@@ -10726,6 +10770,34 @@ def datasets_list():
     storage_used = storage_used_bytes(_viewer) if _viewer else 0
     storage_cap = int(_viewer.quota_max_storage_bytes) if _viewer else 0
 
+    # Community dataset-import requests (voting list). Sorted by
+    # vote count desc so the most-wanted bubbles up. Pending-only by
+    # default; admins can flip statuses via the dedicated routes.
+    vote_count_subq = (
+        db.session.query(
+            DatasetRequestVote.request_id,
+            db.func.count(DatasetRequestVote.id).label('n')
+        ).group_by(DatasetRequestVote.request_id).subquery()
+    )
+    pending_reqs = (
+        db.session.query(DatasetRequest,
+                         db.func.coalesce(vote_count_subq.c.n, 0).label('vote_count'))
+        .outerjoin(vote_count_subq, vote_count_subq.c.request_id == DatasetRequest.id)
+        .filter(DatasetRequest.status == 'pending')
+        .order_by(db.desc('vote_count'), DatasetRequest.created_at.desc())
+        .limit(100).all()
+    )
+    me = getattr(g, 'current_user', None)
+    voted_ids = set()
+    if me:
+        voted_ids = {
+            r.request_id for r in
+            DatasetRequestVote.query.filter_by(user_id=me.id).all()
+        }
+    dataset_requests = [
+        {'req': r, 'vote_count': int(n), 'i_voted': r.id in voted_ids}
+        for r, n in pending_reqs
+    ]
     return render_template('datasets.html',
                            datasets=datasets,
                            dataset_thumbs=dataset_thumbs,
@@ -10735,7 +10807,105 @@ def datasets_list():
                            known_categories=known_categories,
                            storage_used=storage_used,
                            storage_cap=storage_cap,
-                           format_bytes=_format_bytes)
+                           format_bytes=_format_bytes,
+                           dataset_requests=dataset_requests)
+
+
+# -----------------------------------------------------------------------
+# Dataset-request voting routes
+# -----------------------------------------------------------------------
+
+_HF_REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+
+
+def _parse_hf_repo_id(raw: str) -> str | None:
+    raw = (raw or '').strip()
+    # Accept full URLs too — strip the huggingface.co/datasets/ prefix.
+    for pre in ('https://huggingface.co/datasets/',
+                'http://huggingface.co/datasets/',
+                'huggingface.co/datasets/'):
+        if raw.startswith(pre):
+            raw = raw[len(pre):]
+            break
+    raw = raw.strip('/').split('/tree/')[0]
+    return raw if _HF_REPO_RE.match(raw) else None
+
+
+@app.route('/dataset_requests/add', methods=['POST'])
+@login_required
+def add_dataset_request():
+    """Anyone signed in can file a 'please import this HF repo' wish.
+    Dedup on repo_id: if a pending row exists, auto-upvote it instead
+    of creating a duplicate; if an imported/rejected row exists, allow
+    a new pending request (it may have changed upstream)."""
+    repo = _parse_hf_repo_id(request.form.get('repo_id') or '')
+    if not repo:
+        flash('Enter a HuggingFace repo id (user/repo) or full URL.', 'warning')
+        return redirect(request.referrer or url_for('datasets_list'))
+    description = (request.form.get('description') or '').strip()[:1000] or None
+
+    existing = (DatasetRequest.query
+                .filter_by(repo_id=repo, status='pending')
+                .first())
+    if existing is not None:
+        # Treat duplicate submit as an upvote toggle.
+        v = DatasetRequestVote.query.filter_by(
+            request_id=existing.id, user_id=g.current_user.id
+        ).first()
+        if v is None:
+            db.session.add(DatasetRequestVote(
+                request_id=existing.id, user_id=g.current_user.id))
+            db.session.commit()
+            flash(f'Already requested — upvoted "{repo}".', 'info')
+        else:
+            flash(f'You\'ve already voted for "{repo}".', 'info')
+        return redirect(request.referrer or url_for('datasets_list'))
+
+    req = DatasetRequest(
+        repo_id=repo, description=description,
+        requested_by_user_id=g.current_user.id,
+        status='pending',
+    )
+    db.session.add(req); db.session.flush()
+    # Submitter auto-votes for their own request.
+    db.session.add(DatasetRequestVote(
+        request_id=req.id, user_id=g.current_user.id))
+    db.session.commit()
+    flash(f'Requested "{repo}".', 'success')
+    return redirect(request.referrer or url_for('datasets_list'))
+
+
+@app.route('/dataset_requests/<int:req_id>/vote', methods=['POST'])
+@login_required
+def vote_dataset_request(req_id: int):
+    """Toggle vote: add if absent, remove if present."""
+    req = DatasetRequest.query.get_or_404(req_id)
+    v = DatasetRequestVote.query.filter_by(
+        request_id=req.id, user_id=g.current_user.id).first()
+    if v is None:
+        db.session.add(DatasetRequestVote(
+            request_id=req.id, user_id=g.current_user.id))
+    else:
+        db.session.delete(v)
+    db.session.commit()
+    return redirect(request.referrer or url_for('datasets_list'))
+
+
+@app.route('/admin/dataset_requests/<int:req_id>/status', methods=['POST'])
+@login_required
+def admin_set_dataset_request_status(req_id: int):
+    """Admin triage: mark a request as imported or rejected, with a note."""
+    if not g.current_user.is_admin:
+        abort(403)
+    req = DatasetRequest.query.get_or_404(req_id)
+    status = request.form.get('status', '').strip()
+    if status in ('pending', 'imported', 'rejected'):
+        req.status = status
+    note = (request.form.get('admin_note') or '').strip()
+    if note:
+        req.admin_note = note
+    db.session.commit()
+    return redirect(request.referrer or url_for('datasets_list'))
 
 @app.route('/author_avatars/<filename>')
 def serve_author_avatar(filename):
@@ -14262,6 +14432,44 @@ def check_and_migrate_db():
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (feature_request): {e}")
+
+                # --- DatasetRequest + DatasetRequestVote tables ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS dataset_request ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  repo_id VARCHAR(200) NOT NULL,"
+                        "  description TEXT,"
+                        "  requested_by_user_id INTEGER REFERENCES user(id),"
+                        "  created_at DATETIME NOT NULL,"
+                        "  status VARCHAR(20) NOT NULL DEFAULT 'pending',"
+                        "  admin_note TEXT"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_request_repo_id "
+                        "ON dataset_request (repo_id)"
+                    )
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS dataset_request_vote ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  request_id INTEGER NOT NULL REFERENCES dataset_request(id),"
+                        "  user_id INTEGER NOT NULL REFERENCES user(id),"
+                        "  created_at DATETIME NOT NULL,"
+                        "  UNIQUE(request_id, user_id)"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_request_vote_request_id "
+                        "ON dataset_request_vote (request_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_request_vote_user_id "
+                        "ON dataset_request_vote (user_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (dataset_request): {e}")
 
                 # --- DatasetVisualization table ---
                 try:

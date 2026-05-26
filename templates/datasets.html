@@ -16,6 +16,132 @@
         <span class="text-body-secondary small">{{ entries|length }} total</span>
     </div>
 
+    {# Community dataset-request voting list. Collapsible, default
+       closed — users open it to either request a new HF dataset or
+       upvote an existing one. Decoupled from each user's own
+       datasets; this is the wishlist admins triage. #}
+    <details class="card border-0 shadow-sm mb-3 dataset-req-card">
+        <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
+            <i class="bi bi-chevron-right req-chev"></i>
+            <span class="small fw-semibold text-body-emphasis">
+                <i class="bi bi-hand-thumbs-up me-1 text-primary"></i>Request a dataset
+            </span>
+            <span class="ms-auto small text-body-secondary">
+                {{ dataset_requests|length }} open
+                {% if not current_user %}<span class="ms-2 fst-italic">(log in to vote)</span>{% endif %}
+            </span>
+        </summary>
+        <div class="card-body pt-0">
+            <p class="small text-body-secondary mb-3">
+                Want a HuggingFace dataset on BenchHub? File a request below;
+                anyone signed in can upvote. Admins triage by vote count.
+                Requests don't appear on your own dataset list — this is a
+                shared wishlist.
+            </p>
+
+            {% if current_user %}
+            <form method="post" action="{{ url_for('add_dataset_request') }}"
+                  class="row g-2 align-items-end mb-3 border rounded p-2"
+                  style="background: var(--bs-body-tertiary);">
+                <div class="col-md-5">
+                    <label class="form-label small fw-semibold mb-1">HF repo id or URL</label>
+                    <input type="text" name="repo_id"
+                           class="form-control form-control-sm font-monospace"
+                           placeholder="user/repo  or  https://huggingface.co/datasets/user/repo"
+                           required>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label small fw-semibold mb-1">Why (optional)</label>
+                    <input type="text" name="description" maxlength="200"
+                           class="form-control form-control-sm"
+                           placeholder="why you want it (one sentence)">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-sm btn-primary w-100">
+                        <i class="bi bi-plus-lg me-1"></i>Request
+                    </button>
+                </div>
+            </form>
+            {% else %}
+            <div class="alert alert-secondary py-2 px-3 small mb-3">
+                <a href="{{ url_for('login') }}">Log in</a> to file a request or upvote.
+            </div>
+            {% endif %}
+
+            {% if dataset_requests %}
+            <div style="max-height: 360px; overflow-y: auto;">
+                <ul class="list-group list-group-flush">
+                    {% for entry in dataset_requests %}
+                    {% set req = entry.req %}
+                    <li class="list-group-item d-flex align-items-center gap-3 px-2">
+                        {% if current_user %}
+                        <form method="post"
+                              action="{{ url_for('vote_dataset_request', req_id=req.id) }}"
+                              class="m-0">
+                            <button type="submit"
+                                    class="btn btn-sm {{ 'btn-primary' if entry.i_voted else 'btn-outline-primary' }} d-flex flex-column align-items-center"
+                                    style="min-width: 50px;"
+                                    title="{{ 'Click to revoke your vote' if entry.i_voted else 'Upvote this request' }}">
+                                <i class="bi bi-caret-up-fill"></i>
+                                <span class="small fw-bold">{{ entry.vote_count }}</span>
+                            </button>
+                        </form>
+                        {% else %}
+                        <div class="text-center" style="min-width: 50px;">
+                            <i class="bi bi-caret-up-fill text-body-secondary"></i>
+                            <div class="small fw-bold text-body-secondary">{{ entry.vote_count }}</div>
+                        </div>
+                        {% endif %}
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <a href="https://huggingface.co/datasets/{{ req.repo_id }}"
+                                   target="_blank" rel="noopener"
+                                   class="font-monospace fw-semibold text-decoration-none">
+                                    {{ req.repo_id }}
+                                    <i class="bi bi-box-arrow-up-right small text-body-secondary"></i>
+                                </a>
+                                {% if req.requester %}
+                                <span class="small text-body-secondary">
+                                    by {{ req.requester.display_name or req.requester.email }}
+                                </span>
+                                {% endif %}
+                                <span class="small text-body-secondary">
+                                    · {{ req.created_at.strftime('%Y-%m-%d') }}
+                                </span>
+                            </div>
+                            {% if req.description %}
+                            <div class="small text-body-secondary mt-1">{{ req.description }}</div>
+                            {% endif %}
+                            {% if req.admin_note %}
+                            <div class="small text-warning-emphasis mt-1">
+                                <i class="bi bi-shield-check me-1"></i>admin: {{ req.admin_note }}
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% if current_user and current_user_is_admin %}
+                        <form method="post"
+                              action="{{ url_for('admin_set_dataset_request_status', req_id=req.id) }}"
+                              class="d-flex gap-1 flex-shrink-0">
+                            <select name="status" class="form-select form-select-sm" style="width: auto;">
+                                <option value="pending" {{ 'selected' if req.status == 'pending' }}>pending</option>
+                                <option value="imported" {{ 'selected' if req.status == 'imported' }}>imported</option>
+                                <option value="rejected" {{ 'selected' if req.status == 'rejected' }}>rejected</option>
+                            </select>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">save</button>
+                        </form>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% else %}
+            <div class="text-body-secondary small fst-italic">
+                No requests yet — be the first.
+            </div>
+            {% endif %}
+        </div>
+    </details>
+
     {# Full-width search row, HF-style. #}
     <div class="mb-3 position-relative">
         <i class="bi bi-search position-absolute"
@@ -370,6 +496,24 @@ print(result[&quot;dataset_id&quot;])</code></pre>
 .cat-toggle .cat-chev { transition: transform 0.15s ease-in-out; }
 .cat-toggle:not(.collapsed) .cat-chev { transform: rotate(90deg); }
 .cat-toggle:hover { color: var(--bs-primary) !important; }
+
+/* Dataset-request voting card — same chevron-rotate pattern as
+   the other collapsibles on the page. */
+details.dataset-req-card > summary {
+    list-style: none;
+    cursor: pointer;
+}
+details.dataset-req-card > summary::-webkit-details-marker { display: none; }
+details.dataset-req-card > summary .req-chev {
+    transition: transform 0.15s ease-in-out;
+    color: var(--bs-body-secondary);
+}
+details.dataset-req-card[open] > summary .req-chev {
+    transform: rotate(90deg);
+}
+details.dataset-req-card:hover > summary .req-chev {
+    color: var(--bs-primary);
+}
 
 /* Floating dataset cards: small, denser than the old list rows.
    Soft shadow + hover lift gives a "floating" vibe; the per-card
