@@ -705,6 +705,42 @@ class GlobalVisualization(db.Model):
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
     owner = db.relationship('User', foreign_keys=[owner_user_id])
 
+class DatasetVisualization(db.Model):
+    """Link table: Dataset ↔ GlobalVisualization.
+
+    Mirrors LeaderboardVisualization but bound to a Dataset. Drives
+    two things:
+      1. The visualization list on /dataset/<id>/settings (where the
+         owner picks + configures viz attachments + arg mappings).
+      2. Inheritance: when a Leaderboard is created from a Dataset,
+         each row here is copied into a LeaderboardVisualization for
+         the new LB so the LB inherits its dataset's visualisations
+         without manual re-attachment.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    dataset_id = db.Column(
+        db.Integer, db.ForeignKey('dataset.id'),
+        nullable=False, index=True,
+    )
+    global_visualization_id = db.Column(
+        db.Integer, db.ForeignKey('global_visualization.id'),
+        nullable=False, index=True,
+    )
+    # JSON object mapping viz function arg name → dataset field key
+    # (uses the same `gt_<field>` convention as LeaderboardVisualization
+    # so the inheritance copy is verbatim).
+    arg_mappings = db.Column(db.Text, nullable=False)
+    target_name = db.Column(db.String(100), nullable=True)
+    display_order = db.Column(db.Integer, default=0)
+    dataset = db.relationship('Dataset', backref=db.backref(
+        'dataset_visualizations', lazy=True, cascade='all, delete-orphan',
+        order_by='DatasetVisualization.display_order',
+    ))
+    global_visualization = db.relationship(
+        'GlobalVisualization', backref='dataset_usages'
+    )
+
+
 class LeaderboardVisualization(db.Model):
     """Link table between Leaderboard and GlobalVisualization"""
     id = db.Column(db.Integer, primary_key=True)
@@ -8893,8 +8929,30 @@ def create_leaderboard():
             'warning',
         )
 
+    # Inherit visualisations from each backing dataset. Each
+    # DatasetVisualization row → a LeaderboardVisualization with the
+    # same arg_mappings, target_name, and ordering. If two datasets
+    # attach the same GlobalVisualization, only the first carries
+    # over (idempotent + no duplicate cells in the LB grid).
+    seen_viz: set[int] = set()
+    for _ds in (new_leaderboard.datasets or []):
+        for dv in (DatasetVisualization.query
+                   .filter_by(dataset_id=_ds.id)
+                   .order_by(DatasetVisualization.display_order,
+                              DatasetVisualization.id).all()):
+            if dv.global_visualization_id in seen_viz:
+                continue
+            seen_viz.add(dv.global_visualization_id)
+            lv = LeaderboardVisualization(
+                leaderboard_id=new_leaderboard.id,
+                global_visualization_id=dv.global_visualization_id,
+                arg_mappings=dv.arg_mappings,
+                target_name=dv.target_name,
+                display_order=dv.display_order,
+            )
+            db.session.add(lv)
     db.session.commit()
-    
+
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
     return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))
 
@@ -10759,6 +10817,50 @@ def dataset_settings(dataset_id):
     name_source_candidates = sorted(
         f.name for f in dataset.fields if f.kind in ('scalar', 'text', 'label')
     )
+    # Visualisations the user can pick from in the "Add a viz" form.
+    # Include the user's own private viz rows plus every public one.
+    _me_id = g.current_user.id if getattr(g, 'current_user', None) else None
+    viz_candidates = (
+        GlobalVisualization.query.filter(
+            (GlobalVisualization.visibility == 'public') |
+            (GlobalVisualization.owner_user_id == _me_id)
+        ).order_by(GlobalVisualization.name).all()
+    )
+    # Per-candidate metadata used by the form to render arg pickers
+    # (input_kinds → which dataset fields match for each arg).
+    viz_specs = []
+    dataset_fields_by_kind: dict[str, list[str]] = {}
+    for f in dataset.dataset_fields:
+        dataset_fields_by_kind.setdefault(f.kind, []).append(f.name)
+    for gv in viz_candidates:
+        kinds = []
+        try:
+            kinds = json.loads(gv.input_kinds) if gv.input_kinds else []
+        except Exception:
+            kinds = []
+        # Try to infer arg names from the function signature in
+        # python_code. Fallback to arg_0 / arg_1 / …
+        arg_names: list[str] = []
+        try:
+            m = re.search(r'def\s+\w+\s*\(([^)]*)\)', gv.python_code or '')
+            if m:
+                for tok in m.group(1).split(','):
+                    name = tok.split(':')[0].split('=')[0].strip()
+                    if name and name != 'self':
+                        arg_names.append(name)
+        except Exception:
+            pass
+        if not arg_names:
+            arg_names = [f'arg_{i}' for i in range(len(kinds))]
+        viz_specs.append({
+            'id': gv.id, 'name': gv.name, 'description': gv.description or '',
+            'input_kinds': kinds, 'arg_names': arg_names,
+        })
+
+    attached_viz = (
+        DatasetVisualization.query.filter_by(dataset_id=dataset.id)
+        .order_by(DatasetVisualization.display_order, DatasetVisualization.id).all()
+    )
     return render_template(
         'dataset_settings.html',
         dataset=dataset,
@@ -10769,7 +10871,65 @@ def dataset_settings(dataset_id):
         lbs_using=lbs_using,
         schema_editable=(not lbs_using),
         name_source_candidates=name_source_candidates,
+        viz_specs=viz_specs,
+        attached_viz=attached_viz,
+        dataset_fields_by_kind=dataset_fields_by_kind,
     )
+
+
+@app.route('/dataset/<int:dataset_id>/visualizations/add', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def add_dataset_visualization(dataset_id):
+    """Attach a GlobalVisualization to this dataset. Form posts:
+      - global_visualization_id
+      - arg_<arg_name> field per arg in the viz function signature,
+        each holding a dataset field name (mapped through `gt_<field>`).
+      - target_name (optional override for display).
+    """
+    dataset = Dataset.query.get_or_404(dataset_id)
+    gv_id = request.form.get('global_visualization_id', type=int)
+    gv = GlobalVisualization.query.get_or_404(gv_id) if gv_id else None
+    if gv is None:
+        flash('Pick a visualisation.', 'warning')
+        return redirect(url_for('dataset_settings', dataset_id=dataset.id))
+
+    # Pull arg mappings from arg_<name> form fields.
+    mappings = {}
+    for key, val in request.form.items():
+        if not key.startswith('arg_'): continue
+        arg = key[4:]
+        val = (val or '').strip()
+        if val:
+            mappings[arg] = f'gt_{val}' if not val.startswith(('gt_', 'sub_', 'SCALAR:')) else val
+    if not mappings:
+        flash('Map at least one argument to a dataset field.', 'warning')
+        return redirect(url_for('dataset_settings', dataset_id=dataset.id))
+
+    dv = DatasetVisualization(
+        dataset_id=dataset.id,
+        global_visualization_id=gv.id,
+        arg_mappings=json.dumps(mappings),
+        target_name=(request.form.get('target_name') or '').strip() or None,
+        display_order=(DatasetVisualization.query.filter_by(dataset_id=dataset.id).count()),
+    )
+    db.session.add(dv); db.session.commit()
+    flash(f'Attached visualisation "{gv.name}".', 'success')
+    return redirect(url_for('dataset_settings', dataset_id=dataset.id))
+
+
+@app.route('/dataset/<int:dataset_id>/visualizations/<int:dv_id>/remove', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def remove_dataset_visualization(dataset_id, dv_id):
+    dataset = Dataset.query.get_or_404(dataset_id)
+    dv = DatasetVisualization.query.get_or_404(dv_id)
+    if dv.dataset_id != dataset.id:
+        abort(404)
+    name = dv.global_visualization.name if dv.global_visualization else 'visualisation'
+    db.session.delete(dv); db.session.commit()
+    flash(f'Removed {name}.', 'success')
+    return redirect(url_for('dataset_settings', dataset_id=dataset.id))
 
 
 @app.route('/dataset/<int:dataset_id>/pred_fields/add', methods=['POST'])
@@ -14039,7 +14199,32 @@ def check_and_migrate_db():
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (feature_request): {e}")
-                
+
+                # --- DatasetVisualization table ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS dataset_visualization ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  dataset_id INTEGER NOT NULL REFERENCES dataset(id),"
+                        "  global_visualization_id INTEGER NOT NULL "
+                        "    REFERENCES global_visualization(id),"
+                        "  arg_mappings TEXT NOT NULL,"
+                        "  target_name VARCHAR(100),"
+                        "  display_order INTEGER DEFAULT 0"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_visualization_dataset_id "
+                        "ON dataset_visualization (dataset_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_dataset_visualization_global_visualization_id "
+                        "ON dataset_visualization (global_visualization_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (dataset_visualization): {e}")
+
                 # Add git_author column to submission table
                 cursor.execute("PRAGMA table_info(submission)")
                 submission_columns = [row[1] for row in cursor.fetchall()]

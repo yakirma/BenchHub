@@ -273,6 +273,125 @@
     </div>
     {% endif %}
 
+    {# ---- Visualizations ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-2">
+                <i class="bi bi-eye me-1"></i>Visualizations
+            </h5>
+            <p class="text-body-secondary small mb-3">
+                Attach a saved visualisation from the
+                <a href="{{ url_for('visualizations_view') }}">visualisations catalog</a>
+                to this dataset. Each attached viz becomes a column
+                on every leaderboard backed by this dataset (inherited
+                automatically when you create a new LB).
+            </p>
+
+            {% if attached_viz %}
+            <ul class="list-group mb-3">
+                {% for dv in attached_viz %}
+                <li class="list-group-item d-flex justify-content-between align-items-start gap-3">
+                    <div class="flex-grow-1 min-w-0">
+                        <div class="fw-semibold">
+                            {{ dv.target_name or dv.global_visualization.name }}
+                            <code class="small text-body-secondary ms-1">{{ dv.global_visualization.name }}</code>
+                        </div>
+                        <div class="small text-body-secondary font-monospace text-truncate">
+                            args: {{ dv.arg_mappings }}
+                        </div>
+                    </div>
+                    <form method="post"
+                          action="{{ url_for('remove_dataset_visualization', dataset_id=dataset.id, dv_id=dv.id) }}"
+                          onsubmit="return confirm('Remove this visualisation?');">
+                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </form>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="alert alert-secondary py-2 px-3 small mb-3">
+                No visualisations attached yet.
+            </div>
+            {% endif %}
+
+            {# Add form. JS swaps the arg-picker UI when the user
+               picks a viz, since each viz has its own arg list +
+               accepted kinds. #}
+            <form method="post"
+                  action="{{ url_for('add_dataset_visualization', dataset_id=dataset.id) }}"
+                  id="dv-add-form" class="border rounded p-3"
+                  style="background: var(--bs-body-tertiary);">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-6">
+                        <label class="form-label small fw-semibold mb-1">Visualisation</label>
+                        <select name="global_visualization_id" id="dv-pick"
+                                class="form-select form-select-sm" required>
+                            <option value="">— pick one —</option>
+                            {% for spec in viz_specs %}
+                            <option value="{{ spec.id }}"
+                                    data-args="{{ spec.arg_names|tojson|forceescape }}"
+                                    data-kinds="{{ spec.input_kinds|tojson|forceescape }}">
+                                {{ spec.name }}
+                                {% if spec.input_kinds %}({{ spec.input_kinds|join(' + ') }}){% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-semibold mb-1">Display name (optional)</label>
+                        <input type="text" name="target_name" class="form-control form-control-sm"
+                               placeholder="defaults to the viz name">
+                    </div>
+                </div>
+                <div id="dv-args" class="mt-3"></div>
+                <button type="submit" class="btn btn-sm btn-primary mt-3">
+                    <i class="bi bi-plus-lg me-1"></i>Attach
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {# Field-by-kind lookup table for the picker, plus the JS that
+       builds the per-arg dropdowns when a viz is selected. #}
+    <script>
+    (function () {
+        const FIELDS_BY_KIND = {{ dataset_fields_by_kind|tojson }};
+        const sel = document.getElementById('dv-pick');
+        const argBox = document.getElementById('dv-args');
+        if (!sel || !argBox) return;
+        function render() {
+            const opt = sel.options[sel.selectedIndex];
+            argBox.innerHTML = '';
+            if (!opt || !opt.value) return;
+            let args = []; let kinds = [];
+            try { args = JSON.parse(opt.dataset.args || '[]'); } catch (e) {}
+            try { kinds = JSON.parse(opt.dataset.kinds || '[]'); } catch (e) {}
+            args.forEach((a, i) => {
+                const kind = kinds[i] || null;
+                const matches = kind && FIELDS_BY_KIND[kind] ? FIELDS_BY_KIND[kind] : [];
+                const allFields = [].concat(...Object.values(FIELDS_BY_KIND));
+                const fields = matches.length ? matches : allFields;
+                const wrap = document.createElement('div');
+                wrap.className = 'mb-2 row g-2 align-items-center';
+                wrap.innerHTML = `
+                    <label class="col-sm-3 col-form-label-sm small">
+                        <code>${a}</code>${kind ? ` <span class="text-body-secondary">(${kind})</span>` : ''}
+                    </label>
+                    <div class="col-sm-9">
+                        <select name="arg_${a}" class="form-select form-select-sm" required>
+                            <option value="">— pick a field —</option>
+                            ${fields.map(f => `<option value="${f}">${f}</option>`).join('')}
+                        </select>
+                    </div>`;
+                argBox.appendChild(wrap);
+            });
+        }
+        sel.addEventListener('change', render);
+    })();
+    </script>
+
     {# ---- Danger zone ---- #}
     <div class="card border-danger shadow-sm">
         <div class="card-body p-4">
