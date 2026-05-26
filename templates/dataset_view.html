@@ -933,8 +933,12 @@
                         {{ "%.4f"|format(field_data.value) if field_data.value is not none else 'N/A' }}
                     </div>
                     {% elif field_data.type == 'json' %}
-                    <div class="json-display" style="max-height: 200px; overflow-y: auto;">
-                        <pre style="font-size: 0.8rem; margin: 0;"
+                    {# Fixed width matches the image cell (300px) so columns
+                       align across mixed-modality rows. Inner pre wraps so
+                       long strings reflow inside the box. #}
+                    <div class="json-display border rounded"
+                         style="width: 300px; max-height: 200px; overflow-y: auto; background: var(--bs-body-tertiary);">
+                        <pre style="font-size: 0.75rem; margin: 0; padding: 6px; white-space: pre-wrap; word-break: break-word;"
                             id="json-preview-{{ sample.id }}-{{ col_key }}">Loading...</pre>
                     </div>
                     <script>
@@ -949,8 +953,8 @@
                             });
                     </script>
                     {% elif field_data.type == 'text' %}
-                    <div class="text-start p-1"
-                        style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; font-size: 0.9em;">
+                    <div class="text-start p-2 border rounded"
+                        style="width: 300px; max-height: 150px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font-size: 0.9em; background: var(--bs-body-tertiary);">
                         {{ field_data.value }}
                     </div>
                     {% elif field_data.type == 'label' %}
