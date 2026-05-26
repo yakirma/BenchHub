@@ -464,6 +464,15 @@ class Dataset(db.Model):
     #                demand and caches via bench_cache.
     storage_mode = db.Column(db.String(20), nullable=False,
                              default='local', server_default='local')
+    # Hybrid storage flag. True ⇒ uploads/datasets/<id>/<field>/<sample>.<ext>
+    # holds a downscaled / colormapped preview (JPG for vis modalities,
+    # PNG for audio), not the original bytes. The HF source URL stays
+    # in source_metadata for re-fetch; LeaderboardMaterialization rows
+    # carry the full-resolution snapshots needed for submission scoring.
+    preview_only = db.Column(
+        db.Boolean, nullable=False,
+        default=False, server_default='0',
+    )
 
     @property
     def source_metadata_parsed(self):
@@ -704,6 +713,44 @@ class GlobalVisualization(db.Model):
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
     owner = db.relationship('User', foreign_keys=[owner_user_id])
+
+class LeaderboardMaterialization(db.Model):
+    """Frozen full-resolution snapshot taken when an LB is created
+    from a preview-only Dataset.
+
+    Each LB picks how many samples + how to sample them; the
+    materializer fetches those samples from upstream HF at full
+    resolution and stores them at
+    `uploads/lb_materializations/<lb_id>/<field>/<sample>.<ext>`.
+    Submission scoring reads the full bytes from here; the dataset's
+    preview tier stays untouched.
+
+    Quota cost lands on the LB owner.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    leaderboard_id = db.Column(
+        db.Integer, db.ForeignKey('leaderboard.id'),
+        nullable=False, unique=True, index=True,
+    )
+    sample_cap = db.Column(db.Integer, nullable=False)
+    # 'head' | 'random' | 'stratified'. 'random' is the default for
+    # everything except classification, where 'stratified' is preferred.
+    sampling = db.Column(db.String(20), nullable=False, default='random')
+    sampling_seed = db.Column(db.Integer, nullable=False, default=42)
+    # Field name used for stratification (e.g. 'label'). NULL for
+    # non-stratified sampling.
+    stratify_field = db.Column(db.String(100), nullable=True)
+    materialized_at = db.Column(db.DateTime, nullable=True)
+    storage_bytes = db.Column(db.BigInteger, nullable=True)
+    status = db.Column(
+        db.String(20), nullable=False,
+        default='pending', server_default='pending',
+    )  # 'pending' | 'running' | 'ready' | 'failed'
+    error_message = db.Column(db.Text, nullable=True)
+    leaderboard = db.relationship('Leaderboard', backref=db.backref(
+        'materialization', lazy=True, uselist=False, cascade='all, delete-orphan',
+    ))
+
 
 class DatasetRequest(db.Model):
     """Community wishlist row: "please import this HF dataset."
@@ -957,9 +1004,9 @@ class User(db.Model):
     # free-tier values; bump per-user when you launch a paid tier. NULL caps
     # are allowed → "unlimited" (used for the `system` curated-content user).
     quota_max_storage_bytes = db.Column(
-        db.BigInteger, nullable=False, default=50 * 1024 * 1024,
-        server_default=str(50 * 1024 * 1024),
-    )  # 50 MB
+        db.BigInteger, nullable=False, default=10 * 1024 ** 3,
+        server_default=str(10 * 1024 ** 3),
+    )  # 10 GB — covers both preview ownership and LB materializations
     quota_max_datasets = db.Column(
         db.Integer, nullable=False, default=5, server_default='5',
     )
@@ -14432,6 +14479,65 @@ def check_and_migrate_db():
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (feature_request): {e}")
+
+                # --- Dataset.preview_only column ---
+                try:
+                    cursor.execute("PRAGMA table_info(dataset)")
+                    cols = [row[1] for row in cursor.fetchall()]
+                    if 'preview_only' not in cols:
+                        print("Migrating DB: Adding 'preview_only' to 'dataset'...")
+                        cursor.execute(
+                            "ALTER TABLE dataset ADD COLUMN preview_only "
+                            "BOOLEAN NOT NULL DEFAULT 0"
+                        )
+                        conn.commit()
+                except Exception as e:
+                    print(f"Migration error (dataset.preview_only): {e}")
+
+                # --- LeaderboardMaterialization table ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS leaderboard_materialization ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  leaderboard_id INTEGER NOT NULL UNIQUE "
+                        "    REFERENCES leaderboard(id),"
+                        "  sample_cap INTEGER NOT NULL,"
+                        "  sampling VARCHAR(20) NOT NULL DEFAULT 'random',"
+                        "  sampling_seed INTEGER NOT NULL DEFAULT 42,"
+                        "  stratify_field VARCHAR(100),"
+                        "  materialized_at DATETIME,"
+                        "  storage_bytes BIGINT,"
+                        "  status VARCHAR(20) NOT NULL DEFAULT 'pending',"
+                        "  error_message TEXT"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_leaderboard_materialization_leaderboard_id "
+                        "ON leaderboard_materialization (leaderboard_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (leaderboard_materialization): {e}")
+
+                # --- Bump default user storage quota to 10 GB ---
+                try:
+                    # Existing rows still at the old 50 MB default get
+                    # bumped to the new free-tier quota (10 GB). Admins
+                    # are unaffected (they bypass via is_admin), and
+                    # any user already on a custom cap > old default
+                    # keeps their custom value.
+                    OLD = 50 * 1024 * 1024
+                    NEW = 10 * 1024 ** 3
+                    cursor.execute(
+                        'UPDATE user SET quota_max_storage_bytes = ? '
+                        'WHERE quota_max_storage_bytes <= ?',
+                        (NEW, OLD),
+                    )
+                    if cursor.rowcount:
+                        print(f"Migrated {cursor.rowcount} user(s) to 10 GB quota")
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (quota bump): {e}")
 
                 # --- DatasetRequest + DatasetRequestVote tables ---
                 try:
