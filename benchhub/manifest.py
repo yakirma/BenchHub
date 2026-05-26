@@ -138,6 +138,7 @@ def import_typed_dataset(
     visibility: str = "public",
     DatasetField=None,
     existing_dataset=None,
+    tolerate_incomplete: bool = False,
 ) -> tuple[int, dict]:
     """Materialise a typed dataset into the DB + uploads volume.
 
@@ -162,34 +163,41 @@ def import_typed_dataset(
 
     # Pre-flight: every data-bearing (field, sample) file must exist.
     # `role='pred'` is schema-only — no per-sample files expected.
-    # Drop any sample that's missing ANY required field rather than
-    # killing the whole import — HF parquet rows occasionally fail
-    # one column out of many, and the rest of the dataset is still
-    # worth cataloging. If ALL samples drop, that's still a hard fail.
+    # Default behaviour (`tolerate_incomplete=False`) is strict: any
+    # missing file raises. The HF bulk importer passes True so a
+    # single bad parquet row doesn't kill the whole import.
     data_fields = [f for f in manifest["fields"]
                    if f.get("role", "gt") in _DATA_BEARING_ROLES]
-    kept_samples: list[str] = []
-    dropped: list[str] = []
-    for s in manifest["samples"]:
-        sample_missing = []
+    if tolerate_incomplete:
+        kept_samples: list[str] = []
+        dropped: list[str] = []
+        for s in manifest["samples"]:
+            sample_missing = [f["name"] for f in data_fields
+                              if not expected_file_path(source_root, f, s).exists()]
+            if sample_missing:
+                dropped.append(f"{s}({','.join(sample_missing)})")
+            else:
+                kept_samples.append(s)
+        if not kept_samples:
+            raise FileNotFoundError(
+                f"every sample missing at least one field; first 5 drops: "
+                f"{dropped[:5]}"
+            )
+        if dropped:
+            manifest["samples"] = kept_samples
+            manifest.setdefault("source", {})["dropped_incomplete"] = dropped[:50]
+    else:
+        missing: list[str] = []
         for f in data_fields:
-            p = expected_file_path(source_root, f, s)
-            if not p.exists():
-                sample_missing.append(f["name"])
-        if sample_missing:
-            dropped.append(f"{s}({','.join(sample_missing)})")
-        else:
-            kept_samples.append(s)
-    if not kept_samples:
-        raise FileNotFoundError(
-            f"every sample missing at least one field; first 5 drops: "
-            f"{dropped[:5]}"
-        )
-    if dropped:
-        # Mutate the manifest so downstream sample-row writers only
-        # see the kept set.
-        manifest["samples"] = kept_samples
-        manifest.setdefault("source", {})["dropped_incomplete"] = dropped[:50]
+            for s in manifest["samples"]:
+                p = expected_file_path(source_root, f, s)
+                if not p.exists():
+                    missing.append(str(p.relative_to(source_root)))
+        if missing:
+            raise FileNotFoundError(
+                f"manifest references missing files: {missing[:5]}"
+                + ("…" if len(missing) > 5 else "")
+            )
 
     if existing_dataset is not None:
         dataset = existing_dataset

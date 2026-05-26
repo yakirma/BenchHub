@@ -819,12 +819,17 @@
                 <th style="width: 50px;">Options</th>
 
                 {% for col_key in selected_display_columns %}
+                {# Pick a column width by kind. All "visual modality"
+                   kinds (image/depth/mask/audio/text/json/bboxes) use
+                   the same image_width so a 160px cell sits cleanly
+                   in a 180px column, left-aligned, no horizontal
+                   overflow. Scalars / labels stay narrower. #}
                 <th scope="col" {% set col_width=global_settings.name_width if col_key=='sample_name' else
                     (global_settings.tags_width if col_key=='tags' else (global_settings.histogram_width if
                     col_key=='histogram' else (global_settings.config_width if col_key in
                     ['signal_shape', 'per_source_stats' ] else (global_settings.metric_chart_width if
                     col_key=='per_sample_metrics' else (global_settings.image_width if
-                    (dataset_display_options[col_key].type in ['image', 'depth' ]) else
+                    (dataset_display_options[col_key].type in ['image', 'depth', 'mask', 'audio', 'text', 'json', 'bboxes' ]) else
                     global_settings.scalar_width))))) %}
                     style="width: {{ col_width }}; min-width: {{ col_width }}; overflow: hidden; text-overflow: ellipsis;">
                     {% if col_key == 'per_sample_metrics' %}
