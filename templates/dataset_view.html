@@ -611,6 +611,63 @@
 
 <div class="mb-3">
     <form method="get" action="{{ url_for('dataset_view', dataset_id=dataset.id) }}">
+        {# Tag filters — collapsible <details>, default closed.
+           Sits above the sample-name search since it's the heavier /
+           less-common control; users default to text search. #}
+        <details class="card border-0 shadow-sm mb-3 collapsible-card">
+            <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
+                <i class="bi bi-chevron-right collapsible-chev"></i>
+                <span class="small fw-semibold text-body-emphasis">
+                    <i class="bi bi-funnel me-1 text-primary"></i>Tag filters
+                </span>
+                <span class="ms-auto small text-body-secondary">
+                    include / exclude / prefix
+                </span>
+            </summary>
+            <div class="card-body py-2 pt-0">
+                <div class="d-flex align-items-center mt-2 flex-wrap">
+                    <!-- Include Types -->
+                    <div class="d-flex align-items-center me-3 mb-2">
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="checkbox" id="enable-include-tags">
+                        </div>
+                        <div class="tag-input-wrapper disabled" id="include-tags-wrapper">
+                            <div class="chips-container d-flex flex-wrap"></div>
+                            <input type="text" class="tag-input" id="include-tags-input" placeholder="Include tags..."
+                                disabled autocomplete="off">
+                            <ul class="suggestions-list" id="include-suggestions"></ul>
+                        </div>
+                    </div>
+
+                    <!-- Exclude Types -->
+                    <div class="d-flex align-items-center me-3 mb-2">
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="checkbox" id="enable-exclude-tags">
+                        </div>
+                        <div class="tag-input-wrapper disabled" id="exclude-tags-wrapper">
+                            <div class="chips-container d-flex flex-wrap"></div>
+                            <input type="text" class="tag-input" id="exclude-tags-input" placeholder="Exclude tags..."
+                                disabled autocomplete="off">
+                            <ul class="suggestions-list" id="exclude-suggestions"></ul>
+                        </div>
+                    </div>
+
+                    <!-- Prefix Types -->
+                    <div class="d-flex align-items-center mb-2">
+                        <div class="form-check me-2">
+                            <input class="form-check-input" type="checkbox" id="enable-prefix-tags">
+                        </div>
+                        <div class="tag-input-wrapper disabled" id="prefix-tags-wrapper">
+                            <div class="chips-container d-flex flex-wrap"></div>
+                            <input type="text" class="tag-input" id="prefix-tags-input" placeholder="Prefix tags..."
+                                disabled autocomplete="off">
+                            <ul class="suggestions-list" id="prefix-suggestions"></ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </details>
+
         {# Sample-name search — same `search` query param as the comparison
            page so the URL contract is consistent. #}
         <div class="input-group mb-3">
@@ -628,51 +685,6 @@
             </a>
             {% endif %}
             <button type="submit" class="btn btn-primary">Search</button>
-        </div>
-
-        <!-- Row 1: Tag Filters -->
-        <div class="mb-3 p-2 bg-body-tertiary border rounded">
-            <strong>Tag Filters:</strong>
-            <div class="d-flex align-items-center mt-2 flex-wrap">
-                <!-- Include Types -->
-                <div class="d-flex align-items-center me-3 mb-2">
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="checkbox" id="enable-include-tags">
-                    </div>
-                    <div class="tag-input-wrapper disabled" id="include-tags-wrapper">
-                        <div class="chips-container d-flex flex-wrap"></div>
-                        <input type="text" class="tag-input" id="include-tags-input" placeholder="Include tags..."
-                            disabled autocomplete="off">
-                        <ul class="suggestions-list" id="include-suggestions"></ul>
-                    </div>
-                </div>
-
-                <!-- Exclude Types -->
-                <div class="d-flex align-items-center me-3 mb-2">
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="checkbox" id="enable-exclude-tags">
-                    </div>
-                    <div class="tag-input-wrapper disabled" id="exclude-tags-wrapper">
-                        <div class="chips-container d-flex flex-wrap"></div>
-                        <input type="text" class="tag-input" id="exclude-tags-input" placeholder="Exclude tags..."
-                            disabled autocomplete="off">
-                        <ul class="suggestions-list" id="exclude-suggestions"></ul>
-                    </div>
-                </div>
-
-                <!-- Prefix Types -->
-                <div class="d-flex align-items-center mb-2">
-                    <div class="form-check me-2">
-                        <input class="form-check-input" type="checkbox" id="enable-prefix-tags">
-                    </div>
-                    <div class="tag-input-wrapper disabled" id="prefix-tags-wrapper">
-                        <div class="chips-container d-flex flex-wrap"></div>
-                        <input type="text" class="tag-input" id="prefix-tags-input" placeholder="Prefix tags..."
-                            disabled autocomplete="off">
-                        <ul class="suggestions-list" id="prefix-suggestions"></ul>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- Row 2: Per Page and Sorting -->
