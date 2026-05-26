@@ -970,6 +970,21 @@
                     <div class="sample-metrics-chart-container">
                         <canvas id="sample-metrics-chart-{{ sample.id }}"></canvas>
                     </div>
+                    {% elif col_key.startswith('dsviz_') %}
+                    {# Dataset-attached visualisation cell. Hits the
+                       /api/dataset_viz/<dv_id>/<sample_id> endpoint
+                       which runs the viz function + caches the PNG. #}
+                    {% set _opt = dataset_display_options[col_key] %}
+                    {% set _src = url_for('execute_dataset_visualization', dv_id=_opt.dv_id, sample_id=sample.id) %}
+                    <div class="text-center" style="display: inline-block;">
+                        <img src="{{ _src }}"
+                             class="border rounded shadow-sm clickable-vis"
+                             style="width: 160px !important; min-width: 160px !important; height: 140px !important; object-fit: contain; cursor: pointer;"
+                             data-bs-toggle="modal" data-bs-target="#custom-field-modal"
+                             data-img-url="{{ _src }}"
+                             data-sample-name="{{ sample.name }}" data-vis-type="dataset_viz"
+                             alt="{{ col_key }}">
+                    </div>
                     {% elif col_key in custom_fields_map[sample.id] %}
                     {% set field_data = custom_fields_map[sample.id][col_key] %}
                     {% if field_data.type in ['image', 'depth', 'mask', 'audio'] %}

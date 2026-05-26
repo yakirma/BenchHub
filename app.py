@@ -3585,6 +3585,54 @@ def extract_viz_arg_value(sample, submission, field_key):
             
     return value
 
+@app.route('/api/dataset_viz/<int:dv_id>/<int:sample_id>')
+def execute_dataset_visualization(dv_id, sample_id):
+    """Render a DatasetVisualization for one sample. Same exec model
+    as the LB-side execute_visualization (no submission since this is
+    dataset-scoped). Cached by content hash so repeat hits hit disk
+    not Python."""
+    import io as _io, hashlib as _hl, re as _re
+    from PIL import Image as _PIL
+    dv = DatasetVisualization.query.get_or_404(dv_id)
+    gv = dv.global_visualization
+    sample = Sample.query.get_or_404(sample_id)
+    if sample.dataset_id != dv.dataset_id:
+        return abort(400, description='sample/dataset mismatch')
+
+    code_hash = _hl.md5((gv.python_code or '').encode()).hexdigest()
+    mapping_hash = _hl.md5((dv.arg_mappings or '').encode()).hexdigest()
+    cache_key = f'dsviz_{dv_id}_{sample_id}_{code_hash}_{mapping_hash}'
+    cache_hash = _hl.md5(cache_key.encode()).hexdigest()
+    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f'{cache_hash}.png')
+    if os.path.exists(cache_path):
+        return send_file(cache_path, mimetype='image/png')
+
+    try:
+        arg_mappings = json.loads(dv.arg_mappings) if dv.arg_mappings else {}
+        kwargs = {a: extract_viz_arg_value(sample, None, k)
+                  for a, k in arg_mappings.items()}
+        exec_globals = {
+            'Image': _PIL, 'PIL': __import__('PIL'),
+            'numpy': __import__('numpy'), 'np': __import__('numpy'),
+        }
+        exec(gv.python_code, exec_globals)
+        m = _re.search(r'def\s+(\w+)\s*\(', gv.python_code)
+        func_name = m.group(1) if m else None
+        if func_name and func_name in exec_globals:
+            result = exec_globals[func_name](**kwargs)
+            if isinstance(result, _PIL.Image):
+                result.save(cache_path, 'PNG')
+                buf = _io.BytesIO()
+                result.save(buf, 'PNG'); buf.seek(0)
+                return send_file(buf, mimetype='image/png')
+        return create_error_image('No result')
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return create_error_image(str(e)[:60])
+
+
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>')
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>/<int:submission_id>')
 def execute_visualization(lv_id, sample_id, submission_id=None):
@@ -11629,6 +11677,21 @@ def dataset_view(dataset_id):
     )
     if not has_gt_scalars_or_metrics:
         available_display_options.pop('per_source_stats', None)
+
+    # Dataset-attached visualisations → per-sample image columns.
+    # Each DatasetVisualization gets a key like `dsviz_<dv_id>`; the
+    # template hits /api/dataset_viz/<dv_id>/<sample_id> to render.
+    for dv in DatasetVisualization.query.filter_by(dataset_id=dataset.id) \
+            .order_by(DatasetVisualization.display_order,
+                      DatasetVisualization.id).all():
+        gv = dv.global_visualization
+        if gv is None:
+            continue
+        label = dv.target_name or gv.name
+        available_display_options[f'dsviz_{dv.id}'] = {
+            'label': label, 'type': 'dataset_viz',
+            'dv_id': dv.id, 'default_width': '180px',
+        }
 
     # Filter selected columns to ensure they exist in available options
     selected_display_columns = [col for col in selected_display_columns if col in available_display_options]
