@@ -224,118 +224,94 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                specific bits (visibility / owner / HF split badges). #}
             {% set _last_area = namespace(v=None) %}
             {% set _last_task = namespace(v=None) %}
-            <div class="list-group shadow-sm">
-                {% for e in entries %}
+            {% set _open_grid = namespace(v=False) %}
+            {% for e in entries %}
                 {% if e.area != _last_area.v %}
-                <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
-                    <i class="bi bi-diagram-3 me-1"></i>{{ e.area }}
-                </div>
-                {% set _last_area.v = e.area %}
-                {% set _last_task.v = None %}
+                    {% if _open_grid.v %}</div>{% set _open_grid.v = False %}{% endif %}
+                    <div class="d-flex align-items-center gap-2 mt-4 mb-2">
+                        <span class="small fw-semibold text-body-secondary text-uppercase"
+                              style="letter-spacing: 0.05em;">
+                            <i class="bi bi-diagram-3 me-1"></i>{{ e.area }}
+                        </span>
+                        <span class="flex-grow-1 border-bottom"></span>
+                    </div>
+                    {% set _last_area.v = e.area %}
+                    {% set _last_task.v = None %}
                 {% endif %}
                 {% if e.task and e.task != _last_task.v %}
-                <div class="list-group-item bg-body py-1 px-4 small text-body-secondary border-0 border-bottom">
-                    <i class="bi bi-chevron-right me-1 opacity-50"></i>{{ e.task }}
-                </div>
-                {% set _last_task.v = e.task %}
+                    {% if _open_grid.v %}</div>{% set _open_grid.v = False %}{% endif %}
+                    <div class="small text-body-secondary mt-3 mb-2 ms-1">
+                        <i class="bi bi-chevron-right me-1 opacity-50"></i>{{ e.task }}
+                    </div>
+                    {% set _last_task.v = e.task %}
+                {% endif %}
+                {% if not _open_grid.v %}
+                    <div class="row g-3">{% set _open_grid.v = True %}
                 {% endif %}
 
                 {% if e.kind == 'bh' %}
                 {% set dataset = e.bh %}
                 {% set _accent = dataset.name | accent_color %}
                 {% set _accent_bg = dataset.name | accent_bg %}
-                <div class="list-group-item list-group-item-action catalog-row d-flex justify-content-between align-items-center gap-3 ds-search-row"
-                     style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};"
+                <div class="col-sm-6 col-lg-6 col-xl-4 ds-search-row"
                      data-search="{{ dataset.name|lower }} {{ (e.category or '')|lower }} {% for t in dataset.tags %}{{ t.name|lower }} {% endfor %}">
-                    {% if e.thumb_url %}
-                    <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
-                        class="flex-shrink-0"
-                        style="display:block; width:64px; height:64px; border-radius:6px;
-                               background-image: url('{{ e.thumb_url }}');
-                               background-size: cover; background-position: center;"
-                        title="{{ dataset.name }}"
-                        aria-label="{{ dataset.name }} thumbnail"></a>
-                    {% else %}
-                    <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
-                        style="width:64px; height:64px; border-radius:6px;
-                               background: var(--bs-tertiary-bg); color: var(--bs-body-secondary);">
-                        <i class="bi bi-database fs-3 opacity-50"></i>
-                    </div>
-                    {% endif %}
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="d-flex align-items-center mb-1 flex-wrap">
-                            <span class="me-2">{{ user_avatar(dataset.owner, size=32) }}</span>
-                            <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
-                                class="text-decoration-none text-body fw-bold fs-5 text-truncate">
-                                {{ dataset.name }}
-                            </a>
-                            {% if dataset.visibility == 'public' %}
-                            <span class="badge text-bg-success-subtle text-success border border-success-subtle ms-2 small fw-normal">
-                                <i class="bi bi-globe me-1"></i>Public
-                            </span>
-                            {% elif dataset.visibility == 'private' %}
-                            <span class="badge text-bg-danger-subtle text-danger border border-danger-subtle ms-2 small fw-normal">
-                                <i class="bi bi-lock-fill me-1"></i>Private
-                            </span>
-                            {% elif dataset.visibility == 'unlisted' %}
-                            <span class="badge text-bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-2 small fw-normal">
-                                <i class="bi bi-link-45deg me-1"></i>Unlisted
-                            </span>
-                            {% endif %}
-                            {% if dataset.import_status == 'importing' %}
-                            <span class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle ms-2 small fw-normal"
-                                  title="Background HF import in progress">
-                                <i class="bi bi-arrow-repeat me-1"></i>Importing…
-                            </span>
-                            {% elif dataset.import_status == 'failed' %}
-                            <span class="badge text-bg-danger-subtle text-danger border border-danger-subtle ms-2 small fw-normal"
-                                  title="{{ dataset.import_error or 'Import failed' }}">
-                                <i class="bi bi-x-octagon me-1"></i>Import failed
-                            </span>
-                            {% endif %}
-                        </div>
-                        {% if dataset.tags %}
-                        <div class="mt-1 d-flex flex-wrap gap-1">
-                            {% for t in dataset.tags %}
-                            <a href="{{ url_for('leaderboards', tag=t.name) }}"
-                                class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none small"
-                                onclick="event.stopPropagation();"
-                                title="See others tagged '{{ t.name }}'">
-                                <i class="bi bi-tag-fill me-1"></i>{{ t.name }}
-                            </a>
-                            {% endfor %}
+                    <div class="card ds-card h-100 border-0 position-relative"
+                         style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};">
+                        {% if e.thumb_url %}
+                        <div class="ds-card-thumb"
+                             style="background-image: url('{{ e.thumb_url }}');"></div>
+                        {% else %}
+                        <div class="ds-card-thumb ds-card-thumb-empty">
+                            <i class="bi bi-database"></i>
                         </div>
                         {% endif %}
-                        <small class="d-block text-body-secondary mt-1">
-                            <i class="bi bi-clock me-1"></i> Uploaded: {{ dataset.upload_date.strftime('%Y-%m-%d %H:%M') }}
-                            {% if dataset.last_associated_activity and dataset.last_associated_activity > dataset.upload_date %}
-                            <span class="mx-2 opacity-50">|</span>
-                            <span title="Most recent activity (Active Leaderboard or Submission)"><i class="bi bi-activity me-1"></i> Active: {{ dataset.last_associated_activity.strftime('%Y-%m-%d %H:%M') }}</span>
-                            {% endif %}
-                            <span class="mx-2 opacity-50">|</span>
-                            <span title="Total Samples"><i class="bi bi-card-image me-1"></i> {{ e.sample_count }} samples</span>
-                        </small>
-                        {% if dataset.active_leaderboards %}
-                        <div class="mt-2">
-                            <small class="text-body-secondary"><i class="bi bi-trophy me-1"></i> Used in:</small>
-                            {% for lb in dataset.active_leaderboards %}
-                            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-                                class="text-decoration-none badge bg-body-secondary border text-body ms-1 change-on-hover">
-                                {{ lb.name }}
-                                {% if lb.subs_last_24h and lb.subs_last_24h > 0 %}
-                                {% set percentage = (lb.subs_last_24h * 20) if lb.subs_last_24h < 5 else 100 %} <i
-                                    class="bi bi-fire ms-1"
-                                    style="background: linear-gradient(to top, #ff4500 {{ percentage }}%, #adadad {{ percentage }}%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"
-                                    title="{{ lb.subs_last_24h }} submissions in the last 24 hours"></i>
+                        <div class="card-body p-3 d-flex flex-column">
+                            <div class="d-flex align-items-center gap-2 mb-1">
+                                {{ user_avatar(dataset.owner, size=22) }}
+                                <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                                   class="text-decoration-none text-body fw-semibold text-truncate flex-grow-1"
+                                   style="font-size: 0.92rem;"
+                                   title="{{ dataset.name }}">{{ dataset.name }}</a>
+                                {% if dataset.visibility == 'private' %}
+                                <i class="bi bi-lock-fill text-danger small" title="Private"></i>
+                                {% elif dataset.visibility == 'unlisted' %}
+                                <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
                                 {% endif %}
-                            </a>
-                            {% endfor %}
+                                {% if dataset.import_status == 'importing' %}
+                                <i class="bi bi-arrow-repeat text-primary small" title="Importing…"></i>
+                                {% elif dataset.import_status == 'failed' %}
+                                <i class="bi bi-x-octagon text-danger small"
+                                   title="{{ dataset.import_error or 'Import failed' }}"></i>
+                                {% endif %}
+                            </div>
+                            {% if dataset.tags %}
+                            <div class="d-flex flex-wrap gap-1 mb-2">
+                                {% for t in dataset.tags[:3] %}
+                                <a href="{{ url_for('leaderboards', tag=t.name) }}"
+                                   class="badge text-bg-primary-subtle text-primary-emphasis border border-primary-subtle text-decoration-none"
+                                   onclick="event.stopPropagation();"
+                                   style="font-size: 0.65rem;"
+                                   title="{{ t.name }}">{{ t.name }}</a>
+                                {% endfor %}
+                                {% if dataset.tags|length > 3 %}
+                                <span class="badge text-bg-light border fw-normal"
+                                      style="font-size: 0.65rem;">+{{ dataset.tags|length - 3 }}</span>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                            <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
+                                 style="font-size: 0.7rem;">
+                                <span title="Samples"><i class="bi bi-card-image me-1"></i>{{ e.sample_count }}</span>
+                                {% if dataset.active_leaderboards %}
+                                <span title="Leaderboards using this"><i class="bi bi-trophy me-1"></i>{{ dataset.active_leaderboards|length }}</span>
+                                {% endif %}
+                                <span class="ms-auto opacity-75">{{ dataset.upload_date.strftime('%Y-%m-%d') }}</span>
+                            </div>
                         </div>
-                        {% endif %}
+                        <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
+                           class="stretched-link"
+                           aria-label="Open {{ dataset.name }}"></a>
                     </div>
-                    <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
-                       class="stretched-link"
-                       aria-label="Open {{ dataset.name }}"></a>
                 </div>
 
                 {% else %}
@@ -345,57 +321,37 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                 {% set _accent_key = hf.hf_repo_id or 'hf' %}
                 {% set _accent = _accent_key | accent_color %}
                 {% set _accent_bg = _accent_key | accent_bg %}
-                <div class="list-group-item list-group-item-action catalog-row d-flex justify-content-between align-items-center gap-3 ds-search-row"
-                     style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};"
+                <div class="col-sm-6 col-lg-6 col-xl-4 ds-search-row"
                      data-search="{{ hf.hf_repo_id|lower }} {{ (e.category or '')|lower }} {% for lb in hf.leaderboards %}{{ lb.name|lower }} {% endfor %}">
-                    <div class="flex-shrink-0 d-flex align-items-center justify-content-center"
-                         style="width:64px; height:64px; border-radius:6px;
-                                background: var(--bs-info-bg-subtle, var(--bs-tertiary-bg));
-                                color: var(--bs-info-text-emphasis, var(--bs-body-secondary));"
-                         title="Cached HuggingFace dataset">
-                        <i class="bi bi-cloud-arrow-down fs-3"></i>
-                    </div>
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="d-flex align-items-center mb-1 flex-wrap gap-1">
-                            <a href="https://huggingface.co/datasets/{{ hf.hf_repo_id }}"
-                               target="_blank" rel="noopener"
-                               class="text-decoration-none text-body fw-bold font-monospace text-truncate"
-                               title="Open {{ hf.hf_repo_id }} on HuggingFace (new tab)">
-                                {{ hf.hf_repo_id }}
-                                <i class="bi bi-box-arrow-up-right small text-body-secondary"></i>
-                            </a>
-                            <span class="badge text-bg-info-subtle text-info-emphasis border small ms-1"
-                                  title="Imported from HuggingFace">
-                                <i class="bi bi-cloud-arrow-down me-1"></i>HF
-                            </span>
-                            {% if hf.hf_split %}
-                            <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
-                                  title="HuggingFace split">
-                                split: {{ hf.hf_split }}
-                            </span>
-                            {% endif %}
-                            {% if hf.hf_revision %}
-                            <span class="badge text-bg-light border small ms-1 font-monospace"
-                                  title="Pinned revision">
-                                @{{ hf.hf_revision[:8] }}
-                            </span>
-                            {% endif %}
+                    <div class="card ds-card h-100 border-0 position-relative"
+                         style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};">
+                        <div class="ds-card-thumb ds-card-thumb-hf">
+                            <i class="bi bi-cloud-arrow-down"></i>
                         </div>
-                        <small class="d-block text-body-secondary mt-1">
-                            <i class="bi bi-card-image me-1"></i>{{ hf.sample_count }} cached samples
-                            <span class="mx-2 opacity-50">|</span>
-                            <i class="bi bi-trophy me-1"></i>Used by
-                            {% for lb in hf.leaderboards %}<a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-                                class="text-decoration-none">{{ lb.name }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-                        </small>
+                        <div class="card-body p-3 d-flex flex-column">
+                            <div class="d-flex align-items-center gap-1 mb-1">
+                                <a href="https://huggingface.co/datasets/{{ hf.hf_repo_id }}"
+                                   target="_blank" rel="noopener"
+                                   class="text-decoration-none text-body fw-semibold font-monospace text-truncate flex-grow-1"
+                                   style="font-size: 0.82rem;"
+                                   title="{{ hf.hf_repo_id }}">{{ hf.hf_repo_id }}</a>
+                                <i class="bi bi-cloud-arrow-down text-info small" title="HuggingFace"></i>
+                            </div>
+                            <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
+                                 style="font-size: 0.7rem;">
+                                <span><i class="bi bi-card-image me-1"></i>{{ hf.sample_count }}</span>
+                                {% if hf.hf_split %}<span class="opacity-75">{{ hf.hf_split }}</span>{% endif %}
+                                <span class="ms-auto opacity-75">{{ hf.leaderboards|length }} LB{{ '' if hf.leaderboards|length == 1 else 's' }}</span>
+                            </div>
+                        </div>
+                        <a href="{{ url_for('leaderboard_view', leaderboard_id=primary_lb.id) }}"
+                           class="stretched-link"
+                           aria-label="Open {{ hf.hf_repo_id }}"></a>
                     </div>
-                    <a href="{{ url_for('leaderboard_view', leaderboard_id=primary_lb.id) }}"
-                       class="stretched-link"
-                       aria-label="Open {{ hf.hf_repo_id }} on its leaderboard"></a>
                 </div>
                 {% endif %}
-                {% endfor %}
-            </div>
+            {% endfor %}
+            {% if _open_grid.v %}</div>{% endif %}
             {% else %}
             <div class="alert alert-secondary d-flex align-items-center" role="alert">
                 <i class="bi bi-info-circle me-2"></i>
@@ -412,15 +368,55 @@ print(result[&quot;dataset_id&quot;])</code></pre>
 </div>
 
 <style>
-/* HF-style facet links: subtle hover to signal interactivity without
-   the heavy list-group chrome. */
 .hover-bg:hover { background-color: var(--bs-tertiary-bg); }
 
-/* Expand/collapse chevron — rotate when the parent button is in the
-   open state. Bootstrap toggles .collapsed on the trigger button. */
 .cat-toggle .cat-chev { transition: transform 0.15s ease-in-out; }
 .cat-toggle:not(.collapsed) .cat-chev { transform: rotate(90deg); }
 .cat-toggle:hover { color: var(--bs-primary) !important; }
+
+/* Floating dataset cards: small, denser than the old list rows.
+   Soft shadow + hover lift gives a "floating" vibe; the per-card
+   --accent stripe at the top doubles as a category tint. */
+.ds-card {
+    border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    overflow: hidden;
+    border-top: 3px solid var(--accent, var(--bs-primary)) !important;
+}
+.ds-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.07), 0 12px 24px rgba(0,0,0,0.08);
+}
+.ds-card-thumb {
+    height: 92px;
+    background-size: cover;
+    background-position: center;
+    background-color: var(--bs-tertiary-bg);
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+.ds-card-thumb-empty,
+.ds-card-thumb-hf {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.8rem;
+    color: var(--bs-body-secondary);
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent, var(--bs-primary)) 18%, var(--bs-body-bg)),
+        var(--bs-body-bg));
+}
+.ds-card-thumb-hf {
+    color: var(--bs-info-text-emphasis);
+}
+/* Tighten the card-body so the cards feel compact, not airy. */
+.ds-card .card-body { font-size: 0.85rem; }
+/* The stretched-link covers all sub-anchors. Re-elevate tag links so
+   they still navigate independently. */
+.ds-card a:not(.stretched-link) {
+    position: relative;
+    z-index: 2;
+}
 </style>
 {% endblock %}
 
