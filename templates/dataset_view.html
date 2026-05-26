@@ -994,10 +994,12 @@
                     {% elif field_data.type == 'json' %}
                     {# Fixed width matches the image cell so columns align
                        across mixed-modality rows. Inner pre wraps so long
-                       strings reflow inside the box. #}
-                    <div class="json-display border rounded"
-                         style="width: 160px; max-height: 140px; overflow-y: auto; background: var(--bs-body-tertiary);">
-                        <pre style="font-size: 0.7rem; margin: 0; padding: 4px; white-space: pre-wrap; word-break: break-word;"
+                       strings reflow inside the box. Pin the wrapper to
+                       the left edge with mr-auto so any inherited center
+                       alignment from a parent td/flex can't push it. #}
+                    <div class="json-display border rounded text-start"
+                         style="width: 160px; max-height: 140px; overflow-y: auto; background: var(--bs-body-tertiary); margin-right: auto; margin-left: 0; text-align: left !important;">
+                        <pre style="font-size: 0.7rem; margin: 0; padding: 4px; white-space: pre-wrap; word-break: break-word; text-align: left;"
                             id="json-preview-{{ sample.id }}-{{ col_key }}">Loading…</pre>
                     </div>
                     <script>
@@ -1013,9 +1015,7 @@
                     </script>
                     {% elif field_data.type == 'text' %}
                     <div class="text-start p-2 border rounded"
-                        style="width: 160px; max-height: 140px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: var(--bs-body-tertiary);">
-                        {{ field_data.value }}
-                    </div>
+                        style="width: 160px; max-height: 140px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: var(--bs-body-tertiary); margin-right: auto; margin-left: 0; text-align: left !important;">{{ (field_data.value or '')|trim }}</div>
                     {% elif field_data.type == 'label' %}
                     <div class="text-center fw-bold">
                         {{ field_data.value if field_data.value is not none else 'N/A' }}
