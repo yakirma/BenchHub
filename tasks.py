@@ -5,7 +5,7 @@ import shutil
 import tempfile
 from app import (
     celery, db, Submission, LeaderboardMetric, MetricResult, Sample, app,
-    CustomField, Dataset, DatasetField,
+    CustomField, Dataset, DatasetField, Leaderboard, LeaderboardMaterialization,
 )
 from metric_engine import (
     evaluate_dynamic_metric,
@@ -722,3 +722,47 @@ def reaggregate_submission_metrics(self, submission_id):
         session.remove()
 
 
+
+
+@celery.task(bind=True, name='tasks.materialize_leaderboard',
+              max_retries=2, ignore_result=True)
+def materialize_leaderboard(self, leaderboard_id: int):
+    """Stage C: full-resolution re-fetch from HF for the LB's chosen
+    sample subset. Reads the LeaderboardMaterialization row already
+    persisted by the create_leaderboard route, runs the materialiser,
+    updates status. Failure puts the row in status='failed' with the
+    error message; the LB page surfaces a retry button.
+    """
+    from benchhub.lb_materialize import materialize_for_lb
+
+    logger = logging.getLogger(__name__)
+    with app.app_context():
+        lb = Leaderboard.query.get(leaderboard_id)
+        if lb is None:
+            logger.warning(f'materialize: LB {leaderboard_id} not found')
+            return
+        matrow = LeaderboardMaterialization.query.filter_by(
+            leaderboard_id=leaderboard_id).first()
+        if matrow is None:
+            logger.warning(f'materialize: LB {leaderboard_id} has no '
+                           'LeaderboardMaterialization row')
+            return
+        ds = (lb.datasets or [None])[0]
+        if ds is None:
+            matrow.status = 'failed'
+            matrow.error_message = 'no backing dataset'
+            db.session.commit()
+            return
+        try:
+            summary = materialize_for_lb(
+                leaderboard=lb, dataset=ds, db_session=db.session,
+                upload_folder=app.config['UPLOAD_FOLDER'],
+                CustomField=CustomField,
+                LeaderboardMaterialization=LeaderboardMaterialization,
+            )
+            logger.info(f'materialize: LB {leaderboard_id} → {summary}')
+        except Exception as e:
+            logger.exception(f'materialize LB {leaderboard_id} failed: {e}')
+            matrow.status = 'failed'
+            matrow.error_message = str(e)[:500]
+            db.session.commit()

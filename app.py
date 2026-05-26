@@ -6930,8 +6930,13 @@ def leaderboard_view(leaderboard_id):
     submission_predict_lines = _pred_field_constructor_lines(
         leaderboard, indent='                ',
     )
+    # Materialization status for the LB (if any). The materialization
+    # row was created at LB-create time for preview-only datasets;
+    # the page surfaces status + a retry button when failed.
+    materialization = leaderboard.materialization
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
+                           materialization=materialization,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
                            submission_predict_lines=submission_predict_lines,
@@ -9150,47 +9155,24 @@ def create_leaderboard():
         )
         db.session.add(matrow)
         db.session.commit()
-        # Kick off the materialisation. Sync for now — Celery hand-
-        # off is a follow-up. Failures don't block LB creation; the
-        # row just stays in 'failed' status with the error message
-        # so the user can retry from the LB page later.
+        # Kick off the materialisation as a Celery task so the
+        # request handler doesn't block on a long HF download. The
+        # LB page polls + surfaces the running/ready/failed state.
+        # Sync fallback (CELERY_TASK_ALWAYS_EAGER, used in tests) is
+        # automatic via Celery's eager mode flag.
         try:
-            from benchhub.lb_materialize import materialize_for_lb
-            _ds = (new_leaderboard.datasets or [None])[0]
-            if _ds is not None:
-                summary = materialize_for_lb(
-                    leaderboard=new_leaderboard, dataset=_ds,
-                    db_session=db.session,
-                    upload_folder=app.config['UPLOAD_FOLDER'],
-                    CustomField=CustomField,
-                    LeaderboardMaterialization=LeaderboardMaterialization,
-                )
-                if summary.get('status') == 'ready':
-                    flash(
-                        f'Materialised {summary.get("files_copied")} files '
-                        f'across {summary.get("samples_picked")} samples '
-                        f'({_format_bytes(summary.get("bytes", 0))}).',
-                        'info',
-                    )
-                # Post-flight quota warning (no enforcement; we said
-                # post-flight in the wizard answers).
-                owner_user = User.query.get(new_leaderboard.owner_user_id)
-                if owner_user and not is_admin(owner_user):
-                    used = storage_used_bytes(owner_user)
-                    cap = int(owner_user.quota_max_storage_bytes or 0)
-                    if cap and used > cap:
-                        flash(
-                            f'Storage over quota: {_format_bytes(used)} > '
-                            f'{_format_bytes(cap)}. Delete some materializations '
-                            f'or contact us for a higher cap.',
-                            'warning',
-                        )
+            import tasks as _tasks
+            _tasks.materialize_leaderboard.delay(new_leaderboard.id)
+            flash(
+                f'Materialisation queued ({sample_cap} samples, '
+                f'{sampling} sampling). Track progress on the LB page.',
+                'info',
+            )
         except Exception as e:
             matrow.status = 'failed'
-            matrow.error_message = str(e)[:500]
+            matrow.error_message = f'enqueue: {e}'
             db.session.commit()
-            flash(f'Materialisation failed: {e}. Retry from the LB page.',
-                  'warning')
+            flash(f'Couldn\'t queue materialisation: {e}', 'warning')
 
     flash(f'Leaderboard "{leaderboard_name}" created successfully!', 'success')
     return redirect(url_for('leaderboard_view', leaderboard_id=new_leaderboard.id))
@@ -10976,6 +10958,35 @@ def _parse_hf_repo_id(raw: str) -> str | None:
             break
     raw = raw.strip('/').split('/tree/')[0]
     return raw if _HF_REPO_RE.match(raw) else None
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/materialize/retry', methods=['POST'])
+@login_required
+def retry_lb_materialization(leaderboard_id: int):
+    """Re-enqueue the materialization task. Useful when the initial
+    run failed (e.g. HF rate-limited) and the user wants to try again
+    without recreating the LB. Owner / admin only."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    if not (g.current_user and (
+            g.current_user.id == lb.owner_user_id or is_admin(g.current_user))):
+        abort(403)
+    matrow = lb.materialization
+    if matrow is None:
+        flash('No materialization configured for this LB.', 'warning')
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    matrow.status = 'pending'
+    matrow.error_message = None
+    db.session.commit()
+    try:
+        import tasks as _tasks
+        _tasks.materialize_leaderboard.delay(lb.id)
+        flash('Materialization re-queued.', 'info')
+    except Exception as e:
+        matrow.status = 'failed'
+        matrow.error_message = f'enqueue: {e}'
+        db.session.commit()
+        flash(f'Couldn\'t queue retry: {e}', 'warning')
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
 
 
 @app.route('/dataset_requests/add', methods=['POST'])

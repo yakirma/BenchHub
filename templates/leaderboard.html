@@ -311,7 +311,73 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <i class="bi bi-diagram-3 me-1"></i>{{ leaderboard.category }}
                 </a>
                 {% endif %}
+                {% if materialization %}
+                {% if materialization.status == 'ready' %}
+                <span class="badge text-bg-success-subtle text-success-emphasis border align-middle"
+                      style="font-size: 0.5em;"
+                      title="{{ materialization.sample_cap }} samples materialized at full resolution ({{ materialization.sampling }} sampling)">
+                    <i class="bi bi-hdd-check me-1"></i>materialized
+                </span>
+                {% elif materialization.status in ('pending', 'running') %}
+                <span class="badge text-bg-warning-subtle text-warning-emphasis border align-middle"
+                      style="font-size: 0.5em;"
+                      title="Re-fetching full-resolution bytes from HF…">
+                    <i class="bi bi-arrow-repeat me-1"></i>materializing…
+                </span>
+                {% elif materialization.status == 'failed' %}
+                <span class="badge text-bg-danger-subtle text-danger-emphasis border align-middle"
+                      style="font-size: 0.5em;"
+                      title="{{ materialization.error_message or 'Materialization failed' }}">
+                    <i class="bi bi-x-octagon me-1"></i>materialize failed
+                </span>
+                {% endif %}
+                {% endif %}
             </h1>
+
+            {# Materialization status bar — shown when a row exists.
+               Surfaces sample count + sampling strategy + a retry
+               button for failed runs. #}
+            {% if materialization %}
+            <div class="alert alert-{{ 'success' if materialization.status == 'ready'
+                                       else 'warning' if materialization.status in ('pending','running')
+                                       else 'danger' if materialization.status == 'failed'
+                                       else 'secondary' }} py-2 px-3 small mb-2 d-flex align-items-center gap-2 flex-wrap">
+                <i class="bi {{ 'bi-hdd-check' if materialization.status == 'ready'
+                                else 'bi-arrow-repeat' if materialization.status in ('pending','running')
+                                else 'bi-x-octagon' }}"></i>
+                <span>
+                    {% if materialization.status == 'ready' %}
+                        <strong>Materialized.</strong>
+                        {{ '{:,}'.format(materialization.sample_cap) }} samples,
+                        {{ materialization.sampling }} sampling, seed
+                        {{ materialization.sampling_seed }}.
+                        {% if materialization.storage_bytes %}
+                        Disk usage: {{ (materialization.storage_bytes / 1024 / 1024)|round(1) }} MB.
+                        {% endif %}
+                    {% elif materialization.status == 'running' %}
+                        <strong>Materializing…</strong>
+                        Re-fetching {{ '{:,}'.format(materialization.sample_cap) }} samples
+                        from HuggingFace at full resolution. Refresh to check.
+                    {% elif materialization.status == 'pending' %}
+                        <strong>Queued for materialization.</strong>
+                        Worker should pick this up momentarily.
+                    {% elif materialization.status == 'failed' %}
+                        <strong>Materialization failed.</strong>
+                        <code class="small">{{ materialization.error_message or 'unknown error' }}</code>
+                    {% endif %}
+                </span>
+                {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin)
+                      and materialization.status in ('failed',) %}
+                <form method="post"
+                      action="{{ url_for('retry_lb_materialization', leaderboard_id=leaderboard.id) }}"
+                      class="ms-auto m-0">
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Retry
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+            {% endif %}
             <p class="text-muted mb-0 small">
                 <i class="bi bi-clock me-1"></i>Created
                 {{ leaderboard.upload_date.strftime('%Y-%m-%d %H:%M') if leaderboard.upload_date else '—' }}
