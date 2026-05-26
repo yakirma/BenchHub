@@ -590,12 +590,15 @@ class CocoDetections(DataType):
           {
             "category_id": int,
             "category_name": str | None,     # optional, for human reading
-            "bbox": [x, y, w, h],            # COCO standard: top-left + WH
+            "bbox": [x, y, w, h],            # COCO standard xywh:
+                                             # top-left corner + WIDTH + HEIGHT
+                                             # NOT xyxy. Importers that get xyxy
+                                             # from upstream MUST convert.
             "segmentation": [                # zero or more polygons
-                [x0, y0, x1, y1, ...],
+                [x0, y0, x1, y1, ...],       # flat (x,y) pairs in image space
                 ...
             ],
-            "area": float | None,            # optional
+            "area": float | None,            # mask/region area (NOT bbox area)
             "iscrowd": 0 | 1                 # optional
           },
           ...
