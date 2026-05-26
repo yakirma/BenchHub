@@ -9888,10 +9888,16 @@ def comparison_view(leaderboard_id):
     # Sorting (BH path only — HF branch above already paginated)
     if not hf_stub_mode and sort_by:
         if sort_by == 'name':
+            # Natural sort by (length, name) so 1 < 2 < 10 < 100 and
+            # s_1 < s_2 < s_10 instead of lex's 1,10,100,2. Lex
+            # within equal-length groups handles zero-padded sample
+            # names (s_001, s_002) naturally too.
             if sort_order == 'desc':
-                samples_query = samples_query.order_by(Sample.name.desc())
+                samples_query = samples_query.order_by(
+                    func.length(Sample.name).desc(), Sample.name.desc())
             else:
-                samples_query = samples_query.order_by(Sample.name.asc())
+                samples_query = samples_query.order_by(
+                    func.length(Sample.name).asc(), Sample.name.asc())
             total = samples_query.count()
             paginated_items = samples_query.offset((page-1)*per_page).limit(per_page).all()
         elif ':' in sort_by:
@@ -11971,10 +11977,16 @@ def dataset_view(dataset_id):
 
     # Sorting
     if sort_by == 'name':
+        # Natural sort: shorter strings before longer ones, lex
+        # within equal lengths. So 1, 2, 10, 100 and s_1, s_2, s_10
+        # come out in numeric / human order instead of lex's
+        # 1, 10, 100, 2.
         if sort_order == 'desc':
-            samples_query = samples_query.order_by(Sample.name.desc())
+            samples_query = samples_query.order_by(
+                func.length(Sample.name).desc(), Sample.name.desc())
         else:
-            samples_query = samples_query.order_by(Sample.name.asc())
+            samples_query = samples_query.order_by(
+                func.length(Sample.name).asc(), Sample.name.asc())
     elif sort_by in custom_scalar_metric_names:
         # Optimized sort by custom field
         samples_query = samples_query.outerjoin(
