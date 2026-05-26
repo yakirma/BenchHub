@@ -1148,8 +1148,8 @@ SETTINGS_FILE = os.path.join(dtof_data_dir, 'global_settings.json')
 class GlobalSettings:
     def __init__(self):
         self.defaults = {
-            'scalar_width': '150px',
-            'image_width': '300px',
+            'scalar_width': '120px',
+            'image_width': '180px',   # matches the 160px cell + padding
             'theme_mode': 'dark'
         }
         self.settings = self.load_settings()
@@ -1187,11 +1187,11 @@ class GlobalSettings:
 
     @property
     def scalar_width(self):
-        return self.settings.get('scalar_width', '150px')
+        return self.settings.get('scalar_width', '120px')
 
     @property
     def image_width(self):
-        return self.settings.get('image_width', '300px')
+        return self.settings.get('image_width', '180px')
 
     @property
     def theme_mode(self):
@@ -1205,14 +1205,37 @@ def inject_settings():
     user_theme = request.cookies.get('theme_mode')
     
     # Create a wrapper or use the object directly but inject the user preference
+    # NOTE on widths: the per-cell content was tightened to 160×140
+    # (images, depth, mask, json, text) and 180×140 (charts). The
+    # column widths here are the TH widths — they should be ~20px
+    # wider than the cell to leave room for borders/padding. We
+    # ignore any pre-existing cookie that pinned a wider value
+    # ("user resized older table column"), since the old 300px
+    # default left the column visibly wider than the image, which
+    # the user flagged as ugly.
+    def _clamped(cookie_val, default, max_px):
+        try:
+            if cookie_val and cookie_val.endswith('px'):
+                if int(cookie_val[:-2]) > max_px:
+                    return default
+            return cookie_val or default
+        except Exception:
+            return default
     settings_dict = {
-        'scalar_width': request.cookies.get('scalar_width', global_settings.scalar_width),
-        'image_width': request.cookies.get('image_width', global_settings.image_width),
-        'metric_chart_width': request.cookies.get('metric_chart_width', '300px'),
-        'tags_width': request.cookies.get('tags_width', '150px'),
-        'config_width': request.cookies.get('config_width', '150px'),
-        'name_width': request.cookies.get('name_width', '150px'),
-        'histogram_width': request.cookies.get('histogram_width', '150px'),
+        'scalar_width': _clamped(request.cookies.get('scalar_width'),
+                                  global_settings.scalar_width, 150),
+        'image_width':  _clamped(request.cookies.get('image_width'),
+                                  global_settings.image_width, 220),
+        'metric_chart_width': _clamped(request.cookies.get('metric_chart_width'),
+                                        '200px', 240),
+        'tags_width':   _clamped(request.cookies.get('tags_width'),
+                                  '140px', 200),
+        'config_width': _clamped(request.cookies.get('config_width'),
+                                  '140px', 200),
+        'name_width':   _clamped(request.cookies.get('name_width'),
+                                  '140px', 200),
+        'histogram_width': _clamped(request.cookies.get('histogram_width'),
+                                     '160px', 220),
         'theme_mode': user_theme if user_theme in ['light', 'dark'] else global_settings.theme_mode
     }
     return {'global_settings': settings_dict}
