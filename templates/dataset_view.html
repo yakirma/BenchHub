@@ -181,10 +181,17 @@
                 <code>&lt;name&gt;_pred</code> of the same kind for every
                 <code>gt</code> field below.
             </span>
+            <span class="ms-auto small text-body-secondary">
+                {{ dataset.dataset_fields|length }} field{{ '' if dataset.dataset_fields|length == 1 else 's' }}
+            </span>
         </div>
-        <div class="table-responsive">
+        {# Cap the schema box at a fixed scrollable height so datasets
+           with 12+ fields (multi-cam, multi-modal) don't dominate the
+           page. Sticky thead keeps columns readable while scrolling. #}
+        <div class="table-responsive schema-scroll"
+             style="max-height: 280px; overflow-y: auto; border: 1px solid var(--bs-border-color); border-radius: 6px;">
             <table class="table align-middle small mb-0">
-                <thead class="table-light">
+                <thead class="table-light" style="position: sticky; top: 0; z-index: 1;">
                     <tr>
                         <th style="width: 25%;">Field</th>
                         <th style="width: 15%;">Kind</th>
