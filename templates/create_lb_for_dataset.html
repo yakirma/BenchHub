@@ -42,37 +42,60 @@
                         placeholder="e.g. {{ dataset.name }} benchmark">
                 </div>
 
-                {# ---- Materialization wizard (preview-only datasets) -----------
-                   The dataset is stored as preview JPGs/PNGs to save disk.
-                   When you create this LB, BenchHub re-fetches FULL bytes for
-                   a chosen subset of samples from upstream HF and stores
-                   them under your quota. Submission scoring runs against
-                   those full bytes; the dataset's preview tier stays
-                   untouched. Skip this section if the dataset is already
-                   full-storage — no materialization is needed. #}
-                {% if dataset.preview_only %}
+                {# ---- Sample selection / materialization wizard --------
+                   For preview-only datasets, BenchHub re-fetches FULL
+                   bytes for the chosen subset from upstream HF and
+                   stores them under your quota. Submission scoring
+                   runs against those full bytes; the dataset's
+                   preview tier stays untouched. For full-storage
+                   datasets the controls still show (informational —
+                   submissions hit the dataset's own files), but
+                   submitting the form skips materialization. #}
+                {% set _total = dataset.samples|length %}
                 <div class="card border-info-subtle mb-3"
                      style="background: var(--bs-body-tertiary);">
                     <div class="card-body p-3">
-                        <h6 class="fw-semibold mb-2">
-                            <i class="bi bi-download me-1 text-info"></i>
-                            Sample selection
-                        </h6>
+                        <div class="d-flex align-items-center gap-2 mb-2">
+                            <h6 class="fw-semibold mb-0">
+                                <i class="bi bi-download me-1 text-info"></i>
+                                Sample selection
+                            </h6>
+                            <span class="badge text-bg-info-subtle text-info-emphasis border ms-1"
+                                  title="Total samples in this dataset">
+                                <i class="bi bi-card-image me-1"></i>{{ '{:,}'.format(_total) }} samples
+                            </span>
+                            {% if dataset.preview_only %}
+                            <span class="badge text-bg-light text-body-secondary border small"
+                                  title="Preview tier — full bytes are materialised per LB">
+                                <i class="bi bi-eye me-1"></i>preview only
+                            </span>
+                            {% endif %}
+                        </div>
                         <p class="form-text small mt-0 mb-3">
-                            <strong>{{ '{:,}'.format(dataset.samples|length) }}</strong>
-                            samples available in this dataset (stored as preview only).
-                            Pick how many to materialise at full resolution for scoring.
+                            {% if dataset.preview_only %}
+                            Pick how many of the
+                            <strong>{{ '{:,}'.format(_total) }}</strong>
+                            samples to materialise at full resolution for scoring.
                             Counts against your storage quota.
+                            {% else %}
+                            The dataset has
+                            <strong>{{ '{:,}'.format(_total) }}</strong>
+                            samples available. These controls only apply
+                            when the dataset is preview-only; this one is
+                            full-storage already, so submissions score
+                            against all {{ '{:,}'.format(_total) }} samples
+                            directly.
+                            {% endif %}
                         </p>
                         <div class="row g-2">
                             <div class="col-md-4">
                                 <label for="sample_cap" class="form-label small mb-1">Samples to materialise</label>
                                 <input type="number" id="sample_cap" name="sample_cap"
                                        class="form-control form-control-sm"
-                                       min="1" max="{{ dataset.samples|length }}"
-                                       value="{{ [dataset.samples|length, 1000]|min }}">
+                                       min="1" max="{{ _total }}"
+                                       value="{{ [_total, 1000]|min }}">
                                 <div class="form-text small">
-                                    max {{ '{:,}'.format(dataset.samples|length) }}
+                                    of {{ '{:,}'.format(_total) }} available
                                 </div>
                             </div>
                             <div class="col-md-4">
@@ -114,7 +137,6 @@
                         </div>
                     </div>
                 </div>
-                {% endif %}
 
                 {# ---- Field roles -----------------------------------
                    The Dataset is role-neutral now. Each LB decides
