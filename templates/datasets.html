@@ -39,10 +39,41 @@
                             Add a dataset
                         </div>
                         {% if current_user_is_admin %}
-                        <a href="{{ url_for('admin_import_from_hf') }}"
-                           class="btn btn-sm btn-outline-primary w-100 mb-2">
+                        <button class="btn btn-sm btn-outline-primary w-100 mb-2"
+                                type="button" data-bs-toggle="collapse"
+                                data-bs-target="#hf-import-pane">
                             <i class="bi bi-cloud-arrow-down me-1"></i>Import from HuggingFace
-                        </a>
+                        </button>
+                        <div class="collapse mb-2" id="hf-import-pane">
+                            <form method="post"
+                                  action="{{ url_for('admin_import_from_hf_preview') }}"
+                                  class="border rounded p-2"
+                                  style="background: var(--bs-body-tertiary);">
+                                <label class="form-label small fw-semibold mb-1" for="hf-repo-id">
+                                    HF repo ID
+                                </label>
+                                <div class="position-relative mb-2">
+                                    <input type="text" id="hf-repo-id" name="repo_id"
+                                           required autocomplete="off"
+                                           class="form-control form-control-sm font-monospace"
+                                           placeholder="user/repo">
+                                    <ul id="hf-repo-suggestions"
+                                        class="list-group position-absolute w-100 shadow d-none"
+                                        style="top: 100%; z-index: 900;
+                                               max-height: 280px; overflow-y: auto;"></ul>
+                                </div>
+                                <button type="submit" class="btn btn-sm btn-primary w-100">
+                                    <i class="bi bi-search me-1"></i>Fetch &amp; preview
+                                </button>
+                                <div class="small text-body-secondary mt-2">
+                                    Reads the repo's Croissant metadata,
+                                    infers field kinds. You'll complete
+                                    roles + params on the next step.
+                                    <a href="{{ url_for('admin_import_from_hf') }}"
+                                       class="d-block mt-1">Browse trending →</a>
+                                </div>
+                            </form>
+                        </div>
                         {% endif %}
                         <button class="btn btn-sm btn-outline-secondary w-100"
                                 type="button" data-bs-toggle="collapse"
@@ -374,6 +405,83 @@ print(result[&quot;dataset_id&quot;])</code></pre>
             }
         }
         input.addEventListener('input', refresh);
+    })();
+
+    // ---- Inline HF-import type-ahead (admin) ---------------------
+    // Mirror of the standalone /admin/import_from_hf page's
+    // suggestion dropdown, scoped to the sidebar collapse so we
+    // don't clash with the standalone form.
+    (function () {
+        const repoInput = document.getElementById('hf-repo-id');
+        const suggList  = document.getElementById('hf-repo-suggestions');
+        if (!repoInput || !suggList) return;
+
+        const fmtCount = (n) => {
+            if (!n) return '0';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+            return String(n);
+        };
+        const escapeHtml = (s) => (s || '').replace(/[&<>"']/g, c => (
+            {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+        ));
+
+        let seq = 0, timer = null;
+        repoInput.addEventListener('input', () => {
+            clearTimeout(timer);
+            const q = repoInput.value.trim();
+            if (q.length < 2) {
+                suggList.classList.add('d-none');
+                suggList.innerHTML = '';
+                return;
+            }
+            timer = setTimeout(async () => {
+                const mine = ++seq;
+                try {
+                    const resp = await fetch(
+                        '{{ url_for("admin_import_from_hf_search") }}?q=' + encodeURIComponent(q),
+                    );
+                    if (!resp.ok || mine !== seq) return;
+                    const items = await resp.json();
+                    if (mine !== seq) return;
+                    if (!items || !items.length) {
+                        suggList.innerHTML =
+                            '<li class="list-group-item small text-body-secondary">No matches.</li>';
+                        suggList.classList.remove('d-none');
+                        return;
+                    }
+                    suggList.innerHTML = items.map(it => `
+                        <li class="list-group-item list-group-item-action small"
+                            style="cursor:pointer;"
+                            data-repo-id="${escapeHtml(it.id)}">
+                            <div class="d-flex justify-content-between align-items-baseline">
+                                <span class="font-monospace fw-semibold">${escapeHtml(it.id)}</span>
+                                <span class="small text-body-secondary">
+                                    ↓ ${fmtCount(it.downloads)}
+                                    ${it.gated ? '· <span class="text-warning-emphasis">gated</span>' : ''}
+                                </span>
+                            </div>
+                        </li>`).join('');
+                    suggList.classList.remove('d-none');
+                } catch (_) {
+                    suggList.classList.add('d-none');
+                }
+            }, 250);
+        });
+        suggList.addEventListener('click', (e) => {
+            const li = e.target.closest('li[data-repo-id]');
+            if (li) {
+                repoInput.value = li.getAttribute('data-repo-id');
+                suggList.classList.add('d-none');
+                suggList.innerHTML = '';
+                repoInput.focus();
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!repoInput.contains(e.target) && !suggList.contains(e.target)) {
+                suggList.classList.add('d-none');
+            }
+        });
     })();
 </script>
 {% endblock %}
