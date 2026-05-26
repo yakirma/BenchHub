@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_user_avatar.html" import user_avatar %}
 
-{% block title %}Dataset: {{ dataset.name }}{% endblock %}
+{% block title %}Dataset: {{ dataset.name|display_name }}{% endblock %}
 
 {% set meta_title = 'Dataset: ' ~ dataset.name ~ ' — BenchHub' %}
 {% set meta_description = 'BenchHub dataset "' ~ dataset.name ~ '". ' ~ ((dataset.git_message or '')[:160]) %}
@@ -12,7 +12,7 @@
         {{ user_avatar(dataset.owner, size=53) }}
         <div>
             <h1 class="d-flex align-items-center gap-2 flex-wrap">
-                Dataset: {{ dataset.name }}
+                Dataset: {{ dataset.name|display_name }}
                 {# HF source badge — visible to everyone, deep-links back
                    to the upstream HuggingFace repo. #}
                 {% set hf = dataset.source_metadata_parsed %}

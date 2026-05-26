@@ -270,7 +270,7 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                                 {{ user_avatar(dataset.owner, size=16) }}
                                 <a href="{{ url_for('dataset_view', dataset_id=dataset.id) }}"
                                    class="text-decoration-none text-body fw-semibold text-truncate flex-grow-1"
-                                   title="{{ dataset.name }}">{{ dataset.name }}</a>
+                                   title="{{ dataset.name }}">{{ dataset.name|display_name }}</a>
                                 {% if dataset.visibility == 'private' %}
                                 <i class="bi bi-lock-fill text-danger small" title="Private"></i>
                                 {% elif dataset.visibility == 'unlisted' %}

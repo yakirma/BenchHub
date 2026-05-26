@@ -50,7 +50,7 @@
                         <h6 class="card-title fw-semibold mb-1 text-truncate" title="{{ ds.name }}">
                             <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
                                 class="text-decoration-none stretched-link text-body">
-                                {{ ds.name }}
+                                {{ ds.name|display_name }}
                             </a>
                         </h6>
                         <p class="text-body-secondary small mb-0">

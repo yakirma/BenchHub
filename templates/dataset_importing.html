@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ dataset.name }} — Importing{% endblock %}
+{% block title %}{{ dataset.name|display_name }} — Importing{% endblock %}
 
 {% block content %}
 <div class="container py-4" style="max-width: 760px;">
@@ -16,7 +16,7 @@
         {% else %}
         <i class="bi bi-arrow-repeat text-primary me-1"></i>
         {% endif %}
-        {{ dataset.name }}
+        {{ dataset.name|display_name }}
     </h1>
     <p class="text-body-secondary mb-4">
         {% if dataset.import_status == 'failed' %}

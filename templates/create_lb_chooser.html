@@ -57,7 +57,7 @@
                            name="dataset_ids" value="{{ ds.id }}"
                            {{ 'checked' if loop.first }}>
                     <div class="flex-grow-1">
-                        <div class="fw-semibold">{{ ds.name }}</div>
+                        <div class="fw-semibold">{{ ds.name|display_name }}</div>
                         <div class="small text-body-secondary">
                             {% if ds.category %}{{ ds.category }} &middot; {% endif %}
                             uploaded {{ ds.upload_date.strftime('%Y-%m-%d') if ds.upload_date }}

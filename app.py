@@ -13689,6 +13689,27 @@ def accent_color_filter(s):
 def accent_bg_filter(s):
     return _accent_bg_for(s)
 
+
+@app.template_filter('display_name')
+def display_name_filter(s):
+    """Render a dataset name for display: strip the owner/org prefix
+    (everything before the last '__'), replace underscores with
+    spaces, and title-case each word (hyphens treated as separators
+    too). The DB-canonical name stays `<owner>__<slug>`; this is
+    purely cosmetic.
+
+    Examples:
+      'tanganke__eurosat'               → 'Eurosat'
+      'COIN-Research-Group__sawhill-dataset' → 'Sawhill-Dataset'
+      'Lin-Chen__MMStar'                → 'Mmstar'
+      'gksriharsha__chitralekha'        → 'Chitralekha'
+      'cifar10'                         → 'Cifar10'
+    """
+    if not s:
+        return s
+    raw = s.rsplit('__', 1)[-1] if '__' in s else s
+    return raw.replace('_', ' ').title()
+
 def check_and_migrate_db():
     """
     Checks for missing columns/tables (legacy support) and adds them if necessary.

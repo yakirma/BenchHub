@@ -266,7 +266,7 @@
                         <tr>
                             <td>
                                 <a href="{{ url_for('dataset_view', dataset_id=d.id) }}"
-                                   class="text-decoration-none">{{ d.name }}</a>
+                                   class="text-decoration-none">{{ d.name|display_name }}</a>
                                 <span class="small text-body-secondary ms-1">id={{ d.id }}</span>
                             </td>
                             <td class="text-end font-monospace">{{ '{:,}'.format(d.samples) }}</td>
