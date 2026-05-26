@@ -11275,14 +11275,19 @@ def dataset_settings(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
     if request.method == 'POST':
         if 'category' in request.form:
-            cat = (request.form.get('category') or '').strip()
-            # Strip duplicate slashes / trailing whitespace so a
-            # later equality filter against another dataset's
-            # category doesn't miss a trivially-different string.
-            cat = '/'.join(seg.strip() for seg in cat.split('/') if seg.strip())
-            dataset.category = cat or None
+            raw = request.form.get('category') or ''
+            # CSV of Area/Task paths. Normalise each entry: trim each
+            # path segment, collapse duplicate slashes, drop blank
+            # entries; dedupe in declared order. Empty result clears.
+            out, seen = [], set()
+            for chunk in raw.split(','):
+                c = '/'.join(seg.strip() for seg in chunk.split('/') if seg.strip())
+                if c and c not in seen:
+                    seen.add(c)
+                    out.append(c)
+            dataset.category = ', '.join(out) if out else None
             db.session.commit()
-            flash("Saved category.", "success")
+            flash(f'Saved categories: {dataset.category or "(none)"}', 'success')
         return redirect(url_for('dataset_settings', dataset_id=dataset.id))
     field_types = _dataset_field_types(dataset)
     # Source provenance for the HF-import badge.

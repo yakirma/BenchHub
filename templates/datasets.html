@@ -380,7 +380,7 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                 {% set _accent = dataset.name | accent_color %}
                 {% set _accent_bg = dataset.name | accent_bg %}
                 <div class="col-6 col-md-4 col-lg-3 col-xl-2 ds-search-row"
-                     data-search="{{ dataset.name|lower }} {{ (e.category or '')|lower }} {% for t in dataset.tags %}{{ t.name|lower }} {% endfor %}">
+                     data-search="{{ dataset.name|lower }} {% for c in (e.categories or [e.category]) %}{{ (c or '')|lower }} {% endfor %}{% for t in dataset.tags %}{{ t.name|lower }} {% endfor %}">
                     <div class="card ds-card h-100 border-0 position-relative"
                          style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};">
                         {% if e.thumb_url %}
@@ -431,6 +431,13 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                                 <span title="Samples"><i class="bi bi-card-image me-1"></i>{{ e.sample_count }}</span>
                                 {% if dataset.active_leaderboards %}
                                 <span title="Leaderboards using this"><i class="bi bi-trophy me-1"></i>{{ dataset.active_leaderboards|length }}</span>
+                                {% endif %}
+                                {% if e.categories and e.categories|length > 1 %}
+                                <span title="Also in {{ e.categories[1:]|join(', ') }}"
+                                      class="badge text-bg-light border fw-normal"
+                                      style="font-size: 0.6rem;">
+                                    +{{ e.categories|length - 1 }} cat
+                                </span>
                                 {% endif %}
                                 <span class="ms-auto opacity-75">{{ dataset.upload_date.strftime('%Y-%m-%d') }}</span>
                             </div>

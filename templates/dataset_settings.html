@@ -41,36 +41,48 @@
     </div>
     {% endif %}
 
-    {# ---- Category (Area/Task) — pre-filled from HF tags on import,
-           editable here afterward. Free-form text with a datalist of
-           categories already in use elsewhere on the site. #}
+    {# ---- Categories — comma-separated Area/Task paths. A dataset
+           can declare itself relevant to multiple categories (e.g.
+           a depth+segmentation dataset belongs in both
+           Vision/Depth Estimation AND Vision/Image Segmentation).
+           Pre-filled from HF tags on import, editable here afterward.
+           The first category is the primary — drives sort order on
+           /datasets. Inline edit lives in the dataset header too. #}
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
             <h5 class="fw-bold mb-2">
-                <i class="bi bi-diagram-3 me-1"></i>Category
+                <i class="bi bi-diagram-3 me-1"></i>Categories
             </h5>
             <p class="text-body-secondary small mb-3">
-                Two-level <code>Area/Task</code> path. Drives the
-                taxonomy on <a href="{{ url_for('datasets_list') }}">/datasets</a>
-                and <a href="{{ url_for('leaderboards') }}">/leaderboards</a>.
-                Leave blank to land under <em>Uncategorized</em>.
+                Comma-separated <code>Area/Task</code> paths. The
+                <strong>first</strong> entry is the primary (sorts
+                under it on <a href="{{ url_for('datasets_list') }}">/datasets</a>);
+                additional entries surface the dataset under each one's
+                filter. Leave blank to land under <em>Uncategorized</em>.
             </p>
             <form method="post"
                   action="{{ url_for('dataset_settings', dataset_id=dataset.id) }}"
-                  class="auto-save d-flex gap-2 align-items-center flex-wrap">
+                  class="d-flex gap-2 align-items-center flex-wrap">
                 <input type="text"
                        name="category"
                        class="form-control"
                        list="ds-category-suggestions"
                        value="{{ dataset.category or '' }}"
-                       placeholder="e.g. Vision/Depth Estimation"
-                       style="max-width: 420px;">
+                       placeholder="Vision/Depth Estimation, Vision/Image Segmentation"
+                       style="max-width: 560px;">
                 <datalist id="ds-category-suggestions">
                     {% for c in known_categories %}
                     <option value="{{ c }}"></option>
                     {% endfor %}
                 </datalist>
+                <button type="submit" class="btn btn-sm btn-primary">Save</button>
             </form>
+            {% if dataset.category_list and dataset.category_list|length > 1 %}
+            <div class="mt-2 small text-body-secondary">
+                Current: {% for c in dataset.category_list %}
+                <span class="badge text-bg-light border me-1">{{ c }}</span>{% endfor %}
+            </div>
+            {% endif %}
         </div>
     </div>
 
