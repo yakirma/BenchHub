@@ -11470,22 +11470,6 @@ def dataset_view(dataset_id):
     if not has_gt_scalars_or_metrics:
         available_display_options.pop('per_source_stats', None)
 
-    # Virtual overlay columns: for every (image_field, coco_field) pair on
-    # this dataset, surface a synthetic column that renders the polygons +
-    # bboxes layered on top of the image. The column key encodes both
-    # field names so the template can split and resolve per-sample.
-    _image_fields = [fn for fn, ft in custom_field_names if ft == 'image']
-    _coco_fields  = [fn for fn, ft in custom_field_names if ft == 'coco_detections']
-    for img_fn in _image_fields:
-        for coco_fn in _coco_fields:
-            key = f'coco_overlay::{img_fn}::{coco_fn}'
-            label = f'{img_fn} + {coco_fn} (overlay)'
-            available_display_options[key] = {
-                'label': label, 'type': 'coco_overlay',
-                'image_field': img_fn, 'coco_field': coco_fn,
-                'default_width': '180px',
-            }
-
     # Filter selected columns to ensure they exist in available options
     selected_display_columns = [col for col in selected_display_columns if col in available_display_options]
 
@@ -12185,7 +12169,10 @@ def serve_custom_field_json(field_id):
          (legacy + back-compat).
     """
     custom_field = CustomField.query.get_or_404(field_id)
-    if custom_field.data_type != 'json':
+    # coco_detections is a structured JSON kind too — the wire format
+    # is a JSON list of detection records, so the same endpoint
+    # serves it.
+    if custom_field.data_type not in ('json', 'coco_detections'):
         return abort(400, description="Not a JSON field")
 
     raw = custom_field.value_text or ''
@@ -12209,99 +12196,6 @@ def serve_custom_field_json(field_id):
             return jsonify(json.load(f))
     except Exception as e:
         return abort(500, description=f"Error reading JSON file: {str(e)}")
-
-
-@app.route('/api/coco_overlay/<int:image_field_id>/<int:coco_field_id>')
-def serve_coco_overlay(image_field_id: int, coco_field_id: int):
-    """Render a PNG of an Image with CocoDetections drawn on top.
-
-    A multi-input visualisation: takes an image CustomField AND a
-    coco_detections CustomField (both must belong to the same Sample)
-    and returns a PNG showing the original image with every polygon
-    outlined and every bbox boxed. Each category gets a stable hue so
-    multi-category scenes are readable.
-    """
-    img_cf = CustomField.query.get_or_404(image_field_id)
-    coco_cf = CustomField.query.get_or_404(coco_field_id)
-    if img_cf.data_type != 'image':
-        return abort(400, description='image_field_id must point at an image kind')
-    if coco_cf.data_type != 'coco_detections':
-        return abort(400, description='coco_field_id must point at a coco_detections kind')
-    if img_cf.sample_id != coco_cf.sample_id:
-        return abort(400, description='fields must belong to the same sample')
-
-    # Resolve the image file on disk.
-    img_path = img_cf.value_text
-    if not img_path or not os.path.isabs(img_path):
-        img_path = os.path.join(app.config['UPLOAD_FOLDER'], img_path or '')
-    if not os.path.exists(img_path):
-        return abort(404, description='source image not found')
-
-    # Resolve detections (inline JSON or file path).
-    raw = coco_cf.value_text or ''
-    stripped = raw.lstrip()
-    if stripped[:1] in ('{', '['):
-        try:
-            detections = json.loads(raw)
-        except (TypeError, ValueError):
-            detections = []
-    else:
-        det_path = os.path.join(app.config['UPLOAD_FOLDER'], raw)
-        try:
-            with open(det_path) as f:
-                detections = json.load(f)
-        except Exception:
-            detections = []
-    if not isinstance(detections, list):
-        detections = []
-
-    # Load image, draw overlay.
-    from PIL import Image as _PIL, ImageDraw, ImageFont
-    im = _PIL.open(img_path).convert('RGBA')
-    overlay = _PIL.new('RGBA', im.size, (0, 0, 0, 0))
-    drawer = ImageDraw.Draw(overlay)
-    try:
-        font = ImageFont.load_default()
-    except Exception:
-        font = None
-
-    def _hue_to_rgb(cat_id, alpha_fill=60, alpha_stroke=200):
-        # Stable per-category color via golden-ratio hue.
-        hue = ((int(cat_id) * 137) % 360) / 360.0
-        # HSV → RGB (V=1, S=0.8)
-        import colorsys
-        r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 1.0)
-        return (int(r*255), int(g*255), int(b*255), alpha_stroke), (
-            int(r*255), int(g*255), int(b*255), alpha_fill)
-
-    for det in detections:
-        cat_id = det.get('category_id', 0)
-        stroke, fill = _hue_to_rgb(cat_id)
-        # Polygons (semi-transparent fill)
-        for poly in det.get('segmentation') or []:
-            if isinstance(poly, list) and len(poly) >= 6 and len(poly) % 2 == 0:
-                pts = [(float(poly[i]), float(poly[i+1]))
-                       for i in range(0, len(poly), 2)]
-                drawer.polygon(pts, fill=fill, outline=stroke)
-        # BBox (outline only)
-        bb = det.get('bbox')
-        if bb and len(bb) == 4:
-            x, y, w, h = (float(v) for v in bb)
-            drawer.rectangle([x, y, x+w, y+h], outline=stroke, width=2)
-            label = det.get('category_name') or str(cat_id)
-            try:
-                drawer.text((x + 2, max(0, y - 12)), label,
-                            fill=stroke, font=font)
-            except Exception:
-                pass
-
-    composed = _PIL.alpha_composite(im, overlay).convert('RGB')
-    buf = io.BytesIO()
-    composed.save(buf, format='PNG', optimize=True)
-    buf.seek(0)
-    resp = send_file(buf, mimetype='image/png')
-    resp.headers['Cache-Control'] = 'public, max-age=3600'
-    return resp
 
 
 @app.route('/sample/<int:sample_id>/download')
