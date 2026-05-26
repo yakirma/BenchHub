@@ -11676,6 +11676,13 @@ def rename_samples_by_field(dataset_id):
     safe_re = _re.compile(r"[^A-Za-z0-9._-]+")
 
     def _sanitize(raw) -> str:
+        # Drop trailing `.0` when the source is an integer-valued
+        # float (HF Value('int32') columns arrive as floats through
+        # the CustomField.value_float pathway, so a `139` image_id
+        # becomes `139.0` on read). Without this, every numeric-id
+        # rename leaves an ugly `.0` suffix.
+        if isinstance(raw, float) and raw.is_integer():
+            raw = int(raw)
         s = safe_re.sub("_", str(raw)).strip("._ \t\r\n")
         return s[:80]
 
