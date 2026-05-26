@@ -251,20 +251,31 @@
             <span class="text-body-secondary small">
                 Vocab for label fields — integer indices map to these names.
             </span>
+            <span class="ms-auto small text-body-secondary">
+                {% set _total_classes = label_vocabs.values()|map('length')|sum %}
+                {{ _total_classes }} class{{ '' if _total_classes == 1 else 'es' }}
+            </span>
         </div>
-        {% for field_name, names in label_vocabs.items() %}
-        <div class="mb-2">
-            <code class="small">{{ field_name }}</code>
-            <span class="text-body-secondary small">({{ names|length }} classes)</span>
-            <div class="d-flex flex-wrap gap-1 mt-1">
-                {% for nm in names %}
-                <span class="badge text-bg-light border font-monospace">
-                    <span class="text-body-secondary">{{ loop.index0 }}</span>&nbsp;{{ nm }}
-                </span>
-                {% endfor %}
+        {# Cap at a fixed scrollable height — datasets like COCO (80
+           classes) or LVIS (1200) would otherwise blow out the page. #}
+        <div style="max-height: 260px; overflow-y: auto;
+                    border: 1px solid var(--bs-border-color);
+                    border-radius: 6px; padding: 10px;
+                    background: var(--bs-body-tertiary);">
+            {% for field_name, names in label_vocabs.items() %}
+            <div class="mb-2">
+                <code class="small">{{ field_name }}</code>
+                <span class="text-body-secondary small">({{ names|length }} classes)</span>
+                <div class="d-flex flex-wrap gap-1 mt-1">
+                    {% for nm in names %}
+                    <span class="badge text-bg-light border font-monospace">
+                        <span class="text-body-secondary">{{ loop.index0 }}</span>&nbsp;{{ nm }}
+                    </span>
+                    {% endfor %}
+                </div>
             </div>
+            {% endfor %}
         </div>
-        {% endfor %}
     </div>
 </div>
 {% endif %}
