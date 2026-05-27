@@ -1037,6 +1037,7 @@
                             data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=field_data.field_id) }}"
                             {% if field_data.type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=field_data.field_id) }}"{% endif %}
                             {% if field_data.type == 'mask' %}data-mask-raw-url="{{ _ds_src }}?raw=1"{% endif %}
+                            {% if field_data.type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
                             data-sample-name="{{ sample.name }}" data-vis-type="{{ field_data.type }}"
                             alt="{{ col_key }}">
                         {% if field_data.type == 'depth' %}
@@ -1859,6 +1860,8 @@
                         img.classList.add('mask-img');
                         const rawUrl = srcEl.getAttribute('data-mask-raw-url');
                         if (rawUrl) img.setAttribute('data-mask-raw-url', rawUrl);
+                        const names = srcEl.getAttribute('data-mask-class-names');
+                        if (names) img.setAttribute('data-mask-class-names', names);
                     } else if (srcEl.classList.contains('image-img')) {
                         img.classList.add('image-img');
                     } else if (srcEl.classList.contains('depth-img')) {
@@ -2114,11 +2117,15 @@
                     // tooltip activates inside the zoom window too.
                     modalImg.classList.remove('mask-img', 'image-img', 'depth-img');
                     modalImg.removeAttribute('data-mask-raw-url');
+                    modalImg.removeAttribute('data-mask-class-names');
                     modalImg.removeAttribute('data-depth-meta-url');
+                    modalImg._maskNames = undefined;
                     if (visType === 'mask') {
                         modalImg.classList.add('mask-img');
                         const rawUrl = button.getAttribute('data-mask-raw-url');
                         if (rawUrl) modalImg.setAttribute('data-mask-raw-url', rawUrl);
+                        const names = button.getAttribute('data-mask-class-names');
+                        if (names) modalImg.setAttribute('data-mask-class-names', names);
                     } else if (visType === 'image') {
                         modalImg.classList.add('image-img');
                     } else if (visType === 'depth') {
@@ -3271,7 +3278,23 @@
         }
         function format(img, p) {
             const xy = '(' + p.x + ',' + p.y + ')';
-            if (img.classList.contains('mask-img')) return xy + '  class=' + p.r;
+            if (img.classList.contains('mask-img')) {
+                const cid = p.r;
+                // Look up class name from the data-mask-class-names
+                // JSON array if the field carries one (e.g. cityscapes,
+                // FoodSeg103, ADE20K). Cache the parse on the element.
+                let names = img._maskNames;
+                if (names === undefined) {
+                    const raw = img.getAttribute('data-mask-class-names');
+                    try { names = raw ? JSON.parse(raw) : null; }
+                    catch (e) { names = null; }
+                    img._maskNames = names;
+                }
+                if (Array.isArray(names) && cid >= 0 && cid < names.length) {
+                    return xy + '  ' + cid + ' ' + names[cid];
+                }
+                return xy + '  class=' + cid;
+            }
             if (img.classList.contains('image-img')) return xy + '  rgb=(' + p.r + ',' + p.g + ',' + p.b + ')';
             if (img.classList.contains('depth-img')) {
                 // Reverse-turbo: nearest LUT index gives the original

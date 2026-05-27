@@ -11890,14 +11890,19 @@ def dataset_view(dataset_id):
 
     # Class-name vocabularies for label fields. Built up front so
     # the filter logic below can translate `cat` → index 3 before
-    # building the CustomField subquery.
+    # building the CustomField subquery. Mask fields can also carry
+    # a names list (e.g. cityscapes' 35 classes), used by the hover
+    # tooltip to read "12 road" instead of just "12".
     label_vocabs = {}
+    mask_vocabs = {}
     for df in dataset.fields:
-        if df.kind != 'label':
-            continue
         names = (df.get_params() or {}).get('names')
-        if isinstance(names, list) and names:
+        if not isinstance(names, list) or not names:
+            continue
+        if df.kind == 'label':
             label_vocabs[df.name] = list(names)
+        elif df.kind == 'mask':
+            mask_vocabs[df.name] = list(names)
 
     # Field-filter: narrow the sample list to those whose chosen
     # text / scalar / label / metric custom field matches
@@ -12296,6 +12301,7 @@ def dataset_view(dataset_id):
                            custom_field_names=sorted(list(custom_field_names)),
                            custom_fields_map=custom_fields_map,
                            label_vocabs=label_vocabs,
+                           mask_vocabs=mask_vocabs,
                            custom_scalar_metrics=custom_scalar_metrics,
                            sample_search_query=sample_search_query,
                            filter_field=filter_field,
