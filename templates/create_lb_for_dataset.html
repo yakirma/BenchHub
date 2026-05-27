@@ -26,6 +26,45 @@
                    submitted dataset_ids list even if the user doesn't tweak the field. #}
                 <input type="hidden" name="dataset_ids" value="{{ dataset.id }}">
 
+                {# ---- LB task templates ----
+                   Each chip pre-fills the metric + pred-field tables
+                   for a standard task (segmentation / depth / etc.)
+                   based on the dataset's own GT fields. Only templates
+                   whose required dtypes are present on this dataset
+                   are shown — keeps the picker honest. The user is
+                   still free to edit any pre-filled value. #}
+                {% if applicable_templates %}
+                <div class="mb-3 p-2 border rounded bg-body-tertiary">
+                    <div class="small fw-semibold mb-1">
+                        Start from a task template
+                        <span class="text-body-secondary fw-normal">(optional — pre-fills metrics &amp; pred fields)</span>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        {% for t in applicable_templates %}
+                        <a href="{{ url_for('create_lb_for_dataset', dataset_id=dataset.id, template=t.id) }}"
+                           class="btn btn-sm {% if applied_template.template_id == t.id %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                           title="{{ t.description }}">
+                            {{ t.label }}
+                        </a>
+                        {% endfor %}
+                        {% if applied_template %}
+                        <a href="{{ url_for('create_lb_for_dataset', dataset_id=dataset.id) }}"
+                           class="btn btn-sm btn-outline-secondary"
+                           title="Clear template and start from scratch">
+                            <i class="bi bi-x-circle me-1"></i>Clear
+                        </a>
+                        {% endif %}
+                    </div>
+                    {% if applied_template %}
+                    <div class="small text-body-secondary mt-2">
+                        Pre-filled {{ applied_template.preselected_metric_ids|length }} metric(s)
+                        and {{ applied_template.preselected_pred_fields|length }} pred field(s)
+                        for <strong>{{ applied_template.template_label }}</strong>. Edit below before creating.
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
                 <div class="mb-3">
                     <label for="leaderboard_name" class="form-label small fw-semibold mb-1">
                         Leaderboard name
@@ -693,6 +732,80 @@
                 // Initial pass: pre-seed auto rows from defaults.
                 refreshAllAuto();
             })();
+
+            {% if applied_template %}
+            // ---- LB template pre-fill ----
+            // Server flagged a template applied via ?template=<id>.
+            // After the existing form-init JS runs, we:
+            //   1) replace the auto-seeded pred-field rows with the
+            //      template's explicit pred-field schema (one entry
+            //      per required GT kind), and
+            //   2) programmatically click "Add metric" for each
+            //      preselected GlobalMetric id, then set the per-arg
+            //      mapping select to the matched GT field. The user
+            //      can still edit / remove any of these before
+            //      hitting Create.
+            (function () {
+                const tplPred = {{ applied_template.preselected_pred_fields|tojson|safe }};
+                const tplMetricIds = {{ applied_template.preselected_metric_ids|tojson|safe }};
+                const tplArgMappings = {{ applied_template.preselected_arg_mappings|tojson|safe }};
+
+                // Replace pred-field rows.
+                const predBody = document.getElementById('lb-pred-fields-body');
+                const predTplEl = document.getElementById('lb-pred-row-template');
+                if (predBody && predTplEl && tplPred.length) {
+                    predBody.innerHTML = '';
+                    tplPred.forEach(f => {
+                        const frag = predTplEl.content.cloneNode(true);
+                        const row = frag.querySelector('tr');
+                        row.querySelector('input[name="pred_field_name"]').value = f.name || '';
+                        const kSel = row.querySelector('select[name="pred_field_kind"]');
+                        if (kSel) kSel.value = f.kind || 'label';
+                        predBody.appendChild(row);
+                    });
+                }
+
+                // Add metric rows. Sequence: select the metric in the
+                // picker → click Add → set arg mappings.
+                const metricPicker = document.getElementById('lb-metric-picker');
+                const metricAdd = document.getElementById('lb-metric-add');
+                if (metricPicker && metricAdd) {
+                    tplMetricIds.forEach(mid => {
+                        metricPicker.value = String(mid);
+                        metricAdd.click();
+                        // The new row is the last child of lb-metrics-rows.
+                        const rows = document.querySelectorAll('#lb-metrics-rows .lb-metric-row');
+                        const row = rows[rows.length - 1];
+                        const mapping = tplArgMappings[String(mid)] || {};
+                        if (row) {
+                            // arg-select class is `.arg-map`; the
+                            // value of an option is the bare field
+                            // name (e.g. "depth", "depth_pred"). For
+                            // pred args, the option may not exist yet
+                            // because the pred-fields table just got
+                            // rewritten and the metric-picker reads
+                            // the schema dynamically. Insert the
+                            // option if missing so the value sticks.
+                            row.querySelectorAll('select.arg-map').forEach(sel => {
+                                const arg = sel.dataset.argName;
+                                const wanted = mapping[arg];
+                                if (!wanted) return;
+                                let opt = Array.from(sel.options).find(o => o.value === wanted);
+                                if (!opt) {
+                                    opt = document.createElement('option');
+                                    opt.value = wanted;
+                                    opt.textContent = wanted;
+                                    sel.appendChild(opt);
+                                }
+                                sel.value = wanted;
+                                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                            });
+                        }
+                    });
+                    metricPicker.value = '';
+                }
+            })();
+            {% endif %}
             </script>
             <p class="form-text small mb-0 mt-2">
                 Tied to <strong>{{ dataset.name }}</strong> by default. Add

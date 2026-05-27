@@ -713,6 +713,52 @@ class FeatureRequest(db.Model):
     user = db.relationship('User', foreign_keys=[user_id])
 
 
+class LbTemplate(db.Model):
+    """Admin-editable LB starter template. Drives the chip picker on
+    `/dataset/<id>/create_lb` — clicking a chip pre-fills metrics +
+    pred-field schema for the named task. The fallback `LB_TEMPLATES`
+    Python dict seeds this table on first boot; admins can edit
+    afterwards without a code change."""
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(60), nullable=False, unique=True)
+    label = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    # JSON arrays of strings. Required kinds drive the picker
+    # filter; metric_names + visualization_names reference catalog
+    # rows by GlobalMetric.name / GlobalVisualization.name.
+    required_kinds_json = db.Column(db.Text, nullable=False, default='[]',
+                                     server_default='[]')
+    metric_names_json = db.Column(db.Text, nullable=False, default='[]',
+                                   server_default='[]')
+    visualization_names_json = db.Column(db.Text, nullable=False, default='[]',
+                                          server_default='[]')
+    enabled = db.Column(db.Boolean, nullable=False, default=True,
+                        server_default='1')
+    sort_order = db.Column(db.Integer, nullable=False, default=0,
+                           server_default='0')
+
+    def required_kinds(self) -> list[str]:
+        try:
+            v = json.loads(self.required_kinds_json or '[]')
+            return v if isinstance(v, list) else []
+        except (TypeError, ValueError):
+            return []
+
+    def metric_names(self) -> list[str]:
+        try:
+            v = json.loads(self.metric_names_json or '[]')
+            return v if isinstance(v, list) else []
+        except (TypeError, ValueError):
+            return []
+
+    def visualization_names(self) -> list[str]:
+        try:
+            v = json.loads(self.visualization_names_json or '[]')
+            return v if isinstance(v, list) else []
+        except (TypeError, ValueError):
+            return []
+
+
 class GlobalVisualization(db.Model):
     """Global visualization definition (analogous to GlobalMetric but returns PIL.Image)"""
     id = db.Column(db.Integer, primary_key=True)
@@ -4368,6 +4414,187 @@ def _roles_from_arg_names(args: list[str]) -> list[str]:
         else:
             out.append('')
     return out if any_match else []
+
+
+# Task-shaped LB templates. Each preselects a sensible default metric
+# set + pred-field schema for the named task. `required_kinds` are the
+# DTYPES the dataset must expose at role='gt' for the template to be
+# offered as a choice on the LB-create form. Adding a template here
+# auto-surfaces it; no new route/UI plumbing needed.
+LB_TEMPLATES: dict[str, dict] = {
+    'image_segmentation': {
+        'label': 'Image Segmentation',
+        'description': "IoU on the GT mask. Pred contract: one mask "
+                       "field per GT mask.",
+        'required_kinds': ['mask'],
+        'metric_names': ['iou_mask'],
+        'visualization_names': [],
+    },
+    'depth_estimation': {
+        'label': 'Depth Estimation',
+        'description': "RMSE + MAE against the GT depth. Pred contract: "
+                       "one depth field per GT depth.",
+        'required_kinds': ['depth'],
+        'metric_names': ['rmse_depth', 'mae_depth'],
+        'visualization_names': [],
+    },
+    'image_classification': {
+        'label': 'Image Classification',
+        'description': "Top-1 + top-5 accuracy. Pred contract: a "
+                       "label_list (top-K) per GT label.",
+        'required_kinds': ['label'],
+        'metric_names': ['top_1_accuracy', 'top_5_accuracy'],
+        'visualization_names': [],
+    },
+    'text_qa': {
+        'label': 'Text QA / Captioning',
+        'description': "Exact-match against GT text. Pred contract: "
+                       "one text field per GT text.",
+        'required_kinds': ['text'],
+        'metric_names': ['exact_match_text'],
+        'visualization_names': [],
+    },
+}
+
+
+def _all_lb_templates() -> list[dict]:
+    """Return every enabled LbTemplate row as plain dicts, in
+    sort_order. Falls back to the hardcoded LB_TEMPLATES dict if the
+    table is empty / unmigrated (defensive for fresh installs)."""
+    try:
+        rows = (
+            LbTemplate.query
+            .filter_by(enabled=True)
+            .order_by(LbTemplate.sort_order, LbTemplate.id)
+            .all()
+        )
+        if rows:
+            return [{
+                'id': r.slug,
+                'label': r.label,
+                'description': r.description or '',
+                'required_kinds': r.required_kinds(),
+                'metric_names': r.metric_names(),
+                'visualization_names': r.visualization_names(),
+            } for r in rows]
+    except Exception:
+        pass
+    return [{'id': k, **v} for k, v in LB_TEMPLATES.items()]
+
+
+def _lb_template_by_slug(slug: str) -> dict:
+    for t in _all_lb_templates():
+        if t['id'] == slug:
+            return t
+    return {}
+
+
+def _applicable_lb_templates(dataset) -> list[dict]:
+    """Return the templates that *this* dataset's GT-role fields can
+    satisfy, each annotated with the matched GT field names so the
+    caller can build a pred-field schema. Templates whose required
+    kinds aren't present don't show up — keeps the picker honest."""
+    gt_fields_by_kind: dict[str, list[str]] = {}
+    for df in dataset.fields:
+        if (df.role or 'gt').lower() != 'gt':
+            continue
+        gt_fields_by_kind.setdefault(df.kind, []).append(df.name)
+    out = []
+    for tpl in _all_lb_templates():
+        gt_names = []
+        ok = True
+        for k in tpl.get('required_kinds', []):
+            picks = gt_fields_by_kind.get(k)
+            if not picks:
+                ok = False; break
+            gt_names.append({'kind': k, 'gt_field': picks[0]})
+        if ok:
+            entry = dict(tpl)
+            entry['matched_gt_fields'] = gt_names
+            out.append(entry)
+    return out
+
+
+def _apply_lb_template(dataset, template_id: str) -> dict:
+    """Resolve a template against a dataset → {preselected_metric_ids,
+    preselected_visualization_ids, preselected_pred_fields,
+    preselected_arg_mappings, suggested_name}.
+
+    For each metric in the template, looks it up by name and binds its
+    GT-role args to the dataset's first matching GT field. For each
+    required-kind, derives a pred-field entry named `<gt>_pred`.
+    """
+    tpl = _lb_template_by_slug(template_id)
+    if not tpl:
+        return {}
+    # GT fields by kind (gt-role only — matches what _applicable_ above does)
+    gt_by_kind: dict[str, list[str]] = {}
+    for df in dataset.fields:
+        if (df.role or 'gt').lower() != 'gt':
+            continue
+        gt_by_kind.setdefault(df.kind, []).append(df.name)
+
+    # Metric preselection
+    metric_ids: list[int] = []
+    arg_mappings: dict[int, dict[str, str]] = {}
+    for mname in tpl.get('metric_names', []):
+        gm = GlobalMetric.query.filter_by(name=mname).first()
+        if not gm:
+            continue
+        metric_ids.append(gm.id)
+        try:
+            kinds = json.loads(gm.input_kinds or '[]')
+            roles = json.loads(gm.input_roles or '[]')
+        except (TypeError, ValueError):
+            kinds, roles = [], []
+        args = _extract_metric_arg_names(gm.python_code or '')
+        amap: dict[str, str] = {}
+        for i, arg in enumerate(args):
+            role = roles[i] if i < len(roles) else ''
+            kind = kinds[i] if i < len(kinds) else ''
+            # First member of an `a|b`-joined kind acts as primary.
+            k_first = kind.split('|')[0] if kind else ''
+            picks = gt_by_kind.get(k_first) or []
+            if not picks:
+                continue
+            gt_name = picks[0]
+            if role == 'gt':
+                # Bare field name — the form serialises `{arg: field}`
+                # and the server converts to `gt_<field>` internally.
+                amap[arg] = gt_name
+            elif role == 'pred':
+                # Pred args bind to the matching pred-field. Naming
+                # convention: <gt_name>_pred (also the convention used
+                # by the auto pred-row builder).
+                amap[arg] = f'{gt_name}_pred'
+        if amap:
+            arg_mappings[gm.id] = amap
+
+    # Visualization preselection
+    viz_ids: list[int] = []
+    for vname in tpl.get('visualization_names', []):
+        gv = GlobalVisualization.query.filter_by(name=vname).first()
+        if gv:
+            viz_ids.append(gv.id)
+
+    # Pred-field schema: <gt_name>_pred for every required GT field
+    pred_fields = []
+    for kind in tpl.get('required_kinds', []):
+        for gt_name in gt_by_kind.get(kind, []):
+            pred_fields.append({
+                'name': f'{gt_name}_pred',
+                'kind': kind,
+                'description': f'{tpl["label"]} prediction for {gt_name}',
+            })
+
+    return {
+        'template_id': template_id,
+        'template_label': tpl['label'],
+        'preselected_metric_ids': metric_ids,
+        'preselected_visualization_ids': viz_ids,
+        'preselected_pred_fields': pred_fields,
+        'preselected_arg_mappings': arg_mappings,
+    }
 
 
 def _build_lb_creation_context(dataset):
@@ -8877,6 +9104,15 @@ def create_lb_for_dataset(dataset_id):
     # label-kind field — classification benchmarks want balanced
     # subsets across classes.
     _has_label_field = any(f.kind == 'label' for f in dataset.dataset_fields)
+    # LB templates: `?template=image_segmentation` etc. surface a
+    # default metric + pred-field set. `applicable_templates` powers
+    # the chip picker; `applied_template` carries the resolved values
+    # when one is selected (else falls back to the manual flow).
+    applicable_templates = _applicable_lb_templates(dataset)
+    template_id = (request.args.get('template') or '').strip()
+    applied_template = (
+        _apply_lb_template(dataset, template_id) if template_id else {}
+    )
     return render_template(
         'create_lb_for_dataset.html',
         dataset=dataset,
@@ -8885,6 +9121,8 @@ def create_lb_for_dataset(dataset_id):
         gt_field_options=gt_field_options,
         dataset_field_options=dataset_field_options,
         _has_label_field=_has_label_field,
+        applicable_templates=applicable_templates,
+        applied_template=applied_template,
     )
 
 
@@ -14873,6 +15111,44 @@ def check_and_migrate_db():
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (feature_request): {e}")
+
+                # --- LbTemplate (admin-editable task templates) ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS lb_template ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "slug VARCHAR(60) NOT NULL UNIQUE, "
+                        "label VARCHAR(120) NOT NULL, "
+                        "description TEXT, "
+                        "required_kinds_json TEXT NOT NULL DEFAULT '[]', "
+                        "metric_names_json TEXT NOT NULL DEFAULT '[]', "
+                        "visualization_names_json TEXT NOT NULL DEFAULT '[]', "
+                        "enabled BOOLEAN NOT NULL DEFAULT 1, "
+                        "sort_order INTEGER NOT NULL DEFAULT 0"
+                        ")"
+                    )
+                    conn.commit()
+                    # Seed from LB_TEMPLATES on first boot only — admin
+                    # edits in the DB win on later boots.
+                    cursor.execute("SELECT COUNT(*) FROM lb_template")
+                    if cursor.fetchone()[0] == 0:
+                        print("Migrating DB: Seeding lb_template from LB_TEMPLATES dict...")
+                        for i, (slug, tpl) in enumerate(LB_TEMPLATES.items()):
+                            cursor.execute(
+                                "INSERT INTO lb_template "
+                                "(slug, label, description, "
+                                " required_kinds_json, metric_names_json, "
+                                " visualization_names_json, sort_order) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (slug, tpl['label'], tpl.get('description', ''),
+                                 json.dumps(tpl.get('required_kinds', [])),
+                                 json.dumps(tpl.get('metric_names', [])),
+                                 json.dumps(tpl.get('visualization_names', [])),
+                                 i),
+                            )
+                        conn.commit()
+                except Exception as e:
+                    print(f"Migration error (lb_template): {e}")
 
                 # --- Dataset.preview_only column ---
                 try:
