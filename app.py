@@ -12859,6 +12859,14 @@ def serve_custom_field_image(field_id):
         # for hover tooltips. The default still applies the palette
         # for visual rendering.
         if request.args.get('raw') in ('1', 'true'):
+            # Preview-only masks ship a `.classid.png` sidecar — a
+            # single-channel mode-I;16 PNG with class ids. Use that if
+            # present (the display .jpg is palette-applied and would
+            # give wrong hover values).
+            stem, _ = os.path.splitext(image_path)
+            sidecar = stem + '.classid.png'
+            if os.path.isfile(sidecar):
+                return send_file(sidecar)
             return send_file(image_path)
         # BH masks land on disk as raw class-index PNGs (values like
         # 0/1 for binary masks, 0/1/2/4 for multi-class). Rendered as

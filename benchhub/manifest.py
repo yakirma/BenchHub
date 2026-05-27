@@ -54,8 +54,28 @@ def _render_preview_from_file(kind: str, src: Path) -> tuple[bytes, str, dict | 
         return (*render_preview('image', _PIL.open(_io.BytesIO(raw))), None)
     if kind == 'mask':
         # mask kind stores a class-id PNG on disk; pass through.
-        return (*render_preview('mask',
-                                _np.asarray(_PIL.open(_io.BytesIO(raw)))), None)
+        # Also return the raw class-id array as a "meta" payload that the
+        # caller writes as a single-channel PNG sidecar, used at hover
+        # time so the tooltip can read class ids even after the display
+        # JPG is palette-applied + JPEG-compressed.
+        arr = _np.asarray(_PIL.open(_io.BytesIO(raw)))
+        ids = arr
+        if ids.ndim == 3 and ids.shape[-1] == 1:
+            ids = ids[..., 0]
+        if ids.ndim == 3 and ids.shape[-1] >= 3:
+            # Grayscale-stored-as-RGB (R=G=B=class_id) — collapse.
+            if (_np.array_equal(ids[..., 0], ids[..., 1])
+                    and _np.array_equal(ids[..., 1], ids[..., 2])
+                    and int(ids.max()) < 256):
+                ids = ids[..., 0]
+            else:
+                ids = None  # genuine RGB colour mask, no class ids to save
+        if ids is not None and ids.ndim == 2:
+            classid_meta = {'_classid_array': ids.astype(_np.uint16)}
+        else:
+            classid_meta = None
+        bytes_, ext = render_preview('mask', arr)
+        return bytes_, ext, classid_meta
     if kind == 'depth':
         # Canonical depth file_ext is .npz with key 'depth'.
         with _np.load(_io.BytesIO(raw)) as z:
@@ -326,13 +346,38 @@ def import_typed_dataset(
                         )
                         dst = field_dir / (Path(src.name).stem + prev_ext)
                         dst.write_bytes(prev_bytes)
-                        # Sidecar with original min/max so a colormap
-                        # preview can still surface metric values on
-                        # hover / colorbar via reverse-turbo.
+                        # Sidecar handling:
+                        #   depth → {'min','max','shape'} dict → .meta.json
+                        #   mask  → {'_classid_array': uint16 (H,W)} → .classid.png
+                        # The display JPG is lossy palette/colormap; the
+                        # sidecar preserves the precise per-pixel value
+                        # so hover tooltips and ?raw=1 can serve real
+                        # class ids / depth meta even for preview-only
+                        # imports.
                         if prev_meta is not None:
-                            import json as _json
-                            (field_dir / (Path(src.name).stem + '.meta.json')
-                            ).write_text(_json.dumps(prev_meta))
+                            if kind == 'mask' and '_classid_array' in prev_meta:
+                                from PIL import Image as _PIL2
+                                arr = prev_meta['_classid_array']
+                                # Canvas getImageData drops 16-bit PNGs to
+                                # 8-bit on the way in. Save 'L' (uint8)
+                                # when class ids fit; only fall back to
+                                # I;16 for >256-class datasets so hover
+                                # still reads accurate ids in the typical
+                                # case.
+                                import numpy as _np2
+                                if int(arr.max()) < 256:
+                                    out_arr = arr.astype(_np2.uint8)
+                                    mode = 'L'
+                                else:
+                                    out_arr = arr.astype(_np2.uint16)
+                                    mode = 'I;16'
+                                _PIL2.fromarray(out_arr, mode=mode).save(
+                                    field_dir / (Path(src.name).stem + '.classid.png')
+                                )
+                            elif kind == 'depth':
+                                import json as _json
+                                (field_dir / (Path(src.name).stem + '.meta.json')
+                                ).write_text(_json.dumps(prev_meta))
                     except Exception as e:
                         # Fall back to full copy if preview generation
                         # fails — partial preview > broken sample.

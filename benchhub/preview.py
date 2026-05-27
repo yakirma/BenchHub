@@ -193,16 +193,31 @@ def mask_preview(arr: np.ndarray) -> bytes:
     if arr.ndim == 3 and arr.shape[-1] == 1:
         arr = arr[..., 0]
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        # Already a colored mask — keep visual, just downscale.
-        im = PILImage.fromarray(arr[..., :3].astype(np.uint8), 'RGB')
-    elif arr.ndim != 2:
+        # Grayscale-stored-as-RGB: many HF mask mirrors save class IDs
+        # in all three channels (R=G=B=class_id). Detect by channel
+        # equality + low max value, then collapse to 2D so the palette
+        # actually lights up — otherwise the preview reads near-black.
+        rgb = arr[..., :3]
+        ch_equal = (
+            np.array_equal(rgb[..., 0], rgb[..., 1])
+            and np.array_equal(rgb[..., 1], rgb[..., 2])
+        )
+        if ch_equal and int(rgb.max()) < 256:
+            arr = rgb[..., 0]
+        else:
+            # Already a colored mask — keep visual, just downscale.
+            im = PILImage.fromarray(rgb.astype(np.uint8), 'RGB')
+            im = _resize_max_edge(im)
+            buf = io.BytesIO()
+            im.save(buf, 'JPEG', quality=PREVIEW_JPEG_Q, optimize=True)
+            return buf.getvalue()
+    if arr.ndim != 2:
         raise ValueError(f'mask must be (H,W) or (H,W,1)/(H,W,3), got {arr.shape}')
-    else:
-        ids = arr.astype(np.int32)
-        n = int(ids.max()) + 1 if ids.size else 1
-        pal = _deterministic_palette(max(n, 16))
-        rgb = pal[ids.clip(0, n - 1)]
-        im = PILImage.fromarray(rgb, 'RGB')
+    ids = arr.astype(np.int32)
+    n = int(ids.max()) + 1 if ids.size else 1
+    pal = _deterministic_palette(max(n, 16))
+    rgb = pal[ids.clip(0, n - 1)]
+    im = PILImage.fromarray(rgb, 'RGB')
     im = _resize_max_edge(im)
     buf = io.BytesIO()
     im.save(buf, 'JPEG', quality=PREVIEW_JPEG_Q, optimize=True)
