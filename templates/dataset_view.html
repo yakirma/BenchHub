@@ -864,18 +864,19 @@
                 <th style="width: 50px;">Options</th>
 
                 {% for col_key in selected_display_columns %}
-                {# Pick a column width by kind. All "visual modality"
-                   kinds (image/depth/mask/audio/text/json/bboxes) use
-                   the same image_width so a 160px cell sits cleanly
-                   in a 180px column, left-aligned, no horizontal
-                   overflow. Scalars / labels stay narrower. #}
+                {# Pick a column width by kind. Visual modality kinds
+                   (image/depth/mask/audio/text/bboxes) share image_width;
+                   json gets double-width because its keys+values
+                   typically need more horizontal real estate to be
+                   scannable inline. Scalars / labels stay narrower. #}
                 <th scope="col" {% set col_width=global_settings.name_width if col_key=='sample_name' else
                     (global_settings.tags_width if col_key=='tags' else (global_settings.histogram_width if
                     col_key=='histogram' else (global_settings.config_width if col_key in
                     ['signal_shape', 'per_source_stats' ] else (global_settings.metric_chart_width if
-                    col_key=='per_sample_metrics' else (global_settings.image_width if
-                    (dataset_display_options[col_key].type in ['image', 'depth', 'mask', 'audio', 'text', 'json', 'bboxes' ]) else
-                    global_settings.scalar_width))))) %}
+                    col_key=='per_sample_metrics' else ('360px' if
+                    dataset_display_options[col_key].type == 'json' else (global_settings.image_width if
+                    (dataset_display_options[col_key].type in ['image', 'depth', 'mask', 'audio', 'text', 'bboxes' ]) else
+                    global_settings.scalar_width)))))) %}
                     style="width: {{ col_width }}; min-width: {{ col_width }}; overflow: hidden; text-overflow: ellipsis;">
                     {% if col_key == 'per_sample_metrics' %}
                     {% if active_metrics|length == 1 %}
@@ -1067,7 +1068,7 @@
                          data-json-url="{{ url_for('serve_custom_field_json', field_id=field_data.field_id) }}"
                          data-json-label="{{ sample.name }} / {{ col_key }}"
                          data-truncated="{{ '1' if _raw|length > 200 else '0' }}"
-                         style="width: 160px; max-height: 140px; overflow-y: auto; background: var(--bs-body-tertiary); margin-right: auto; margin-left: 0; text-align: left !important; cursor: pointer;"
+                         style="width: 320px; max-height: 140px; overflow-y: auto; background: var(--bs-body-tertiary); margin-right: auto; margin-left: 0; text-align: left !important; cursor: pointer;"
                          title="Click to open in a larger window">
                         <pre style="font-size: 0.7rem; margin: 0; padding: 4px; white-space: pre-wrap; word-break: break-word; text-align: left;">{{ _short }}{% if _raw|length > 200 %}…{% endif %}</pre>
                     </div>
@@ -1278,6 +1279,22 @@
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="custom-field-modal-layers"
                          style="position: absolute; inset: 0; pointer-events: none;"></div>
+                    {# Depth colorbar — shown only when the picked
+                       layer is a depth field. Populated from the
+                       /api/custom_field_depth_meta endpoint on open
+                       and on every picked-layer switch. #}
+                    <div id="modal-depth-colorbar" class="depth-colorbar"
+                         data-cmap="turbo"
+                         style="display: none; right: 32px; top: 32px;
+                                height: 240px; width: 14px;"></div>
+                    <div id="modal-depth-colorbar-labels"
+                         class="depth-colorbar-labels"
+                         style="display: none; right: 50px; top: 32px;
+                                height: 240px;">
+                        <span class="cbar-max">…</span>
+                        <span class="cbar-mid">…</span>
+                        <span class="cbar-min">…</span>
+                    </div>
                     <div id="modal-loading-spinner" class="spinner-border text-primary" role="status"
                         style="display: none;">
                         <span class="visually-hidden">Loading...</span>
@@ -1850,6 +1867,7 @@
                 }
                 wrap.appendChild(img);
             });
+            if (window._cfUpdateModalColorbar) window._cfUpdateModalColorbar();
         }
         function _cfSetLayerOpacity(index, value) {
             const wrap = document.getElementById('custom-field-modal-layers');
@@ -1877,6 +1895,7 @@
                 const oi = parseInt(other.dataset.layerIndex, 10);
                 other.style.pointerEvents = (gal && gal.currentIndex === oi) ? 'auto' : 'none';
             });
+            if (window._cfUpdateModalColorbar) window._cfUpdateModalColorbar();
         }
 
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
@@ -3060,6 +3079,42 @@
         const stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
         cbar.style.background = 'linear-gradient(to top, ' + stops.join(', ') + ')';
     }
+    // Sync the in-modal depth colorbar with whichever layer is
+    // currently picked. Hides itself when the picked layer isn't
+    // depth. Reads min/max via /api/custom_field_depth_meta (returns
+    // `normalized: true` for old preview imports without sidecar).
+    window._cfUpdateModalColorbar = function () {
+        const wrap = document.getElementById('custom-field-modal-layers');
+        const cbar = document.getElementById('modal-depth-colorbar');
+        const labels = document.getElementById('modal-depth-colorbar-labels');
+        if (!wrap || !cbar || !labels) return;
+        const gal = window.customFieldGallery;
+        const idx = gal ? gal.currentIndex : -1;
+        const picked = wrap.querySelector(`img[data-layer-index="${idx}"]`);
+        if (!picked || !picked.classList.contains('depth-img')) {
+            cbar.style.display = 'none';
+            labels.style.display = 'none';
+            return;
+        }
+        cbar.style.display = 'block';
+        labels.style.display = 'flex';
+        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+        const metaUrl = picked.getAttribute('data-depth-meta-url');
+        const setLabels = (mn, mx, normalized) => {
+            const mid = (mn + mx) / 2;
+            const fmt = (v) => _fmtAxisVal(v) + (normalized ? '' : '');
+            labels.querySelector('.cbar-max').textContent = fmt(mx);
+            labels.querySelector('.cbar-mid').textContent = fmt(mid);
+            labels.querySelector('.cbar-min').textContent = fmt(mn);
+        };
+        // Default placeholders while the fetch is in flight.
+        setLabels(0, 1, true);
+        if (!metaUrl) return;
+        fetch(metaUrl).then(r => r.ok ? r.json() : null).then(m => {
+            if (!m) return;
+            setLabels(m.min, m.max, !!m.normalized);
+        }).catch(() => {});
+    };
     function _fmtAxisVal(v) {
         if (!isFinite(v)) return '–';
         const abs = Math.abs(v);
