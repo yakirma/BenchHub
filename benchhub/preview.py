@@ -72,6 +72,57 @@ def _turbo_colormap(values: np.ndarray) -> np.ndarray:
     return np.stack([r, g, b], axis=-1).astype(np.uint8)
 
 
+_TURBO_LUT_CACHE = None
+def _turbo_lut() -> np.ndarray:
+    """256-entry RGB LUT for turbo. Cached because the polynomial
+    only needs to run once per process."""
+    global _TURBO_LUT_CACHE
+    if _TURBO_LUT_CACHE is None:
+        _TURBO_LUT_CACHE = _turbo_colormap(np.linspace(0, 1, 256))
+    return _TURBO_LUT_CACHE
+
+
+def reverse_turbo(rgb: np.ndarray) -> np.ndarray:
+    """Approximate inverse of the turbo colormap. Given an (H, W, 3)
+    uint8 RGB array, return an (H, W) float32 array in [0, 1] where
+    each pixel is the LUT index (normalised) whose RGB is closest to
+    the input by L2 distance.
+    Lossy by JPEG compression + LUT quantisation, but monotonic — the
+    hover number tracks the original depth ordering."""
+    lut = _turbo_lut().astype(np.float32)
+    flat = rgb.reshape(-1, 3).astype(np.float32)
+    # L2 distance from each pixel to all 256 LUT entries; argmin per pixel.
+    d = ((flat[:, None, :] - lut[None, :, :]) ** 2).sum(axis=-1)
+    idx = d.argmin(axis=1)
+    return (idx.astype(np.float32) / 255.0).reshape(rgb.shape[:2])
+
+
+def depth_meta(arr: np.ndarray, *, vmin: float | None = None,
+               vmax: float | None = None) -> dict:
+    """Return the (min, max, shape) that depth_preview would normalise
+    against. Saved as a sidecar .meta.json next to preview JPGs so
+    callers can recover real metric values from the reverse-turbo
+    lookup."""
+    a = arr
+    if a.ndim == 3 and a.shape[-1] == 1:
+        a = a[..., 0]
+    if a.ndim == 3 and a.shape[-1] == 3:
+        chan_max = float(np.nanmax(a)) if a.size else 0.0
+        if chan_max <= 255.5:
+            r = a[..., 0].astype(np.float64)
+            g = a[..., 1].astype(np.float64)
+            b = a[..., 2].astype(np.float64)
+            a = (r + g * 256.0 + b * 65536.0) / (256.0 ** 3 - 1.0)
+    a = np.asarray(a, dtype=np.float32)
+    mask = np.isfinite(a) & (a > 0)
+    if mask.any():
+        lo = float(vmin) if vmin is not None else float(a[mask].min())
+        hi = float(vmax) if vmax is not None else float(a[mask].max())
+    else:
+        lo, hi = 0.0, 0.0
+    return {'min': lo, 'max': hi, 'shape': list(a.shape)}
+
+
 def depth_preview(arr: np.ndarray, *, vmin: float | None = None,
                   vmax: float | None = None) -> bytes:
     """Colormapped JPG preview of a depth map.

@@ -10681,11 +10681,47 @@ def serve_depth_data(filepath):
     """
     Serve raw depth map data as JSON for interactive visualization.
     filepath should be relative to UPLOAD_FOLDER.
+
+    Preview-only datasets keep depth as a turbo-colormapped JPG; this
+    endpoint reverse-turbos it back to a 2D float array in [0, 1] and
+    scales by the sidecar .meta.json's (min, max) when available so
+    plotly hover still shows metric values.
     """
     full_path = os.path.join(app.config['UPLOAD_FOLDER'], filepath)
-    
+
     if not os.path.exists(full_path):
         return abort(404, description="File not found")
+
+    ext = full_path.rsplit('.', 1)[-1].lower()
+    if ext in ('jpg', 'jpeg', 'png'):
+        try:
+            from PIL import Image as _PIL
+            from benchhub.preview import reverse_turbo
+            with _PIL.open(full_path) as im:
+                rgb = np.asarray(im.convert('RGB'))
+            normed = reverse_turbo(rgb)  # (H, W) float32 in [0, 1]
+            meta_path = full_path.rsplit('.', 1)[0] + '.meta.json'
+            lo, hi, normalized = 0.0, 1.0, True
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path) as f:
+                        m = json.load(f)
+                    lo = float(m.get('min', 0.0))
+                    hi = float(m.get('max', 1.0))
+                    normalized = False
+                except Exception:
+                    pass
+            arr = (normed * (hi - lo) + lo).astype(float)
+            return jsonify({
+                'data': arr.tolist(),
+                'min': lo,
+                'max': hi,
+                'shape': list(arr.shape),
+                'normalized': normalized,
+            })
+        except Exception as e:
+            print(f"Error serving preview-depth data: {e}")
+            return abort(500, description=str(e))
 
     try:
         # Load npz
@@ -10696,28 +10732,24 @@ def serve_depth_data(filepath):
                 if len(data[key].shape) == 2:
                     arr = data[key]
                     break
-            
+
             if arr is None:
                 # Fallback to first available if any
                 if data.files:
                     arr = data[data.files[0]]
                 else:
                     return abort(500, description="Empty npz file")
-        
-        # Check if we need to json-serialize types (numpy types to python types)
+
         return jsonify({
             'data': arr.tolist(),
             'min': float(np.min(arr)),
             'max': float(np.max(arr)),
-            'shape': arr.shape
+            'shape': arr.shape,
+            'normalized': False,
         })
-            
+
     except Exception as e:
         print(f"Error serving depth data: {e}")
-        return abort(500, description=str(e))
-            
-    except Exception as e:
-        print(f"Error serving depth image: {e}")
         return abort(500, description=str(e))
 
 
@@ -12890,13 +12922,41 @@ def serve_custom_field_depth_meta(field_id):
     """Return just {min, max, shape} for a depth field. The full
     array endpoint loads ~MB per request; this one is for the
     inline colorbar labels in the comparison + dataset views,
-    where rendering 50 cells × full arrays is wasteful."""
+    where rendering 50 cells × full arrays is wasteful.
+
+    Preview-only datasets store depth as a turbo-colormapped JPG.
+    A sidecar .meta.json (written by manifest.import_typed_dataset)
+    carries the original min/max so colorbar labels stay metric.
+    Without a sidecar we return normalised [0, 1] and flag it."""
     custom_field = CustomField.query.get_or_404(field_id)
     if custom_field.data_type != 'depth':
         return abort(400, description="Not a depth field")
     full_path = os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text or '')
     if not os.path.exists(full_path):
         return abort(404, description="File not found")
+    ext = full_path.rsplit('.', 1)[-1].lower()
+    if ext in ('jpg', 'jpeg', 'png'):
+        meta_path = full_path.rsplit('.', 1)[0] + '.meta.json'
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path) as f:
+                    m = json.load(f)
+                return jsonify({
+                    'min': float(m.get('min', 0.0)),
+                    'max': float(m.get('max', 1.0)),
+                    'shape': m.get('shape') or [],
+                    'normalized': False,
+                })
+            except Exception:
+                pass
+        # No sidecar — preview is normalised [0, 1]; tell the client.
+        from PIL import Image as _PIL
+        try:
+            with _PIL.open(full_path) as im:
+                shp = [im.height, im.width]
+        except Exception:
+            shp = []
+        return jsonify({'min': 0.0, 'max': 1.0, 'shape': shp, 'normalized': True})
     try:
         with np.load(full_path) as data:
             arr = None
@@ -12911,6 +12971,7 @@ def serve_custom_field_depth_meta(field_id):
                 'min': float(np.nanmin(arr)),
                 'max': float(np.nanmax(arr)),
                 'shape': list(arr.shape),
+                'normalized': False,
             })
     except Exception as e:
         return abort(500, description=str(e))

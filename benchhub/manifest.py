@@ -37,35 +37,40 @@ from typing import Any
 from benchhub.types import DTYPES
 
 
-def _render_preview_from_file(kind: str, src: Path) -> tuple[bytes, str]:
+def _render_preview_from_file(kind: str, src: Path) -> tuple[bytes, str, dict | None]:
     """Read a staged source file + render it to preview bytes per
-    kind. Returns (bytes, file_ext). Lazy-imports benchhub.preview so
-    a non-preview import doesn't pull numpy/PIL machinery.
+    kind. Returns (bytes, file_ext, meta_or_None). The meta dict is
+    populated for depth (carries the original min/max so hover can
+    recover metric values from the lossy colormap encode). Lazy-imports
+    benchhub.preview so a non-preview import doesn't pull numpy/PIL
+    machinery.
     """
-    from benchhub.preview import render_preview
+    from benchhub.preview import render_preview, depth_meta
     import numpy as _np
     import io as _io
     from PIL import Image as _PIL
     raw = src.read_bytes()
     if kind == 'image':
-        return render_preview('image', _PIL.open(_io.BytesIO(raw)))
+        return (*render_preview('image', _PIL.open(_io.BytesIO(raw))), None)
     if kind == 'mask':
         # mask kind stores a class-id PNG on disk; pass through.
-        return render_preview('mask',
-                              _np.asarray(_PIL.open(_io.BytesIO(raw))))
+        return (*render_preview('mask',
+                                _np.asarray(_PIL.open(_io.BytesIO(raw)))), None)
     if kind == 'depth':
         # Canonical depth file_ext is .npz with key 'depth'.
         with _np.load(_io.BytesIO(raw)) as z:
             keys = list(z.keys())
             arr = z[keys[0] if 'depth' not in keys else 'depth']
-        return render_preview('depth', arr.astype(_np.float32))
+        arr32 = arr.astype(_np.float32)
+        bytes_, ext = render_preview('depth', arr32)
+        return bytes_, ext, depth_meta(arr32)
     if kind == 'audio':
         # Lazy import soundfile so the dep stays optional unless
         # someone actually imports audio in preview mode.
         import soundfile as _sf
         with _io.BytesIO(raw) as buf:
             samples, sr = _sf.read(buf, always_2d=False)
-        return render_preview('audio', samples)
+        return (*render_preview('audio', samples), None)
     raise ValueError(f'no preview for kind={kind!r}')
 
 
@@ -316,11 +321,18 @@ def import_typed_dataset(
                 # format under the same path.
                 if preview_only and kind in ('image', 'mask', 'depth', 'audio'):
                     try:
-                        prev_bytes, prev_ext = _render_preview_from_file(
+                        prev_bytes, prev_ext, prev_meta = _render_preview_from_file(
                             kind, src
                         )
                         dst = field_dir / (Path(src.name).stem + prev_ext)
                         dst.write_bytes(prev_bytes)
+                        # Sidecar with original min/max so a colormap
+                        # preview can still surface metric values on
+                        # hover / colorbar via reverse-turbo.
+                        if prev_meta is not None:
+                            import json as _json
+                            (field_dir / (Path(src.name).stem + '.meta.json')
+                            ).write_text(_json.dumps(prev_meta))
                     except Exception as e:
                         # Fall back to full copy if preview generation
                         # fails — partial preview > broken sample.
