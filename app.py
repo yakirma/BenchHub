@@ -14921,6 +14921,22 @@ def check_and_migrate_db():
                 except Exception as e:
                     print(f"Migration error (dataset_visualization): {e}")
 
+                # custom_field.sample_id was historically un-indexed, making
+                # any per-sample CF lookup a full table scan — fatal on
+                # 100k+ row datasets (dataset_view page took ~50s).
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_custom_field_sample_id_submission_id "
+                        "ON custom_field (sample_id, submission_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_custom_field_submission_id "
+                        "ON custom_field (submission_id) WHERE submission_id IS NOT NULL"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (custom_field indexes): {e}")
+
                 # Add git_author column to submission table
                 cursor.execute("PRAGMA table_info(submission)")
                 submission_columns = [row[1] for row in cursor.fetchall()]

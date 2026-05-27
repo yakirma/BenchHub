@@ -1029,7 +1029,7 @@
                     {% set _ds_initial_src = (_ds_src + '?cmap=turbo') if field_data.type == 'depth' else _ds_src %}
                     <div class="text-center depth-cell" style="position: relative; display: inline-block;">
                         <img src="{{ _ds_initial_src }}"
-                            class="border rounded shadow-sm clickable-vis{% if field_data.type == 'depth' %} depth-img{% endif %}{% if field_data.type == 'mask' %} mask-img{% endif %}"
+                            class="border rounded shadow-sm clickable-vis{% if field_data.type == 'depth' %} depth-img{% endif %}{% if field_data.type == 'mask' %} mask-img{% endif %}{% if field_data.type == 'image' %} image-img{% endif %}"
                             style="width: 160px !important; min-width: 160px !important; height: 140px !important; object-fit: contain; cursor: pointer;"
                             data-bs-toggle="modal" data-bs-target="#custom-field-modal"
                             data-img-url="{{ _ds_initial_src }}"
@@ -2060,6 +2060,23 @@
                     modalImg.src = imgUrl;
                     modalImg.style.display = 'block';
 
+                    // Forward the source img's modality so the pixel-hover
+                    // tooltip activates inside the zoom window too.
+                    modalImg.classList.remove('mask-img', 'image-img', 'depth-img');
+                    if (visType === 'mask') {
+                        modalImg.classList.add('mask-img');
+                        const rawUrl = button.getAttribute('data-mask-raw-url');
+                        if (rawUrl) modalImg.setAttribute('data-mask-raw-url', rawUrl);
+                        else modalImg.removeAttribute('data-mask-raw-url');
+                    } else if (visType === 'image') {
+                        modalImg.classList.add('image-img');
+                        modalImg.removeAttribute('data-mask-raw-url');
+                    } else if (visType === 'depth') {
+                        modalImg.classList.add('depth-img');
+                        modalImg.removeAttribute('data-mask-raw-url');
+                    }
+                    if (window._bhPixelHover) window._bhPixelHover.reload(modalImg);
+
                     // Re-attach ZoomHandler
                     if (!customFieldZoomHandler) {
                         customFieldZoomHandler = new ZoomHandler(modalImg);
@@ -3038,18 +3055,40 @@
         }).catch(function () {});
     });
 
-    // Mask pixel hover. Fetch the raw (no-palette) PNG once per IMG,
-    // draw to a Canvas, look up class IDs on mousemove.
-    (function () {
+    // Pixel hover. Draws the displayed image to a canvas once, then
+    // reads pixel values on mousemove and surfaces them in a tooltip.
+    // Triggers on:
+    //   .mask-img → no-palette PNG fetched via data-mask-raw-url; show class id
+    //   .image-img → use the displayed JPG directly; show R,G,B
+    //   .depth-img → use the displayed (colormapped) JPG; show approximate
+    //                normalised depth from luminance (qualitative only —
+    //                the full-precision plotly modal carries metric values).
+    // The single handler attaches to document and runs for both
+    // thumbnails and the zoomed modal image (which inherits the
+    // class + data attributes when the modal opens).
+    window._bhPixelHover = (function () {
         const tooltip = document.createElement('div');
         tooltip.className = 'mask-hover-tooltip';
         document.body.appendChild(tooltip);
         const cache = new WeakMap();
+        function loadSource(img) {
+            // For masks we need the raw (no-palette) PNG. For image / depth
+            // we just sample the displayed src — it's already an RGB JPG.
+            if (img.classList.contains('mask-img')) {
+                const url = img.getAttribute('data-mask-raw-url');
+                if (!url) return null;
+                return { url: url };
+            }
+            return { url: img.currentSrc || img.src };
+        }
         function load(img) {
-            if (cache.has(img)) return cache.get(img);
-            const url = img.getAttribute('data-mask-raw-url');
-            if (!url) return null;
-            const entry = { canvas: null, ctx: null, w: 0, h: 0, ready: false };
+            const src = loadSource(img);
+            if (!src) return null;
+            // Re-key the cache by URL so the modal's <img> picks up the
+            // right canvas after its src is reassigned.
+            let bucket = cache.get(img);
+            if (bucket && bucket._url === src.url) return bucket;
+            const entry = { _url: src.url, canvas: null, ctx: null, w: 0, h: 0, ready: false };
             cache.set(img, entry);
             const raw = new Image();
             raw.crossOrigin = 'anonymous';
@@ -3062,7 +3101,7 @@
                 entry.w = raw.naturalWidth; entry.h = raw.naturalHeight;
                 entry.ready = true;
             };
-            raw.src = url;
+            raw.src = src.url;
             return entry;
         }
         function pixelAt(img, cx, cy) {
@@ -3081,25 +3120,43 @@
             const px = Math.floor(lx / dW * iw), py = Math.floor(ly / dH * ih);
             try {
                 const d = entry.ctx.getImageData(px, py, 1, 1).data;
-                return { x: px, y: py, classId: d[0] };
+                return { x: px, y: py, r: d[0], g: d[1], b: d[2], a: d[3] };
             } catch (e) { return null; }
+        }
+        function isHoverable(img) {
+            return img && img.classList && (
+                img.classList.contains('mask-img') ||
+                img.classList.contains('image-img') ||
+                img.classList.contains('depth-img')
+            );
+        }
+        function format(img, p) {
+            const xy = '(' + p.x + ',' + p.y + ')';
+            if (img.classList.contains('mask-img')) return xy + '  class=' + p.r;
+            if (img.classList.contains('image-img')) return xy + '  rgb=(' + p.r + ',' + p.g + ',' + p.b + ')';
+            if (img.classList.contains('depth-img')) {
+                // 0..255 luminance → 0..1 normalised depth (no metric meaning).
+                const lum = (0.299 * p.r + 0.587 * p.g + 0.114 * p.b) / 255;
+                return xy + '  ~depth=' + lum.toFixed(3);
+            }
+            return xy;
         }
         document.addEventListener('mousemove', function (ev) {
             const img = ev.target;
-            if (!img || !img.classList || !img.classList.contains('mask-img')) return;
+            if (!isHoverable(img)) return;
             const p = pixelAt(img, ev.clientX, ev.clientY);
             if (p == null) { tooltip.style.display = 'none'; return; }
-            tooltip.textContent = '(' + p.x + ',' + p.y + ')  class=' + p.classId;
+            tooltip.textContent = format(img, p);
             tooltip.style.display = 'block';
             tooltip.style.left = (ev.clientX + 12) + 'px';
             tooltip.style.top  = (ev.clientY + 12) + 'px';
         }, true);
         document.addEventListener('mouseleave', function (ev) {
-            const img = ev.target;
-            if (img && img.classList && img.classList.contains('mask-img')) {
-                tooltip.style.display = 'none';
-            }
+            if (isHoverable(ev.target)) tooltip.style.display = 'none';
         }, true);
+        // Exported so the modal-open handler can re-prime the cache after
+        // changing the modal-img src.
+        return { reload: function (img) { cache.delete(img); load(img); } };
     })();
 </script>
 {% endblock %}

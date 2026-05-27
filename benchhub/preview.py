@@ -77,9 +77,19 @@ def depth_preview(arr: np.ndarray, *, vmin: float | None = None,
     """Colormapped JPG preview of a depth map.
     Accepts (H,W) or (H,W,1) float arrays in any unit. The visual
     range is the array's own min/max unless overridden — preview is
-    qualitative, not metric."""
+    qualitative, not metric.
+    Also accepts (H,W,3) byte-range arrays as RGB-packed depth
+    (CARLA convention: depth = R + G*256 + B*65536, normalised to
+    the 24-bit range)."""
     if arr.ndim == 3 and arr.shape[-1] == 1:
         arr = arr[..., 0]
+    if arr.ndim == 3 and arr.shape[-1] == 3:
+        chan_max = float(np.nanmax(arr)) if arr.size else 0.0
+        if chan_max <= 255.5:
+            r = arr[..., 0].astype(np.float64)
+            g = arr[..., 1].astype(np.float64)
+            b = arr[..., 2].astype(np.float64)
+            arr = (r + g * 256.0 + b * 65536.0) / (256.0 ** 3 - 1.0)
     if arr.ndim != 2:
         raise ValueError(f'depth array must be 2D, got shape {arr.shape}')
     a = arr.astype(np.float32)
