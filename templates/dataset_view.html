@@ -1825,8 +1825,27 @@
                 img.style.width = '100%';
                 img.style.height = '100%';
                 img.style.objectFit = 'contain';
-                img.style.pointerEvents = 'none';
+                // Only the currently picked layer accepts pointer events
+                // so the per-pixel hover handler can read its rect /
+                // canvas. Non-picked layers stay pointer-transparent so
+                // their opacity slider still composes them visually.
+                img.style.pointerEvents = (i === currentIndex) ? 'auto' : 'none';
                 img.style.opacity = (i === currentIndex) ? '1' : '0';
+                // Forward the source modality so the pixel-hover handler
+                // (mask class id / image RGB / depth intensity) activates
+                // in the zoom window too.
+                const srcEl = item.element;
+                if (srcEl && srcEl.classList) {
+                    if (srcEl.classList.contains('mask-img')) {
+                        img.classList.add('mask-img');
+                        const rawUrl = srcEl.getAttribute('data-mask-raw-url');
+                        if (rawUrl) img.setAttribute('data-mask-raw-url', rawUrl);
+                    } else if (srcEl.classList.contains('image-img')) {
+                        img.classList.add('image-img');
+                    } else if (srcEl.classList.contains('depth-img')) {
+                        img.classList.add('depth-img');
+                    }
+                }
                 wrap.appendChild(img);
             });
         }
@@ -1848,6 +1867,14 @@
             } else if (clamped > 0) {
                 if (wrap.lastChild !== img) wrap.appendChild(img);
             }
+            // Only the picked layer takes mouse events — the pixel-hover
+            // tooltip needs an element to fire mousemove on. Other layers
+            // stay pointer-transparent so the picked layer's hover keeps
+            // working even when overlays are composed on top.
+            Array.from(wrap.querySelectorAll('img')).forEach(other => {
+                const oi = parseInt(other.dataset.layerIndex, 10);
+                other.style.pointerEvents = (gal && gal.currentIndex === oi) ? 'auto' : 'none';
+            });
         }
 
         window.customFieldGallery = new GalleryModalManager('custom-field-modal', 'custom-field-gallery-footer',
