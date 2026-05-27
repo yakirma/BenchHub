@@ -11,8 +11,11 @@
 <div class="alert alert-info py-2 d-flex align-items-center gap-2 mb-3">
     <i class="bi bi-funnel-fill"></i>
     <div class="flex-grow-1 small">
-        Showing the <strong>{{ lb_filter_names_count or 0 }}-sample subset</strong>
-        materialised for leaderboard
+        Showing
+        <strong>{{ '{:,}'.format(lb_filter_names_count or 0) }}</strong>
+        of
+        <strong>{{ '{:,}'.format(dataset_total_samples or 0) }}</strong>
+        samples — the subset materialised for leaderboard
         <a href="{{ url_for('leaderboard_view', leaderboard_id=lb_filter.id) }}"
            class="alert-link">{{ lb_filter.name }}</a>.
         Submissions to this LB score against this subset only.

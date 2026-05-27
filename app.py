@@ -12210,6 +12210,7 @@ def dataset_view(dataset_id):
     lb_filter_id = request.args.get('lb', type=int)
     lb_filter_obj = None
     lb_filter_names_count = None
+    dataset_total_samples = None
     if lb_filter_id:
         lb_filter_obj = Leaderboard.query.get(lb_filter_id)
         if lb_filter_obj:
@@ -12218,6 +12219,12 @@ def dataset_view(dataset_id):
                 app.config['UPLOAD_FOLDER'], lb_filter_id,
             )
             lb_filter_names_count = len(mat_names)
+            # Pre-count the full dataset so the banner can show
+            # "N of M" without forcing a `.samples` list-load in the
+            # template. Done before the .in_() filter is applied.
+            dataset_total_samples = Sample.query.filter_by(
+                dataset_id=dataset.id,
+            ).count()
             if mat_names:
                 samples_query = samples_query.filter(Sample.name.in_(mat_names))
             else:
@@ -12659,6 +12666,7 @@ def dataset_view(dataset_id):
                            mask_vocabs=mask_vocabs,
                            lb_filter=lb_filter_obj,
                            lb_filter_names_count=lb_filter_names_count,
+                           dataset_total_samples=dataset_total_samples,
                            custom_scalar_metrics=custom_scalar_metrics,
                            sample_search_query=sample_search_query,
                            filter_field=filter_field,
