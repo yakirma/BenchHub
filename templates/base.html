@@ -752,10 +752,11 @@
                            Login link for anonymous visitors. #}
                         {% if current_user %}
                         {% if current_user_is_admin %}
-                        <span class="badge text-bg-warning text-dark ms-3 d-flex align-items-center"
-                            title="You're on the BENCHHUB_ADMIN_EMAILS allow-list — you can view and delete other users' content.">
+                        <a href="{{ url_for('admin_index') }}"
+                           class="badge text-bg-warning text-dark ms-3 d-flex align-items-center text-decoration-none"
+                           title="Open the admin tools index (manage admins, feature requests, LB templates, …)">
                             <i class="bi bi-shield-fill-check me-1"></i>Admin
-                        </span>
+                        </a>
                         {% endif %}
                         <div class="dropdown ms-3">
                             <a href="#" class="d-flex align-items-center text-decoration-none dropdown-toggle
@@ -801,8 +802,13 @@
                                 </li>
                                 {% if current_user_is_admin %}
                                 <li>
-                                    <a class="dropdown-item" href="{{ url_for('admins_settings') }}">
-                                        <i class="bi bi-shield-fill-check me-1 text-warning"></i> Manage admins
+                                    <a class="dropdown-item" href="{{ url_for('admin_index') }}">
+                                        <i class="bi bi-shield-fill-check me-1 text-warning"></i> Admin tools
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item" href="{{ url_for('admin_lb_templates') }}">
+                                        <i class="bi bi-grid-3x3-gap-fill me-1 text-warning"></i> LB templates
                                     </a>
                                 </li>
                                 <li>

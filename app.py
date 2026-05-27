@@ -6196,6 +6196,101 @@ def admin_feature_request_status(req_id):
     return redirect(url_for('admin_feature_requests'))
 
 
+@app.route('/admin')
+@login_required
+def admin_index():
+    """Index page listing every admin tool. Linked from the navbar's
+    `Admin` chip so admins don't have to dig through the user menu."""
+    if not is_admin(g.current_user):
+        abort(403)
+    return render_template('admin_index.html')
+
+
+@app.route('/admin/lb_templates')
+@login_required
+def admin_lb_templates():
+    if not is_admin(g.current_user):
+        abort(403)
+    templates = (
+        LbTemplate.query
+        .order_by(LbTemplate.sort_order, LbTemplate.id)
+        .all()
+    )
+    # Build kind/metric/viz pickers for the form. Just the catalog
+    # names; the admin types arbitrary strings if they want a
+    # not-yet-existing entry.
+    metric_names = sorted({
+        m.name for m in GlobalMetric.query.filter_by(visibility='public').all()
+    })
+    viz_names = sorted({
+        v.name for v in GlobalVisualization.query.filter_by(visibility='public').all()
+    })
+    kind_names = sorted([
+        'image', 'mask', 'depth', 'audio', 'text', 'bboxes',
+        'label', 'label_list', 'scalar', 'json',
+    ])
+    return render_template(
+        'admin_lb_templates.html',
+        templates=templates,
+        metric_names=metric_names,
+        viz_names=viz_names,
+        kind_names=kind_names,
+    )
+
+
+@app.route('/admin/lb_templates/save', methods=['POST'])
+@login_required
+def admin_lb_template_save():
+    """Upsert a template by slug. Multi-value form fields:
+    required_kinds[], metric_names[], visualization_names[].
+    Returns to the admin index."""
+    if not is_admin(g.current_user):
+        abort(403)
+    slug = (request.form.get('slug') or '').strip()
+    if not slug:
+        flash('Slug is required', 'danger')
+        return redirect(url_for('admin_lb_templates'))
+    row = LbTemplate.query.filter_by(slug=slug).first()
+    if row is None:
+        row = LbTemplate(slug=slug)
+        db.session.add(row)
+    row.label = (request.form.get('label') or '').strip() or slug
+    row.description = (request.form.get('description') or '').strip() or None
+    row.required_kinds_json = json.dumps([
+        s.strip() for s in request.form.getlist('required_kinds')
+        if s and s.strip()
+    ])
+    row.metric_names_json = json.dumps([
+        s.strip() for s in request.form.getlist('metric_names')
+        if s and s.strip()
+    ])
+    row.visualization_names_json = json.dumps([
+        s.strip() for s in request.form.getlist('visualization_names')
+        if s and s.strip()
+    ])
+    row.enabled = request.form.get('enabled') in ('1', 'on', 'true')
+    try:
+        row.sort_order = int(request.form.get('sort_order') or 0)
+    except ValueError:
+        row.sort_order = 0
+    db.session.commit()
+    flash(f'Saved template "{slug}".', 'success')
+    return redirect(url_for('admin_lb_templates'))
+
+
+@app.route('/admin/lb_templates/<int:tid>/delete', methods=['POST'])
+@login_required
+def admin_lb_template_delete(tid):
+    if not is_admin(g.current_user):
+        abort(403)
+    row = LbTemplate.query.get_or_404(tid)
+    slug = row.slug
+    db.session.delete(row)
+    db.session.commit()
+    flash(f'Deleted template "{slug}".', 'success')
+    return redirect(url_for('admin_lb_templates'))
+
+
 @app.route('/create_visualization', methods=['POST'])
 @login_required
 def create_visualization():

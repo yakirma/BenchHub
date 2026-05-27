@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Admin{% endblock %}
+
+{% block content %}
+<div class="container py-3">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <h1 class="h3 fw-bold mb-0">
+            <i class="bi bi-shield-fill-check me-2 text-warning"></i>Admin
+        </h1>
+        <span class="text-body-secondary small">Restricted to admin accounts.</span>
+    </div>
+
+    <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3">
+        {% set _cards = [
+            ('admins_settings',         'bi-people-fill',         'Manage admins',
+             'Grant or revoke the admin flag on user accounts.'),
+            ('admin_feature_requests',  'bi-lightbulb',           'Feature requests',
+             'Triage user-submitted feature requests + leave a note.'),
+            ('admin_lb_templates',      'bi-grid-3x3-gap-fill',   'LB task templates',
+             'Edit the default metric + pred-field set per task category (segmentation, depth, etc.).'),
+            ('admin_user_storage',      'bi-hdd-fill',            'User storage usage',
+             'Per-user disk + quota dashboard.'),
+            ('admin_cache_stats',       'bi-database-fill',       'Cache stats',
+             'HF dataset + sample cache hit-rate, eviction stats.'),
+            ('admin_import_from_hf',    'bi-cloud-arrow-down',    'Import from HuggingFace',
+             'Server-side HF dataset import (the manual single-repo flow).'),
+        ] %}
+        {% for endpoint, icon, label, blurb in _cards %}
+        <div class="col">
+            <a href="{{ url_for(endpoint) }}" class="text-decoration-none">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body">
+                        <h5 class="card-title mb-1">
+                            <i class="bi {{ icon }} text-warning me-2"></i>{{ label }}
+                        </h5>
+                        <p class="card-text small text-body-secondary mb-0">{{ blurb }}</p>
+                    </div>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
