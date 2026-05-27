@@ -12202,6 +12202,28 @@ def dataset_view(dataset_id):
     all_dataset_prefixes = sorted(list(all_dataset_prefixes))
 
     samples_query = Sample.query.filter_by(dataset_id=dataset.id)
+    # ?lb=<id> scopes the view to a single LB's materialised subset.
+    # The dataset row itself stays the source of truth (kinds,
+    # display columns, viz attachments) — we just filter Sample names
+    # to those present on disk under
+    # uploads/lb_materializations/<lb_id>/. Surfaces a banner.
+    lb_filter_id = request.args.get('lb', type=int)
+    lb_filter_obj = None
+    lb_filter_names_count = None
+    if lb_filter_id:
+        lb_filter_obj = Leaderboard.query.get(lb_filter_id)
+        if lb_filter_obj:
+            from benchhub.lb_materialize import list_materialized_samples
+            mat_names = list_materialized_samples(
+                app.config['UPLOAD_FOLDER'], lb_filter_id,
+            )
+            lb_filter_names_count = len(mat_names)
+            if mat_names:
+                samples_query = samples_query.filter(Sample.name.in_(mat_names))
+            else:
+                # LB has no materialisation yet — show empty rather than
+                # silently fall back to the full dataset (would mislead).
+                samples_query = samples_query.filter(False)
     # Sample-name search (case-insensitive substring match), mirrors the
     # comparison view's `search` query param so the URL contract is the
     # same in both places.
@@ -12635,6 +12657,8 @@ def dataset_view(dataset_id):
                            custom_fields_map=custom_fields_map,
                            label_vocabs=label_vocabs,
                            mask_vocabs=mask_vocabs,
+                           lb_filter=lb_filter_obj,
+                           lb_filter_names_count=lb_filter_names_count,
                            custom_scalar_metrics=custom_scalar_metrics,
                            sample_search_query=sample_search_query,
                            filter_field=filter_field,

@@ -34,6 +34,24 @@ def materialization_dir(upload_folder: str | os.PathLike, lb_id: int) -> Path:
     return Path(upload_folder) / 'lb_materializations' / str(lb_id)
 
 
+def list_materialized_samples(
+    upload_folder: str | os.PathLike, lb_id: int,
+) -> list[str]:
+    """Sample names present in this LB's materialisation. Reads the
+    first non-empty per-field subdirectory and strips extensions.
+    Returns [] if no materialisation directory exists yet."""
+    base = materialization_dir(upload_folder, lb_id)
+    if not base.is_dir():
+        return []
+    for field_dir in sorted(base.iterdir()):
+        if not field_dir.is_dir():
+            continue
+        names = sorted({p.stem for p in field_dir.iterdir() if p.is_file()})
+        if names:
+            return names
+    return []
+
+
 def materialized_or_preview_path(
     upload_folder: str | os.PathLike,
     leaderboard_id: int | None,

@@ -501,7 +501,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {% for ds in _bh_datasets %}
                 {% if ds.id not in _bh_ds_seen %}
                 {% set thumb = dataset_thumbs.get(ds.id) if dataset_thumbs else None %}
-                <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                {# Deep-link to the materialised subset when one exists
+                   (see the View-dataset button comment above). #}
+                {% set _mat2 = leaderboard.materialization %}
+                <a href="{{ url_for('dataset_view', dataset_id=ds.id,
+                                    lb=(leaderboard.id if _mat2 and _mat2.status == 'ready' else None)) }}"
                     class="btn btn-sm btn-outline-primary d-inline-flex align-items-center gap-2 py-1 ps-1 pe-2"
                     title="Open {{ ds.name }}">
                     {% if thumb %}
@@ -589,9 +593,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
            is the canonical place to browse GT samples. #}
         {% set _primary_ds = leaderboard.datasets[0] if leaderboard.datasets else None %}
         {% if _primary_ds %}
+        {# When the LB has a ready materialisation, deep-link to the
+           per-LB subset view (`?lb=<id>`) so the user lands on the
+           samples that submissions will actually be scored against —
+           not the dataset's full preview pool. Otherwise drop the
+           param and show everything. #}
+        {% set _mat = leaderboard.materialization %}
         <a class="btn btn-outline-secondary"
-           href="{{ url_for('dataset_view', dataset_id=_primary_ds.id) }}"
-           title="Browse the dataset attached to this leaderboard.">
+           href="{{ url_for('dataset_view', dataset_id=_primary_ds.id,
+                            lb=(leaderboard.id if _mat and _mat.status == 'ready' else None)) }}"
+           title="Browse the dataset {% if _mat and _mat.status == 'ready' %}subset materialised for this LB{% else %}attached to this leaderboard{% endif %}.">
             <i class="bi bi-grid me-1"></i>View dataset
         </a>
         {% endif %}
