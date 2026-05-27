@@ -10626,6 +10626,16 @@ def serve_depth_image(filepath):
     if not os.path.exists(full_path):
         return abort(404, description="File not found")
 
+    # Preview-only datasets store depth as a pre-colormapped JPG (turbo
+    # baked in at import time). Serve the bytes verbatim — the per-
+    # request `?cmap=` switcher only works for raw .npz; for preview
+    # the column header dropdown is a no-op.
+    ext = full_path.rsplit('.', 1)[-1].lower()
+    if ext in ('jpg', 'jpeg', 'png'):
+        return send_file(full_path,
+                         mimetype=f'image/{"jpeg" if ext != "png" else "png"}',
+                         max_age=60)
+
     try:
         with np.load(full_path) as data:
             arr = None
