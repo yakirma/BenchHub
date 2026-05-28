@@ -2833,12 +2833,12 @@ def leaderboards():
         )
         .outerjoin(recent_activity, Leaderboard.id == recent_activity.c.lb_id)
         .outerjoin(total_activity, Leaderboard.id == total_activity.c.lb_id)
+        # visible_in_list already encodes the right policy: public
+        # rows for everyone, plus owner's own non-unlisted rows for
+        # signed-in users, plus everything for admins. The old
+        # hardcoded `visibility == 'public'` filter we used to stack
+        # on top hid owners' own private LBs from their own catalog.
         .filter(visible_in_list(Leaderboard, getattr(g, 'current_user', None)))
-        # /explore lists every LB the user has flipped to public
-        # visibility. Multiple LBs per HF repo are now permitted —
-        # `canonical_for_repo` is informational metadata, NOT a uniqueness
-        # gate. Each owner promotes/demotes their own LB independently.
-        .filter(Leaderboard.visibility == 'public')
     )
 
 
@@ -2950,8 +2950,7 @@ def leaderboards():
     # the results panel but the tree stays stable).
     cat_rows = (
         db.session.query(Leaderboard.category, func.count(Leaderboard.id))
-        .filter(visible_lb_filter)
-        .filter(Leaderboard.visibility == 'public')
+        .filter(visible_lb_filter)   # already gates by visibility + ownership
         .filter(Leaderboard.category.isnot(None))
         .group_by(Leaderboard.category)
         .all()
