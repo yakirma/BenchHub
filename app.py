@@ -2547,13 +2547,18 @@ def landing():
     """Public marketing landing page (Phase 6 Slice 1).
 
     Replaces the old `redirect('/projects')` so anonymous visitors see
-    a real homepage. Logged-in users see the same page but with a
-    "Go to dashboard" CTA instead of "Log in".
+    a real homepage.
+
+    Signed-in users are forwarded to /home — their dashboard is the
+    relevant entry point. Anonymous visitors see the featured-LB
+    pitch below.
 
     Featured leaderboards: top public leaderboards by submission activity
     in the last 30 days. Visibility filter excludes private + unlisted —
     same rules as /explore (when that lands).
     """
+    if getattr(g, 'current_user', None):
+        return redirect(url_for('home'))
     cutoff = datetime.utcnow() - timedelta(days=30)
 
     # Subquery: count submissions per leaderboard in the activity window.
