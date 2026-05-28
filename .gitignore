@@ -48,3 +48,8 @@ uploads/
 .idea/
 .coverage
 .claude/
+
+# Build artifacts for the PyPI-published benchhub-client package.
+dist/
+build/
+*.egg-info/

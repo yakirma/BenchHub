@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "benchhub-client"
+version = "0.1.0"
+description = "Python client + typed contract for the BenchHub benchmarking platform"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "BenchHub" }]
+dependencies = [
+    "numpy",
+    "Pillow",
+    "requests",
+]
+
+[project.urls]
+Homepage = "https://runbenchhub.com"
+
+[tool.setuptools.packages.find]
+include = ["benchhub*"]
+exclude = ["tests*", "scripts*", "archive*", "docs*"]
