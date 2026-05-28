@@ -88,8 +88,9 @@ def test_home_lists_owned_leaderboards(auth_client, db_session, logged_in_user):
 
 
 def test_home_renders_visibility_badge_for_private(auth_client, db_session, logged_in_user):
-    """Private/unlisted items get a small badge so the user knows they're
-    not public. Public items don't carry one (cleaner default)."""
+    """Private/unlisted items get an icon + descriptive tooltip so the user
+    knows they're not public. The badge is icon-only (no 'private' word)
+    so we assert on the lock icon + descriptive title text instead."""
     db.session.add_all([
         Dataset(name='ds_pub', owner_user_id=logged_in_user.id, visibility='public'),
         Dataset(name='ds_priv', owner_user_id=logged_in_user.id, visibility='private'),
@@ -100,8 +101,10 @@ def test_home_renders_visibility_badge_for_private(auth_client, db_session, logg
     # Both names show up
     assert 'ds_pub' in body
     assert 'ds_priv' in body
-    # Only the private one gets the badge text "private"
-    assert 'private' in body
+    # Lock icon class appears (private cue) AND the descriptive tooltip
+    # text is in the title attribute on at least one element.
+    assert 'bi-lock-fill' in body
+    assert 'only you and admins can see this' in body
 
 
 def test_home_empty_state_when_user_has_nothing(auth_client, logged_in_user):
