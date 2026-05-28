@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 
-{% block title %}BenchHub — Benchmark your model in 60 seconds{% endblock %}
+{% block title %}BenchHub — Build, run, and share ML benchmarks{% endblock %}
 
 {# SEO override (Phase 6). Title is the hero pitch; description matches the
    sub-headline so search-result snippets read sensibly. #}
-{% set meta_title = 'BenchHub — Benchmark your model in 60 seconds' %}
+{% set meta_title = 'BenchHub — Build, run, and share ML benchmarks' %}
 {% set meta_description = 'Open-source benchmarking platform: pick a dataset, define metrics in Python, upload predictions, see how your model ranks. No credit card.' %}
 
 {% block flash_messages %}{% endblock %}
@@ -43,17 +43,26 @@
         letter-spacing: -0.025em;
         line-height: 1.05;
         font-size: clamp(2.5rem, 5.5vw, 4.5rem);
-        color: #281950;
+        color: var(--bh-heading-color);  /* warm-dark on light, cream on dark */
     }
     .hero-headline .accent {
+        /* Vibrant gradient that reads on both themes — stops stay
+           saturated enough on dark, the violet → magenta → orange is
+           the same on light. Dark mode overrides to lighter stops
+           (see below) for stronger contrast. */
         background: linear-gradient(95deg, #7c3aed 0%, #c026d3 45%, #ff008a 100%);
         -webkit-background-clip: text;
         background-clip: text;
         color: transparent;
     }
+    [data-bs-theme="dark"] .hero-headline .accent {
+        background: linear-gradient(95deg, #a78bfa 0%, #e879f9 45%, #fb7185 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+    }
     .hero-sub {
         font-size: 1.2rem;
-        color: #564b80;
+        color: var(--bs-secondary-color);
         max-width: 38rem;
         margin: 0 auto;
     }
@@ -124,8 +133,8 @@
         <div class="row align-items-center justify-content-center text-center">
             <div class="col-lg-9">
                 <h1 class="hero-headline mb-4">
-                    Benchmark your model<br>
-                    <span class="accent">in 60 seconds.</span>
+                    Build, run, and<br>
+                    <span class="accent">share ML benchmarks.</span>
                 </h1>
                 <p class="hero-sub mb-4">
                     Pick a dataset, define your metrics in Python, upload predictions,

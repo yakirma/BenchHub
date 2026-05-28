@@ -31,7 +31,7 @@
        block alone — no harm done, just generic chrome. #}
     {% block meta %}
     {% set _t = meta_title|default(self.title()) %}
-    {% set _d = meta_description|default('Benchmark your model in 60 seconds. Pick a dataset, define metrics in Python, upload predictions, see your ranking.') %}
+    {% set _d = meta_description|default('Build, run, and share ML benchmarks. Pick a dataset, define metrics in Python, upload predictions, see your ranking.') %}
     {% set _u = meta_url|default(request.url) %}
     {% set _i = meta_image|default('') %}
     <meta name="description" content="{{ _d }}">
