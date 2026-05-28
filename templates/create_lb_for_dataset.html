@@ -103,12 +103,9 @@
                                   title="Total samples in this dataset">
                                 <i class="bi bi-card-image me-1"></i>{{ '{:,}'.format(_total) }} samples
                             </span>
-                            {% if dataset.preview_only %}
-                            <span class="badge text-bg-light text-body-secondary border small"
-                                  title="Preview tier — full bytes are materialised per LB">
-                                <i class="bi bi-eye me-1"></i>preview only
-                            </span>
-                            {% endif %}
+                            {# Preview tier is the default; the sample
+                               wizard below makes the materialisation
+                               step explicit so the badge is redundant. #}
                         </div>
                         <p class="form-text small mt-0 mb-3">
                             {% if dataset.preview_only %}

@@ -408,10 +408,8 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                                 <i class="bi bi-x-octagon text-danger small"
                                    title="{{ dataset.import_error or 'Import failed' }}"></i>
                                 {% endif %}
-                                {% if dataset.preview_only %}
-                                <i class="bi bi-eye text-info small"
-                                   title="Preview-only — full bytes materialised per leaderboard"></i>
-                                {% endif %}
+                                {# Preview-only is the implicit default
+                                   for HF imports — no badge. #}
                             </div>
                             {% if dataset.tags %}
                             <div class="d-flex flex-wrap gap-1 mb-1">

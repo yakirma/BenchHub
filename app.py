@@ -473,6 +473,12 @@ class Dataset(db.Model):
         db.Boolean, nullable=False,
         default=False, server_default='0',
     )
+    # Markdown-ish description scraped from the upstream dataset card.
+    # For HF imports we strip the YAML frontmatter and stash the body
+    # here so /dataset/<id> can show it under a collapsed "Details"
+    # section without an extra HTTP call per page load. Backfilled
+    # idempotently in check_and_migrate_db for legacy HF rows.
+    card_description = db.Column(db.Text, nullable=True)
 
     @property
     def source_metadata_parsed(self):
@@ -15276,6 +15282,48 @@ def check_and_migrate_db():
                         conn.commit()
                 except Exception as e:
                     print(f"Migration error (lb_template): {e}")
+
+                # --- Dataset.card_description column + backfill ---
+                try:
+                    cursor.execute("PRAGMA table_info(dataset)")
+                    cols = [row[1] for row in cursor.fetchall()]
+                    if 'card_description' not in cols:
+                        print("Migrating DB: Adding 'card_description' to 'dataset'...")
+                        cursor.execute(
+                            "ALTER TABLE dataset ADD COLUMN card_description TEXT"
+                        )
+                        conn.commit()
+                    # Idempotent retroactive backfill — fetch the HF
+                    # README for every HF row whose card_description is
+                    # still NULL. Run only when we find at least one
+                    # candidate so this doesn't re-hit HF on every boot.
+                    cursor.execute(
+                        "SELECT id, source_url FROM dataset "
+                        "WHERE card_description IS NULL "
+                        "AND source_kind = 'hf' "
+                        "AND source_url LIKE 'https://huggingface.co/datasets/%'"
+                    )
+                    targets = cursor.fetchall()
+                    if targets:
+                        from benchhub.hf_search import fetch_hf_card_description
+                        print(f"Migrating DB: Backfilling card_description "
+                              f"for {len(targets)} HF dataset(s)...")
+                        for ds_id, url in targets:
+                            repo = (url or '').split(
+                                'huggingface.co/datasets/', 1
+                            )[-1].strip('/')
+                            if not repo:
+                                continue
+                            desc = fetch_hf_card_description(repo)
+                            if desc:
+                                cursor.execute(
+                                    "UPDATE dataset SET card_description = ? "
+                                    "WHERE id = ?",
+                                    (desc, ds_id),
+                                )
+                        conn.commit()
+                except Exception as e:
+                    print(f"Migration error (card_description): {e}")
 
                 # --- Dataset.preview_only column ---
                 try:

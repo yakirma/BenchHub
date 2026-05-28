@@ -61,9 +61,6 @@
                         <div class="small text-body-secondary">
                             {% if ds.category %}{{ ds.category }} &middot; {% endif %}
                             <i class="bi bi-card-image me-1"></i>{{ '{:,}'.format(ds.samples|length) }} samples
-                            {% if ds.preview_only %}
-                            &middot; <i class="bi bi-eye text-info"></i> preview
-                            {% endif %}
                             &middot; uploaded {{ ds.upload_date.strftime('%Y-%m-%d') if ds.upload_date }}
                         </div>
                     </div>

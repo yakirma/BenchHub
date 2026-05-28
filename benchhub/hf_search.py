@@ -235,6 +235,35 @@ def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
     return {"features": features, "splits": splits}
 
 
+def fetch_hf_card_description(repo_id: str, *, timeout: int = 10) -> str | None:
+    """Return the markdown body of an HF dataset's README.md with the
+    YAML front-matter stripped off. Used to seed
+    `Dataset.card_description` so the per-dataset page can surface the
+    upstream card text under a Details section.
+    Returns None on any HTTP / decode failure."""
+    if not repo_id:
+        return None
+    url = (f"https://huggingface.co/datasets/"
+           f"{urllib.parse.quote(repo_id, safe='/')}/raw/main/README.md")
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "benchhub/0.1"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError, UnicodeError):
+        return None
+    body = raw
+    # Strip YAML frontmatter: starts at the first `---\n` and ends at
+    # the next `---\n`. HF README templates always emit it; older
+    # cards may not. Only strip the leading delimited block.
+    if body.startswith("---"):
+        end = body.find("\n---", 3)
+        if end != -1:
+            body = body[end + 4 :].lstrip("\n")
+    return body.strip() or None
+
+
 def fetch_dataset_card(repo_id: str, *, timeout: int = 10) -> dict | None:
     """Return the HF Hub's per-dataset metadata document — the same
     JSON the dataset card page is rendered from. Carries `tags`
