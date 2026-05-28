@@ -251,115 +251,106 @@
        re-sorts rows by category so contiguous runs share a header. #}
     {% set _last_area = namespace(v=None) %}
     {% set _last_task = namespace(v=None) %}
-    <div class="list-group mb-4 shadow-sm">
+    {% set _open_grid = namespace(v=False) %}
+    <div class="mb-4">
         {% for row in rows %}
         {% set lb = row.lb %}
         {% set _cat_parts = (lb.category or '').split('/', 1) %}
         {% set _area = _cat_parts[0] if _cat_parts[0] else 'Uncategorized' %}
         {% set _task = _cat_parts[1] if _cat_parts|length > 1 else None %}
         {% if _area != _last_area.v %}
-        <div class="list-group-item bg-body-tertiary py-2 px-3 fw-semibold small text-body-secondary text-uppercase">
-            <i class="bi bi-diagram-3 me-1"></i>
-            {% if _area == 'Uncategorized' %}{{ _area }}{% else %}
-            <a href="{{ url_for('leaderboards', category=_area, q=q, sort=sort, tag=active_tag) }}"
-               class="text-decoration-none text-reset">{{ _area }}</a>
-            {% endif %}
-        </div>
-        {% set _last_area.v = _area %}
-        {% set _last_task.v = None %}
+            {% if _open_grid.v %}</div>{% set _open_grid.v = False %}{% endif %}
+            <div class="bg-body-tertiary rounded py-2 px-3 mb-2 mt-3 fw-semibold small text-body-secondary text-uppercase">
+                <i class="bi bi-diagram-3 me-1"></i>
+                {% if _area == 'Uncategorized' %}{{ _area }}{% else %}
+                <a href="{{ url_for('leaderboards', category=_area, q=q, sort=sort, tag=active_tag) }}"
+                   class="text-decoration-none text-reset">{{ _area }}</a>
+                {% endif %}
+            </div>
+            {% set _last_area.v = _area %}
+            {% set _last_task.v = None %}
         {% endif %}
         {% if _task and _task != _last_task.v %}
-        <div class="list-group-item bg-body py-1 px-4 small text-body-secondary border-0 border-bottom">
-            <i class="bi bi-chevron-right me-1 opacity-50"></i>
-            <a href="{{ url_for('leaderboards', category=_area ~ '/' ~ _task, q=q, sort=sort, tag=active_tag) }}"
-               class="text-decoration-none text-body-secondary">{{ _task }}</a>
-        </div>
-        {% set _last_task.v = _task %}
+            {% if _open_grid.v %}</div>{% set _open_grid.v = False %}{% endif %}
+            <div class="py-1 px-3 mb-2 small text-body-secondary">
+                <i class="bi bi-chevron-right me-1 opacity-50"></i>
+                <a href="{{ url_for('leaderboards', category=_area ~ '/' ~ _task, q=q, sort=sort, tag=active_tag) }}"
+                   class="text-decoration-none text-body-secondary">{{ _task }}</a>
+            </div>
+            {% set _last_task.v = _task %}
+        {% endif %}
+        {% if not _open_grid.v %}
+            <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-6 g-2 mb-3">
+            {% set _open_grid.v = True %}
         {% endif %}
 
         {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
         {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
         {% set _hf = _hf_atts[0] if _hf_atts else None %}
         {% set _bh_ds_count = lb.datasets|length %}
-        {% set _accent = lb.name | accent_color %}
-        {% set _accent_bg = lb.name | accent_bg %}
-        <div class="list-group-item list-group-item-action catalog-row d-flex justify-content-between align-items-center gap-3"
-             style="--accent: {{ _accent }}; background-color: {{ _accent_bg }};">
-            {% if thumb %}
-            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-               class="flex-shrink-0"
-               style="display:block; width:64px; height:64px; border-radius:6px;
-                      background-image: url('{{ thumb }}');
-                      background-size: cover; background-position: center;"
-               title="{{ lb.name }}"
-               aria-label="{{ lb.name }} thumbnail"></a>
-            {% else %}
-            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-               class="flex-shrink-0 d-flex align-items-center justify-content-center text-decoration-none"
-               style="width:64px; height:64px; border-radius:6px;
-                      background: var(--bs-info-bg-subtle, var(--bs-tertiary-bg));
-                      color: var(--bs-info-text-emphasis, var(--bs-body-secondary));"
-               title="{{ lb.name }}"
-               aria-label="{{ lb.name }} thumbnail">
-                <i class="bi bi-{{ 'cloud-arrow-down' if _hf else 'trophy' }} fs-3"></i>
-            </a>
-            {% endif %}
-            <div class="flex-grow-1 min-w-0">
-                <div class="d-flex align-items-center mb-1 flex-wrap gap-1">
-                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-                       class="text-decoration-none text-body fw-bold fs-6 text-truncate"
-                       title="{{ lb.name }}">
-                        {{ lb.name }}
-                    </a>
-                    {% if _hf and _hf.hf_split %}
-                    <span class="badge text-bg-primary-subtle text-primary-emphasis border small ms-1"
-                          title="HF split currently used for GT">
-                        split: {{ _hf.hf_split }}
-                    </span>
-                    {% endif %}
-                    {% if lb.canonical_for_repo %}
-                    <span class="badge text-bg-info-subtle text-info-emphasis border small"
-                          title="Imported from Papers With Code">
-                        <i class="bi bi-cloud-arrow-down me-1"></i>PWC
-                    </span>
-                    {% endif %}
-                    {% if row.recent > 0 %}
-                    <span class="badge text-bg-light border small"
-                          title="{{ row.recent }} submission{{ '' if row.recent == 1 else 's' }} in the last 30 days">
-                        <i class="bi bi-arrow-up-right me-1"></i>{{ row.recent }}
-                    </span>
-                    {% endif %}
-                </div>
-                {% if lb.tags %}
-                <div class="mb-1 d-flex flex-wrap gap-1">
-                    {% for t in lb.tags %}
-                    <a href="{{ url_for('leaderboards', tag=t.name) }}" class="tag-pill"
-                       onclick="event.stopPropagation();">{{ t.name }}</a>
-                    {% endfor %}
+        <div class="col">
+            <div class="card home-card h-100 border-0 shadow-sm position-relative">
+                {% if thumb %}
+                <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                {% else %}
+                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                    <i class="bi bi-{{ 'cloud-arrow-down' if _hf else 'trophy' }}"></i>
                 </div>
                 {% endif %}
-                <small class="d-block text-body-secondary mt-1">
-                    <i class="bi bi-people me-1"></i>{{ row.total }} submission{{ '' if row.total == 1 else 's' }}
-                    {% if _hf %}
-                    <span class="mx-2 opacity-50">|</span>
-                    <i class="bi bi-cloud-arrow-down me-1"></i>
-                    <a href="https://huggingface.co/datasets/{{ _hf.hf_repo_id }}"
-                       target="_blank" rel="noopener"
-                       class="text-decoration-none font-monospace"
-                       title="Open {{ _hf.hf_repo_id }} on HuggingFace (new tab)">
-                        {{ _hf.hf_repo_id }}<i class="bi bi-box-arrow-up-right small ms-1"></i>
-                    </a>
-                    {% elif _bh_ds_count %}
-                    <span class="mx-2 opacity-50">|</span>
-                    <i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}
+                <div class="card-body p-3 d-flex flex-column">
+                    <div class="d-flex align-items-center gap-1 mb-1">
+                        <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                           class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
+                           title="{{ lb.name }}">{{ lb.name }}</a>
+                        {% if lb.canonical_for_repo %}
+                        <span class="badge text-bg-info-subtle text-info-emphasis border"
+                              style="font-size: 0.6rem;"
+                              title="Imported from Papers With Code">PWC</span>
+                        {% endif %}
+                        {% if row.recent > 0 %}
+                        <span class="badge text-bg-light border"
+                              style="font-size: 0.6rem;"
+                              title="{{ row.recent }} submission{{ '' if row.recent == 1 else 's' }} in the last 30 days">
+                            <i class="bi bi-arrow-up-right"></i>{{ row.recent }}
+                        </span>
+                        {% endif %}
+                    </div>
+                    {% if lb.tags %}
+                    <div class="d-flex flex-wrap gap-1 mb-1" style="position: relative; z-index: 2;">
+                        {% for t in lb.tags[:2] %}
+                        <a href="{{ url_for('leaderboards', tag=t.name) }}"
+                           class="badge text-bg-primary-subtle text-primary-emphasis text-decoration-none small"
+                           onclick="event.stopPropagation();">{{ t.name }}</a>
+                        {% endfor %}
+                        {% if lb.tags|length > 2 %}
+                        <span class="badge text-bg-light border fw-normal">+{{ lb.tags|length - 2 }}</span>
+                        {% endif %}
+                    </div>
                     {% endif %}
-                </small>
+                    <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
+                         style="font-size: 0.7rem;">
+                        <span title="Submissions">
+                            <i class="bi bi-people me-1"></i>{{ row.total }}
+                        </span>
+                        {% if _bh_ds_count %}
+                        <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
+                            <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
+                        </span>
+                        {% endif %}
+                        {% if _hf %}
+                        <span title="HuggingFace attachment">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>HF
+                        </span>
+                        {% endif %}
+                        {% if _hf and _hf.hf_split %}
+                        <span class="opacity-75">{{ _hf.hf_split }}</span>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
-            <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-               class="stretched-link"
-               aria-label="Open {{ lb.name }}"></a>
         </div>
         {% endfor %}
+        {% if _open_grid.v %}</div>{% endif %}
     </div>
     {% else %}
     <div class="text-center py-5 text-body-secondary">
