@@ -2592,9 +2592,19 @@ def landing():
     # Render-friendly wrapper: list of (leaderboard, recent_count_int).
     featured_rows = [(lb, int(c or 0)) for lb, c in featured]
 
+    # Per-LB thumb URL so the landing-page cards can show the same
+    # 130px hero image the rest of the site uses (home-card shape).
+    landing_thumbs = {}
+    for lb, _ in featured_rows:
+        lb_datasets = list(lb.datasets)
+        landing_thumbs[lb.id] = (
+            _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
+        )
+
     return render_template(
         'landing.html',
         featured=featured_rows,
+        leaderboard_thumbs=landing_thumbs,
     )
 
 

@@ -339,45 +339,73 @@
     </div>
 
     {% if featured %}
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+    {# Same .home-card shape used on /home, /datasets, /leaderboards
+       and the LB grid on /dataset/<id>. Featured = top 3 by recent
+       activity, all public by definition (the route's visibility
+       filter). #}
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
         {% for lb, recent_count in featured %}
+        {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
+        {% set _hf = _hf_atts[0] if _hf_atts else None %}
+        {% set _bh_ds_count = lb.datasets|length %}
+        {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
         <div class="col">
-            <div class="card leaderboard-card h-100 border-0 shadow-sm">
-                <div class="card-body p-4 d-flex flex-column">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <h5 class="card-title fw-semibold mb-0 text-truncate" title="{{ lb.name }}">
-                            {{ lb.name }}
-                        </h5>
-                        <span class="badge text-bg-light ms-2 flex-shrink-0">
-                            <i class="bi bi-arrow-up-right me-1"></i>{{ recent_count }}
-                        </span>
-                    </div>
-
-                    {% if lb %}
-                    
-                    {% endif %}
-
-                    {% set _bh_ds_count = lb.datasets|length %}
-                    {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
-                    <div class="mt-auto d-flex flex-wrap gap-2 small text-body-secondary">
-                        <span><i class="bi bi-people me-1"></i>{{ lb.submissions|length }} submissions</span>
-                        {% if _bh_ds_count %}
-                        <span><i class="bi bi-database me-1"></i>{{ _bh_ds_count }} dataset{{ '' if _bh_ds_count == 1 else 's' }}</span>
-                        {% endif %}
-                        {% if _hf_atts %}
-                        <span><i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}</span>
-                        {% endif %}
+            <div class="card home-card h-100 border-0 shadow-sm position-relative">
+                {% if thumb %}
+                <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                {% else %}
+                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                    <i class="bi bi-{{ 'cloud-arrow-down' if _hf else 'trophy' }}"></i>
+                </div>
+                {% endif %}
+                <div class="card-body p-3 d-flex flex-column">
+                    <div class="d-flex align-items-center gap-1 mb-1">
+                        <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                           class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
+                           title="{{ lb.name }}">{{ lb.name }}</a>
+                        <i class="bi bi-globe text-success small privacy-icon"
+                           title="Public — visible to everyone on /datasets and /leaderboards"></i>
                         {% if lb.canonical_for_repo %}
-                        <span class="badge text-bg-info-subtle text-info-emphasis border" title="Imported from Papers With Code">
-                            <i class="bi bi-cloud-arrow-down me-1"></i>PWC
+                        <span class="badge text-bg-info-subtle text-info-emphasis border"
+                              style="font-size: 0.6rem;"
+                              title="Imported from Papers With Code">PWC</span>
+                        {% endif %}
+                        {% if recent_count > 0 %}
+                        <span class="badge text-bg-light border"
+                              style="font-size: 0.6rem;"
+                              title="{{ recent_count }} submission{{ '' if recent_count == 1 else 's' }} in the last 30 days">
+                            <i class="bi bi-arrow-up-right"></i>{{ recent_count }}
                         </span>
                         {% endif %}
                     </div>
-
-                    {% if lb %}
-                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-                       class="stretched-link" aria-label="Open {{ lb.name }}"></a>
+                    {% if lb.tags %}
+                    <div class="d-flex flex-wrap gap-1 mb-1" style="position: relative; z-index: 2;">
+                        {% for t in lb.tags[:2] %}
+                        <a href="{{ url_for('leaderboards', tag=t.name) }}"
+                           class="badge text-bg-primary-subtle text-primary-emphasis text-decoration-none small"
+                           onclick="event.stopPropagation();">{{ t.name }}</a>
+                        {% endfor %}
+                        {% if lb.tags|length > 2 %}
+                        <span class="badge text-bg-light border fw-normal">+{{ lb.tags|length - 2 }}</span>
+                        {% endif %}
+                    </div>
                     {% endif %}
+                    <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
+                         style="font-size: 0.7rem;">
+                        <span title="Submissions">
+                            <i class="bi bi-people me-1"></i>{{ lb.submissions|length }}
+                        </span>
+                        {% if _bh_ds_count %}
+                        <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
+                            <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
+                        </span>
+                        {% endif %}
+                        {% if _hf %}
+                        <span title="HuggingFace attachment">
+                            <i class="bi bi-cloud-arrow-down me-1"></i>HF
+                        </span>
+                        {% endif %}
+                    </div>
                 </div>
             </div>
         </div>
