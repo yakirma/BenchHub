@@ -172,14 +172,47 @@
 </div>
 
 {% if dataset.leaderboards %}
-<ul class="list-inline mb-2">
+{# Same card shape as the home page — thumb placeholder, name + owner
+   avatar, category + tags, stats row at bottom. Stretched-link makes
+   the whole card clickable. #}
+<div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-6 g-2 mb-3">
     {% for lb in dataset.leaderboards %}
-    <li class="list-inline-item">
-        <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
-            class="btn btn-sm btn-outline-primary">{{ lb.name }}</a>
-    </li>
+    <div class="col">
+        <div class="card home-card h-100 border-0 shadow-sm position-relative">
+            <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                <i class="bi bi-trophy"></i>
+            </div>
+            <div class="card-body p-3 d-flex flex-column">
+                <div class="d-flex align-items-center gap-1 mb-1">
+                    {{ user_avatar(lb.owner, size=16) }}
+                    <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
+                       class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
+                       title="{{ lb.name }}">{{ lb.name }}</a>
+                </div>
+                {% if lb.category %}
+                <div class="small text-body-secondary mb-1 text-truncate"
+                     title="{{ lb.category }}">{{ lb.category }}</div>
+                {% endif %}
+                {% if lb.tags %}
+                <div class="mb-1 d-flex flex-wrap gap-1" style="position: relative; z-index: 2;">
+                    {% for t in lb.tags[:2] %}
+                    <a href="{{ url_for('leaderboards', tag=t.name) }}"
+                       class="badge text-bg-primary-subtle text-primary-emphasis text-decoration-none small"
+                       onclick="event.stopPropagation();">{{ t.name }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap"
+                     style="font-size: 0.7rem;">
+                    <span title="Submissions">
+                        <i class="bi bi-people me-1"></i>{{ lb.submissions|length }}
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
     {% endfor %}
-</ul>
+</div>
 {% else %}
 <p class="text-body-secondary small mb-2">No leaderboards yet — be the first.</p>
 {% endif %}
