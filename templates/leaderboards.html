@@ -302,6 +302,13 @@
                         <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                            class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                            title="{{ lb.name }}">{{ lb.name }}</a>
+                        {% if lb.visibility == 'private' %}
+                        <i class="bi bi-lock-fill text-danger small" title="Private"></i>
+                        {% elif lb.visibility == 'unlisted' %}
+                        <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
+                        {% else %}
+                        <i class="bi bi-globe text-success small" title="Public"></i>
+                        {% endif %}
                         {% if lb.canonical_for_repo %}
                         <span class="badge text-bg-info-subtle text-info-emphasis border"
                               style="font-size: 0.6rem;"

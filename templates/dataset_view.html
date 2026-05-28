@@ -32,6 +32,25 @@
         <div>
             <h1 class="d-flex align-items-center gap-2 flex-wrap">
                 Dataset: {{ dataset.name|display_name }}
+                {# Visibility chip — same colour scheme as the cards
+                   (green/amber/red) so a glance at the page header
+                   tells you whether the dataset is shared. #}
+                {% if dataset.visibility == 'private' %}
+                <span class="badge text-bg-danger-subtle text-danger-emphasis border align-middle"
+                      style="font-size: 0.55em;" title="Private — only you and admins">
+                    <i class="bi bi-lock-fill me-1"></i>Private
+                </span>
+                {% elif dataset.visibility == 'unlisted' %}
+                <span class="badge text-bg-warning-subtle text-warning-emphasis border align-middle"
+                      style="font-size: 0.55em;" title="Unlisted — direct link only">
+                    <i class="bi bi-link-45deg me-1"></i>Unlisted
+                </span>
+                {% else %}
+                <span class="badge text-bg-success-subtle text-success-emphasis border align-middle"
+                      style="font-size: 0.55em;" title="Public — visible to everyone">
+                    <i class="bi bi-globe me-1"></i>Public
+                </span>
+                {% endif %}
                 {# HF source badge — visible to everyone, deep-links back
                    to the upstream HuggingFace repo. #}
                 {% set hf = dataset.source_metadata_parsed %}
@@ -188,6 +207,13 @@
                     <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                        class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                        title="{{ lb.name }}">{{ lb.name }}</a>
+                    {% if lb.visibility == 'private' %}
+                    <i class="bi bi-lock-fill text-danger small" title="Private"></i>
+                    {% elif lb.visibility == 'unlisted' %}
+                    <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
+                    {% else %}
+                    <i class="bi bi-globe text-success small" title="Public"></i>
+                    {% endif %}
                 </div>
                 {% if lb.category %}
                 <div class="small text-body-secondary mb-1 text-truncate"

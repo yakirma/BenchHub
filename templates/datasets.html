@@ -398,6 +398,8 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                                 <i class="bi bi-lock-fill text-danger small" title="Private"></i>
                                 {% elif dataset.visibility == 'unlisted' %}
                                 <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
+                                {% else %}
+                                <i class="bi bi-globe text-success small" title="Public"></i>
                                 {% endif %}
                                 {% if dataset.import_status == 'importing' %}
                                 <i class="bi bi-arrow-repeat text-primary small" title="Importing…"></i>
