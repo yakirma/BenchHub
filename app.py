@@ -5722,6 +5722,128 @@ def feature_request_new():
     return redirect(url_for('feature_requests_list'))
 
 
+@app.route('/api/leaderboard/<int:leaderboard_id>/samples', methods=['GET'])
+def api_leaderboard_samples(leaderboard_id):
+    """List the samples a submission to this LB should produce
+    predictions for, plus URLs / inline values for every `role=input`
+    field on the attached dataset.
+
+    Response shape:
+      {
+        "leaderboard_id": int,
+        "input_fields": [{name, kind}, ...],
+        "samples": [
+          {"name": "s000000",
+           "inputs": {
+              "img":   {"kind": "image", "url": "/custom_field_image/<cf_id>"},
+              "tags":  {"kind": "text",  "value": "foo,bar"},
+           }},
+          ...
+        ]
+      }
+
+    File-backed kinds (image / mask / depth / audio) are returned as
+    URLs the client GETs lazily; inline kinds (text / scalar / label /
+    json / label_list) embed the decoded value directly.
+
+    When the LB has a ready materialisation the sample list is the
+    materialised subset; otherwise it falls back to the bound
+    dataset's full sample list. Visibility-gated via cookie OR
+    Bearer auth, same as /contract."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if not _can_view_parent(user, lb):
+        abort(404)
+
+    # Resolve the dataset behind this LB. Prefer the primary
+    # DatasetField-bearing dataset (Leaderboard.datasets is a list).
+    dss = list(lb.datasets) if lb.datasets else []
+    if not dss:
+        return jsonify({'leaderboard_id': lb.id, 'input_fields': [],
+                         'samples': []})
+    ds = dss[0]
+
+    input_fields = [df for df in ds.fields
+                    if (df.role or 'gt').lower() == 'input']
+
+    # Materialised subset filter (if the LB has a ready materialisation)
+    sample_filter = None
+    mat = getattr(lb, 'materialization', None)
+    if mat and mat.status == 'ready':
+        from benchhub.lb_materialize import list_materialized_samples
+        mat_names = list_materialized_samples(
+            app.config['UPLOAD_FOLDER'], lb.id,
+        )
+        if mat_names:
+            sample_filter = set(mat_names)
+
+    samples_q = (Sample.query
+                 .filter_by(dataset_id=ds.id)
+                 .order_by(func.length(Sample.name), Sample.name))
+    if sample_filter is not None:
+        samples_q = samples_q.filter(Sample.name.in_(sample_filter))
+    samples_rows = samples_q.all()
+    sample_ids = [s.id for s in samples_rows]
+
+    # Bulk-load the CustomField rows for the input fields across these
+    # samples in one query — avoids N+1 lookups in the loop below.
+    input_names = [df.name for df in input_fields]
+    cfs_by_sample: dict[int, dict[str, CustomField]] = {}
+    if sample_ids and input_names:
+        cf_rows = (CustomField.query
+                   .filter(CustomField.sample_id.in_(sample_ids),
+                           CustomField.name.in_(input_names),
+                           CustomField.submission_id.is_(None))
+                   .all())
+        for cf in cf_rows:
+            cfs_by_sample.setdefault(cf.sample_id, {})[cf.name] = cf
+
+    out_samples = []
+    for s in samples_rows:
+        bucket = cfs_by_sample.get(s.id, {})
+        inputs: dict[str, dict] = {}
+        for df in input_fields:
+            cf = bucket.get(df.name)
+            entry: dict = {'kind': df.kind}
+            if cf is None:
+                entry['value'] = None
+            elif df.kind in ('image', 'mask', 'depth', 'audio'):
+                # File-backed; the client GETs this URL to download.
+                entry['url'] = url_for(
+                    'serve_custom_field_image', field_id=cf.id,
+                    _external=False,
+                )
+            elif df.kind == 'json':
+                try:
+                    entry['value'] = json.loads(cf.value_text or 'null')
+                except (TypeError, ValueError):
+                    entry['value'] = cf.value_text
+            elif df.kind in ('scalar', 'metric'):
+                entry['value'] = cf.value_float
+            elif df.kind == 'label':
+                # value_text holds the JSON-encoded label (int or str);
+                # decode so callers see the raw value.
+                try:
+                    entry['value'] = json.loads(cf.value_text or 'null')
+                except (TypeError, ValueError):
+                    entry['value'] = cf.value_text
+            else:
+                entry['value'] = cf.value_text
+            inputs[df.name] = entry
+        out_samples.append({'name': s.name, 'inputs': inputs})
+
+    return jsonify({
+        'leaderboard_id': lb.id,
+        'input_fields': [{'name': df.name, 'kind': df.kind}
+                          for df in input_fields],
+        'samples': out_samples,
+    })
+
+
 @app.route('/api/leaderboard/<int:leaderboard_id>/contract', methods=['GET'])
 def api_leaderboard_contract(leaderboard_id):
     """Live pred contract for an LB.
@@ -6836,31 +6958,35 @@ def _pred_field_constructor_lines(lb, *, indent: str = '                  ') -> 
         kind = f.get('kind', 'scalar')
         params = f.get('params') or {}
         name = f['name']
+        # Reference the value `my_model` returns in the predictions dict
+        # so the generated line is plug-and-play. The user only has to
+        # write my_model() — the wrapping is template-generated.
+        ref = f"predictions[{name!r}]"
         if kind == 'label':
-            line = f"{indent}{name}=bh.Label(0),                       # int or str class id"
+            line = f"{indent}{name}=bh.Label({ref}),                       # int or str class id"
         elif kind == 'label_list':
             k = params.get('k', 5)
-            line = f"{indent}{name}=bh.LabelList([0] * {k}, k={k}),   # top-{k} class ids (descending confidence)"
+            line = f"{indent}{name}=bh.LabelList({ref}, k={k}),   # top-{k} class ids (descending confidence)"
         elif kind == 'scalar':
-            line = f"{indent}{name}=bh.Scalar(0.0),"
+            line = f"{indent}{name}=bh.Scalar({ref}),"
         elif kind == 'text':
-            line = f"{indent}{name}=bh.Text(''),"
+            line = f"{indent}{name}=bh.Text({ref}),"
         elif kind == 'depth':
             unit = params.get('unit', 'meters')
-            line = f"{indent}{name}=bh.Depth(np.zeros((H, W), dtype=np.float32), unit={unit!r}),"
+            line = f"{indent}{name}=bh.Depth({ref}, unit={unit!r}),"
         elif kind == 'mask':
-            line = f"{indent}{name}=bh.Mask(np.zeros((H, W), dtype=np.uint8)),"
+            line = f"{indent}{name}=bh.Mask({ref}),"
         elif kind == 'image':
-            line = f"{indent}{name}=bh.Image(np.zeros((H, W, 3), dtype=np.uint8)),"
+            line = f"{indent}{name}=bh.Image({ref}),"
         elif kind == 'bboxes':
             fmt = params.get('format', 'xyxy')
-            line = f"{indent}{name}=bh.BBoxes([], format={fmt!r}),"
+            line = f"{indent}{name}=bh.BBoxes({ref}, format={fmt!r}),"
         elif kind == 'audio':
-            line = f"{indent}{name}=bh.Audio(np.zeros(16000, dtype=np.float32), 16000),"
+            line = f"{indent}{name}=bh.Audio({ref}[0], {ref}[1]),  # (samples, sample_rate)"
         elif kind == 'json':
-            line = f"{indent}{name}=bh.Json({{}}),"
+            line = f"{indent}{name}=bh.Json({ref}),"
         else:
-            line = f"{indent}{name}=...,  # kind={kind}"
+            line = f"{indent}{name}={ref},  # kind={kind}"
         lines.append(line)
     if not lines:
         lines = [
@@ -6908,22 +7034,38 @@ client = bh.Client(base_url=BASE_URL)
 contract = client.leaderboard_contract(LEADERBOARD_ID)
 print(f"LB {{LEADERBOARD_ID}} pred contract: {{contract}}")
 
-# === fill in: how do you load your test inputs? ============================
-# Return an iterable of (sample_name, *whatever your model needs*).
-def iter_samples():
-    raise NotImplementedError("Yield (sample_name, ...) tuples for your test set")
+# Samples come from the BenchHub server — no need to maintain a local
+# copy of the dataset. `client.iter_samples(LB_ID)` yields
+# (sample_name, inputs_dict) for every sample on the LB's bound
+# dataset (or its materialised subset, if any). Each input field
+# arrives decoded: image / mask → PIL.Image, depth → PIL.Image of the
+# colormapped preview, scalar/label/text/json → the raw value.
+
+# === fill in: your model ====================================================
+def my_model(inputs):
+    """Take the per-sample inputs dict and return the values BenchHub
+    expects for each pred field declared on the LB's contract.
+
+    For this LB the contract is:
+      {{contract}}
+
+    Replace this stub. The dict you return is splatted into
+    `sub.predict(sample_name, **predictions)`."""
+    raise NotImplementedError(
+        "Replace my_model() with your inference. Return a dict whose keys "
+        "match the LB's pred-field names."
+    )
 # ===========================================================================
 
 sub = client.submission(LEADERBOARD_ID)
-for item in iter_samples():
-    sample_name = item[0]
-    # === fill in: your prediction(s) per sample ============================
-    # Construct one bh.<Kind>(...) per pred field declared on the LB.
-    # The generated calls below match the LB's current contract:
+for sample_name, inputs in client.iter_samples(LEADERBOARD_ID):
+    predictions = my_model(inputs)
+    # The generated bh.<Kind>(...) calls below match the LB's current
+    # contract — wrap your `predictions` values into the typed objects
+    # the server expects.
     sub.predict(sample_name,
 {chr(10).join(pred_snippets)}
                 )
-    # =======================================================================
 
 result = sub.submit(name='my submission')
 print(result)  # → {{'submission_id': ..., 'view_url': '...'}}

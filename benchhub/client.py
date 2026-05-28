@@ -30,6 +30,25 @@ from benchhub.types import DTYPES, DataType
 _DEFAULT_BASE_URL = "https://runbenchhub.com"
 
 
+def _decode_input_bytes(kind: str, blob: bytes):
+    """Decode a per-sample input blob into a Python-friendly value.
+    Lazy-imports the per-kind libraries so consumers who only need
+    text/scalar samples don't pay the PIL / numpy import cost."""
+    if kind in ("image", "mask"):
+        import io as _io
+        from PIL import Image as _Image
+        return _Image.open(_io.BytesIO(blob))
+    if kind == "depth":
+        # Server returns the colormapped JPG for preview-only depth.
+        # For now we hand back a PIL.Image; metric-grade users can hit
+        # /api/custom_field_depth_data/<id> directly.
+        import io as _io
+        from PIL import Image as _Image
+        return _Image.open(_io.BytesIO(blob))
+    # audio / unknown: hand back raw bytes
+    return blob
+
+
 class _RequestsTransport:
     """Production transport — thin wrapper around `requests`."""
 
@@ -93,6 +112,37 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
+    def get_leaderboard_samples(self, leaderboard_id: int,
+                                token: str | None = None) -> dict:
+        """List samples + their `role=input` field URLs / inline
+        values. File-backed kinds (image/depth/mask/audio) come back
+        as URLs the caller fetches lazily."""
+        import requests
+        resp = requests.get(
+            f"{self.base_url}/api/leaderboard/{leaderboard_id}/samples",
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
+        )
+        if resp.status_code >= 400:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, payload)
+        return resp.json()
+
+    def fetch_bytes(self, url: str, token: str | None = None) -> bytes:
+        """Pull a per-sample file from the BH server. Relative URLs
+        are resolved against self.base_url so the listing endpoint
+        can return short paths."""
+        import requests
+        full = url if url.startswith("http") else self.base_url + url
+        resp = requests.get(
+            full,
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
+        )
+        resp.raise_for_status()
+        return resp.content
+
 
 class BenchHubAPIError(Exception):
     """Raised when the server returns a non-2xx response."""
@@ -141,6 +191,39 @@ class Client:
         return self.transport.get_leaderboard_contract(
             leaderboard_id, token=self.token or None,
         )
+
+    def iter_samples(self, leaderboard_id: int):
+        """Yield `(sample_name, inputs_dict)` for every sample on the
+        leaderboard's bound dataset (or its materialised subset, if
+        any). The dict is keyed by input-field name; values are:
+
+          * **image / mask**: a PIL.Image.Image
+          * **depth**:        a numpy.ndarray (H, W) float32
+          * **audio**:        raw bytes — caller decodes with soundfile
+            or similar
+          * **scalar**:       float
+          * **label**:        int / str (whatever the dataset stores)
+          * **text / json / label_list**: the decoded value
+
+        Designed for the generated submission notebook: the user
+        plugs in their model, calls `sub.predict(name, …)`. No
+        torchvision / HF datasets dependency.
+        """
+        payload = self.transport.get_leaderboard_samples(
+            leaderboard_id, token=self.token or None,
+        )
+        for s in payload.get('samples', []):
+            inputs: dict[str, Any] = {}
+            for field_name, entry in (s.get('inputs') or {}).items():
+                kind = entry.get('kind') or ''
+                if 'url' in entry:
+                    blob = self.transport.fetch_bytes(
+                        entry['url'], token=self.token or None,
+                    )
+                    inputs[field_name] = _decode_input_bytes(kind, blob)
+                else:
+                    inputs[field_name] = entry.get('value')
+            yield s['name'], inputs
 
     def create_dataset(
         self,
@@ -656,6 +739,24 @@ class FlaskTestClientTransport:
         if resp.status_code >= 400:
             raise BenchHubAPIError(resp.status_code, payload or {})
         return payload if isinstance(payload, list) else []
+
+    def get_leaderboard_samples(self, leaderboard_id: int,
+                                token: str | None = None) -> dict:
+        resp = self.test_client.get(f"/api/leaderboard/{leaderboard_id}/samples")
+        try:
+            payload = resp.get_json()
+        except Exception:
+            payload = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, payload or {})
+        return payload if isinstance(payload, dict) else {}
+
+    def fetch_bytes(self, url: str, token: str | None = None) -> bytes:
+        resp = self.test_client.get(url)
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code,
+                                    {"error": resp.data.decode("utf-8", "replace")})
+        return resp.data
 
     def post_submission_zip(self, leaderboard_id: int, name: str | None,
                             zip_bytes: bytes, token: str) -> dict:

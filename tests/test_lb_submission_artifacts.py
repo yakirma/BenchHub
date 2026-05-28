@@ -68,7 +68,7 @@ def test_submission_script_uses_label_list_constructor_with_correct_k(client, db
     _, lb = _seed_lb_with_pred(kind='label_list', extra_params={'k': 5})
     r = client.get(f'/leaderboard/{lb.id}/submission_script.py')
     body = r.data.decode('utf-8')
-    assert 'bh.LabelList([0] * 5, k=5)' in body
+    assert "bh.LabelList(predictions['label_pred'], k=5)" in body
 
 
 def test_submission_notebook_route_returns_ipynb_json(client, db_session):
@@ -138,9 +138,13 @@ def test_inline_snippet_on_lb_page_reflects_pred_contract(client, db_session):
     os.makedirs(os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id)),
                 exist_ok=True)
     body = client.get(f'/leaderboard/{lb.id}').data.decode()
-    # Both pred fields rendered with the right constructors.
-    assert 'label_pred=bh.Label(0)' in body
-    assert 'label_topk_pred=bh.LabelList([0] * 7, k=7)' in body
+    # The Python snippet is rendered inside an HTML <pre>, which means
+    # Jinja escapes single quotes to &#39;. Match the escaped form for
+    # the inline LB-page test; the script-route test (no escaping) uses
+    # the raw form.
+    assert "label_pred=bh.Label(predictions[&#39;label_pred&#39;])" in body
+    assert ("label_topk_pred=bh.LabelList(predictions[&#39;label_topk_pred&#39;], k=7)"
+            in body)
     # Old hardcoded line is gone.
     assert 'label_pred=bh.Label(predicted_class)' not in body
 
