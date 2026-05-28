@@ -993,6 +993,10 @@ class Leaderboard(db.Model):
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
+    # GitHub gist id holding this LB's submission notebook. Created /
+    # updated lazily on click of "Open in Colab"; reused across clicks
+    # so we don't proliferate gists. NULL = never been opened in Colab.
+    colab_gist_id = db.Column(db.String(64), nullable=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
@@ -6919,6 +6923,91 @@ def leaderboard_submission_notebook(leaderboard_id):
             'Content-Disposition': f'attachment; filename="{safe}_submit.ipynb"',
         },
     )
+
+
+def _gh_upsert_gist(token: str, gist_id: str | None,
+                    description: str, filename: str, content: str) -> str | None:
+    """Create or update a single-file public gist via the GitHub REST
+    API. Returns the gist id, or None on any failure (so the caller
+    can fall back to the manual workflow).
+
+    `gist_id` None    → POST (create new gist)
+    `gist_id` set     → PATCH existing gist with new content
+    """
+    import urllib.request, urllib.error
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'benchhub/0.1',
+    }
+    payload = {
+        'description': description,
+        'files': {filename: {'content': content}},
+    }
+    if gist_id is None:
+        url = 'https://api.github.com/gists'
+        payload['public'] = True
+        method = 'POST'
+    else:
+        url = f'https://api.github.com/gists/{gist_id}'
+        method = 'PATCH'
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode('utf-8'),
+        method=method, headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            doc = json.loads(resp.read())
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as e:
+        print(f'  ! gist upsert failed: {e}')
+        return None
+    return doc.get('id') if isinstance(doc, dict) else None
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/open_in_colab')
+@visibility_required(Leaderboard, 'leaderboard_id')
+def leaderboard_open_in_colab(leaderboard_id):
+    """Push this LB's submission notebook to a GitHub gist (creating it
+    on first click, updating it after that) and 302 the browser to
+    `colab.research.google.com/gist/<id>`. Colab's URL-import only
+    accepts allowlisted hosts (github / gist.github / drive), so the
+    gist is the shim that makes 'open in Colab' actually open the
+    pre-filled notebook.
+
+    Falls back to opening Colab's homepage with a warning flash if the
+    server has no GIST token configured."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    token = os.environ.get('BENCHHUB_GITHUB_GIST_TOKEN', '').strip()
+    if not token:
+        flash('Server has no GitHub gist token configured — download the '
+              '.ipynb and upload manually via Colab → File → Upload Notebook.',
+              'warning')
+        return redirect('https://colab.research.google.com/')
+
+    body = _submission_notebook_source(lb)
+    safe = secure_filename(lb.name) or f'lb_{lb.id}'
+    filename = f'{safe}_submit.ipynb'
+    desc = (f'BenchHub submission notebook for leaderboard '
+            f'"{lb.name}" — auto-managed by BenchHub.')
+
+    new_id = _gh_upsert_gist(
+        token, lb.colab_gist_id, desc, filename, body,
+    )
+    # If a PATCH to an existing gist failed (e.g. it was deleted on
+    # GitHub), try once more as a CREATE so the user still gets a
+    # working notebook.
+    if new_id is None and lb.colab_gist_id is not None:
+        new_id = _gh_upsert_gist(token, None, desc, filename, body)
+    if new_id is None:
+        flash('Could not push the notebook to GitHub. '
+              'Download the .ipynb and upload manually.', 'danger')
+        return redirect('https://colab.research.google.com/')
+
+    if new_id != lb.colab_gist_id:
+        lb.colab_gist_id = new_id
+        db.session.commit()
+    return redirect(f'https://colab.research.google.com/gist/{new_id}')
 
 
 @app.route('/leaderboard/<int:leaderboard_id>')
@@ -15395,6 +15484,19 @@ def check_and_migrate_db():
                         conn.commit()
                 except Exception as e:
                     print(f"Migration error (card_description): {e}")
+
+                # --- Leaderboard.colab_gist_id column ---
+                try:
+                    cursor.execute("PRAGMA table_info(leaderboard)")
+                    cols = [row[1] for row in cursor.fetchall()]
+                    if 'colab_gist_id' not in cols:
+                        print("Migrating DB: Adding 'colab_gist_id' to 'leaderboard'...")
+                        cursor.execute(
+                            "ALTER TABLE leaderboard ADD COLUMN colab_gist_id VARCHAR(64)"
+                        )
+                        conn.commit()
+                except Exception as e:
+                    print(f"Migration error (colab_gist_id): {e}")
 
                 # --- Dataset.preview_only column ---
                 try:
