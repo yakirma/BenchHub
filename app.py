@@ -5731,9 +5731,22 @@ def api_leaderboard_contract(leaderboard_id):
     by `bh.Client.leaderboard_contract(lb_id)` to pre-validate
     predictions locally before any upload, including shape_match
     cross-checks. Visibility-gated through the LB's own visibility
-    rules (private LBs 404 to non-owners)."""
+    rules (private LBs 404 to non-owners).
+
+    Accepts either cookie auth (browser sessions) or an Authorization:
+    Bearer token (API clients + the Colab notebook). Without the
+    bearer fall-through, the notebook hits a 404 on private LBs even
+    when it's holding a valid submission token bound to that LB."""
     lb = Leaderboard.query.get_or_404(leaderboard_id)
-    if not _can_view_parent(g.current_user, lb):
+    # Cookie-authed users come in with g.current_user pre-populated by
+    # load_user. Bearer-authed callers don't; resolve the token if any
+    # so they get treated as the owning user for the visibility check.
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if not _can_view_parent(user, lb):
         abort(404)
     return jsonify(_lb_pred_contract_from_dataset_fields(lb))
 
