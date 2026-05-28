@@ -8,6 +8,19 @@
 <html lang="en" data-bs-theme="light">
 
 <head>
+    {# Flash-free theme init — must be the first child of <head> so
+       the initial paint already has the right colors. Otherwise we'd
+       flash light-then-dark on every navigation for users who picked
+       dark. localStorage key: bh_theme. #}
+    <script>
+    (function () {
+        try {
+            var t = localStorage.getItem('bh_theme');
+            if (t !== 'light' && t !== 'dark') return;
+            document.documentElement.setAttribute('data-bs-theme', t);
+        } catch (e) {}
+    })();
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}dTOF Benchmarking{% endblock %}</title>
@@ -55,8 +68,7 @@
            top. Light-only by design — dark mode is not supported.
            ============================================================ */
         :root,
-        [data-bs-theme="light"],
-        [data-bs-theme="dark"] {
+        [data-bs-theme="light"] {
             /* Warm-cream surface inspired by Cabinet (runcabinet.com):
                cream body bg + tan-tinted cards + warm-brown body text.
                Violet primary kept as the brand accent so identity
@@ -84,6 +96,60 @@
             --bs-list-group-bg: #fdf8ea;
             --bs-border-color-translucent: rgba(214, 194, 160, 0.5);
             --bs-emphasis-color: #2a1f10;
+            /* Navbar surface variables — pinned so the navbar stays
+               the same regardless of theme inheritance. */
+            --bh-navbar-bg: rgba(243, 230, 196, 0.92);
+            --bh-navbar-color: #3a2614;
+            --bh-navbar-brand-color: #2a1f10;
+            --bh-heading-color: #2a1f10;
+            --bh-radial-amber: rgba(217, 119, 6, 0.06);
+            --bh-radial-peach: rgba(244, 114, 89, 0.05);
+            --bh-shadow-card: 0 2px 8px rgba(40, 25, 80, 0.06),
+                              0 1px 2px rgba(40, 25, 80, 0.03);
+            --bh-shadow-card-lift: 0 4px 14px rgba(40, 25, 80, 0.07),
+                                   0 1px 2px rgba(40, 25, 80, 0.04);
+            --bh-shadow-card-hover: 0 6px 18px rgba(40, 25, 80, 0.10),
+                                    0 2px 4px rgba(40, 25, 80, 0.05);
+        }
+
+        [data-bs-theme="dark"] {
+            /* Dark mode keeps the warm palette family — deep coffee
+               browns instead of pure black, so the violet accent +
+               cream-light text feel like the same site at night. */
+            --bs-primary: #9061ff;          /* slightly lighter violet for AA contrast on dark */
+            --bs-primary-rgb: 144, 97, 255;
+            --bs-link-color: #b598ff;
+            --bs-link-color-rgb: 181, 152, 255;
+            --bs-link-hover-color: #d4c2ff;
+            --bs-link-hover-color-rgb: 212, 194, 255;
+            --bs-body-color: #ece2c8;
+            --bs-body-color-rgb: 236, 226, 200;
+            --bs-body-bg: #1f1a14;
+            --bs-body-bg-rgb: 31, 26, 20;
+            --bs-secondary-color: #b8a98a;
+            --bs-secondary-bg: #2a2218;
+            --bs-tertiary-bg: #25201a;
+            --bs-tertiary-bg-rgb: 37, 32, 26;
+            --bs-border-color: #3d3325;
+            --bs-border-color-translucent: rgba(166, 138, 96, 0.25);
+            --bs-card-bg: #2a221a;
+            --bs-list-group-bg: #2a221a;
+            --bs-emphasis-color: #fdf8ea;
+            --bh-navbar-bg: rgba(31, 26, 20, 0.92);
+            --bh-navbar-color: #ece2c8;
+            --bh-navbar-brand-color: #fdf8ea;
+            --bh-heading-color: #fdf8ea;
+            --bh-radial-amber: rgba(217, 119, 6, 0.08);
+            --bh-radial-peach: rgba(244, 114, 89, 0.06);
+            --bh-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.45),
+                              0 1px 2px rgba(0, 0, 0, 0.30);
+            --bh-shadow-card-lift: 0 4px 14px rgba(0, 0, 0, 0.55),
+                                   0 1px 2px rgba(0, 0, 0, 0.35);
+            --bh-shadow-card-hover: 0 6px 18px rgba(0, 0, 0, 0.65),
+                                    0 2px 4px rgba(0, 0, 0, 0.40);
+        }
+
+        :root, [data-bs-theme="light"], [data-bs-theme="dark"] {
 
             /* Pill buttons + softer card radius */
             --bs-border-radius: 0.625rem;
@@ -100,11 +166,13 @@
 
         /* Warm cream wash — amber + peach radial gradients instead of
            the previous violet/pink pair. Matches Cabinet's cream-on-
-           cream feel; barely visible per-pixel but adds depth. */
+           cream feel; barely visible per-pixel but adds depth. Stops
+           use --bh-radial-* so dark mode swaps them in for darker
+           values without re-declaring the rule. */
         body {
             background-image:
-                radial-gradient(1200px 600px at 0% -10%, rgba(217, 119, 6, 0.06), transparent 60%),
-                radial-gradient(1000px 500px at 100% 0%, rgba(244, 114, 89, 0.05), transparent 60%);
+                radial-gradient(1200px 600px at 0% -10%, var(--bh-radial-amber), transparent 60%),
+                radial-gradient(1000px 500px at 100% 0%, var(--bh-radial-peach), transparent 60%);
             background-attachment: fixed;
         }
 
@@ -115,7 +183,7 @@
             font-family: 'Fraunces', 'Charter', 'Georgia', serif;
             font-weight: 600;
             letter-spacing: -0.01em;
-            color: #2a1f10;
+            color: var(--bh-heading-color);
         }
         h1, .h1 { font-weight: 700; letter-spacing: -0.02em; }
 
@@ -143,18 +211,20 @@
         }
         .btn:active { transform: translateY(1px); }
 
-        /* Cards: softer shadow, more rounded, gentle hover lift */
+        /* Cards: softer shadow, more rounded, gentle hover lift.
+           Shadow color comes from --bh-shadow-card so dark mode
+           switches to opaque black-tinted shadows that read on the
+           dark body bg (the violet-tinted light-mode shadow looks
+           muddy on dark). */
         .card {
             --bs-card-border-radius: 1rem;
             border-radius: 1rem;
             border-color: transparent;     /* lean on shadow for depth */
-            box-shadow: 0 2px 8px rgba(40, 25, 80, 0.06),
-                        0 1px 2px rgba(40, 25, 80, 0.03);
+            box-shadow: var(--bh-shadow-card);
             transition: box-shadow .2s ease, transform .2s ease;
         }
         .card.border-0 {
-            box-shadow: 0 4px 14px rgba(40, 25, 80, 0.07),
-                        0 1px 2px rgba(40, 25, 80, 0.04);
+            box-shadow: var(--bh-shadow-card-lift);
         }
         /* Click-through cards (catalog rows, dataset+LB list items)
            lift slightly on hover to telegraph interactivity. The
@@ -166,8 +236,7 @@
         }
         .list-group-item-action:hover,
         a.card:hover {
-            box-shadow: 0 6px 18px rgba(40, 25, 80, 0.10),
-                        0 2px 4px rgba(40, 25, 80, 0.05);
+            box-shadow: var(--bh-shadow-card-hover);
             transform: translateY(-1px);
         }
         /* Soft buttons: small lift on hover for affordance. */
@@ -180,23 +249,25 @@
            (white-on-white invisibility). */
         .navbar.bg-body-tertiary,
         .navbar {
-            /* Navbar matches the body bg (saturated cream) so it
-               feels continuous with the page rather than floating. */
-            background-color: rgba(243, 230, 196, 0.92) !important;
+            /* Navbar bg uses the theme-aware --bh-navbar-bg var so
+               dark mode picks up the deep-coffee tone without us
+               touching Bootstrap's --bs-navbar-* variables (which
+               are tied to data-bs-theme's auto-switch). */
+            background-color: var(--bh-navbar-bg) !important;
             backdrop-filter: saturate(180%) blur(8px);
             -webkit-backdrop-filter: saturate(180%) blur(8px);
             border-bottom: 1px solid var(--bs-border-color);
             box-shadow: none;
         }
         .navbar .nav-link {
-            color: #3a2614;  /* warm brown, matches body text */
+            color: var(--bh-navbar-color);
         }
         .navbar .nav-link:hover,
         .navbar .nav-link:focus {
-            color: #7c3aed;  /* violet accent */
+            color: var(--bs-primary);
         }
         .navbar .nav-link.active {
-            color: #7c3aed;
+            color: var(--bs-primary);
             font-weight: 600;
         }
         .navbar-brand {
@@ -204,10 +275,13 @@
             font-weight: 700;
             font-size: 1.4rem;
             letter-spacing: -0.01em;
-            color: #2a1f10;
+            color: var(--bh-navbar-brand-color);
         }
-        .navbar-brand:hover, .navbar-brand:focus { color: #2a1f10; }
-        .navbar .navbar-toggler { color: #3a2614; border-color: rgba(58, 38, 20, 0.2); }
+        .navbar-brand:hover, .navbar-brand:focus { color: var(--bh-navbar-brand-color); }
+        .navbar .navbar-toggler {
+            color: var(--bh-navbar-color);
+            border-color: var(--bs-border-color);
+        }
 
         /* Inline code + <code> blocks: lavender-tinted */
         code, .font-monospace {
@@ -332,6 +406,78 @@
            shows up: storage gauges, import progress, etc. */
         .progress-bar:not([class*="bg-"]) {
             background: linear-gradient(90deg, #7c3aed 0%, #db2777 50%, #f59e0b 100%);
+        }
+
+        /* Theme-toggle icon visibility — only one icon is visible per
+           theme. The toggle button shows the icon for the CURRENT
+           theme so the user sees what they're on. */
+        .bh-theme-dark-only { display: none; }
+        [data-bs-theme="dark"] .bh-theme-light-only { display: none; }
+        [data-bs-theme="dark"] .bh-theme-dark-only { display: inline-block; }
+
+        /* Dark-mode polish: form controls + table rows + modals were
+           passable via Bootstrap defaults but the warm cream palette
+           leaks specific overrides that need dark-mode counterparts. */
+        [data-bs-theme="dark"] .form-control,
+        [data-bs-theme="dark"] .form-select {
+            background-color: var(--bs-tertiary-bg);
+            color: var(--bs-body-color);
+            border-color: var(--bs-border-color);
+        }
+        [data-bs-theme="dark"] .form-control::placeholder {
+            color: var(--bs-secondary-color);
+            opacity: 0.7;
+        }
+        [data-bs-theme="dark"] .table {
+            --bs-table-bg: transparent;
+            --bs-table-color: var(--bs-body-color);
+            --bs-table-border-color: var(--bs-border-color);
+            --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
+            --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
+        }
+        [data-bs-theme="dark"] .table-light {
+            --bs-table-bg: var(--bs-tertiary-bg);
+            --bs-table-color: var(--bs-body-color);
+        }
+        [data-bs-theme="dark"] .modal-content {
+            background-color: var(--bs-card-bg);
+            color: var(--bs-body-color);
+        }
+        [data-bs-theme="dark"] .alert-info {
+            background-color: rgba(144, 97, 255, 0.10);
+            color: var(--bs-body-color);
+            border-color: rgba(144, 97, 255, 0.25);
+        }
+        [data-bs-theme="dark"] code,
+        [data-bs-theme="dark"] pre {
+            color: #e9d4c4;
+            background-color: rgba(255, 255, 255, 0.04);
+        }
+        [data-bs-theme="dark"] .text-muted,
+        [data-bs-theme="dark"] .text-body-secondary {
+            color: var(--bs-secondary-color) !important;
+        }
+        [data-bs-theme="dark"] .bg-body-tertiary {
+            background-color: var(--bs-tertiary-bg) !important;
+        }
+        [data-bs-theme="dark"] .border,
+        [data-bs-theme="dark"] .border-top,
+        [data-bs-theme="dark"] .border-bottom,
+        [data-bs-theme="dark"] .border-start,
+        [data-bs-theme="dark"] .border-end {
+            border-color: var(--bs-border-color) !important;
+        }
+        [data-bs-theme="dark"] .dropdown-menu {
+            background-color: var(--bs-card-bg);
+            border-color: var(--bs-border-color);
+        }
+        [data-bs-theme="dark"] .dropdown-item {
+            color: var(--bs-body-color);
+        }
+        [data-bs-theme="dark"] .dropdown-item:hover,
+        [data-bs-theme="dark"] .dropdown-item:focus {
+            background-color: rgba(144, 97, 255, 0.12);
+            color: var(--bs-body-color);
         }
     </style>
 
@@ -741,6 +887,17 @@
                             href="{{ url_for('docs') }}">
                             <i class="bi bi-book me-1"></i> Docs
                         </a>
+                        {# Theme toggle. Click flips data-bs-theme on
+                           <html> + saves the choice. The icon swaps via
+                           the .bh-theme-* classes so the visible glyph
+                           always reflects the *current* theme, not the
+                           target. #}
+                        <button type="button" id="bh-theme-toggle"
+                            class="nav-link text-secondary ms-2 btn btn-link p-0 border-0"
+                            title="Toggle theme">
+                            <i class="bi bi-moon-stars-fill fs-4 bh-theme-light-only"></i>
+                            <i class="bi bi-sun-fill fs-4 bh-theme-dark-only"></i>
+                        </button>
                         <a href="{{ url_for('app_settings') }}"
                             class="nav-link text-secondary ms-2 {{ 'active' if request.endpoint == 'app_settings' }}"
                             title="General Settings">
@@ -1302,6 +1459,22 @@
             const saved = localStorage.getItem(key);
             return saved ? JSON.parse(saved) : defaultColumns;
         }
+    </script>
+
+    {# Theme-toggle click handler. The init script in <head> runs at
+       parse time so initial paint already has the right theme; this
+       just flips on click + persists. #}
+    <script>
+    (function () {
+        const btn = document.getElementById('bh-theme-toggle');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            const cur = document.documentElement.getAttribute('data-bs-theme') || 'light';
+            const next = cur === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-bs-theme', next);
+            try { localStorage.setItem('bh_theme', next); } catch (e) {}
+        });
+    })();
     </script>
     {% block scripts %}{% endblock %}
 </body>
