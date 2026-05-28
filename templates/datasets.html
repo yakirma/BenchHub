@@ -372,12 +372,12 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                     {% set _last_task.v = e.task %}
                 {% endif %}
                 {% if not _open_grid.v %}
-                    <div class="row g-3">{% set _open_grid.v = True %}
+                    <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">{% set _open_grid.v = True %}
                 {% endif %}
 
                 {% if e.kind == 'bh' %}
                 {% set dataset = e.bh %}
-                <div class="col-6 col-md-4 col-lg-3 col-xl-2 ds-search-row"
+                <div class="col ds-search-row"
                      data-search="{{ dataset.name|lower }} {% for c in (e.categories or [e.category]) %}{{ (c or '')|lower }} {% endfor %}{% for t in dataset.tags %}{{ t.name|lower }} {% endfor %}">
                     <div class="card home-card h-100 border-0 shadow-sm position-relative">
                         {% if e.thumb_url %}
@@ -443,7 +443,7 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                 {% set hf = e.hf %}
                 {% set primary_lb = hf.leaderboards[0] %}
                 {% set _accent_key = hf.hf_repo_id or 'hf' %}
-                <div class="col-6 col-md-4 col-lg-3 col-xl-2 ds-search-row"
+                <div class="col ds-search-row"
                      data-search="{{ hf.hf_repo_id|lower }} {{ (e.category or '')|lower }} {% for lb in hf.leaderboards %}{{ lb.name|lower }} {% endfor %}">
                     <div class="card home-card h-100 border-0 shadow-sm position-relative">
                         <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
