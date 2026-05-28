@@ -59,9 +59,15 @@
             {% for ds in datasets %}
             <div class="col home-grid-item" data-name="{{ ds.name|lower }}">
                 <div class="card home-card h-100 border-0 shadow-sm">
-                    {% if ds.visibility != 'public' %}
-                    <span class="badge text-bg-secondary visibility-badge">
-                        <i class="bi bi-{{ 'eye-slash' if ds.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ ds.visibility }}
+                    {% if ds.visibility == 'private' %}
+                    <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
+                          title="Private — only you and admins can see this">
+                        <i class="bi bi-lock-fill me-1"></i>private
+                    </span>
+                    {% elif ds.visibility == 'unlisted' %}
+                    <span class="badge text-bg-warning-subtle text-warning-emphasis border visibility-badge"
+                          title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs">
+                        <i class="bi bi-link-45deg me-1"></i>unlisted
                     </span>
                     {% endif %}
                     {% set thumb = dataset_thumbs.get(ds.id) %}
@@ -147,9 +153,15 @@
             {# Public is the implicit default — only flag non-public LBs
                via the upper-right badge. Inline lock/link icon next to
                the name (further down) gives a second cue. #}
-            {% if lb.visibility != 'public' %}
-            <span class="badge text-bg-secondary visibility-badge">
-                <i class="bi bi-{{ 'lock-fill' if lb.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ lb.visibility }}
+            {% if lb.visibility == 'private' %}
+            <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
+                  title="Private — only you and admins can see this">
+                <i class="bi bi-lock-fill me-1"></i>private
+            </span>
+            {% elif lb.visibility == 'unlisted' %}
+            <span class="badge text-bg-warning-subtle text-warning-emphasis border visibility-badge"
+                  title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs">
+                <i class="bi bi-link-45deg me-1"></i>unlisted
             </span>
             {% endif %}
             {% set thumb = leaderboard_thumbs.get(lb.id) %}
