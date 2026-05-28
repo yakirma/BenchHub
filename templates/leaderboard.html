@@ -1799,37 +1799,43 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             Three ways to get your predictions in:
         </p>
 
-        {# Quick-start action row: one click per common workflow.
-           The notebook URL is hosted on this server; Colab opens
-           it via its `#fileId=<URL>` import path. The script
-           download is a plain .py the user can run locally. #}
+        {# Submission workflow: download the LB-tailored .ipynb or .py
+           and run it. Colab's `#fileId=<URL>` import only works for
+           an allowlisted set of hosts (github, gist, drive) — it
+           rejects any non-allowlisted domain like runbenchhub.com,
+           so we don't expose a one-click "Submit via Colab" button.
+           Users open the downloaded .ipynb via Colab's
+           File → Upload Notebook flow. #}
         {% set _script_url = url_for('leaderboard_submission_script', leaderboard_id=leaderboard.id, _external=True) %}
         {% set _nb_url = url_for('leaderboard_submission_notebook', leaderboard_id=leaderboard.id, _external=True) %}
         <div class="d-flex flex-wrap gap-2 mb-3">
             <a class="btn btn-success"
-               href="https://colab.research.google.com/#fileId={{ _nb_url | urlencode }}"
-               target="_blank" rel="noopener"
-               title="Open this LB's submission notebook in Colab. Set BENCHHUB_API_TOKEN as a Colab Secret first.">
-                <i class="bi bi-rocket-takeoff me-1"></i>Submit via Colab
-            </a>
-            <a class="btn btn-outline-primary"
                href="{{ url_for('leaderboard_submission_notebook', leaderboard_id=leaderboard.id) }}"
-               title="Download the Colab notebook to upload manually.">
-                <i class="bi bi-journal-code me-1"></i>Download .ipynb
+               title="Download the LB-tailored Colab notebook. Open it in Colab via File → Upload Notebook.">
+                <i class="bi bi-journal-code me-1"></i>Download notebook (.ipynb)
             </a>
             <a class="btn btn-outline-primary"
                href="{{ url_for('leaderboard_submission_script', leaderboard_id=leaderboard.id) }}"
                title="Self-contained Python script. Reads BENCHHUB_API_TOKEN from env.">
                 <i class="bi bi-file-earmark-code me-1"></i>Download script (.py)
             </a>
+            <a class="btn btn-outline-secondary"
+               href="https://colab.research.google.com/"
+               target="_blank" rel="noopener"
+               title="Open Colab in a new tab; then File → Upload Notebook to load the .ipynb you just downloaded.">
+                <i class="bi bi-box-arrow-up-right me-1"></i>Open Colab
+            </a>
         </div>
 
         <p class="small text-body-secondary mb-1">
             Each download is tailored to this leaderboard's fields.
-            For Colab, add <code>BENCHHUB_API_TOKEN</code> as a
+            Workflow: <strong>Download .ipynb</strong> →
+            <strong>Open Colab</strong> →
+            <em>File → Upload Notebook</em>. Add
+            <code>BENCHHUB_API_TOKEN</code> as a
             <a href="https://colab.research.google.com/notebooks/secrets.ipynb"
-               target="_blank" rel="noopener">Colab Secret</a>.
-            Locally, export it as an env var:
+               target="_blank" rel="noopener">Colab Secret</a> in the
+            notebook. Locally, export it as an env var:
         </p>
         <pre class=" p-3 rounded small mb-2" style="font-size: 0.85em;"><code>pip install benchhub-client
 export BENCHHUB_API_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
