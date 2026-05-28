@@ -38,7 +38,8 @@ def test_root_renders_landing_page(client):
     public marketing page that anonymous visitors can hit."""
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code == 200
-    assert b"Benchmark your model" in resp.data
+    # Hero headline — tracks the current marketing pitch.
+    assert b"Build, run, and" in resp.data
 
 
 def test_celery_is_eager(app):

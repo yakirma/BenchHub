@@ -67,7 +67,8 @@ def _mk_submission(lb, *, days_ago=1, archived=False):
 def test_landing_renders_for_anonymous(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"Benchmark your model" in resp.data
+    # Hero headline — tracks the current marketing pitch.
+    assert b"Build, run, and" in resp.data
     assert b"How it works" in resp.data
 
 
@@ -78,12 +79,13 @@ def test_landing_shows_login_cta_when_anonymous(client):
     assert b"Go to your dashboard" not in resp.data
 
 
-def test_landing_shows_dashboard_cta_when_logged_in(auth_client):
-    resp = auth_client.get("/")
-    assert resp.status_code == 200
-    assert b"Go to your dashboard" in resp.data
-    # No login CTA when already in.
-    assert b"Continue with GitHub" not in resp.data
+def test_landing_redirects_to_home_when_logged_in(auth_client):
+    """Signed-in visitors shouldn't see the marketing landing —
+    they jump straight to their dashboard. Was a 200 with a
+    'Go to your dashboard' CTA before; now it's a 302."""
+    resp = auth_client.get("/", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/home")
 
 
 # ---------------------------------------------------------------------------

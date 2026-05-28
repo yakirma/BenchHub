@@ -187,7 +187,7 @@ def test_landing_emits_og_meta(client):
     assert b'<meta property="og:title"' in body
     assert b'<meta name="description"' in body
     # Title content reflects the marketing pitch, not the generic default.
-    assert b'Benchmark your model in 60 seconds' in body
+    assert b'Build, run, and share ML benchmarks' in body
 
 
 def test_user_profile_emits_og_meta(client, db_session, stranger):
