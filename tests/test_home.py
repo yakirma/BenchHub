@@ -104,7 +104,7 @@ def test_home_renders_visibility_badge_for_private(auth_client, db_session, logg
     # Lock icon class appears (private cue) AND the descriptive tooltip
     # text is in the title attribute on at least one element.
     assert 'bi-lock-fill' in body
-    assert 'only you and admins can see this' in body
+    assert 'only you can see this' in body
 
 
 def test_home_empty_state_when_user_has_nothing(auth_client, logged_in_user):

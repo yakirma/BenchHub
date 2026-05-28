@@ -38,7 +38,7 @@
                    a quick "Publish" button next to non-public chips. #}
                 {% if dataset.visibility == 'private' %}
                 <span class="badge text-bg-danger-subtle text-danger-emphasis border align-middle"
-                      style="font-size: 0.55em;" title="Private — only you and admins">
+                      style="font-size: 0.55em;" title="Private — only you">
                     <i class="bi bi-lock-fill me-1"></i>Private
                 </span>
                 {% elif dataset.visibility == 'unlisted' %}
@@ -223,7 +223,7 @@
                        class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                        title="{{ lb.name }}">{{ lb.name }}</a>
                     {% if lb.visibility == 'private' %}
-                    <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you and admins can see this"></i>
+                    <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you can see this"></i>
                     {% elif lb.visibility == 'unlisted' %}
                     <i class="bi bi-link-45deg text-warning small privacy-icon" title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs"></i>
                     {% else %}

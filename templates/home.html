@@ -61,7 +61,7 @@
                 <div class="card home-card h-100 border-0 shadow-sm">
                     {% if ds.visibility == 'private' %}
                     <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
-                          title="Private — only you and admins can see this">
+                          title="Private — only you can see this">
                         <i class="bi bi-lock-fill"></i>
                     </span>
                     {% elif ds.visibility == 'unlisted' %}
@@ -85,7 +85,7 @@
                                class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                                title="{{ ds.name }}">{{ ds.name|display_name }}</a>
                             {% if ds.visibility == 'private' %}
-                            <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you and admins can see this"></i>
+                            <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you can see this"></i>
                             {% elif ds.visibility == 'unlisted' %}
                             <i class="bi bi-link-45deg text-warning small privacy-icon" title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs"></i>
                             {% else %}
@@ -155,7 +155,7 @@
                the name (further down) gives a second cue. #}
             {% if lb.visibility == 'private' %}
             <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
-                  title="Private — only you and admins can see this">
+                  title="Private — only you can see this">
                 <i class="bi bi-lock-fill"></i>
             </span>
             {% elif lb.visibility == 'unlisted' %}
@@ -179,7 +179,7 @@
                         class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                         title="{{ lb.name }}">{{ lb.name }}</a>
                     {% if lb.visibility == 'private' %}
-                    <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you and admins can see this"></i>
+                    <i class="bi bi-lock-fill text-danger small privacy-icon" title="Private — only you can see this"></i>
                     {% elif lb.visibility == 'unlisted' %}
                     <i class="bi bi-link-45deg text-warning small privacy-icon" title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs"></i>
                     {% else %}

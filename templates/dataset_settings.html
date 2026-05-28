@@ -98,7 +98,7 @@
             <p class="form-text small mt-0 mb-2">
                 Public datasets show up in <code>/datasets</code> for
                 everyone. Unlisted are reachable via direct link but
-                hidden from the index. Private is owner + admins only.
+                hidden from the index. Private is owner-only.
             </p>
             <form method="post"
                   action="{{ url_for('set_dataset_visibility', dataset_id=dataset.id) }}"
@@ -106,7 +106,7 @@
                 {% for opt, label, hint in [
                     ('public',   'Public',   'Visible to everyone'),
                     ('unlisted', 'Unlisted', 'Hidden from /datasets — direct link only'),
-                    ('private',  'Private',  'Only you + admins'),
+                    ('private',  'Private',  'Only you'),
                 ] %}
                 <div class="form-check">
                     <input class="form-check-input" type="radio"
