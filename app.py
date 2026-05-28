@@ -4559,7 +4559,13 @@ LB_TEMPLATES: dict[str, dict] = {
         'description': "Top-1 + top-5 accuracy. Pred contract: a "
                        "label_list (top-K) per GT label.",
         'required_kinds': ['label'],
-        'metric_names': ['top_1_accuracy', 'top_5_accuracy'],
+        # Optional pred_kinds map: when the required_kind on a GT
+        # field maps to a different kind on the pred side, the
+        # template applier uses this instead of the same-kind default.
+        # For classification the pred is a ranked top-K list, not a
+        # single class, so top_5_accuracy can score against it.
+        'pred_kinds': {'label': 'label_list'},
+        'metric_names': ['top_1_accuracy', 'top_5_accuracy', 'accuracy'],
         'visualization_names': [],
     },
     'text_qa': {
@@ -4693,13 +4699,18 @@ def _apply_lb_template(dataset, template_id: str) -> dict:
         if gv:
             viz_ids.append(gv.id)
 
-    # Pred-field schema: <gt_name>_pred for every required GT field
+    # Pred-field schema: <gt_name>_pred for every required GT field.
+    # Default to same kind on the pred side, but allow the template to
+    # override per GT-kind via `pred_kinds` — e.g. classification keeps
+    # gt=label but emits pred=label_list so top_K_accuracy can score.
+    pred_kinds_map = tpl.get('pred_kinds') or {}
     pred_fields = []
     for kind in tpl.get('required_kinds', []):
+        pred_kind = pred_kinds_map.get(kind, kind)
         for gt_name in gt_by_kind.get(kind, []):
             pred_fields.append({
                 'name': f'{gt_name}_pred',
-                'kind': kind,
+                'kind': pred_kind,
                 'description': f'{tpl["label"]} prediction for {gt_name}',
             })
 
