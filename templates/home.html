@@ -142,15 +142,12 @@
     {% macro lb_card(lb, idx) %}
     <div class="col home-grid-item" data-name="{{ lb.name|lower }}">
         <div class="card home-card h-100 border-0 shadow-sm">
-            {% if lb.visibility == 'public' %}
-            <span class="badge text-bg-success visibility-badge"
-                title="Public leaderboard — appears on /leaderboards"
-                style="left: 0.5rem; right: auto;">
-                <i class="bi bi-globe me-1"></i>public
-            </span>
-            {% else %}
+            {# Public is the implicit default — only flag non-public LBs
+               via the upper-right badge. Inline lock/link icon next to
+               the name (further down) gives a second cue. #}
+            {% if lb.visibility != 'public' %}
             <span class="badge text-bg-secondary visibility-badge">
-                <i class="bi bi-{{ 'eye-slash' if lb.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ lb.visibility }}
+                <i class="bi bi-{{ 'lock-fill' if lb.visibility == 'private' else 'link-45deg' }} me-1"></i>{{ lb.visibility }}
             </span>
             {% endif %}
             {% set thumb = leaderboard_thumbs.get(lb.id) %}
@@ -167,6 +164,11 @@
                     <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                         class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                         title="{{ lb.name }}">{{ lb.name }}</a>
+                    {% if lb.visibility == 'private' %}
+                    <i class="bi bi-lock-fill text-danger small" title="Private"></i>
+                    {% elif lb.visibility == 'unlisted' %}
+                    <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
+                    {% endif %}
                     {% if lb.canonical_for_repo %}
                     <span class="badge text-bg-info-subtle text-info-emphasis border" style="font-size: 0.6rem;"
                           title="Imported from Papers With Code">PWC</span>
@@ -211,35 +213,22 @@
     </div>
     {% endmacro %}
 
-    {% if public_lbs %}
-    <section class="mb-4">
-        <div class="d-flex align-items-baseline gap-2 mb-3">
-            <h2 class="h5 fw-semibold mb-0">
-                <i class="bi bi-globe me-2 text-success"></i>Your public leaderboards
-            </h2>
-            <span class="text-body-secondary small">({{ public_lbs|length }})</span>
-            <span class="text-body-secondary small ms-1">— admin-promoted, visible on /leaderboards</span>
-        </div>
-        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
-            {% for lb in public_lbs %}{{ lb_card(lb, loop.index0) }}{% endfor %}
-        </div>
-    </section>
-    {% endif %}
-
+    {# Unified leaderboards section — public and private/unlisted live
+       in one grid. Per-card lock/link icons next to the title (and the
+       upper-right visibility-badge for non-public) carry the
+       distinction; no need for two separate headers. #}
     <section class="mb-5">
         <div class="d-flex align-items-baseline gap-2 mb-3">
             <h2 class="h5 fw-semibold mb-0">
-                <i class="bi bi-trophy me-2 text-warning"></i>
-                {% if public_lbs %}Your personal leaderboards{% else %}Leaderboards{% endif %}
+                <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
             </h2>
-            <span class="text-body-secondary small">({{ personal_lbs|length }})</span>
+            <span class="text-body-secondary small">({{ leaderboards|length }})</span>
         </div>
-
-        {% if personal_lbs %}
+        {% if leaderboards %}
         <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-lb-grid">
-            {% for lb in personal_lbs %}{{ lb_card(lb, loop.index0) }}{% endfor %}
+            {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
         </div>
-        {% elif not public_lbs %}
+        {% else %}
         <div class="text-center py-5 text-body-secondary border rounded">
             <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
             <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
