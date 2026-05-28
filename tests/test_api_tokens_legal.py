@@ -59,7 +59,7 @@ def test_dataset_upload_api_rejects_bad_token(client, db_session):
                        data={'dataset_zip': (io.BytesIO(b'x'), 'x.zip')},
                        content_type='multipart/form-data')
     assert resp.status_code == 401
-    assert b'Invalid API token' in resp.data
+    assert b'Invalid or expired API token' in resp.data
 
 
 def test_dataset_upload_api_quota_returns_429(client, db_session, token_user, make_zip):

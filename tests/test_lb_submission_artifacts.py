@@ -96,8 +96,8 @@ def test_lb_page_renders_submit_action_buttons(client, db_session):
     _, lb = _seed_lb_with_pred()
     body = client.get(f'/leaderboard/{lb.id}').data.decode('utf-8')
     # Three new action buttons.
-    assert 'Submit via Colab' in body
-    assert 'Download .ipynb' in body
+    assert 'Open in Colab' in body
+    assert 'Download notebook' in body
     assert 'Download script (.py)' in body
     # Code snippet uses the env-var path, not the literal placeholder.
     assert 'YOUR_API_TOKEN' not in body
