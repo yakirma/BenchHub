@@ -223,6 +223,112 @@
     </div>
 </section>
 
+<!-- ===================== Sharing & storage =========================== -->
+<section class="container mb-5 pb-3">
+    <div class="text-center mb-4">
+        <h2 class="fw-bold mb-1">Sharing &amp; storage</h2>
+        <p class="text-body-secondary mb-0">
+            Every dataset and leaderboard is either public or private. Generous
+            storage on either side.
+        </p>
+    </div>
+
+    <div class="row row-cols-1 row-cols-md-2 g-3 justify-content-center"
+         style="max-width: 920px; margin: 0 auto;">
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-public">
+                <div class="tier-stripe"></div>
+                <div class="card-body p-4">
+                    <div class="d-flex align-items-center gap-2 mb-3">
+                        <span class="tier-icon-circle tier-icon-public">
+                            <i class="bi bi-globe"></i>
+                        </span>
+                        <h3 class="h5 fw-semibold mb-0">Public</h3>
+                        <span class="badge text-bg-success-subtle text-success-emphasis border ms-auto">
+                            100 GB
+                        </span>
+                    </div>
+                    <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Listed on <code>/datasets</code> and <code>/leaderboards</code> for everyone
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Anyone can submit predictions and appear on the board
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Counted against your <strong>100 GB public quota</strong> — covers dataset bytes, LB materialisations, and submissions
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-private">
+                <div class="tier-stripe"></div>
+                <div class="card-body p-4">
+                    <div class="d-flex align-items-center gap-2 mb-3">
+                        <span class="tier-icon-circle tier-icon-private">
+                            <i class="bi bi-lock-fill"></i>
+                        </span>
+                        <h3 class="h5 fw-semibold mb-0">Private</h3>
+                        <span class="badge text-bg-danger-subtle text-danger-emphasis border ms-auto">
+                            10 GB
+                        </span>
+                    </div>
+                    <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Visible only to you and admins — not listed anywhere
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Iterate without the world watching; <em>Publish</em> with one click when ready
+                        </li>
+                        <li class="mb-2">
+                            <i class="bi bi-check2 text-success me-1"></i>
+                            Counted against your <strong>10 GB private quota</strong> — separate from public
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<style>
+    /* Tier cards on the landing page — visually echo the dataset/LB
+       card visibility cues (green globe / red lock) so the user
+       learns the icon language while reading about the tiers. */
+    .tier-card { transition: transform .15s ease, box-shadow .15s ease; }
+    .tier-card:hover { transform: translateY(-3px); }
+    .tier-stripe {
+        position: absolute; top: 0; left: 0; right: 0; height: 4px;
+        background: var(--tier-stripe-color, var(--bs-primary));
+    }
+    .tier-public  { --tier-stripe-color: #10b981; }
+    .tier-private { --tier-stripe-color: #ef4444; }
+    .tier-icon-circle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 38px; height: 38px; border-radius: 50%;
+        font-size: 1.15rem;
+    }
+    .tier-icon-public {
+        background: rgba(16, 185, 129, 0.12);
+        color: #059669;
+    }
+    .tier-icon-private {
+        background: rgba(239, 68, 68, 0.12);
+        color: #dc2626;
+    }
+    [data-bs-theme="dark"] .tier-icon-public { color: #34d399; }
+    [data-bs-theme="dark"] .tier-icon-private { color: #f87171; }
+</style>
+
 <!-- ===================== Featured leaderboards ===================== -->
 <section id="featured" class="container mb-5 pb-3">
     <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-2">
