@@ -34,7 +34,8 @@
                 Dataset: {{ dataset.name|display_name }}
                 {# Visibility chip — same colour scheme as the cards
                    (green/amber/red) so a glance at the page header
-                   tells you whether the dataset is shared. #}
+                   tells you whether the dataset is shared. Owners see
+                   a quick "Publish" button next to non-public chips. #}
                 {% if dataset.visibility == 'private' %}
                 <span class="badge text-bg-danger-subtle text-danger-emphasis border align-middle"
                       style="font-size: 0.55em;" title="Private — only you and admins">
@@ -50,6 +51,20 @@
                       style="font-size: 0.55em;" title="Public — visible to everyone">
                     <i class="bi bi-globe me-1"></i>Public
                 </span>
+                {% endif %}
+                {% if dataset.visibility != 'public' and current_user
+                       and (current_user.id == dataset.owner_user_id or current_user_is_admin) %}
+                <form method="post"
+                      action="{{ url_for('set_dataset_visibility', dataset_id=dataset.id) }}"
+                      class="d-inline-block align-middle">
+                    <input type="hidden" name="visibility" value="public">
+                    <button type="submit"
+                            class="btn btn-sm btn-success py-0 px-2 align-middle"
+                            style="font-size: 0.7em;"
+                            title="Make this dataset public — visible to everyone on /datasets">
+                        <i class="bi bi-megaphone me-1"></i>Publish
+                    </button>
+                </form>
                 {% endif %}
                 {# HF source badge — visible to everyone, deep-links back
                    to the upstream HuggingFace repo. #}

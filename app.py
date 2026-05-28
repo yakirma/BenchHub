@@ -5405,6 +5405,26 @@ def edit_lb_pred_fields(leaderboard_id):
     return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
 
+@app.route('/leaderboard/<int:leaderboard_id>/visibility', methods=['POST'])
+@login_required
+@owner_required(Leaderboard, 'leaderboard_id')
+def set_leaderboard_visibility(leaderboard_id):
+    """Owner / admin flip of Leaderboard.visibility. Drives the
+    'Publish' button on /leaderboard/<id>. Returns to the LB page."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    target = (request.form.get('visibility') or '').strip()
+    if target not in ('public', 'private', 'unlisted'):
+        flash("Invalid visibility.", "warning")
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    lb.visibility = target
+    db.session.commit()
+    if target == 'public':
+        flash(f'"{lb.name}" is now public — visible on /leaderboards.', "success")
+    else:
+        flash(f'"{lb.name}" is now {target}.', "success")
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
 @app.route('/dataset/<int:dataset_id>/visibility', methods=['POST'])
 @login_required
 @owner_required(Dataset, 'dataset_id')
@@ -6122,7 +6142,11 @@ def upload_typed_dataset_zip():
     ZIP without juggling tokens.
     """
     upload = request.files.get('dataset_zip')
-    visibility = (request.form.get('visibility') or 'public').strip()
+    # User-uploaded datasets default to private — owners explicitly
+    # publish via the "Publish" button on /dataset/<id>. The form can
+    # override (`?visibility=public`) for ZIP imports that should land
+    # public immediately, but the safe default is private.
+    visibility = (request.form.get('visibility') or 'private').strip()
     summary, status, err = _ingest_typed_dataset_zip(
         upload, owner_user=g.current_user, visibility=visibility,
     )
@@ -9360,6 +9384,11 @@ def create_leaderboard():
         category=(request.form.get('category') or '').strip() or None,
         field_roles_json=(json.dumps(_role_overrides) if _role_overrides else None),
         required_pred_fields_json=(json.dumps(pred_entries) if pred_entries else None),
+        # User-created LBs land private; the owner publishes via the
+        # "Publish" button on the LB page when they're ready to share.
+        # Admin/import scripts that need public-by-default pass an
+        # explicit `visibility` form field.
+        visibility=(request.form.get('visibility') or 'private').strip(),
     )
 
     # Handle multiple datasets
