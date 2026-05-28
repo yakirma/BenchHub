@@ -62,12 +62,12 @@
                     {% if ds.visibility == 'private' %}
                     <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
                           title="Private — only you and admins can see this">
-                        <i class="bi bi-lock-fill me-1"></i>private
+                        <i class="bi bi-lock-fill"></i>
                     </span>
                     {% elif ds.visibility == 'unlisted' %}
                     <span class="badge text-bg-warning-subtle text-warning-emphasis border visibility-badge"
                           title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs">
-                        <i class="bi bi-link-45deg me-1"></i>unlisted
+                        <i class="bi bi-link-45deg"></i>
                     </span>
                     {% endif %}
                     {% set thumb = dataset_thumbs.get(ds.id) %}
@@ -156,12 +156,12 @@
             {% if lb.visibility == 'private' %}
             <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
                   title="Private — only you and admins can see this">
-                <i class="bi bi-lock-fill me-1"></i>private
+                <i class="bi bi-lock-fill"></i>
             </span>
             {% elif lb.visibility == 'unlisted' %}
             <span class="badge text-bg-warning-subtle text-warning-emphasis border visibility-badge"
                   title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs">
-                <i class="bi bi-link-45deg me-1"></i>unlisted
+                <i class="bi bi-link-45deg"></i>
             </span>
             {% endif %}
             {% set thumb = leaderboard_thumbs.get(lb.id) %}
