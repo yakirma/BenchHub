@@ -993,10 +993,12 @@ class Leaderboard(db.Model):
     # Phase 1 multi-tenancy.
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
-    # GitHub gist id holding this LB's submission notebook. Created /
-    # updated lazily on click of "Open in Colab"; reused across clicks
-    # so we don't proliferate gists. NULL = never been opened in Colab.
-    colab_gist_id = db.Column(db.String(64), nullable=True)
+    # GitHub gist path "<owner>/<id>" holding this LB's submission
+    # notebook. Created / updated lazily on click of "Open in Colab";
+    # reused across clicks so we don't proliferate gists. NULL = never
+    # been opened in Colab. Column is varchar(128) — GitHub login is
+    # up to 39 chars, gist id is 32 chars, plus the slash.
+    colab_gist_id = db.Column(db.String(128), nullable=True)
     owner = db.relationship('User', foreign_keys=[owner_user_id])
     submissions = db.relationship('Submission', backref='leaderboard', lazy=True, cascade="all, delete-orphan")
     datasets = db.relationship('Dataset', secondary=leaderboard_datasets, backref=db.backref('leaderboards', lazy='dynamic'))
@@ -6928,8 +6930,8 @@ def leaderboard_submission_notebook(leaderboard_id):
 def _gh_upsert_gist(token: str, gist_id: str | None,
                     description: str, filename: str, content: str) -> str | None:
     """Create or update a single-file public gist via the GitHub REST
-    API. Returns the gist id, or None on any failure (so the caller
-    can fall back to the manual workflow).
+    API. Returns `<owner_login>/<gist_id>` (the Colab gist-path
+    format), or None on any failure.
 
     `gist_id` None    → POST (create new gist)
     `gist_id` set     → PATCH existing gist with new content
@@ -6962,7 +6964,13 @@ def _gh_upsert_gist(token: str, gist_id: str | None,
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as e:
         print(f'  ! gist upsert failed: {e}')
         return None
-    return doc.get('id') if isinstance(doc, dict) else None
+    if not isinstance(doc, dict):
+        return None
+    new_id = doc.get('id')
+    owner = (doc.get('owner') or {}).get('login') if isinstance(doc.get('owner'), dict) else None
+    if not new_id or not owner:
+        return None
+    return f'{owner}/{new_id}'
 
 
 @app.route('/leaderboard/<int:leaderboard_id>/open_in_colab')
@@ -6991,23 +6999,25 @@ def leaderboard_open_in_colab(leaderboard_id):
     desc = (f'BenchHub submission notebook for leaderboard '
             f'"{lb.name}" — auto-managed by BenchHub.')
 
-    new_id = _gh_upsert_gist(
-        token, lb.colab_gist_id, desc, filename, body,
-    )
+    # lb.colab_gist_id stores "<owner>/<id>"; PATCH wants the bare id.
+    prior_path = lb.colab_gist_id or ''
+    prior_id = prior_path.split('/', 1)[1] if '/' in prior_path else (prior_path or None)
+
+    new_path = _gh_upsert_gist(token, prior_id, desc, filename, body)
     # If a PATCH to an existing gist failed (e.g. it was deleted on
     # GitHub), try once more as a CREATE so the user still gets a
     # working notebook.
-    if new_id is None and lb.colab_gist_id is not None:
-        new_id = _gh_upsert_gist(token, None, desc, filename, body)
-    if new_id is None:
+    if new_path is None and prior_id:
+        new_path = _gh_upsert_gist(token, None, desc, filename, body)
+    if new_path is None:
         flash('Could not push the notebook to GitHub. '
               'Download the .ipynb and upload manually.', 'danger')
         return redirect('https://colab.research.google.com/')
 
-    if new_id != lb.colab_gist_id:
-        lb.colab_gist_id = new_id
+    if new_path != lb.colab_gist_id:
+        lb.colab_gist_id = new_path
         db.session.commit()
-    return redirect(f'https://colab.research.google.com/gist/{new_id}')
+    return redirect(f'https://colab.research.google.com/gist/{new_path}')
 
 
 @app.route('/leaderboard/<int:leaderboard_id>')
