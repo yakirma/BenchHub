@@ -75,15 +75,15 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
-    def get_leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+    def get_leaderboard_contract(self, leaderboard_id: int,
+                                 token: str | None = None) -> list[dict]:
         """Fetch the LB's pred wire-contract. Token optional — the
         server-side route is visibility-gated, but public LBs respond
         to anonymous requests too."""
         import requests
         resp = requests.get(
             f"{self.base_url}/api/leaderboard/{leaderboard_id}/contract",
-            headers=({"Authorization": f"Bearer {self.token}"}
-                     if self.token else {}),  # type: ignore[attr-defined]
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
         )
         if resp.status_code >= 400:
             try:
@@ -138,7 +138,9 @@ class Client:
         any `shape_match` constraints). Hand the result to
         `SubmissionBuilder.set_contract()` so client-side validation
         catches shape mismatches before any ZIP upload."""
-        return self.transport.get_leaderboard_contract(leaderboard_id)
+        return self.transport.get_leaderboard_contract(
+            leaderboard_id, token=self.token or None,
+        )
 
     def create_dataset(
         self,
@@ -641,7 +643,11 @@ class FlaskTestClientTransport:
     def __init__(self, test_client):
         self.test_client = test_client
 
-    def get_leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+    def get_leaderboard_contract(self, leaderboard_id: int,
+                                 token: str | None = None) -> list[dict]:
+        # Test transport ignores token — Flask-test-client routes
+        # don't run @require_api_token in the same way; tests stub
+        # auth directly.
         resp = self.test_client.get(f"/api/leaderboard/{leaderboard_id}/contract")
         try:
             payload = resp.get_json()

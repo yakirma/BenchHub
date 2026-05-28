@@ -6924,7 +6924,8 @@ def _submission_notebook_source(lb, *, inline_token: str | None = None,
     script = _submission_script_source(lb)
     install_cell = (
         "# Install the BenchHub client + numpy. Run once per fresh runtime.\n"
-        "!pip install -q benchhub-client numpy\n"
+        "# --upgrade so an older cached copy doesn't shadow a bug fix.\n"
+        "!pip install -q --upgrade benchhub-client numpy\n"
     )
     # Embed inline token as a Python string literal (json.dumps gives
     # us a safely-escaped one). Falls back to None.

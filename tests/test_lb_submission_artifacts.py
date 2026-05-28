@@ -83,7 +83,7 @@ def test_submission_notebook_route_returns_ipynb_json(client, db_session):
         ''.join(c.get('source', []))
         for c in nb['cells']
     )
-    assert 'pip install -q benchhub-client' in all_src
+    assert 'pip install -q --upgrade benchhub-client' in all_src
     assert 'BENCHHUB_API_TOKEN' in all_src
     assert 'google.colab' in all_src
     assert 'userdata' in all_src
