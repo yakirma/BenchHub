@@ -395,11 +395,11 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                                    class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                                    title="{{ dataset.name }}">{{ dataset.name|display_name }}</a>
                                 {% if dataset.visibility == 'private' %}
-                                <i class="bi bi-lock-fill text-danger small" title="Private"></i>
+                                <i class="bi bi-lock-fill text-danger small" title="Private — only you and admins can see this"></i>
                                 {% elif dataset.visibility == 'unlisted' %}
-                                <i class="bi bi-link-45deg text-warning small" title="Unlisted"></i>
+                                <i class="bi bi-link-45deg text-warning small" title="Unlisted — anyone with the link can see it, but it doesn't show in catalogs"></i>
                                 {% else %}
-                                <i class="bi bi-globe text-success small" title="Public"></i>
+                                <i class="bi bi-globe text-success small" title="Public — visible to everyone on /datasets and /leaderboards"></i>
                                 {% endif %}
                                 {% if dataset.import_status == 'importing' %}
                                 <i class="bi bi-arrow-repeat text-primary small" title="Importing…"></i>
