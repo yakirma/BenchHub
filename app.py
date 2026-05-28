@@ -1008,6 +1008,61 @@ class Leaderboard(db.Model):
                                     backref=db.backref('shared_leaderboards', lazy=True))
 
 
+class SubmissionToken(db.Model):
+    """Short-lived, single-LB submission token. Minted server-side when
+    a user clicks "Open in Colab" so the generated notebook can submit
+    without us having to leak the user's long-lived `User.api_token`
+    through the public gist. Behaves identically to `User.api_token` at
+    /api/submit/<lb_id> time — the auth shim accepts either — but is
+    scoped down: only valid for one leaderboard, expires after
+    ~1 hour, and bumps `used_count` per submission so abuse stays
+    cheap to revoke."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'),
+                        nullable=False, index=True)
+    leaderboard_id = db.Column(db.Integer, db.ForeignKey('leaderboard.id'),
+                               nullable=False, index=True)
+    token = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    used_count = db.Column(db.Integer, nullable=False, default=0,
+                           server_default='0')
+    revoked = db.Column(db.Boolean, nullable=False, default=False,
+                        server_default='0')
+    user = db.relationship('User', foreign_keys=[user_id])
+    leaderboard = db.relationship('Leaderboard', foreign_keys=[leaderboard_id])
+
+
+def _mint_submission_token(user, lb, *, hours: int = 1) -> 'SubmissionToken':
+    """Create a fresh single-use submission token. Caller commits."""
+    import secrets
+    row = SubmissionToken(
+        user_id=user.id,
+        leaderboard_id=lb.id,
+        token='bhst_' + secrets.token_urlsafe(32),
+        expires_at=datetime.utcnow() + timedelta(hours=hours),
+    )
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+def _resolve_api_token(raw: str) -> tuple['User | None', 'SubmissionToken | None']:
+    """Lookup a bearer token. Returns (user, submission_token_or_None).
+    A long-lived User.api_token resolves to (user, None). A short-lived
+    SubmissionToken resolves to (user, st) so the caller can also
+    enforce per-LB scope and bump used_count."""
+    if not raw:
+        return None, None
+    if raw.startswith('bhst_'):
+        st = SubmissionToken.query.filter_by(token=raw, revoked=False).first()
+        if st is None or st.expires_at < datetime.utcnow():
+            return None, None
+        return st.user, st
+    user = User.query.filter_by(api_token=raw).first()
+    return user, None
+
+
 class Submission(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -1851,18 +1906,43 @@ def require_api_token(view):
     Use on programmatic /api/* endpoints. Returns 401 JSON on missing
     or invalid token. Inside the view, g.current_user is the row that
     owns the token, so quota helpers and owner_user_id assignments
-    work the same as on cookie-authed routes."""
+    work the same as on cookie-authed routes.
+
+    Accepts either:
+      • a long-lived User.api_token (Settings → API tokens)
+      • a short-lived SubmissionToken (prefix `bhst_`) minted by the
+        Open-in-Colab flow. Stashed on g.submission_token so a wrapped
+        view can also enforce per-LB scope (see /api/submit/<lb_id>).
+    """
     @wraps(view)
     def wrapped(*args, **kwargs):
         token = _bearer_token_from_request()
         if not token:
             return jsonify({'error': 'API token required (Authorization: Bearer <token>)'}), 401
-        user = User.query.filter_by(api_token=token).first()
+        user, sub_token = _resolve_api_token(token)
         if user is None:
-            return jsonify({'error': 'Invalid API token'}), 401
+            return jsonify({'error': 'Invalid or expired API token'}), 401
         g.current_user = user
+        g.submission_token = sub_token   # None for long-lived tokens
         return view(*args, **kwargs)
     return wrapped
+
+
+@app.route('/api/whoami')
+@require_api_token
+def api_whoami():
+    """Cheap auth-validation endpoint used by the Colab notebook to
+    decide whether the bearer token is still good before submitting.
+    A 200 means: token valid, user known, and (for SubmissionTokens)
+    not expired and not revoked."""
+    st = g.get('submission_token')
+    return jsonify({
+        'user_id': g.current_user.id,
+        'display_name': g.current_user.display_name,
+        'token_kind': 'submission' if st else 'api',
+        'leaderboard_id': st.leaderboard_id if st else None,
+        'expires_at': st.expires_at.isoformat() + 'Z' if st else None,
+    })
 
 
 def _admin_emails():
@@ -5668,6 +5748,19 @@ def api_submit_typed(leaderboard_id):
 
     lb = Leaderboard.query.get_or_404(leaderboard_id)
 
+    # Submission-scoped tokens (Open-in-Colab flow) are bound to a
+    # single leaderboard. Reject cross-LB use; bump used_count so
+    # admins can spot abuse later.
+    st = g.get('submission_token')
+    if st is not None:
+        if st.leaderboard_id != lb.id:
+            return jsonify({
+                'error': 'This submission token is scoped to a different '
+                         f'leaderboard (#{st.leaderboard_id}).',
+            }), 403
+        st.used_count = (st.used_count or 0) + 1
+        db.session.commit()
+
     upload = request.files.get('submission_zip')
     if upload is None or not upload.filename:
         return jsonify({'error': 'multipart field "submission_zip" required'}), 400
@@ -6813,31 +6906,76 @@ print(result)  # → {{'submission_id': ..., 'view_url': '...'}}
 '''
 
 
-def _submission_notebook_source(lb) -> str:
-    """Generate a Colab-flavoured `.ipynb` for the LB. Reads
-    BENCHHUB_API_TOKEN from `google.colab.userdata` (Colab Secrets) when
-    running on Colab, falling back to the environment otherwise."""
+def _submission_notebook_source(lb, *, inline_token: str | None = None,
+                                inline_token_expires: str | None = None) -> str:
+    """Generate a Colab-flavoured `.ipynb` for the LB.
+
+    Token resolution at run-time uses three tiers, in order:
+      1. Inline short-lived token baked into the cell at generation
+         time (Open-in-Colab flow). Expires after ~1 hour.
+      2. `BENCHHUB_API_TOKEN` from Colab Secrets — long-lived, set
+         once per Google account.
+      3. Interactive `getpass` prompt — last-ditch when neither of
+         the above is available (e.g. expired inline token + no Colab
+         Secret yet).
+    The /api/whoami probe validates the chosen token before the body
+    cell runs; on 401 the cell drops to tier 2 / tier 3 as needed.
+    """
     script = _submission_script_source(lb)
-    # The script's pip-install + token-bootstrap step gets split out
-    # into its own Colab cell; the rest of the script becomes a
-    # single body cell. Token reading uses Colab userdata when
-    # available so users don't have to paste tokens into the
-    # notebook.
     install_cell = (
         "# Install the BenchHub client + numpy. Run once per fresh runtime.\n"
         "!pip install -q benchhub-client numpy\n"
     )
+    # Embed inline token as a Python string literal (json.dumps gives
+    # us a safely-escaped one). Falls back to None.
+    inline_lit = json.dumps(inline_token or '')
+    inline_expires_lit = json.dumps(inline_token_expires or '')
+    base_url = _get_base_url() or 'https://runbenchhub.com'
+    base_url_lit = json.dumps(base_url)
     token_cell = (
-        "# Pull BENCHHUB_API_TOKEN out of Colab Secrets (left sidebar →\n"
-        "# key icon → add new secret → name=BENCHHUB_API_TOKEN, value=<your token from BenchHub Settings>).\n"
-        "# Falls back to an env var when running outside Colab.\n"
-        "import os\n"
-        "try:\n"
-        "    from google.colab import userdata\n"
-        "    os.environ['BENCHHUB_API_TOKEN'] = userdata.get('BENCHHUB_API_TOKEN')\n"
-        "except Exception:\n"
-        "    pass\n"
-        "assert os.environ.get('BENCHHUB_API_TOKEN'), 'Set BENCHHUB_API_TOKEN in Colab Secrets'\n"
+        "# Three-tier token resolution. The Open-in-Colab flow bakes a\n"
+        "# short-lived token into the next line; if that expires (or\n"
+        "# wasn't set), we try a Colab Secret named BENCHHUB_API_TOKEN,\n"
+        "# then prompt with getpass as a final fallback.\n"
+        "import os, urllib.request, urllib.error, json\n"
+        f"_INLINE_TOKEN = {inline_lit}\n"
+        f"_INLINE_EXPIRES = {inline_expires_lit}\n"
+        f"_BASE_URL = {base_url_lit}\n"
+        "\n"
+        "def _bh_validate_token(tok):\n"
+        "    if not tok: return False\n"
+        "    req = urllib.request.Request(_BASE_URL + '/api/whoami',\n"
+        "        headers={'Authorization': 'Bearer ' + tok})\n"
+        "    try:\n"
+        "        with urllib.request.urlopen(req, timeout=10) as r:\n"
+        "            return r.status == 200\n"
+        "    except urllib.error.HTTPError as e:\n"
+        "        return False\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "\n"
+        "_token = None\n"
+        "if _bh_validate_token(_INLINE_TOKEN):\n"
+        "    _token = _INLINE_TOKEN\n"
+        "    print(f'\\u2713 Using the short-lived token baked into this notebook (expires {_INLINE_EXPIRES}).')\n"
+        "else:\n"
+        "    try:\n"
+        "        from google.colab import userdata\n"
+        "        _ts = userdata.get('BENCHHUB_API_TOKEN')\n"
+        "        if _bh_validate_token(_ts):\n"
+        "            _token = _ts\n"
+        "            print('\\u2713 Using BENCHHUB_API_TOKEN from Colab Secrets.')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "if _token is None:\n"
+        "    import getpass\n"
+        "    print('Inline token expired and no Colab Secret found.')\n"
+        "    print('Get a token from ' + _BASE_URL + '/settings/account, paste below.')\n"
+        "    _token = getpass.getpass('BenchHub API token: ').strip()\n"
+        "    if not _bh_validate_token(_token):\n"
+        "        raise RuntimeError('Token rejected by ' + _BASE_URL + '/api/whoami.')\n"
+        "    print('\\u2713 Token accepted.')\n"
+        "os.environ['BENCHHUB_API_TOKEN'] = _token\n"
     )
     body_cell = script
 
@@ -6993,7 +7131,24 @@ def leaderboard_open_in_colab(leaderboard_id):
               'warning')
         return redirect('https://colab.research.google.com/')
 
-    body = _submission_notebook_source(lb)
+    # Login-gate: anonymous users can't get a submission token (it's
+    # bound to a User row). Send them to /login first; they'll bounce
+    # back here after the OAuth dance.
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        return redirect(url_for(
+            'login', next=url_for('leaderboard_open_in_colab',
+                                  leaderboard_id=lb.id),
+        ))
+
+    # Mint a short-lived submission token (1h) scoped to this user +
+    # this LB. The notebook reads it from a python literal in the
+    # token cell and falls back to Colab Secrets / getpass on expiry.
+    st = _mint_submission_token(user, lb, hours=1)
+    body = _submission_notebook_source(
+        lb, inline_token=st.token,
+        inline_token_expires=st.expires_at.isoformat() + 'Z',
+    )
     safe = secure_filename(lb.name) or f'lb_{lb.id}'
     filename = f'{safe}_submit.ipynb'
     desc = (f'BenchHub submission notebook for leaderboard '
@@ -15507,6 +15662,36 @@ def check_and_migrate_db():
                         conn.commit()
                 except Exception as e:
                     print(f"Migration error (colab_gist_id): {e}")
+
+                # --- SubmissionToken table ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS submission_token ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "user_id INTEGER NOT NULL REFERENCES user(id), "
+                        "leaderboard_id INTEGER NOT NULL REFERENCES leaderboard(id), "
+                        "token VARCHAR(64) NOT NULL UNIQUE, "
+                        "expires_at DATETIME NOT NULL, "
+                        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+                        "used_count INTEGER NOT NULL DEFAULT 0, "
+                        "revoked BOOLEAN NOT NULL DEFAULT 0"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_submission_token_user_id "
+                        "ON submission_token (user_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_submission_token_lb_id "
+                        "ON submission_token (leaderboard_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_submission_token_token "
+                        "ON submission_token (token)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (submission_token): {e}")
 
                 # --- Dataset.preview_only column ---
                 try:
