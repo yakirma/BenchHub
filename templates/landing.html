@@ -5,7 +5,7 @@
 {# SEO override (Phase 6). Title is the hero pitch; description matches the
    sub-headline so search-result snippets read sensibly. #}
 {% set meta_title = 'BenchHub — Build, run, and share ML benchmarks' %}
-{% set meta_description = 'Open-source benchmarking platform: pick a dataset, define metrics in Python, upload predictions, see how your model ranks. No credit card.' %}
+{% set meta_description = 'Open-source benchmarking platform: pick a dataset, define a leaderboard, upload predictions, see how your model ranks. No credit card.' %}
 
 {% block flash_messages %}{% endblock %}
 
@@ -137,7 +137,7 @@
                     <span class="accent">share ML benchmarks.</span>
                 </h1>
                 <p class="hero-sub mb-4">
-                    Pick a dataset, define your metrics in Python, upload predictions,
+                    Pick a dataset, define a leaderboard, upload predictions,
                     and see how your model ranks. Open-source. No credit card.
                 </p>
 
@@ -193,13 +193,13 @@
             <div class="card h-100 border-0 shadow-sm">
                 <div class="card-body p-4 text-center">
                     <div class="feature-icon mb-3">
-                        <i class="bi bi-code-square"></i>
+                        <i class="bi bi-trophy"></i>
                     </div>
-                    <h5 class="fw-semibold mb-2">2. Define metrics in Python</h5>
+                    <h5 class="fw-semibold mb-2">2. Define a leaderboard</h5>
                     <p class="text-body-secondary small mb-0">
-                        Bring your own scoring code — any function that takes
-                        ground truth + prediction and returns a number. Per-sample
-                        or aggregated. No DSL to learn.
+                        Pick which dataset fields submissions are scored against,
+                        assign each one a role (input vs ground truth), then attach
+                        the metrics and visualisations to run on every submission.
                     </p>
                 </div>
             </div>
