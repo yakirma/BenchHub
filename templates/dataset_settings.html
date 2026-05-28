@@ -86,6 +86,46 @@
         </div>
     </div>
 
+    {# ---- Visibility (public / unlisted / private). Owner-only.
+           Visibility = 'private' hides the row from anyone who isn't
+           the owner or an admin; LBs attached to a private dataset
+           inherit the gate. Mirrors the GlobalMetric pattern. #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h5 class="fw-bold mb-2">
+                <i class="bi bi-shield-lock me-1"></i>Visibility
+            </h5>
+            <p class="form-text small mt-0 mb-2">
+                Public datasets show up in <code>/datasets</code> for
+                everyone. Unlisted are reachable via direct link but
+                hidden from the index. Private is owner + admins only.
+            </p>
+            <form method="post"
+                  action="{{ url_for('set_dataset_visibility', dataset_id=dataset.id) }}"
+                  class="d-flex flex-wrap align-items-center gap-3">
+                {% for opt, label, hint in [
+                    ('public',   'Public',   'Visible to everyone'),
+                    ('unlisted', 'Unlisted', 'Hidden from /datasets — direct link only'),
+                    ('private',  'Private',  'Only you + admins'),
+                ] %}
+                <div class="form-check">
+                    <input class="form-check-input" type="radio"
+                           name="visibility" id="vis-{{ opt }}"
+                           value="{{ opt }}"
+                           {% if (dataset.visibility or 'public') == opt %}checked{% endif %}>
+                    <label class="form-check-label" for="vis-{{ opt }}">
+                        <strong>{{ label }}</strong>
+                        <span class="text-body-secondary small ms-1">{{ hint }}</span>
+                    </label>
+                </div>
+                {% endfor %}
+                <button type="submit" class="btn btn-sm btn-primary">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </form>
+        </div>
+    </div>
+
     {# ---- Sample-name source — use a scalar / text / label field's
            per-sample value as the on-disk sample name. Same gate as
            the field editors (no LB attached) since the rename

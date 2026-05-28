@@ -5405,6 +5405,24 @@ def edit_lb_pred_fields(leaderboard_id):
     return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
 
+@app.route('/dataset/<int:dataset_id>/visibility', methods=['POST'])
+@login_required
+@owner_required(Dataset, 'dataset_id')
+def set_dataset_visibility(dataset_id):
+    """Owner-only flip of Dataset.visibility (public / unlisted / private).
+    Dataset.name is globally unique so we don't need the name-collision
+    dance the GlobalMetric flow has — just commit the new value."""
+    ds = Dataset.query.get_or_404(dataset_id)
+    target = (request.form.get('visibility') or '').strip()
+    if target not in ('public', 'private', 'unlisted'):
+        flash("Invalid visibility.", "warning")
+        return redirect(url_for('dataset_settings', dataset_id=ds.id))
+    ds.visibility = target
+    db.session.commit()
+    flash(f'"{ds.name}" is now {target}.', "success")
+    return redirect(url_for('dataset_settings', dataset_id=ds.id))
+
+
 @app.route('/global_metric/<int:metric_id>/visibility', methods=['POST'])
 @login_required
 @owner_required(GlobalMetric, 'metric_id')
