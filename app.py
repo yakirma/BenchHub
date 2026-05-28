@@ -1582,6 +1582,9 @@ def visible_in_list(model_cls, user):
     - legacy NULL-owner rows (treated as public until backfill)
     - **owner's own non-unlisted rows** (so I can find my private stuff)
     - **rows shared with the user** (collaborator on a private row)
+    - **everything for admins** (private + unlisted included) so the
+      admin index pages can surface unlisted rows that would otherwise
+      be invisible
 
     Hide:
     - unlisted (URL-only by design — even from the owner's list pages)
@@ -1594,6 +1597,12 @@ def visible_in_list(model_cls, user):
     )
     if user is None:
         return public_or_legacy
+
+    # Admins see everything — keep them out of the visibility funnel
+    # so the catalog reflects the full state of the system.
+    if is_admin(user):
+        return or_(public_or_legacy,
+                   model_cls.owner_user_id.isnot(None))
 
     # Collaborator share-table lookup, model-aware.
     share_clause = None
