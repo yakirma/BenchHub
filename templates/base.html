@@ -448,6 +448,18 @@
             z-index: 2;
         }
 
+        /* Privacy icon next to a card title. The card's stretched-link
+           covers the whole tile with an invisible ::after overlay so
+           the entire card is clickable — that overlay also eats
+           mouseover, so a bare <i title="…"> never gets to show its
+           tooltip. Lift the icon above the overlay (and the link) so
+           the browser-native title hover actually fires. */
+        .privacy-icon {
+            position: relative;
+            z-index: 3;
+            cursor: help;
+        }
+
         /* Theme-toggle icon visibility — only one icon is visible per
            theme. The toggle button shows the icon for the CURRENT
            theme so the user sees what they're on. */
