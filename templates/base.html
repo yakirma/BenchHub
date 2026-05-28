@@ -458,7 +458,16 @@
             position: relative;
             z-index: 3;
             cursor: pointer;
+            flex-shrink: 0;   /* never collapsed by the title's flex-grow */
         }
+
+        /* Card title row: the link is `flex-grow-1 text-truncate` but
+           without `min-width: 0` the flex item won't shrink below the
+           text's intrinsic width — long names push the trailing
+           privacy icon past the card's right edge where .home-card's
+           overflow:hidden clips it. Force shrinkability here so the
+           title ellipsises and the icon stays visible. */
+        .home-card .text-truncate.flex-grow-1 { min-width: 0; }
 
         /* Theme-toggle icon visibility — only one icon is visible per
            theme. The toggle button shows the icon for the CURRENT
