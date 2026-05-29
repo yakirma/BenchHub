@@ -4224,8 +4224,10 @@ def supported_types():
         'text':   'UTF-8 string.',
         'bboxes': 'List of bounding boxes, optional labels and scores, with declared coordinate format.',
         'label':  'Single class as an int or string. Vocab is declared at the leaderboard level.',
+        'label_list': 'Ordered top-K class predictions. Required `k` is carried alongside the values; metrics use it for top-K accuracy / MRR / Hits@N.',
         'scalar': 'A single float.',
         'json':   "Arbitrary JSON-serialisable structure — escape hatch for shapes that don't fit a typed class yet.",
+        'coco_detections': 'COCO-style detection annotations for one image: per-instance category_id, bbox (xywh), optional segmentation polygons, area, iscrowd.',
     }
     examples = {
         'image':  'bh.Image(arr)                                      # arr: (H,W,3) | (H,W,4) | (H,W) uint8',
@@ -4235,8 +4237,16 @@ def supported_types():
         'text':   'bh.Text("a quick brown fox")',
         'bboxes': 'bh.BBoxes([[x1,y1,x2,y2], ...], labels=["cat"], scores=[0.9], format="xyxy")',
         'label':  'bh.Label("cat")                                    # or bh.Label(3)',
+        'label_list': 'bh.LabelList([3, 5, 1, 9, 2], k=5)                 # top-K predictions; len(values) must equal k',
         'scalar': 'bh.Scalar(0.91)',
         'json':   'bh.Json({"relations": [...]})',
+        'coco_detections':
+            'bh.CocoDetections([                                # one record per detection\n'
+            '    {"category_id": 17, "category_name": "cat",\n'
+            '     "bbox": [x, y, w, h],                         # COCO xywh (NOT xyxy)\n'
+            '     "segmentation": [[x0, y0, x1, y1, ...]],      # zero or more polygons\n'
+            '     "area": 1234.5, "iscrowd": 0},\n'
+            '])',
     }
 
     types_info = []
