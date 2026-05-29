@@ -30,23 +30,38 @@ from benchhub.types import DTYPES, DataType
 _DEFAULT_BASE_URL = "https://runbenchhub.com"
 
 
-def _decode_input_bytes(kind: str, blob: bytes):
-    """Decode a per-sample input blob into a Python-friendly value.
-    Lazy-imports the per-kind libraries so consumers who only need
-    text/scalar samples don't pay the PIL / numpy import cost."""
-    if kind in ("image", "mask"):
-        import io as _io
-        from PIL import Image as _Image
-        return _Image.open(_io.BytesIO(blob))
-    if kind == "depth":
-        # Server returns the colormapped JPG for preview-only depth.
-        # For now we hand back a PIL.Image; metric-grade users can hit
-        # /api/custom_field_depth_data/<id> directly.
-        import io as _io
-        from PIL import Image as _Image
-        return _Image.open(_io.BytesIO(blob))
-    # audio / unknown: hand back raw bytes
-    return blob
+def _decode_input_bytes(kind: str, blob: bytes, params: dict | None = None):
+    """Decode a per-sample input blob into the corresponding `bh.<Kind>`
+    instance — e.g. an image field arrives as a `bh.Image` carrying a
+    `(H, W, 3)` uint8 ndarray, not a bare `PIL.JpegImageFile`. That way
+    `iter_samples()` outputs the same type system the predict side uses.
+
+    The DataType subclasses' `decode()` methods expect canonical
+    encodings (PNG / NPZ / WAV); preview-tier blobs (colormapped JPG
+    depth, waveform PNG audio) aren't canonical, so we fall back to a
+    PIL-wrapped `bh.Image` for those — the user can fetch
+    full-resolution canonical bytes by materialising the LB."""
+    params = params or {}
+    cls = DTYPES.get(kind)
+    if cls is None:
+        return blob
+    try:
+        return cls.decode(blob, params)
+    except Exception:
+        # Preview-tier depth/audio don't round-trip through the
+        # canonical decoder. Fall back to a generic PIL+ndarray wrap
+        # so the caller still gets a `bh.Image`-shaped instance
+        # rather than raw bytes.
+        try:
+            import io as _io
+            import numpy as _np
+            from PIL import Image as _PILImage
+            img = _PILImage.open(_io.BytesIO(blob))
+            if img.mode == "P":
+                img = img.convert("RGB")
+            return DTYPES["image"](_np.asarray(img))
+        except Exception:
+            return blob
 
 
 class _RequestsTransport:
@@ -195,15 +210,18 @@ class Client:
     def iter_samples(self, leaderboard_id: int):
         """Yield `(sample_name, inputs_dict)` for every sample on the
         leaderboard's bound dataset (or its materialised subset, if
-        any). The dict is keyed by input-field name; values are:
+        any). The dict is keyed by input-field name; values are
+        already-decoded `bh.<Kind>` instances — the same type system
+        used on the predict side, so a model that ingests
+        `inputs['img'].array` (uint8 ndarray) round-trips cleanly into
+        `bh.Image(arr)` outputs.
 
-          * **image / mask**: a PIL.Image.Image
-          * **depth**:        a numpy.ndarray (H, W) float32
-          * **audio**:        raw bytes — caller decodes with soundfile
-            or similar
-          * **scalar**:       float
-          * **label**:        int / str (whatever the dataset stores)
-          * **text / json / label_list**: the decoded value
+          * **image / mask / depth**:  bh.Image / bh.Mask / bh.Depth
+          * **audio**:                  bh.Audio
+          * **bboxes / coco_detections**: bh.BBoxes / bh.CocoDetections
+          * **scalar**:                 float
+          * **label**:                  int / str (raw value)
+          * **text / json / label_list**: decoded value (str / dict / list)
 
         Designed for the generated submission notebook: the user
         plugs in their model, calls `sub.predict(name, …)`. No
@@ -216,11 +234,14 @@ class Client:
             inputs: dict[str, Any] = {}
             for field_name, entry in (s.get('inputs') or {}).items():
                 kind = entry.get('kind') or ''
+                params = entry.get('params') or {}
                 if 'url' in entry:
                     blob = self.transport.fetch_bytes(
                         entry['url'], token=self.token or None,
                     )
-                    inputs[field_name] = _decode_input_bytes(kind, blob)
+                    inputs[field_name] = _decode_input_bytes(
+                        kind, blob, params,
+                    )
                 else:
                     inputs[field_name] = entry.get('value')
             yield s['name'], inputs

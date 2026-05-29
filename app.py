@@ -5950,13 +5950,18 @@ def api_leaderboard_samples(leaderboard_id):
         for cf in cf_rows:
             cfs_by_sample.setdefault(cf.sample_id, {})[cf.name] = cf
 
+    # Per-field params (Depth.unit, Mask.num_classes, LabelList.k, ...)
+    # ride alongside the value/url so the client can reconstruct the
+    # canonical bh.<Kind>(...) instance instead of a bare PIL or scalar.
+    input_params = {df.name: (df.get_params() or {}) for df in input_fields}
+
     out_samples = []
     for s in samples_rows:
         bucket = cfs_by_sample.get(s.id, {})
         inputs: dict[str, dict] = {}
         for df in input_fields:
             cf = bucket.get(df.name)
-            entry: dict = {'kind': df.kind}
+            entry: dict = {'kind': df.kind, 'params': input_params[df.name]}
             if cf is None:
                 entry['value'] = None
             elif df.kind in ('image', 'mask', 'depth', 'audio'):
@@ -5986,7 +5991,8 @@ def api_leaderboard_samples(leaderboard_id):
 
     return jsonify({
         'leaderboard_id': lb.id,
-        'input_fields': [{'name': df.name, 'kind': df.kind}
+        'input_fields': [{'name': df.name, 'kind': df.kind,
+                          'params': input_params[df.name]}
                           for df in input_fields],
         'samples': out_samples,
     })
@@ -7199,8 +7205,9 @@ def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     """Take the per-sample inputs dict and return the values BenchHub
     expects for each pred field declared on the LB's contract.
 
-    `inputs` keys are the dataset's role=input fields. File-backed
-    kinds (image / mask / depth) arrive as PIL.Image; inline kinds
+    `inputs` keys are the dataset's role=input fields. Each value is
+    the matching `bh.<Kind>` instance — e.g. `bh.Image` (use `.array`
+    for a (H,W,3) uint8 ndarray), `bh.Mask`, `bh.Depth`. Inline kinds
     (scalar / label / text / json) arrive as their decoded Python value.
 
     Return a dict whose keys are the LB's pred-field names; the values
