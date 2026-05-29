@@ -959,12 +959,6 @@
                             <i class="bi bi-moon-stars-fill fs-4 bh-theme-light-only"></i>
                             <i class="bi bi-sun-fill fs-4 bh-theme-dark-only"></i>
                         </button>
-                        <a href="{{ url_for('app_settings') }}"
-                            class="nav-link text-secondary ms-2 {{ 'active' if request.endpoint == 'app_settings' }}"
-                            title="General Settings">
-                            <i class="bi bi-gear fs-4"></i>
-                        </a>
-
                         {# Auth widget — Phase 1 multi-tenancy. Shows the
                            signed-in user with a dropdown for logout, or a
                            Login link for anonymous visitors. #}

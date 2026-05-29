@@ -1522,48 +1522,12 @@ def inject_settings():
     }
     return {'global_settings': settings_dict}
 
-@app.route('/app-settings', methods=['GET', 'POST'])
-def app_settings():
-    if request.method == 'POST':
-        theme_mode = request.form.get('theme_mode', 'dark')
-        scalar_width = request.form.get('scalar_width', '150px')
-        image_width = request.form.get('image_width', '300px')
-        metric_chart_width = request.form.get('metric_chart_width', '300px')
-        tags_width = request.form.get('tags_width', '150px')
-        config_width = request.form.get('config_width', '150px')
-        name_width = request.form.get('name_width', '150px')
-        histogram_width = request.form.get('histogram_width', '150px')
-        
-        # We redirect back to the same page but with cookies set
-        resp = make_response(redirect(url_for('app_settings')))
-        resp.set_cookie('theme_mode', theme_mode, max_age=30*24*60*60) # 30 days
-        # Store all widths in cookies to make them per-user
-        resp.set_cookie('scalar_width', scalar_width, max_age=30*24*60*60)
-        resp.set_cookie('image_width', image_width, max_age=30*24*60*60)
-        resp.set_cookie('metric_chart_width', metric_chart_width, max_age=30*24*60*60)
-        resp.set_cookie('tags_width', tags_width, max_age=30*24*60*60)
-        resp.set_cookie('config_width', config_width, max_age=30*24*60*60)
-        resp.set_cookie('name_width', name_width, max_age=30*24*60*60)
-        resp.set_cookie('histogram_width', histogram_width, max_age=30*24*60*60)
-        
-        flash('General settings updated successfully!', 'success')
-        return resp
-        
-    # GET: Prepare current settings from cookies or global defaults
-    settings = {
-        'theme_mode': request.cookies.get('theme_mode', global_settings.theme_mode),
-        'scalar_width': request.cookies.get('scalar_width', global_settings.scalar_width),
-        'image_width': request.cookies.get('image_width', global_settings.image_width),
-        'metric_chart_width': request.cookies.get('metric_chart_width', '300px'),
-        'tags_width': request.cookies.get('tags_width', '150px'),
-        'config_width': request.cookies.get('config_width', '150px'),
-        'name_width': request.cookies.get('name_width', '150px'),
-        'histogram_width': request.cookies.get('histogram_width', '150px')
-    }
-    return render_template('app_settings.html', settings=settings)
-
-
 # --- End Global Settings ---
+# (The /app-settings page was dropped — column widths use the cookie-
+# clamped defaults wired into the inject_settings context processor
+# above, and the theme is toggled via the navbar button which writes
+# the `theme_mode` cookie directly. The GlobalSettings class is kept
+# because the context processor still pulls defaults from it.)
 
 # (Removed in projects-removal refactor:
 #   - load_project_context @before_request
