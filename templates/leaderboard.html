@@ -1834,13 +1834,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <code>BENCHHUB_API_TOKEN</code> as a
             <a href="https://colab.research.google.com/notebooks/secrets.ipynb"
                target="_blank" rel="noopener">Colab Secret</a> and run.
-            Locally, export it as an env var:
         </p>
-        <pre class=" p-3 rounded small mb-2" style="font-size: 0.85em;"><code>pip install benchhub-client
-export BENCHHUB_API_TOKEN=&lt;your token from {{ url_for('account_settings') }}&gt;
+        <p class="small text-body-secondary mb-1">
+            Submitting from your own runtime instead?
+            <strong>First install the client from PyPI</strong>
+            (<a href="https://pypi.org/project/benchhub-client/"
+                target="_blank" rel="noopener"><code>benchhub-client</code></a>)
+            and export your API token, then paste the snippet below:
+        </p>
+        <pre class=" p-3 rounded small mb-2" style="font-size: 0.85em;"><code># 1) install the client (one-time per environment)
+pip install benchhub-client
 
-# Inline use (no script download). client.iter_samples() streams the
-# LB's bound dataset straight from BenchHub — no local copy needed.
+# 2) get your token from {{ url_for('account_settings') }} and export it
+export BENCHHUB_API_TOKEN=&lt;your token&gt;
+
+# 3) Inline use (no script download). client.iter_samples() streams the
+#    LB's bound dataset straight from BenchHub — no local copy needed.
 import benchhub as bh
 client = bh.Client()                                    # reads $BENCHHUB_API_TOKEN
 
