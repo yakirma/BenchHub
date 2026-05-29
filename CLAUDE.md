@@ -42,10 +42,18 @@ The catalog now defaults to a lightweight preview tier; full-resolution bytes on
 - `extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)` for file-backed `gt_<field>` lookups consults `benchhub.lb_materialize.materialized_or_preview_path()`. Materialised file wins when present; preview fallback otherwise. Inline kinds (scalar/label/text/json) unaffected.
 - `execute_visualization` route passes `leaderboard_id=lv.leaderboard_id`, so the COCO overlay viz on an LB renders against full-resolution images even though the dataset row itself is preview-only.
 
-**Quotas:**
-- Default per-user storage: **10 GB** (was 50 MB). Migration in `check_and_migrate_db` bumps any existing user still on the old default.
-- Admins still bypass via `is_admin()`.
-- Quota is post-flight (warning, no refusal) — chose this over preflight in the wizard answers.
+**Quotas (split-bucket, Phase 13):**
+- Every user has two byte caps on `User`:
+  - `quota_public_max_bytes` — **100 GB** default. Charged whenever a row whose own `visibility == 'public'` is created or grown. Covers public Datasets + LB materialisations owned by the user.
+  - `quota_private_max_bytes` — **10 GB** default. Charged for `visibility in {'private', 'unlisted', NULL}`. Working space for unpublished content.
+- `check_quota(user, *, kind='dataset_create', incoming_bytes, visibility=...)` reads the bucket implied by the row being written; the visibility kwarg is **required** for new code (default `'private'` fails safe on the smaller bucket).
+- `storage_used_bytes(user, *, visibility=...)` partitions per bucket; pass `None` for the legacy total.
+- Helpers live next to each other in `app.py` (~1763–1944): `_visibility_bucket`, `storage_used_bytes`, `quota_cap_for`, `check_quota`.
+- **Publish flip pre-flight**: `set_dataset_visibility` and `set_leaderboard_visibility` reject a private→public flip when the user's public bucket can't absorb the moving bytes. Surfaces a flash and 302s back to the settings page. Admins bypass.
+- Submission ZIPs are not charged to either bucket — the LB owner already paid for the materialised inputs the submitter is responding to.
+- The legacy `quota_max_storage_bytes` column stays around for back-compat with old admin tools but `check_quota` no longer reads it.
+- Admins still bypass entirely via `is_admin()`.
+- Quota gate is pre-flight on uploads (refusal) and pre-flight on publish-flip (refusal); the post-flight write of `Dataset.storage_bytes` is the authoritative number used by future gauges.
 
 **Key files:**
 - `benchhub/preview.py` — `image_preview`, `depth_preview` (turbo colormap), `mask_preview` (deterministic palette), `audio_preview` (waveform PNG), single dispatch via `render_preview(kind, payload)`.

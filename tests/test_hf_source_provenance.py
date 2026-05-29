@@ -152,7 +152,8 @@ def test_hf_commit_rejects_over_quota_before_download(client, db_session, monkey
     # is the contract under test here.
     import app as _app
     monkeypatch.setattr(_app, 'check_quota',
-                        lambda u, *, kind, incoming_bytes=0: (False, 'Over quota (test)'))
+                        lambda u, *, kind, incoming_bytes=0, visibility='private':
+                            (False, 'Over quota (test)'))
 
     monkeypatch.setattr(hfc, 'fetch_croissant',
                         lambda repo_id, **kw: _load_fixture('croissant_cifar10.json'))

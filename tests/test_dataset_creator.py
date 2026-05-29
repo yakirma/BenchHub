@@ -236,7 +236,9 @@ def test_end_to_end_over_quota_returns_413(client, db_session):
         email='maxed@bench.local', display_name='maxed',
         oauth_provider='github', oauth_sub='maxed-1',
         api_token=generate_api_token(),
-        quota_max_storage_bytes=10,  # tiny cap for the test
+        quota_max_storage_bytes=10,  # legacy cap; not enforced
+        quota_public_max_bytes=10,
+        quota_private_max_bytes=10,  # both buckets at 10 bytes
     )
     db.session.add(u); db.session.commit()
     bh_client = _client_with_transport(client, u)
@@ -248,7 +250,7 @@ def test_end_to_end_over_quota_returns_413(client, db_session):
     with pytest.raises(bh.BenchHubAPIError) as excinfo:
         creator.create()
     assert excinfo.value.status_code == 413
-    assert "Storage limit" in excinfo.value.payload["error"]
+    assert "storage limit" in excinfo.value.payload["error"].lower()
 
 
 def test_end_to_end_missing_api_token_gets_401(client, db_session):

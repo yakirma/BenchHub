@@ -1139,10 +1139,29 @@ class User(db.Model):
     # (so a malicious user can't fill the volume). Defaults below are the
     # free-tier values; bump per-user when you launch a paid tier. NULL caps
     # are allowed → "unlimited" (used for the `system` curated-content user).
+    #
+    # Two-bucket quota (Phase 13 split):
+    #   * quota_public_max_bytes  — datasets + LB materialisations whose
+    #     visibility == 'public'. Higher cap because shared content gets a
+    #     bigger budget.
+    #   * quota_private_max_bytes — visibility in {'private','unlisted'}.
+    #     Tighter cap; flipping a row to public on the Publish button
+    #     pre-flights the public bucket.
+    # The legacy quota_max_storage_bytes column stays around for backward-
+    # compat (old admin tools + the migration's first boot still read it);
+    # the split fields are the source of truth for check_quota now.
     quota_max_storage_bytes = db.Column(
         db.BigInteger, nullable=False, default=10 * 1024 ** 3,
         server_default=str(10 * 1024 ** 3),
-    )  # 10 GB — covers both preview ownership and LB materializations
+    )  # 10 GB — legacy total; superseded by the two split caps below
+    quota_public_max_bytes = db.Column(
+        db.BigInteger, nullable=False, default=100 * 1024 ** 3,
+        server_default=str(100 * 1024 ** 3),
+    )  # 100 GB default for everything visibility='public'
+    quota_private_max_bytes = db.Column(
+        db.BigInteger, nullable=False, default=10 * 1024 ** 3,
+        server_default=str(10 * 1024 ** 3),
+    )  # 10 GB default for private + unlisted
     quota_max_datasets = db.Column(
         db.Integer, nullable=False, default=5, server_default='5',
     )
@@ -1741,18 +1760,71 @@ def visibility_required(model_cls, id_kwarg='id'):
 # everyone else. Each helper below is the source of truth for one cap;
 # enforce_quota_or_flash composes them at upload routes.
 
-def storage_used_bytes(user):
-    """Total bytes this user is currently consuming on the data volume.
-    Sums the cached `Dataset.storage_bytes` (set during dataset ingest)
-    over all of the user's datasets. Submission ZIPs are not counted
-    against the user's quota — the leaderboard owner pays for inbound
-    submissions. Treats NULL as 0."""
+def _visibility_bucket(visibility):
+    """Map a row's visibility string onto the two quota buckets.
+    'public' → 'public'; everything else (private, unlisted, NULL) →
+    'private'. Centralised so call sites don't have to think about it."""
+    return 'public' if visibility == 'public' else 'private'
+
+
+def storage_used_bytes(user, *, visibility=None):
+    """Bytes this user currently consumes on the data volume.
+    Sums `Dataset.storage_bytes` over the user's datasets plus
+    `LeaderboardMaterialization.storage_bytes` over LBs they own (LB
+    owners pay for the full-resolution subset they chose). Submission
+    ZIPs are still not counted — the LB owner already paid for the
+    materialised inputs the submitter is responding to.
+
+    `visibility`:
+      - None      → total across both buckets (legacy callers)
+      - 'public'  → only rows whose own visibility is 'public'
+      - 'private' → rows whose visibility is private/unlisted/NULL
+    Treats NULL bytes as 0."""
     if user is None:
         return 0
-    total = db.session.query(func.coalesce(func.sum(Dataset.storage_bytes), 0)).filter(
+    bucket = _visibility_bucket(visibility) if visibility else None
+
+    ds_q = db.session.query(func.coalesce(func.sum(Dataset.storage_bytes), 0)).filter(
         Dataset.owner_user_id == user.id
-    ).scalar()
-    return int(total or 0)
+    )
+    if bucket == 'public':
+        ds_q = ds_q.filter(Dataset.visibility == 'public')
+    elif bucket == 'private':
+        ds_q = ds_q.filter(
+            (Dataset.visibility != 'public') | (Dataset.visibility.is_(None))
+        )
+    ds_total = int(ds_q.scalar() or 0)
+
+    mat_q = (
+        db.session.query(func.coalesce(func.sum(LeaderboardMaterialization.storage_bytes), 0))
+        .join(Leaderboard, Leaderboard.id == LeaderboardMaterialization.leaderboard_id)
+        .filter(Leaderboard.owner_user_id == user.id)
+    )
+    if bucket == 'public':
+        mat_q = mat_q.filter(Leaderboard.visibility == 'public')
+    elif bucket == 'private':
+        mat_q = mat_q.filter(
+            (Leaderboard.visibility != 'public') | (Leaderboard.visibility.is_(None))
+        )
+    mat_total = int(mat_q.scalar() or 0)
+
+    return ds_total + mat_total
+
+
+def quota_cap_for(user, visibility):
+    """The byte cap that applies to a write of `visibility` for `user`.
+    Falls back to the legacy single-bucket value if the split column is
+    NULL/0 (which can happen briefly during a half-applied migration)."""
+    bucket = _visibility_bucket(visibility)
+    if bucket == 'public':
+        v = int(getattr(user, 'quota_public_max_bytes', 0) or 0)
+        if v > 0:
+            return v
+    else:
+        v = int(getattr(user, 'quota_private_max_bytes', 0) or 0)
+        if v > 0:
+            return v
+    return int(getattr(user, 'quota_max_storage_bytes', 0) or 0)
 
 
 def daily_submission_count(user):
@@ -1787,9 +1859,9 @@ def _format_bytes(n):
 @app.route('/me/usage')
 @login_required
 def user_usage():
-    """Per-user storage breakdown + quota. Shows total used vs the
-    user's `quota_max_storage_bytes` cap (default 50MB), per-dataset
-    rows ordered by size, and submission-rate state."""
+    """Per-user storage breakdown + quota. Shows the two split caps
+    (public bucket vs private/unlisted bucket), per-dataset rows
+    ordered by size, and submission-rate state."""
     user = g.current_user
     ds_rows = (
         Dataset.query
@@ -1797,20 +1869,26 @@ def user_usage():
         .order_by(Dataset.storage_bytes.desc().nullslast())
         .all()
     )
+    used_public = storage_used_bytes(user, visibility='public')
+    used_private = storage_used_bytes(user, visibility='private')
+    cap_public = quota_cap_for(user, 'public')
+    cap_private = quota_cap_for(user, 'private')
     items = []
     for ds in ds_rows:
+        ds_bucket = _visibility_bucket(getattr(ds, 'visibility', None))
+        ds_cap = cap_public if ds_bucket == 'public' else cap_private
         items.append({
             'id': ds.id,
             'name': ds.name,
             'category': ds.category,
+            'visibility': getattr(ds, 'visibility', 'private'),
             'bytes': int(ds.storage_bytes or 0),
             'pct': (
-                float(ds.storage_bytes or 0) * 100.0
-                / max(int(user.quota_max_storage_bytes or 1), 1)
+                float(ds.storage_bytes or 0) * 100.0 / max(int(ds_cap or 1), 1)
             ),
         })
-    used = storage_used_bytes(user)
-    cap = int(user.quota_max_storage_bytes or 200 * 1024 * 1024)
+    used = used_public + used_private
+    cap = cap_public + cap_private
     # Admins bypass every quota cap in `check_quota` (commit f36fe8f),
     # so the storage / dataset-count / submission-rate columns above
     # are cosmetic for them. Surface that to the template so the
@@ -1826,6 +1904,16 @@ def user_usage():
         used_pct=(used * 100.0 / max(cap, 1)),
         used_human=_format_bytes(used),
         cap_human=_format_bytes(cap),
+        used_public_bytes=used_public,
+        used_public_human=_format_bytes(used_public),
+        cap_public_bytes=cap_public,
+        cap_public_human=_format_bytes(cap_public),
+        used_public_pct=(used_public * 100.0 / max(cap_public, 1)),
+        used_private_bytes=used_private,
+        used_private_human=_format_bytes(used_private),
+        cap_private_bytes=cap_private,
+        cap_private_human=_format_bytes(cap_private),
+        used_private_pct=(used_private * 100.0 / max(cap_private, 1)),
         dataset_count=len(items),
         ds_count_cap=user.quota_max_datasets,
         sub_count_24h=daily_submission_count(user),
@@ -1834,10 +1922,16 @@ def user_usage():
     )
 
 
-def check_quota(user, *, kind, incoming_bytes=0):
+def check_quota(user, *, kind, incoming_bytes=0, visibility='private'):
     """Return (ok, message). `kind` is one of:
-       - 'dataset_create'  : count cap + storage cap (incoming_bytes)
-       - 'submission'      : daily rate cap
+       - 'dataset_create'  : count cap + storage cap (incoming_bytes,
+                             charged to the bucket implied by `visibility`)
+       - 'submission'      : daily rate cap (visibility is ignored)
+
+    `visibility` is the visibility of the *row being written* — public
+    writes charge the public bucket, everything else charges the private
+    bucket. Defaults to 'private' so callers that pre-date the split keep
+    failing-safe on the smaller bucket.
     """
     if user is None:
         return False, "Sign in required."
@@ -1855,12 +1949,15 @@ def check_quota(user, *, kind, incoming_bytes=0):
                 f"Dataset limit reached ({user.quota_max_datasets}). "
                 "Delete an existing dataset or contact us for a higher cap."
             )
-        used = storage_used_bytes(user)
-        if used + incoming_bytes > user.quota_max_storage_bytes:
+        bucket = _visibility_bucket(visibility)
+        used = storage_used_bytes(user, visibility=bucket)
+        cap = quota_cap_for(user, bucket)
+        if used + incoming_bytes > cap:
+            bucket_label = 'public' if bucket == 'public' else 'private/unlisted'
             return False, (
-                f"Storage limit would be exceeded: "
+                f"{bucket_label.capitalize()} storage limit would be exceeded: "
                 f"{_format_bytes(used)} used + {_format_bytes(incoming_bytes)} new "
-                f"> {_format_bytes(user.quota_max_storage_bytes)} cap."
+                f"> {_format_bytes(cap)} cap."
             )
         return True, None
 
@@ -2236,6 +2333,7 @@ def admin_user_storage():
         db.session.query(
             User.id, User.email, User.display_name,
             User.is_admin, User.quota_max_storage_bytes,
+            User.quota_public_max_bytes, User.quota_private_max_bytes,
             User.quota_max_datasets, User.quota_max_submissions_per_day,
             func.count(Dataset.id),
             func.coalesce(func.sum(Dataset.storage_bytes), 0),
@@ -2259,12 +2357,43 @@ def admin_user_storage():
         .all()
     )
 
+    # Per-user public vs private dataset bytes — single grouped query
+    # keyed by (owner, bucket) avoids round-tripping per user.
+    ds_split = {}
+    for uid, vis, total in db.session.query(
+        Dataset.owner_user_id,
+        Dataset.visibility,
+        func.coalesce(func.sum(Dataset.storage_bytes), 0),
+    ).group_by(Dataset.owner_user_id, Dataset.visibility).all():
+        bucket = 'public' if vis == 'public' else 'private'
+        ds_split.setdefault(uid, {'public': 0, 'private': 0})
+        ds_split[uid][bucket] += int(total or 0)
+
+    # LB materialisation bytes are charged to the LB owner, and the LB's
+    # own visibility decides the bucket.
+    mat_split = {}
+    for uid, vis, total in db.session.query(
+        Leaderboard.owner_user_id,
+        Leaderboard.visibility,
+        func.coalesce(func.sum(LeaderboardMaterialization.storage_bytes), 0),
+    ).join(
+        LeaderboardMaterialization,
+        LeaderboardMaterialization.leaderboard_id == Leaderboard.id,
+    ).group_by(Leaderboard.owner_user_id, Leaderboard.visibility).all():
+        bucket = 'public' if vis == 'public' else 'private'
+        mat_split.setdefault(uid, {'public': 0, 'private': 0})
+        mat_split[uid][bucket] += int(total or 0)
+
     items = []
     total_bytes = 0
     for (uid, email, name, is_admin_flag, storage_cap,
-         ds_cap, sub_cap, ds_count, storage_used) in rows:
+         pub_cap, priv_cap, ds_cap, sub_cap, ds_count, storage_used) in rows:
         storage_used = int(storage_used or 0)
         total_bytes += storage_used
+        used_pub = (ds_split.get(uid, {}).get('public', 0)
+                    + mat_split.get(uid, {}).get('public', 0))
+        used_priv = (ds_split.get(uid, {}).get('private', 0)
+                     + mat_split.get(uid, {}).get('private', 0))
         items.append({
             'id': uid,
             'email': email or '',
@@ -2272,6 +2401,10 @@ def admin_user_storage():
             'is_admin': bool(is_admin_flag),
             'storage_used': storage_used,
             'storage_cap': int(storage_cap or 0),
+            'public_used': used_pub,
+            'public_cap': int(pub_cap or 0),
+            'private_used': used_priv,
+            'private_cap': int(priv_cap or 0),
             'dataset_count': int(ds_count or 0),
             'dataset_cap': int(ds_cap or 0),
             'sub_24h': int(sub_24h.get(uid, 0)),
@@ -5536,6 +5669,31 @@ def set_leaderboard_visibility(leaderboard_id):
     if target not in ('public', 'private', 'unlisted'):
         flash("Invalid visibility.", "warning")
         return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    # Publish (→public) pre-flight: a private LB's materialisation
+    # bytes are currently charged to the private bucket. Flipping the
+    # LB public moves those bytes onto the public bucket, which must
+    # have room. Admins bypass.
+    if (target == 'public' and lb.visibility != 'public'
+            and not is_admin(g.current_user)):
+        owner = lb.owner or g.current_user
+        mat_total = int(
+            db.session.query(func.coalesce(
+                func.sum(LeaderboardMaterialization.storage_bytes), 0
+            ))
+            .filter(LeaderboardMaterialization.leaderboard_id == lb.id)
+            .scalar() or 0
+        )
+        used_pub = storage_used_bytes(owner, visibility='public')
+        cap_pub = quota_cap_for(owner, 'public')
+        if used_pub + mat_total > cap_pub:
+            flash(
+                f"Can't publish — public-bucket cap would be exceeded: "
+                f"{_format_bytes(used_pub)} used + "
+                f"{_format_bytes(mat_total)} moving > "
+                f"{_format_bytes(cap_pub)} cap.",
+                "warning",
+            )
+            return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
     lb.visibility = target
     db.session.commit()
     if target == 'public':
@@ -5557,6 +5715,23 @@ def set_dataset_visibility(dataset_id):
     if target not in ('public', 'private', 'unlisted'):
         flash("Invalid visibility.", "warning")
         return redirect(url_for('dataset_settings', dataset_id=ds.id))
+    # Publish pre-flight: moving a private dataset to public shifts
+    # its `storage_bytes` onto the public quota bucket. Admins bypass.
+    if (target == 'public' and ds.visibility != 'public'
+            and not is_admin(g.current_user)):
+        owner = ds.owner or g.current_user
+        ds_bytes = int(ds.storage_bytes or 0)
+        used_pub = storage_used_bytes(owner, visibility='public')
+        cap_pub = quota_cap_for(owner, 'public')
+        if used_pub + ds_bytes > cap_pub:
+            flash(
+                f"Can't publish — public-bucket cap would be exceeded: "
+                f"{_format_bytes(used_pub)} used + "
+                f"{_format_bytes(ds_bytes)} moving > "
+                f"{_format_bytes(cap_pub)} cap.",
+                "warning",
+            )
+            return redirect(url_for('dataset_settings', dataset_id=ds.id))
     ds.visibility = target
     db.session.commit()
     flash(f'"{ds.name}" is now {target}.', "success")
@@ -6157,8 +6332,11 @@ def admin_import_from_hf_commit():
             est_bytes = int(split_bytes * min(sample_cap, split_rows) / split_rows)
         est_bytes = int(est_bytes * 1.5)  # materialization headroom
     if est_bytes > 0:
+        # Admin HF imports land as visibility='public' (see Dataset row
+        # below), so charge the public bucket.
         ok, msg = check_quota(g.current_user, kind='dataset_create',
-                              incoming_bytes=est_bytes)
+                              incoming_bytes=est_bytes,
+                              visibility='public')
         if not ok:
             flash(f"{msg} (estimated {_format_bytes(est_bytes)} for this import)",
                   'danger')
@@ -6349,7 +6527,8 @@ def _ingest_typed_dataset_zip(upload, *, owner_user, visibility):
                 except OSError:
                     continue
         ok, msg = check_quota(owner_user, kind='dataset_create',
-                              incoming_bytes=incoming_bytes)
+                              incoming_bytes=incoming_bytes,
+                              visibility=visibility)
         if not ok:
             return None, 413, msg
 
@@ -11815,10 +11994,19 @@ def datasets_list():
     })
 
     # Storage gauge for the upload card. NULL user (anon) and 0-cap
-    # users render the gauge in a "logged-out" state.
+    # users render the gauge in a "logged-out" state. Total cap stays
+    # the sum of the two split caps so the legacy gauge keeps showing a
+    # meaningful "X / Y" number; the per-bucket breakdown lives on
+    # /settings/storage.
     _viewer = g.current_user
     storage_used = storage_used_bytes(_viewer) if _viewer else 0
-    storage_cap = int(_viewer.quota_max_storage_bytes) if _viewer else 0
+    storage_cap_public = (
+        int(quota_cap_for(_viewer, 'public')) if _viewer else 0
+    )
+    storage_cap_private = (
+        int(quota_cap_for(_viewer, 'private')) if _viewer else 0
+    )
+    storage_cap = storage_cap_public + storage_cap_private
 
     # Community dataset-import requests (voting list). Sorted by
     # vote count desc so the most-wanted bubbles up. Pending-only by
@@ -11857,6 +12045,14 @@ def datasets_list():
                            known_categories=known_categories,
                            storage_used=storage_used,
                            storage_cap=storage_cap,
+                           storage_used_public=(
+                               storage_used_bytes(_viewer, visibility='public')
+                               if _viewer else 0),
+                           storage_used_private=(
+                               storage_used_bytes(_viewer, visibility='private')
+                               if _viewer else 0),
+                           storage_cap_public=storage_cap_public,
+                           storage_cap_private=storage_cap_private,
                            format_bytes=_format_bytes,
                            dataset_requests=dataset_requests)
 
@@ -14137,7 +14333,14 @@ def dataset_upload_api():
 
     # Phase 7 quota gate (now possible because the request is authenticated).
     incoming = _path_size_bytes(temp_zip_path)
-    ok, msg = check_quota(g.current_user, kind='dataset_create', incoming_bytes=incoming)
+    # process_dataset_zip below creates a Dataset row with the default
+    # visibility (private for regular users, public for admins). Charge
+    # the corresponding bucket.
+    api_default_vis = 'public' if is_admin(g.current_user) else 'private'
+    ok, msg = check_quota(
+        g.current_user, kind='dataset_create',
+        incoming_bytes=incoming, visibility=api_default_vis,
+    )
     if not ok:
         try:
             os.remove(temp_zip_path)
@@ -15928,6 +16131,31 @@ def check_and_migrate_db():
                 except Exception as e:
                     print(f"Migration error (quota bump): {e}")
 
+                # --- Phase 13 split-quota backfill ---
+                # ALTER ADD COLUMN above already gives every user the new
+                # 100 GB / 10 GB defaults; this block only fires if an
+                # earlier partial migration left someone at 0.
+                try:
+                    PUB = 100 * 1024 ** 3
+                    PRIV = 10 * 1024 ** 3
+                    cursor.execute(
+                        'UPDATE user SET quota_public_max_bytes = ? '
+                        'WHERE quota_public_max_bytes IS NULL OR quota_public_max_bytes <= 0',
+                        (PUB,),
+                    )
+                    if cursor.rowcount:
+                        print(f"Backfilled {cursor.rowcount} user(s) with 100 GB public quota")
+                    cursor.execute(
+                        'UPDATE user SET quota_private_max_bytes = ? '
+                        'WHERE quota_private_max_bytes IS NULL OR quota_private_max_bytes <= 0',
+                        (PRIV,),
+                    )
+                    if cursor.rowcount:
+                        print(f"Backfilled {cursor.rowcount} user(s) with 10 GB private quota")
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (split quota backfill): {e}")
+
                 # --- DatasetRequest + DatasetRequestVote tables ---
                 try:
                     cursor.execute(
@@ -16374,6 +16602,13 @@ def check_and_migrate_db():
                     ("user",                 "quota_max_storage_bytes",        f"BIGINT NOT NULL DEFAULT {200 * 1024 * 1024}"),
                     ("user",                 "quota_max_datasets",             "INTEGER NOT NULL DEFAULT 5"),
                     ("user",                 "quota_max_submissions_per_day",  "INTEGER NOT NULL DEFAULT 50"),
+                    # Phase 13: split storage budget. 100 GB for content the
+                    # user has chosen to publish, 10 GB for private/unlisted
+                    # working space. Existing rows pick up these defaults via
+                    # the ALTER ADD COLUMN; the legacy single-bucket cap above
+                    # is retained for back-compat but no longer enforced.
+                    ("user",                 "quota_public_max_bytes",         f"BIGINT NOT NULL DEFAULT {100 * 1024 ** 3}"),
+                    ("user",                 "quota_private_max_bytes",        f"BIGINT NOT NULL DEFAULT {10 * 1024 ** 3}"),
                     # Phase 8: programmatic-access token. Nullable; users
                     # opt-in by clicking "Generate" in /settings/api_tokens.
                     ("user",                 "api_token",                      "VARCHAR(64)"),

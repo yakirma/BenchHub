@@ -44,12 +44,14 @@ def test_non_admin_still_constrained(db_session):
                 oauth_provider='github', oauth_sub='u-1',
                 is_admin=False,
                 quota_max_storage_bytes=50 * 1024 * 1024,
+                quota_public_max_bytes=100 * 1024 ** 3,
+                quota_private_max_bytes=10 * 1024 ** 3,
                 quota_max_datasets=5)
     db.session.add(user); db.session.commit()
     ok, msg = check_quota(user, kind='dataset_create',
                           incoming_bytes=10**12)
     assert ok is False
-    assert 'Storage limit would be exceeded' in msg
+    assert 'storage limit would be exceeded' in msg.lower()
 
 
 def test_admin_bypasses_daily_submission_cap(db_session):

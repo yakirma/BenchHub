@@ -10,7 +10,8 @@
                 {% if unlimited %}
                 You're an admin — no storage cap applies.
                 {% else %}
-                Where your {{ cap_human }} cap is going.
+                {{ cap_public_human }} for published content,
+                {{ cap_private_human }} for private working space.
                 {% endif %}
             </p>
         </div>
@@ -21,24 +22,52 @@
 
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
+            {% if unlimited %}
             <div class="d-flex justify-content-between align-items-baseline mb-2">
                 <strong>Used</strong>
                 <span class="font-monospace">
-                    {{ used_human }}
-                    {% if unlimited %}<span class="text-body-secondary">/ unlimited</span>
-                    {% else %}/ {{ cap_human }}{% endif %}
+                    {{ used_human }} <span class="text-body-secondary">/ unlimited</span>
                 </span>
             </div>
-            {% if not unlimited %}
-            <div class="progress" style="height: 14px;" role="progressbar"
-                 aria-valuenow="{{ used_pct|round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100">
-                <div class="progress-bar {% if used_pct > 90 %}bg-danger{% elif used_pct > 70 %}bg-warning{% else %}bg-primary{% endif %}"
-                     style="width: {{ used_pct|round(1) }}%;">
-                    {{ used_pct|round(0, 'floor')|int }}%
+            {% else %}
+            <div class="row g-4">
+                <div class="col-md-6">
+                    <div class="d-flex justify-content-between align-items-baseline mb-2">
+                        <strong><i class="bi bi-globe2 me-1 text-success"></i>Public</strong>
+                        <span class="font-monospace small">{{ used_public_human }} / {{ cap_public_human }}</span>
+                    </div>
+                    <div class="progress" style="height: 12px;" role="progressbar"
+                         aria-valuenow="{{ used_public_pct|round(0, 'floor') }}"
+                         aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar {% if used_public_pct > 90 %}bg-danger{% elif used_public_pct > 70 %}bg-warning{% else %}bg-success{% endif %}"
+                             style="width: {{ used_public_pct|round(1) }}%;">
+                            {{ used_public_pct|round(0, 'floor')|int }}%
+                        </div>
+                    </div>
+                    <p class="small text-body-secondary mt-2 mb-0">
+                        Datasets &amp; leaderboards you've published. Bigger budget because public content is shared.
+                    </p>
+                </div>
+                <div class="col-md-6">
+                    <div class="d-flex justify-content-between align-items-baseline mb-2">
+                        <strong><i class="bi bi-lock-fill me-1 text-danger"></i>Private / unlisted</strong>
+                        <span class="font-monospace small">{{ used_private_human }} / {{ cap_private_human }}</span>
+                    </div>
+                    <div class="progress" style="height: 12px;" role="progressbar"
+                         aria-valuenow="{{ used_private_pct|round(0, 'floor') }}"
+                         aria-valuemin="0" aria-valuemax="100">
+                        <div class="progress-bar {% if used_private_pct > 90 %}bg-danger{% elif used_private_pct > 70 %}bg-warning{% else %}bg-primary{% endif %}"
+                             style="width: {{ used_private_pct|round(1) }}%;">
+                            {{ used_private_pct|round(0, 'floor')|int }}%
+                        </div>
+                    </div>
+                    <p class="small text-body-secondary mt-2 mb-0">
+                        Working space for unpublished content. Publish a dataset/leaderboard to move it onto the public bucket.
+                    </p>
                 </div>
             </div>
             {% endif %}
-            <div class="row mt-3 small">
+            <div class="row mt-3 small border-top pt-3">
                 <div class="col-md-6">
                     <i class="bi bi-database me-1"></i>{{ dataset_count }}{% if not unlimited %} / {{ ds_count_cap }}{% endif %} datasets
                 </div>
@@ -56,7 +85,16 @@
         <a href="{{ url_for('dataset_view', dataset_id=it.id) }}"
            class="list-group-item list-group-item-action">
             <div class="d-flex justify-content-between align-items-center gap-3 mb-1">
-                <span class="fw-semibold text-truncate">{{ it.name }}</span>
+                <span class="fw-semibold text-truncate">
+                    {{ it.name }}
+                    {% if it.visibility == 'public' %}
+                        <i class="bi bi-globe2 text-success small ms-1" title="public"></i>
+                    {% elif it.visibility == 'unlisted' %}
+                        <i class="bi bi-link-45deg text-warning small ms-1" title="unlisted"></i>
+                    {% else %}
+                        <i class="bi bi-lock-fill text-danger small ms-1" title="private"></i>
+                    {% endif %}
+                </span>
                 <span class="font-monospace small text-body-secondary">{{ '%.1f MB'|format(it.bytes / 1024.0 / 1024.0) }}</span>
             </div>
             <div class="progress" style="height: 6px;">
