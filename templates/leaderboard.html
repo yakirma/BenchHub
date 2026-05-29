@@ -1840,12 +1840,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             <strong>First install the client from PyPI</strong>
             (<a href="https://pypi.org/project/benchhub-client/"
                 target="_blank" rel="noopener"><code>benchhub-client</code></a>)
-            and export your API token, then paste the snippet below:
+            and export your API token, then paste the snippet below.
+            Grab the token from
+            <a href="{{ url_for('api_tokens') }}">Settings → API tokens</a>
+            (generate one if you haven't already).
         </p>
         <pre class=" p-3 rounded small mb-2" style="font-size: 0.85em;"><code># 1) install the client (one-time per environment)
 pip install benchhub-client
 
-# 2) get your token from {{ url_for('account_settings') }} and export it
+# 2) copy your token from {{ url_for('api_tokens', _external=True) }}
+#    (Settings → API tokens). Hit "Generate" the first time, then export it:
 export BENCHHUB_API_TOKEN=&lt;your token&gt;
 
 # 3) Inline use (no script download). client.iter_samples() streams the
