@@ -1854,10 +1854,11 @@ export BENCHHUB_API_TOKEN=&lt;your token&gt;
 
 # 3) Inline use (no script download). client.iter_samples() streams the
 #    LB's bound dataset straight from BenchHub — no local copy needed.
+from typing import Any
 import benchhub as bh
-client = bh.Client()                                    # reads $BENCHHUB_API_TOKEN
+client: bh.Client = bh.Client()                         # reads $BENCHHUB_API_TOKEN
 
-def my_model(inputs):
+def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     # `inputs` is a dict keyed by the dataset's role=input fields.
     # File-backed kinds (image / mask / depth) arrive as PIL.Image;
     # inline kinds (scalar / label / text / json) arrive as their value.
@@ -1865,8 +1866,10 @@ def my_model(inputs):
     raise NotImplementedError("Plug in your model.")
 
 sub = client.submission(lb_id={{ leaderboard.id }})
+sample_name: str
+inputs: dict[str, Any]
 for sample_name, inputs in client.iter_samples({{ leaderboard.id }}):
-    predictions = my_model(inputs)
+    predictions: dict[str, Any] = my_model(inputs)
     sub.predict(sample_name,
 {%- for line in submission_predict_lines %}
 {{ line }}

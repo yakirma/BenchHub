@@ -7170,11 +7170,12 @@ Then:
     python {lb.name.replace(' ', '_')}_submit.py
 """
 import os
+from typing import Any
 import numpy as np
 import benchhub as bh
 
-LEADERBOARD_ID = {lb.id}
-BASE_URL = {(_get_base_url() or 'https://runbenchhub.com')!r}
+LEADERBOARD_ID: int = {lb.id}
+BASE_URL: str = {(_get_base_url() or 'https://runbenchhub.com')!r}
 
 if not os.environ.get('BENCHHUB_API_TOKEN'):
     raise SystemExit(
@@ -7182,8 +7183,8 @@ if not os.environ.get('BENCHHUB_API_TOKEN'):
         f"{{BASE_URL}}/settings and run: export BENCHHUB_API_TOKEN=<token>"
     )
 
-client = bh.Client(base_url=BASE_URL)
-contract = client.leaderboard_contract(LEADERBOARD_ID)
+client: bh.Client = bh.Client(base_url=BASE_URL)
+contract: list[dict[str, Any]] = client.leaderboard_contract(LEADERBOARD_ID)
 print(f"LB {{LEADERBOARD_ID}} pred contract: {{contract}}")
 
 # Samples come from the BenchHub server — no need to maintain a local
@@ -7194,9 +7195,17 @@ print(f"LB {{LEADERBOARD_ID}} pred contract: {{contract}}")
 # colormapped preview, scalar/label/text/json → the raw value.
 
 # === fill in: your model ====================================================
-def my_model(inputs):
+def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     """Take the per-sample inputs dict and return the values BenchHub
     expects for each pred field declared on the LB's contract.
+
+    `inputs` keys are the dataset's role=input fields. File-backed
+    kinds (image / mask / depth) arrive as PIL.Image; inline kinds
+    (scalar / label / text / json) arrive as their decoded Python value.
+
+    Return a dict whose keys are the LB's pred-field names; the values
+    are unwrapped (plain ints / strings / arrays / etc.), the wrapping
+    in bh.<Kind>(...) below splats them into typed instances.
 
     For this LB the contract is:
       {{contract}}
@@ -7210,8 +7219,10 @@ def my_model(inputs):
 # ===========================================================================
 
 sub = client.submission(LEADERBOARD_ID)
+sample_name: str
+inputs: dict[str, Any]
 for sample_name, inputs in client.iter_samples(LEADERBOARD_ID):
-    predictions = my_model(inputs)
+    predictions: dict[str, Any] = my_model(inputs)
     # The generated bh.<Kind>(...) calls below match the LB's current
     # contract — wrap your `predictions` values into the typed objects
     # the server expects.
@@ -7219,7 +7230,7 @@ for sample_name, inputs in client.iter_samples(LEADERBOARD_ID):
 {chr(10).join(pred_snippets)}
                 )
 
-result = sub.submit(name='my submission')
+result: dict[str, Any] = sub.submit(name='my submission')
 print(result)  # → {{'submission_id': ..., 'view_url': '...'}}
 '''
 
@@ -7257,11 +7268,11 @@ def _submission_notebook_source(lb, *, inline_token: str | None = None,
         "# wasn't set), we try a Colab Secret named BENCHHUB_API_TOKEN,\n"
         "# then prompt with getpass as a final fallback.\n"
         "import os, urllib.request, urllib.error, json\n"
-        f"_INLINE_TOKEN = {inline_lit}\n"
-        f"_INLINE_EXPIRES = {inline_expires_lit}\n"
-        f"_BASE_URL = {base_url_lit}\n"
+        f"_INLINE_TOKEN: str = {inline_lit}\n"
+        f"_INLINE_EXPIRES: str = {inline_expires_lit}\n"
+        f"_BASE_URL: str = {base_url_lit}\n"
         "\n"
-        "def _bh_validate_token(tok):\n"
+        "def _bh_validate_token(tok: str | None) -> bool:\n"
         "    if not tok: return False\n"
         "    req = urllib.request.Request(_BASE_URL + '/api/whoami',\n"
         "        headers={'Authorization': 'Bearer ' + tok})\n"
@@ -7273,7 +7284,7 @@ def _submission_notebook_source(lb, *, inline_token: str | None = None,
         "    except Exception:\n"
         "        return False\n"
         "\n"
-        "_token = None\n"
+        "_token: str | None = None\n"
         "if _bh_validate_token(_INLINE_TOKEN):\n"
         "    _token = _INLINE_TOKEN\n"
         "    print(f'\\u2713 Using the short-lived token baked into this notebook (expires {_INLINE_EXPIRES}).')\n"
