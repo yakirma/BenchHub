@@ -3508,12 +3508,23 @@ def add_leaderboard_metric(leaderboard_id):
         db.session.add(lm)
         db.session.flush() # Ensure ID is generated for use below
         
-        # Auto-add to summary metrics for display using unique ID
-        current_metrics = [m.strip() for m in leaderboard.summary_metrics.split(',') if m.strip()]
-        lmid = f"lm_{lm.id}"
-        if lmid not in current_metrics:
-            current_metrics.append(lmid)
-            leaderboard.summary_metrics = ','.join(current_metrics)
+        # Display set = summary_metrics. Ensure EVERY bound metric is in
+        # it, not just the new one — a metric created via a path that
+        # skipped summary_metrics (older LBs, manual seeding) was only
+        # visible while summary_metrics stayed empty (the "show all"
+        # fallback); adding a second metric populated the list and
+        # silently hid the first. Rebuild as: existing entries (order
+        # preserved, incl. any non-lm custom columns) + any bound metric
+        # not yet listed.
+        current_metrics = [m.strip() for m in (leaderboard.summary_metrics or '').split(',') if m.strip()]
+        seen = set(current_metrics)
+        bound_ids = [f"lm_{m.id}" for m in leaderboard.leaderboard_metrics]
+        bound_ids.append(f"lm_{lm.id}")  # newly-added row may not be in the relationship yet
+        for bid in bound_ids:
+            if bid not in seen:
+                current_metrics.append(bid)
+                seen.add(bid)
+        leaderboard.summary_metrics = ','.join(current_metrics)
             
         db.session.commit()
         

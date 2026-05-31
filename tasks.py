@@ -327,6 +327,46 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
             for lm in leaderboard.leaderboard_metrics:
                  name = lm.target_name if lm.target_name else lm.global_metric.name
                  metric_is_agg_map[name] = lm.global_metric.is_aggregated
+
+            # Which prediction fields did THIS submission actually provide?
+            # (CustomFields that aren't metric outputs.) Used below to mark
+            # a metric "Not computed" instead of scoring 0.0 when the
+            # submission predates the metric / lacks its required pred field
+            # — e.g. adding top_5_accuracy (needs label_topk_pred) to an LB
+            # whose existing submission only has label_pred.
+            sub_pred_field_names = {
+                cf.name for cf in submission.custom_fields
+                if cf.name and not cf.name.startswith('lm_')
+            }
+            try:
+                _lb_pred_decls = json.loads(
+                    leaderboard.required_pred_fields_json or '[]'
+                )
+                lb_pred_field_names = {
+                    e.get('name') for e in _lb_pred_decls
+                    if isinstance(e, dict) and e.get('name')
+                }
+            except (TypeError, ValueError):
+                lb_pred_field_names = set()
+
+            def _metric_missing_pred(arg_mappings_json):
+                """Return the name of a required pred field the submission
+                is missing for this metric, or None if it can be computed.
+                A `sub_<field>` mapping (or a bare mapping naming a declared
+                pred field) that has no CustomField on the submission means
+                the metric isn't applicable to this submission."""
+                try:
+                    amap = json.loads(arg_mappings_json or '{}')
+                except (TypeError, ValueError):
+                    return None
+                for v in amap.values():
+                    if not isinstance(v, str) or v.startswith('SCALAR:') or v.startswith('gt_'):
+                        continue
+                    field = v[4:] if v.startswith('sub_') else v
+                    is_pred_ref = v.startswith('sub_') or field in lb_pred_field_names
+                    if is_pred_ref and field not in sub_pred_field_names:
+                        return field
+                return None
             
             logger.info(f"Evaluating {len(sorted_metrics)} leaderboard metrics...")
             
@@ -349,7 +389,30 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
                 ).first()
                 if existing_result:
                     session.delete(existing_result)
-                
+
+                # Skip metrics this submission can't satisfy: a required
+                # prediction field is absent (e.g. the metric was added
+                # after the submission, or the submission only produced a
+                # different pred kind). Record NULL + a "Not computed"
+                # message so the table shows that instead of a misleading
+                # 0.0. Drop any stale per-sample CFs from a prior run.
+                _missing_field = _metric_missing_pred(arg_mappings_json)
+                if _missing_field is not None:
+                    session.query(CustomField).filter_by(
+                        submission_id=submission.id, name=metric_out_name,
+                    ).delete(synchronize_session=False)
+                    logger.info(
+                        f"  [Metric: {metric_out_name}] Not computed — "
+                        f"submission has no '{_missing_field}' prediction."
+                    )
+                    session.add(MetricResult(
+                        submission_id=submission.id,
+                        leaderboard_metric_id=lm.id,
+                        value=None,
+                        error_message=f"Not computed (no '{_missing_field}' prediction)",
+                    ))
+                    continue
+
                 # Tag-based filtering for this specific metric
                 current_metric_samples = dataset_samples
                 current_metric_ctx = samples_context

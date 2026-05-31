@@ -216,3 +216,54 @@ def test_half_right_model_scores_half(client, seeded_lb_with_accuracy_metric, ap
         leaderboard_metric_id=lm.id,
     ).one()
     assert mr.value == pytest.approx(0.5)
+
+
+def test_metric_added_after_submission_shows_not_computed(
+    client, seeded_lb_with_accuracy_metric, api_user,
+):
+    """Binding a metric whose required pred field the submission never
+    produced must record NULL + a 'Not computed' message — NOT a
+    misleading 0.0. (The submission has label_pred; the new metric
+    needs label_topk_pred.)"""
+    import tasks
+    lb, _ = seeded_lb_with_accuracy_metric
+    payload = _submit_via_client(client, api_user, lb, predict_fn=_gt_label_for_sample)
+    sub_id = payload["submission_id"]
+
+    # New metric requiring a pred field the submission lacks.
+    gm = GlobalMetric(
+        name="top5_needs_topk",
+        python_code=(
+            "def top5_needs_topk(gt, pred):\n"
+            "    if gt is None or pred is None:\n"
+            "        return 0.0\n"
+            "    return 1.0\n"
+        ),
+        input_kinds=json.dumps(["label", "label_list"]),
+        is_aggregated=False,
+        visibility="public",
+    )
+    db.session.add(gm); db.session.flush()
+    lm2 = LeaderboardMetric(
+        leaderboard_id=lb.id,
+        global_metric_id=gm.id,
+        target_name="top5",
+        arg_mappings=json.dumps({"gt": "gt_label", "pred": "sub_label_topk_pred"}),
+        sort_direction="higher_is_better",
+        pooling_type="mean",
+    )
+    db.session.add(lm2); db.session.commit()
+
+    # Re-run eval for the existing submission (eager).
+    tasks.process_submission.delay(sub_id)
+
+    mr = MetricResult.query.filter_by(
+        submission_id=sub_id, leaderboard_metric_id=lm2.id,
+    ).one()
+    assert mr.value is None
+    assert mr.error_message and "Not computed" in mr.error_message
+    assert "label_topk_pred" in mr.error_message
+    # No per-sample lm_<id> CFs were written for the uncomputed metric.
+    assert CustomField.query.filter_by(
+        submission_id=sub_id, name=f"lm_{lm2.id}",
+    ).count() == 0

@@ -198,6 +198,52 @@ def test_add_leaderboard_metric_appends_lm_id_to_summary_metrics(
     assert f"lm_{lm.id}" in (lb.summary_metrics or "")
 
 
+def test_add_second_metric_keeps_first_in_summary_metrics(
+    client, project, metric, leaderboard
+):
+    """Adding a 2nd metric must NOT drop the 1st from summary_metrics —
+    every bound metric stays visible (regression: a metric not in
+    summary_metrics only showed via the empty-list 'show all' fallback,
+    so populating the list silently hid it)."""
+    lb_id = leaderboard.id
+    # Simulate a pre-existing bound metric that was never added to
+    # summary_metrics (older creation path): bind directly, leave
+    # summary_metrics empty.
+    import json
+    pre = LeaderboardMetric(
+        leaderboard_id=lb_id, global_metric_id=metric.id,
+        target_name="pre", arg_mappings=json.dumps({"x": "sub_pred"}),
+        pooling_type="mean",
+    )
+    db.session.add(pre)
+    lb = Leaderboard.query.get(lb_id)
+    lb.summary_metrics = ""  # the "show all" fallback state
+    db.session.commit()
+    pre_id = pre.id
+
+    # Now add a second metric through the route.
+    client.post(
+        f"/leaderboard/{lb_id}/leaderboard_metric/add",
+        data={
+            "global_metric_id": str(metric.id),
+            "arg_name[]": ["x"],
+            "source[]": ["sub"],
+            "field_name[]": ["pred"],
+            "display_name": "M2",
+        },
+    )
+
+    db.session.expire_all()
+    lb = Leaderboard.query.get(lb_id)
+    summary = lb.summary_metrics or ""
+    # BOTH the pre-existing metric and the new one are present.
+    assert f"lm_{pre_id}" in summary
+    new_lm = LeaderboardMetric.query.filter_by(
+        leaderboard_id=lb_id, target_name="M2",
+    ).first()
+    assert f"lm_{new_lm.id}" in summary
+
+
 def test_add_leaderboard_metric_supports_scalar_literal_argument(
     client, project, metric, leaderboard
 ):
