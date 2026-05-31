@@ -1232,7 +1232,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             ('name', 'Name'),
                             ('tags', 'Tags'),
                             ('date_uploaded', 'Date Uploaded'),
-                            ('git_info', 'Git Info'),
+                            ('description', 'Description'),
                         ] %}
                         <div class="form-check">
                             <input class="form-check-input lb-column-checkbox" type="checkbox"
@@ -1404,8 +1404,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }}"></i>
                                 {% endif %}
                             </th>
-                            <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="git_info"
-                                draggable="true">Git Info</th>
+                            <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="description"
+                                draggable="true">Description</th>
                             <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="status"
                                 draggable="true">Status</th>
                             {% for metric in selected_metrics %}
@@ -1507,9 +1507,16 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             </td>
                             <td><input class="form-check-input submission-checkbox" type="checkbox"
                                     name="submission_ids" value="{{ submission.id }}"></td>
-                            <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}">
+                            <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}{% if submission.link %} → {{ submission.link }}{% endif %}">
                                 <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    <a href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, compare_ids=submission.id, 
+                                    {% if submission.link %}
+                                    <a href="{{ submission.link }}" target="_blank" rel="noopener"
+                                        class="text-decoration-none fw-bold submission-name-link">
+                                        {{ submission.name }}
+                                        <i class="bi bi-box-arrow-up-right small ms-1"></i>
+                                    </a>
+                                    {% else %}
+                                    <a href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, compare_ids=submission.id,
                                         search_query=sample_search_query,
                                         enable_include='true' if enable_sample_include else 'false',
                                         include_tags=sample_include_tags|join(','),
@@ -1520,6 +1527,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         class="text-decoration-none fw-bold submission-name-link">
                                         {{ submission.name }}
                                     </a>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td data-lb-column="tags" style="max-width: 200px;"
@@ -1532,14 +1540,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             </td>
                             <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
                             </td>
-                            <td data-lb-column="git_info" style="max-width: 200px;"
-                                title="{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or 'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}{% if submission.git_author %} by {{ submission.git_author }}{% endif %}">
+                            <td data-lb-column="description" style="max-width: 200px;"
+                                title="{{ submission.description or '' }}">
                                 <div class="d-flex align-items-center gap-2">
                                     {{ user_avatar(submission.owner, size=32,
                                                    title=(submission.owner.display_name if submission.owner else (submission.git_author or 'Unknown'))) }}
                                     <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                        <small>{{ submission.git_branch or 'N/A' }} @ {{ (submission.git_commit or
-                                            'N/A')[:7] }}: {{ submission.git_message or 'N/A' }}</small>
+                                        <small>{{ submission.description or '—' }}</small>
                                     </div>
                                     {% if submission.source_colab_url %}
                                     <a href="{{ submission.source_colab_url }}"
@@ -1877,7 +1884,11 @@ for sample_name, inputs in client.iter_samples({{ leaderboard.id }}):
 {{ line }}
 {%- endfor %}
                 )
-print(sub.submit(name="my run"))</code></pre>
+print(sub.submit(
+    name="my run",
+    description="one-line summary (shown in the table, full text on hover)",
+    link="https://github.com/you/your-model",   # optional; the name links here
+))</code></pre>
     </div>
 </div>
 
@@ -2977,7 +2988,7 @@ print(sub.submit(name="my run"))</code></pre>
     // --- Column Visibility Logic ---
     // Build default columns list dynamically including all metrics
     const metricsList = {{ selected_metrics | tojson }};
-    const BASE_COLUMNS = ['name', 'tags', 'date_uploaded', 'git_info'];
+    const BASE_COLUMNS = ['name', 'tags', 'date_uploaded', 'description'];
     const METRIC_COLUMNS = metricsList.map(m => 'metric_' + m);
     const DEFAULT_COLUMNS = [...BASE_COLUMNS, ...METRIC_COLUMNS, 'status'];
 

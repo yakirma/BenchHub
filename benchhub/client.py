@@ -71,11 +71,19 @@ class _RequestsTransport:
         self.base_url = base_url.rstrip("/")
 
     def post_submission_zip(self, leaderboard_id: int, name: str | None,
-                            zip_bytes: bytes, token: str) -> dict:
+                            zip_bytes: bytes, token: str,
+                            *, description: str | None = None,
+                            link: str | None = None) -> dict:
         # Lazy import so the dependency only matters at network time.
         import requests
         files = {"submission_zip": ("submission.zip", zip_bytes, "application/zip")}
-        data = {"name": name} if name else {}
+        data = {}
+        if name:
+            data["name"] = name
+        if description:
+            data["description"] = description
+        if link:
+            data["link"] = link
         resp = requests.post(
             f"{self.base_url}/api/submit/{leaderboard_id}",
             headers={"Authorization": f"Bearer {token}"},
@@ -217,10 +225,18 @@ class Client:
         ).rstrip("/")
         self.transport = transport or _RequestsTransport(self.base_url)
 
-    def submission(self, leaderboard_id: int, name: str | None = None) -> "SubmissionBuilder":
+    def submission(self, leaderboard_id: int, name: str | None = None,
+                   *, description: str | None = None,
+                   link: str | None = None) -> "SubmissionBuilder":
         """Open a new in-memory builder. Call `.predict()` per sample,
-        then `.submit()` to send the whole package."""
-        return SubmissionBuilder(self, leaderboard_id, name)
+        then `.submit()` to send the whole package.
+
+        `description` is a free-text blurb shown in the leaderboard's
+        submission table (full text on hover). `link` is an optional
+        http(s) URL the submission name will hyperlink to (e.g. a repo
+        or model card). Both can also be passed at `.submit()` time."""
+        return SubmissionBuilder(self, leaderboard_id, name,
+                                 description=description, link=link)
 
     def leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
         """Fetch the LB's pred wire-contract (kinds + params, including
@@ -423,7 +439,9 @@ class Client:
         return self._post_zip(leaderboard_id, name, zip_bytes)
 
     # internal -----------------------------------------------------------------
-    def _post_zip(self, leaderboard_id: int, name: str | None, zip_bytes: bytes) -> dict:
+    def _post_zip(self, leaderboard_id: int, name: str | None, zip_bytes: bytes,
+                  *, description: str | None = None,
+                  link: str | None = None) -> dict:
         if not self.token:
             raise ValueError(
                 "BenchHub Client has no API token — pass `token=...` or "
@@ -431,6 +449,7 @@ class Client:
             )
         return self.transport.post_submission_zip(
             leaderboard_id, name, zip_bytes, self.token,
+            description=description, link=link,
         )
 
     def _post_dataset_zip(self, zip_bytes: bytes, *, visibility: str) -> dict:
@@ -454,10 +473,13 @@ class SubmissionBuilder:
     metadata.
     """
 
-    def __init__(self, client: Client, leaderboard_id: int, name: str | None):
+    def __init__(self, client: Client, leaderboard_id: int, name: str | None,
+                 *, description: str | None = None, link: str | None = None):
         self.client = client
         self.leaderboard_id = leaderboard_id
         self.name = name
+        self.description = description
+        self.link = link
         # sample_name -> field_name -> DataType instance
         self._preds: dict[str, dict[str, DataType]] = {}
         # Optional LB contract (set via `set_contract` or
@@ -664,15 +686,22 @@ class SubmissionBuilder:
                     zf.writestr(f"{p['name']}/{sample_name}{ext}", inst.encode())
         return buf.getvalue()
 
-    def submit(self, name: str | None = None) -> dict:
+    def submit(self, name: str | None = None, *,
+               description: str | None = None,
+               link: str | None = None) -> dict:
         """Build the ZIP and POST it. Returns the server's response payload.
 
-        `name` is the submission's display name. It overrides any name
-        passed to `client.submission(lb_id, name=...)`; pass it here if
-        you opened the builder without one (which is what the generated
-        submission script + LB-page snippet do)."""
+        `name` is the submission's display name. `description` is a
+        free-text blurb (shown in the LB submission table, full text on
+        hover) and `link` an optional http(s) URL the submission name
+        links to. Each overrides the value passed to
+        `client.submission(lb_id, ...)`; pass them here if you opened
+        the builder without them (which is what the generated submission
+        script + LB-page snippet do)."""
         return self.client._post_zip(
             self.leaderboard_id, name or self.name, self.build_zip(),
+            description=description or self.description,
+            link=link or self.link,
         )
 
 
@@ -948,13 +977,17 @@ class FlaskTestClientTransport:
             f.write(resp.data)
 
     def post_submission_zip(self, leaderboard_id: int, name: str | None,
-                            zip_bytes: bytes, token: str) -> dict:
+                            zip_bytes: bytes, token: str,
+                            *, description: str | None = None,
+                            link: str | None = None) -> dict:
         from io import BytesIO
         resp = self.test_client.post(
             f"/api/submit/{leaderboard_id}",
             data={
                 "submission_zip": (BytesIO(zip_bytes), "submission.zip"),
                 **({"name": name} if name else {}),
+                **({"description": description} if description else {}),
+                **({"link": link} if link else {}),
             },
             headers={"Authorization": f"Bearer {token}"},
             content_type="multipart/form-data",

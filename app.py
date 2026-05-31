@@ -1071,6 +1071,12 @@ class Submission(db.Model):
     git_branch = db.Column(db.String(100))
     git_message = db.Column(db.String(200))
     git_author = db.Column(db.String(100))  # Git commit author
+    # Free-text blurb the submitter passes via the client (shown in the
+    # submission table where the git column used to be; full text on hover).
+    description = db.Column(db.Text, nullable=True)
+    # Optional external URL the submitter attaches; the submission name
+    # in the table hyperlinks to it. http/https only (sanitised server-side).
+    link = db.Column(db.String(500), nullable=True)
     upload_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     is_archived = db.Column(db.Boolean, default=False, nullable=False)
     processing_status = db.Column(db.String(50), default='Pending')
@@ -6181,6 +6187,15 @@ def api_submit_typed(leaderboard_id):
     if upload is None or not upload.filename:
         return jsonify({'error': 'multipart field "submission_zip" required'}), 400
     name = (request.form.get('name') or '').strip() or None
+    description = (request.form.get('description') or '').strip() or None
+    # Link is rendered as an href on the submission name — only accept
+    # http(s) so a `javascript:`/`data:` URL can't be injected. Anything
+    # else is dropped (the name falls back to the comparison-view link).
+    link = (request.form.get('link') or '').strip() or None
+    if link and not re.match(r'^https?://', link, re.IGNORECASE):
+        link = None
+    if link and len(link) > 500:
+        link = None
 
     from benchhub.manifest import import_typed_submission
     # Prefer the dataset-derived contract over the legacy
@@ -6250,6 +6265,16 @@ def api_submit_typed(leaderboard_id):
                 contract=contract,
                 get_input_shape=_get_input_shape,
             )
+            # Attach the submitter-supplied blurb + link (form fields,
+            # alongside `name`). Set post-import so manifest.py stays
+            # free of presentation metadata.
+            if description is not None or link is not None:
+                sub_row = Submission.query.get(sub_id)
+                if sub_row is not None:
+                    if description is not None:
+                        sub_row.description = description
+                    if link is not None:
+                        sub_row.link = link
             db.session.commit()
         except FileNotFoundError as e:
             db.session.rollback()
@@ -7353,7 +7378,11 @@ for sample_name, inputs in client.iter_samples(LEADERBOARD_ID):
 {chr(10).join(pred_snippets)}
                 )
 
-result: dict[str, Any] = sub.submit(name='my submission')
+result: dict[str, Any] = sub.submit(
+    name='my submission',
+    description='one-line summary (shown in the LB table, full text on hover)',
+    link='https://github.com/you/your-model',   # optional; the name links here
+)
 print(result)  # → {{'submission_id': ..., 'view_url': '...'}}
 '''
 
@@ -16738,6 +16767,9 @@ def check_and_migrate_db():
                     # reviewer re-open the exact notebook that produced
                     # the predictions). NULL for non-Colab submissions.
                     ("submission",           "source_colab_url",                 "VARCHAR(500)"),
+                    # Submitter-supplied blurb + external link (client submit()).
+                    ("submission",           "description",                      "TEXT"),
+                    ("submission",           "link",                             "VARCHAR(500)"),
                     # Pointer-mode storage. NEW (2026-05-08).
                     # storage_mode marks whether a Dataset's samples
                     # carry on-disk files ('local') or get streamed

@@ -214,6 +214,60 @@ def test_submit_name_arg_overrides_builder_name(client, lb_with_depth_pred, api_
     assert persisted.name == "override-name"
 
 
+def test_submit_persists_description_and_link(client, lb_with_depth_pred, api_user):
+    """description + link passed to submit() land on the Submission row."""
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    sub = bh_client.submission(lb_with_depth_pred.id)
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    result = sub.submit(
+        name='run-x',
+        description='resnet50 finetuned 3 epochs',
+        link='https://github.com/me/model',
+    )
+    persisted = Submission.query.get(result["submission_id"])
+    assert persisted.description == 'resnet50 finetuned 3 epochs'
+    assert persisted.link == 'https://github.com/me/model'
+
+
+def test_submit_rejects_non_http_link(client, lb_with_depth_pred, api_user):
+    """A javascript:/data: link is dropped server-side (it's rendered as
+    an href on the submission name)."""
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    sub = bh_client.submission(lb_with_depth_pred.id)
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    result = sub.submit(name='run-y', link='javascript:alert(1)')
+    persisted = Submission.query.get(result["submission_id"])
+    assert persisted.link is None
+
+
+def test_submission_kwargs_carry_to_submit(client, lb_with_depth_pred, api_user):
+    """description/link can be set at submission() time and flushed on submit()."""
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    sub = bh_client.submission(lb_with_depth_pred.id, name='run-z',
+                               description='blurb here',
+                               link='https://example.com/x')
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    result = sub.submit()
+    persisted = Submission.query.get(result["submission_id"])
+    assert persisted.description == 'blurb here'
+    assert persisted.link == 'https://example.com/x'
+
+
 def test_end_to_end_submit_propagates_contract_violation(client, lb_with_depth_pred, api_user):
     """A submission that violates the LB contract gets a 400 from the
     server; the client surfaces it as BenchHubAPIError."""
