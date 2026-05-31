@@ -120,6 +120,29 @@ def test_typed_for_cf_json():
     assert inst.data == payload
 
 
+def test_typed_for_cf_label_with_names_vocab():
+    """A label field carrying a `names` vocab must still wrap to a
+    bh.Label (regression: Label didn't accept `names`, so cls(value,
+    **params) raised TypeError, got swallowed, and typed metrics fell
+    back to a raw int — making accuracy assert-fail to 0.0)."""
+    cf = CustomField(name='label', data_type='label')
+    cf.set_params({'names': ['airplane', 'automobile', 'bird']})
+    inst = _typed_for_cf(cf, 3)
+    assert isinstance(inst, bh.Label)
+    assert inst.value == 3
+    assert inst.names == ['airplane', 'automobile', 'bird']
+
+
+def test_typed_for_cf_ignores_params_constructor_does_not_accept():
+    """Defense-in-depth: a stray param a kind doesn't take is dropped,
+    not fatal — the typed instance is still built."""
+    cf = CustomField(name='s', data_type='scalar')
+    cf.set_params({'bogus': 123, 'whatever': 'x'})
+    inst = _typed_for_cf(cf, 0.9)
+    assert isinstance(inst, bh.Scalar)
+    assert inst.value == 0.9
+
+
 def test_typed_for_cf_unknown_kind_returns_none():
     cf = CustomField(name='legacy', data_type='metric')  # 'metric' isn't in DTYPES
     assert _typed_for_cf(cf, 0.5) is None

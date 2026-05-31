@@ -435,17 +435,28 @@ class Label(DataType):
     file_ext = None  # stored inline
     viz_mime = "text/plain; charset=utf-8"
 
-    def __init__(self, value: int | str):
+    def __init__(self, value: int | str, *, names: list[str] | None = None):
         if not isinstance(value, (int, str)):
             raise ValueError(f"Label value must be int or str; got {type(value).__name__}")
         self.value = value
+        # Optional class vocab carried on the field's params (same as
+        # LabelList). Comparison metrics use `.value`; `names` is just
+        # for display / human-readable rendering. Accepting it here is
+        # what lets a label field with a `names` vocab round-trip through
+        # the typed-instance builder (`cls(value, **params)`).
+        self.names = list(names) if names else None
+
+    @property
+    def params(self) -> dict:
+        return {"names": self.names} if self.names else {}
 
     def encode(self) -> bytes:
         return json.dumps(self.value).encode("utf-8")
 
     @classmethod
     def decode(cls, blob: bytes, params: dict | None = None) -> "Label":
-        return cls(json.loads(blob.decode("utf-8")))
+        params = params or {}
+        return cls(json.loads(blob.decode("utf-8")), names=params.get("names"))
 
     def visualize(self, **_: Any) -> tuple[bytes, str]:
         """Render the label as the bare value (not JSON-quoted) so the

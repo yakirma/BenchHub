@@ -40,10 +40,50 @@ def _typed_for_cf(cf, value):
             # Audio takes sample_rate positionally; rest of the kinds
             # accept their per-instance params as keyword arguments.
             return cls(value, params.get('sample_rate', 16000))
-        return cls(value, **params)
+        # Pass ONLY the params this constructor actually accepts. A field
+        # can carry params a given kind doesn't take (e.g. a `label` field
+        # with a `names` vocab predating Label accepting `names`); blindly
+        # splatting **params used to raise TypeError here, get swallowed,
+        # and silently drop the typed instance — which made typed metrics
+        # fall back to the raw primitive and misbehave (e.g. accuracy
+        # asserting isinstance(gt, bh.Label) on a bare int → 0.0).
+        accepted = _accepted_kwargs(cls)
+        kwargs = ({k: v for k, v in params.items() if k in accepted}
+                  if accepted is not None else params)
+        return cls(value, **kwargs)
     except Exception as e:
         print(f"DEBUG: _typed_for_cf({cf.name}, kind={kind}) failed: {e}")
         return None
+
+
+def _accepted_kwargs(cls):
+    """Set of keyword-arg names `cls.__init__` accepts (excluding self/
+    value). Returns None when the signature takes **kwargs (accept all).
+    Cached per class."""
+    cache = _accepted_kwargs._cache
+    if cls in cache:
+        return cache[cls]
+    import inspect
+    try:
+        sig = inspect.signature(cls.__init__)
+    except (ValueError, TypeError):
+        cache[cls] = None
+        return None
+    names = set()
+    for p in sig.parameters.values():
+        if p.name == 'self':
+            continue
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            cache[cls] = None  # **kwargs → accept anything
+            return None
+        if p.kind in (inspect.Parameter.KEYWORD_ONLY,
+                      inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            names.add(p.name)
+    cache[cls] = names
+    return names
+
+
+_accepted_kwargs._cache = {}
 
 
 def _stash_typed(context, key, cf, value):
