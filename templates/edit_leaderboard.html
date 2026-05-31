@@ -1151,8 +1151,34 @@
     const leaderboardData = JSON.parse(document.getElementById('leaderboard-data').textContent);
     const datasetFields = {{ dataset_fields | tojson }};
     const submissionFields = {{ submission_fields | tojson }};
+    // Contract-aware field options: [{name, kind, role}] for this LB —
+    // dataset GT/input fields (with per-LB role overrides) PLUS virtual
+    // role='pred' entries synthesised from required_pred_fields_json.
+    // Same data the LB-creation form uses to auto-map metric args.
+    const lbFieldOptions = {{ dataset_field_options | tojson }};
     const perSampleMetrics = leaderboardData.perSampleMetrics;
     const aggregatedMetrics = leaderboardData.aggregatedMetrics;
+
+    // Given a metric arg spec {name, kind, role}, pick the best-matching
+    // LB field and the mapping source it implies. Mirrors the creation
+    // form: a `role=pred` arg binds to a pred field (source='sub'), a
+    // `role=gt` arg to a GT field (source='gt'); `kind` may be a
+    // `a|b`-joined union (match any member). Returns {source, field} or
+    // null when nothing matches (caller falls back to a blank row).
+    function autoSuggestMapping(spec) {
+        const kinds = (spec && spec.kind ? String(spec.kind) : '').split('|').filter(Boolean);
+        const role = (spec && spec.role) ? spec.role : '';
+        const matches = lbFieldOptions.filter(function (f) {
+            if (f.role === 'skip') return false;
+            if (kinds.length && kinds.indexOf(f.kind) === -1) return false;
+            if (role && f.role !== role) return false;
+            return true;
+        });
+        if (!matches.length) return null;
+        // Prefer an exact same-named field, else the first eligible.
+        let pick = matches.find(function (f) { return f.name === spec.name; }) || matches[0];
+        return { source: pick.role === 'pred' ? 'sub' : 'gt', field: pick.name };
+    }
 
     // Function to add a mapping row
     function addMappingRow(containerId, values = {}) {
@@ -1491,30 +1517,41 @@
                     displayNameInput.value = name;
                 }
 
-                // Show preview
+                // Code preview (optional helper).
                 if (code) {
                     previewContainer.classList.remove('d-none');
                     codePreview.textContent = code;
-
-                    // Parse args and populate mappings
-                    const args = parsePythonArgs(code);
-
-                    // Clear existing mappings
-                    mappingsContainer.innerHTML = '';
-
-                    if (args.length > 0) {
-                        args.forEach(arg => {
-                            addMappingRow('mappings-container', { arg: arg, source: 'gt', field: '' });
-                        });
-                    } else {
-                        // Show "No arguments required" message
-                        const msg = document.createElement('div');
-                        msg.className = 'text-muted small fst-italic';
-                        msg.textContent = 'This metric requires no arguments.';
-                        mappingsContainer.appendChild(msg);
-                    }
                 } else {
                     previewContainer.classList.add('d-none');
+                }
+
+                // Build the arg list from the option's arg_specs
+                // (name + kind + role), so we can AUTO-MAP each arg to a
+                // matching field — same UX as the LB-creation form.
+                // Fall back to bare arg names parsed from code when an
+                // older option carries no specs.
+                let argSpecs = [];
+                try { argSpecs = JSON.parse(selectedOption.dataset.argSpecs || '[]'); }
+                catch (e) { argSpecs = []; }
+                if (!argSpecs.length && code) {
+                    argSpecs = parsePythonArgs(code).map(function (a) {
+                        return { name: a, kind: null, role: null };
+                    });
+                }
+
+                mappingsContainer.innerHTML = '';
+                if (argSpecs.length > 0) {
+                    argSpecs.forEach(function (spec) {
+                        const sug = autoSuggestMapping(spec) || { source: 'gt', field: '' };
+                        addMappingRow('mappings-container', {
+                            arg: spec.name, source: sug.source, field: sug.field,
+                        });
+                    });
+                } else {
+                    const msg = document.createElement('div');
+                    msg.className = 'text-muted small fst-italic';
+                    msg.textContent = 'This metric requires no arguments.';
+                    mappingsContainer.appendChild(msg);
                 }
             });
         }

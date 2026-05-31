@@ -164,6 +164,16 @@ def depth_metric_bad(gt: bh.Depth, pred: bh.Depth):
     # Unsatisfiable rows are visually disabled in the dropdown.
     assert 'depth_metric_bad' in body
     assert 'disabled' in body
+    # Auto-mapping wiring (same UX as the creation form): options carry
+    # arg specs, and the page ships the field-options data + the
+    # auto-suggest helper that maps each arg to a matching field.
+    assert 'data-arg-specs=' in body
+    assert 'autoSuggestMapping' in body
+    assert 'lbFieldOptions' in body
+    # The pred field is exposed to the client so a role=pred arg can
+    # auto-bind to it (regression: pred args used to default to a blank
+    # gt row, leaving accuracy's `pred` unmapped → 0.0 scores).
+    assert 'label_pred' in body
 
 
 # ---------------------------------------------------------------------------
