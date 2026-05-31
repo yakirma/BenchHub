@@ -3753,23 +3753,12 @@ def delete_leaderboard_metric(leaderboard_id, metric_id):
         abort(403)
 
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
-    # Removing a metric is a contract change — every existing
-    # submission's MetricResult row for this binding gets dropped
-    # and the leaderboard column it powered disappears. Allow only
-    # while the LB is empty (no verified submissions); adding
-    # metrics is still always allowed.
-    has_verified = any(
-        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
-        for s in (leaderboard.submissions or [])
-    )
-    if has_verified:
-        flash(
-            "Can't remove a metric — this leaderboard already has "
-            "verified submissions. Delete them first to unlock.",
-            "warning",
-        )
-        return redirect(url_for('edit_leaderboard', leaderboard_id=leaderboard_id))
-
+    # Removing a metric only drops THIS metric's column + its
+    # MetricResult rows — it never reinterprets a submission's
+    # prediction bytes (unlike renaming/retyping a pred field, which
+    # stays locked when verified submissions exist). Adding metrics is
+    # already allowed with submissions present, so removal is too:
+    # symmetric, and the only safe way to undo an accidental add.
     metric_name = lm.target_name if lm.target_name else lm.global_metric.name
     
     # 1. Remove from selected_metrics (Display Columns)

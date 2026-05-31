@@ -406,9 +406,12 @@ def test_pred_kind_change_blocked_when_lb_has_submissions(client, db_session):
     assert schema[0]['kind'] == 'label'
 
 
-def test_metric_remove_blocked_when_lb_has_submissions(client, db_session):
-    """Removing a LeaderboardMetric drops its column + every MetricResult
-    that powered it — only legal on an empty LB."""
+def test_metric_remove_allowed_when_lb_has_submissions(client, db_session):
+    """Removing a LeaderboardMetric only drops its own column +
+    MetricResult rows — no prediction bytes are reinterpreted — so it's
+    allowed even when the LB has submissions (symmetric with adding; the
+    only way to undo an accidental metric add). Pred-field retyping stays
+    locked; this is just metrics."""
     from app import LeaderboardMetric, Submission
     owner = User(email='mrem@bench.local', display_name='m',
                  oauth_provider='github', oauth_sub='mrem-1')
@@ -438,8 +441,8 @@ def test_metric_remove_blocked_when_lb_has_submissions(client, db_session):
         f'/leaderboard/{lb.id}/leaderboard_metric/{lm_id}/delete',
     )
     assert r.status_code == 302
-    # The metric is still there — the policy blocked the removal.
-    assert LeaderboardMetric.query.get(lm_id) is not None
+    # The metric is gone despite the submission.
+    assert LeaderboardMetric.query.get(lm_id) is None
 
 
 def test_dataset_field_roles_post_forbidden_for_unrelated_user(client, db_session):

@@ -497,22 +497,17 @@
                                             data-mappings="{{ lm.arg_mappings }}">
                                             Duplicate
                                         </button>
-                                        {# Removing a metric drops the column + all
-                                           MetricResult rows that powered it. Allowed
-                                           only on empty LBs — adding remains open
-                                           always. #}
-                                        {% if has_verified_subs %}
-                                        <button type="button" class="btn btn-sm btn-outline-danger"
-                                                disabled
-                                                title="Locked — this leaderboard has submissions. Delete them first to remove a metric.">Remove</button>
-                                        {% else %}
+                                        {# Removing a metric only drops THIS metric's
+                                           column + its MetricResult rows — no prediction
+                                           bytes are reinterpreted, so it's allowed even
+                                           when the LB has submissions (symmetric with
+                                           adding; remaining submissions are recalculated). #}
                                         <form
                                             action="{{ url_for('delete_leaderboard_metric', leaderboard_id=leaderboard.id, metric_id=lm.id) }}"
                                             method="post" style="display:inline;">
                                             <button type="submit" class="btn btn-sm btn-outline-danger"
-                                                onclick="return confirm('Remove this metric from leaderboard?')">Remove</button>
+                                                onclick="return confirm('Remove this metric from leaderboard?{% if has_verified_subs %} Submissions will be recalculated.{% endif %}')">Remove</button>
                                         </form>
-                                        {% endif %}
                                     </div>
                                 </td>
                             </tr>
