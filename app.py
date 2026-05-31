@@ -9765,20 +9765,38 @@ _HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']
 def _iter_lb_eval_samples(lb):
     """Yield (sample, attachment) tuples for every sample the LB evaluates
     against. Walks Attachment rows for the primary dataset(s), plus any
-    legacy m2m `lb.datasets` rows not yet upgraded to an Attachment."""
+    legacy m2m `lb.datasets` rows not yet upgraded to an Attachment.
+
+    When the LB has a ready materialisation, the yield is RESTRICTED to
+    the materialised sample subset — the same set `/api/leaderboard/<id>/
+    samples` exposes to submitters (and that they actually predict).
+    Without this filter, eval iterates the full source dataset (e.g.
+    cifar10's 10k test rows) while the submission only covers the
+    materialised subset (e.g. 1k); the unpredicted samples score 0 and
+    tank the aggregate (954/1000 = 95.4% mis-reported as 954/10000 = 9.5%)."""
+    mat_names = None
+    mat = getattr(lb, 'materialization', None)
+    if mat and mat.status == 'ready':
+        from benchhub.lb_materialize import list_materialized_samples
+        names = list_materialized_samples(app.config['UPLOAD_FOLDER'], lb.id)
+        if names:
+            mat_names = set(names)
+
     covered_dataset_ids = set()
     for att in lb.attachments:
         if att.role != 'primary' or att.dataset is None:
             continue
         covered_dataset_ids.add(att.dataset.id)
         for s in att.dataset.samples:
-            yield s, att
+            if mat_names is None or s.name in mat_names:
+                yield s, att
 
     for ds in (lb.datasets or []):
         if ds.id in covered_dataset_ids:
             continue
         for s in (ds.samples or []):
-            yield s, None
+            if mat_names is None or s.name in mat_names:
+                yield s, None
 
 
 def _discover_submission_pred_indices(submission_id, pred_field_names):
