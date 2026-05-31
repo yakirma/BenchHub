@@ -153,6 +153,25 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
+    def get_leaderboard_submissions(self, leaderboard_id: int,
+                                    name: str | None = None,
+                                    token: str | None = None) -> dict:
+        """List submissions on an LB (optionally filtered to an exact
+        `name`). Returns the server's `{count, submissions:[...]}` shape."""
+        import requests
+        resp = requests.get(
+            f"{self.base_url}/api/leaderboard/{leaderboard_id}/submissions",
+            params=({"name": name} if name else None),
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
+        )
+        if resp.status_code >= 400:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, payload)
+        return resp.json()
+
     def fetch_bytes(self, url: str, token: str | None = None) -> bytes:
         """Pull a per-sample file from the BH server. Relative URLs
         are resolved against self.base_url so the listing endpoint
@@ -246,6 +265,27 @@ class Client:
         return self.transport.get_leaderboard_contract(
             leaderboard_id, token=self.token or None,
         )
+
+    def list_submissions(self, leaderboard_id: int) -> list[dict]:
+        """Return the leaderboard's submissions as a list of
+        `{id, name, upload_date}` dicts (most recent first)."""
+        payload = self.transport.get_leaderboard_submissions(
+            leaderboard_id, token=self.token or None,
+        )
+        return payload.get("submissions", [])
+
+    def submission_exists(self, leaderboard_id: int, name: str) -> bool:
+        """True if a submission named exactly `name` already exists on
+        the leaderboard. Handy to guard a submit() against clobbering or
+        duplicating a previous run:
+
+            if client.submission_exists(lb_id, "resnet50-v1"):
+                raise SystemExit("already submitted — pick a new name")
+        """
+        payload = self.transport.get_leaderboard_submissions(
+            leaderboard_id, name=name, token=self.token or None,
+        )
+        return int(payload.get("count", 0)) > 0
 
     def _inputs_cache_dir(self, leaderboard_id: int) -> Path:
         """Local dir holding this LB's extracted input files. Defaults
@@ -948,6 +988,22 @@ class FlaskTestClientTransport:
     def get_leaderboard_samples(self, leaderboard_id: int,
                                 token: str | None = None) -> dict:
         resp = self.test_client.get(f"/api/leaderboard/{leaderboard_id}/samples")
+        try:
+            payload = resp.get_json()
+        except Exception:
+            payload = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, payload or {})
+        return payload if isinstance(payload, dict) else {}
+
+    def get_leaderboard_submissions(self, leaderboard_id: int,
+                                    name: str | None = None,
+                                    token: str | None = None) -> dict:
+        url = f"/api/leaderboard/{leaderboard_id}/submissions"
+        if name:
+            from urllib.parse import quote
+            url += f"?name={quote(name)}"
+        resp = self.test_client.get(url)
         try:
             payload = resp.get_json()
         except Exception:

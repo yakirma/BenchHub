@@ -268,6 +268,30 @@ def test_submission_kwargs_carry_to_submit(client, lb_with_depth_pred, api_user)
     assert persisted.link == 'https://example.com/x'
 
 
+def test_submission_exists_and_list(client, lb_with_depth_pred, api_user):
+    """submission_exists / list_submissions reflect what's on the LB."""
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    # Nothing submitted yet.
+    assert bh_client.submission_exists(lb_with_depth_pred.id, 'run-A') is False
+    assert bh_client.list_submissions(lb_with_depth_pred.id) == []
+
+    # Submit under a name.
+    sub = bh_client.submission(lb_with_depth_pred.id)
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    sub.submit(name='run-A')
+
+    assert bh_client.submission_exists(lb_with_depth_pred.id, 'run-A') is True
+    # Exact-match only — a different name isn't a false positive.
+    assert bh_client.submission_exists(lb_with_depth_pred.id, 'run-B') is False
+    names = [s['name'] for s in bh_client.list_submissions(lb_with_depth_pred.id)]
+    assert names == ['run-A']
+
+
 def test_end_to_end_submit_propagates_contract_violation(client, lb_with_depth_pred, api_user):
     """A submission that violates the LB contract gets a 400 from the
     server; the client surfaces it as BenchHubAPIError."""

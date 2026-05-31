@@ -6149,6 +6149,42 @@ def api_leaderboard_contract(leaderboard_id):
     return jsonify(_lb_pred_contract_from_dataset_fields(lb))
 
 
+@app.route('/api/leaderboard/<int:leaderboard_id>/submissions', methods=['GET'])
+def api_leaderboard_submissions(leaderboard_id):
+    """List submissions on an LB (name + id + upload time). Used by
+    `bh.Client.list_submissions(lb_id)` / `submission_exists(lb_id, name)`
+    so a submitter can avoid clobbering / duplicating an existing run.
+
+    Optional `?name=<name>` filters to exact-name matches (the client's
+    existence check passes this so it doesn't have to pull the whole
+    list). Visibility-gated like /contract + /samples; cookie OR Bearer.
+    Mirrored (non-verified) submissions are included — they still occupy
+    the name on the board."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if not _can_view_parent(user, lb):
+        abort(404)
+
+    name_filter = (request.args.get('name') or '').strip()
+    q = Submission.query.filter_by(leaderboard_id=lb.id)
+    if name_filter:
+        q = q.filter(Submission.name == name_filter)
+    rows = q.order_by(Submission.upload_date.desc()).all()
+    return jsonify({
+        'leaderboard_id': lb.id,
+        'count': len(rows),
+        'submissions': [
+            {'id': s.id, 'name': s.name,
+             'upload_date': s.upload_date.isoformat() if s.upload_date else None}
+            for s in rows
+        ],
+    })
+
+
 @app.route('/api/submit/<int:leaderboard_id>', methods=['POST'])
 @require_api_token
 def api_submit_typed(leaderboard_id):

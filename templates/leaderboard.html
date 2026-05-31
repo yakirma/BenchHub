@@ -1230,7 +1230,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <hr class="my-2">
                         {% for col_key, col_label in [
                             ('name', 'Name'),
-                            ('tags', 'Tags'),
                             ('date_uploaded', 'Date Uploaded'),
                             ('description', 'Description'),
                         ] %}
@@ -1389,14 +1388,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <th scope="col" style="width: 30px;"></th> <!-- Dropdown Column -->
                             <th scope="col" style="width: 5%;"><input class="form-check-input" type="checkbox"
                                     id="select_all"></th>
-                            <th scope="col" style="width: {{ global_settings.name_width }}; cursor: pointer;"
+                            <th scope="col" style="width: calc({{ global_settings.name_width }} + {{ global_settings.tags_width }}); cursor: pointer;"
                                 data-lb-column="name" draggable="true" onclick="changeSort('name')">Name
                                 {% if sort_metric == 'name' %}
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }}"></i>
                                 {% endif %}
                             </th>
-                            <th scope="col" style="width: {{ global_settings.tags_width }};" data-lb-column="tags"
-                                draggable="true">Tags</th>
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
                                 data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')">
                                 Date Uploaded
@@ -1494,6 +1491,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             <hr class="dropdown-divider">
                                         </li>
                                         <li>
+                                            <a class="dropdown-item show-submission-tags-btn" href="#"
+                                                data-submission-id="{{ submission.id }}">
+                                                <i class="bi bi-tags me-2"></i>Show tags
+                                            </a>
+                                        </li>
+                                        <li>
                                             <a class="dropdown-item edit-submission-tags-btn" href="#"
                                                 data-bs-toggle="modal" data-bs-target="#add-tags-modal"
                                                 data-submission-id="{{ submission.id }}"
@@ -1507,7 +1510,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             </td>
                             <td><input class="form-check-input submission-checkbox" type="checkbox"
                                     name="submission_ids" value="{{ submission.id }}"></td>
-                            <td data-lb-column="name" style="max-width: 200px;" title="{{ submission.name }}{% if submission.link %} → {{ submission.link }}{% endif %}">
+                            <td data-lb-column="name" style="max-width: calc({{ global_settings.name_width }} + {{ global_settings.tags_width }});" title="{{ submission.name }}{% if submission.link %} → {{ submission.link }}{% endif %}">
                                 <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                                     {% if submission.link %}
                                     <a href="{{ submission.link }}" target="_blank" rel="noopener"
@@ -1529,13 +1532,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     </a>
                                     {% endif %}
                                 </div>
-                            </td>
-                            <td data-lb-column="tags" style="max-width: 200px;"
-                                title="{% for tag in submission.tags %}{{ tag.name }}{% if not loop.last %}, {% endif %}{% endfor %}">
-                                <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                {# Tags no longer have their own column — reveal them inline
+                                   on demand via the row's ⋮ → "Show tags". #}
+                                <div class="submission-tags-reveal d-none mt-1"
+                                     data-submission-id="{{ submission.id }}"
+                                     style="white-space: normal;">
+                                    {% if submission.tags %}
                                     {% for tag in submission.tags %}
                                     <span class="badge bg-info text-dark">{{ tag.name }}</span>
                                     {% endfor %}
+                                    {% else %}
+                                    <span class="small text-body-secondary fst-italic">no tags</span>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
@@ -2988,7 +2996,7 @@ print(sub.submit(
     // --- Column Visibility Logic ---
     // Build default columns list dynamically including all metrics
     const metricsList = {{ selected_metrics | tojson }};
-    const BASE_COLUMNS = ['name', 'tags', 'date_uploaded', 'description'];
+    const BASE_COLUMNS = ['name', 'date_uploaded', 'description'];
     const METRIC_COLUMNS = metricsList.map(m => 'metric_' + m);
     const DEFAULT_COLUMNS = [...BASE_COLUMNS, ...METRIC_COLUMNS, 'status'];
 
@@ -3162,6 +3170,16 @@ print(sub.submit(
         startX = e.pageX;
         startWidth = currentColumn.offsetWidth;
 
+        // The header is draggable="true" for column reordering, and
+        // native HTML5 drag otherwise hijacks the mousedown-drag on this
+        // handle — so the column would REORDER instead of resize. Turn
+        // off draggability for the duration of the resize and restore it
+        // on mouseup.
+        if (currentColumn.getAttribute('draggable') === 'true') {
+            currentColumn.dataset.wasDraggable = '1';
+            currentColumn.setAttribute('draggable', 'false');
+        }
+
         document.addEventListener('mousemove', doResize);
         document.addEventListener('mouseup', stopResize);
 
@@ -3200,6 +3218,13 @@ print(sub.submit(
         isResizing = false;
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
+
+        // Restore native drag (column reordering) now that the resize
+        // is done.
+        if (currentColumn && currentColumn.dataset.wasDraggable === '1') {
+            currentColumn.setAttribute('draggable', 'true');
+            delete currentColumn.dataset.wasDraggable;
+        }
 
         document.removeEventListener('mousemove', doResize);
         document.removeEventListener('mouseup', stopResize);
@@ -3523,6 +3548,20 @@ print(sub.submit(
     } else {
         initRowResize();
     }
+
+    // --- "Show tags" per-row toggle ---
+    // Tags no longer have their own column; the row's ⋮ menu reveals
+    // them inline (in the Name cell) on demand.
+    document.querySelectorAll('.show-submission-tags-btn').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            const sid = this.getAttribute('data-submission-id');
+            const reveal = document.querySelector(
+                `.submission-tags-reveal[data-submission-id="${sid}"]`
+            );
+            if (reveal) reveal.classList.toggle('d-none');
+        });
+    });
 
     // --- Modal Tag Logic ---
     // Modal Tag Controller - use 'modal' type to prevent auto-filtering the main table
