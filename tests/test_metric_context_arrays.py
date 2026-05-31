@@ -249,3 +249,37 @@ def test_submission_folder_metric_named_folder_loaded_as_scalar(
     # Both bare-name folders now load uniformly.
     assert ctx.get('sub_label_pred') == 7.0
     assert ctx.get('sub_metric_score') == 0.9
+
+
+def test_label_list_pred_reaches_context_as_typed_labellist(db_session, tmp_path):
+    """A `label_list` submission CF (ranked top-K) must arrive in the
+    context as the parsed list AND a typed bh.LabelList. Regression:
+    get_metric_context had no label_list branch, so the field was
+    dropped entirely → top-K metrics saw pred=None → 0.0."""
+    import benchhub as bh
+    from app import Dataset, Sample as SampleModel, Leaderboard
+
+    ds = Dataset(name='topk_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    sample = SampleModel(dataset_id=ds.id, name='s0')
+    db.session.add(sample); db.session.flush()
+    lb = Leaderboard(name='topk_lb', summary_metrics='', visibility='public')
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+    sub = Submission(name='sub1', leaderboard_id=lb.id)
+    db.session.add(sub); db.session.commit()
+
+    cf = CustomField(
+        submission_id=sub.id, sample_id=sample.id, sample_name='s0',
+        name='label_topk_pred', data_type='label_list',
+        value_text='[3, 5, 9, 6, 0]',
+    )
+    cf.set_params({'k': 5})
+    db.session.add(cf); db.session.commit()
+
+    ctx = get_metric_context(sample, sub=sub, upload_folder=str(tmp_path))
+    # Parsed list at the bare + sub_ keys.
+    assert ctx.get('sub_label_topk_pred') == [3, 5, 9, 6, 0]
+    # Typed instance available for kind-aware metrics.
+    typed = ctx.get('__typed__sub_label_topk_pred')
+    assert isinstance(typed, bh.LabelList)
+    assert typed.values[0] == 3  # NOT '[' (the old string-wrap bug)

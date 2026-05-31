@@ -592,6 +592,17 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                 parsed = cf.value_text
             _stash_typed(context, f"gt_{cf.name}", cf, parsed)
             _stash_typed(context, cf.name, cf, parsed)
+        elif cf.data_type == 'label_list':
+            # Ranked top-K list stored as a JSON array on value_text.
+            # Parse so the typed wrap builds a bh.LabelList; without this
+            # branch the field is dropped from the context entirely and
+            # metrics see pred=None (→ a misleading 0.0).
+            try:
+                parsed = json.loads(cf.value_text) if cf.value_text else None
+            except Exception:
+                parsed = cf.value_text
+            _stash_typed(context, f"gt_{cf.name}", cf, parsed)
+            _stash_typed(context, cf.name, cf, parsed)
         elif cf.data_type == 'json':
             try:
                 parsed = json.loads(cf.value_text) if cf.value_text else None
@@ -676,6 +687,17 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     # Label predictions stored as JSON-encoded primitive
                     # on value_text. Parse so typed metrics receive a
                     # bh.Label and legacy ones see the int/str.
+                    try:
+                        parsed = json.loads(cf.value_text) if cf.value_text else None
+                    except Exception:
+                        parsed = cf.value_text
+                    _stash_typed(context, f"sub_{cf.name}", cf, parsed)
+                    _stash_typed(context, cf.name, cf, parsed)
+                elif cf.data_type == 'label_list':
+                    # Ranked top-K predictions (Hits@K / top-K accuracy /
+                    # MRR) stored as a JSON array. Parse so the typed wrap
+                    # builds a bh.LabelList — otherwise the field is
+                    # dropped and the metric sees pred=None → 0.0.
                     try:
                         parsed = json.loads(cf.value_text) if cf.value_text else None
                     except Exception:
