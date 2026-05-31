@@ -158,6 +158,30 @@ class _RequestsTransport:
         resp.raise_for_status()
         return resp.content
 
+    def download_inputs_archive(self, leaderboard_id: int, dest_path: str,
+                                token: str | None = None) -> None:
+        """Stream the LB's bulk inputs ZIP straight to `dest_path` on
+        disk — never holds the whole archive in memory, so a multi-GB
+        LB is bounded by disk, not RAM. Raises BenchHubAPIError on a
+        non-2xx (e.g. 404 from an older server with no archive route)
+        so the caller can fall back to the per-sample path."""
+        import requests
+        with requests.get(
+            f"{self.base_url}/api/leaderboard/{leaderboard_id}/inputs.zip",
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
+            stream=True,
+        ) as resp:
+            if resp.status_code >= 400:
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {"error": resp.text}
+                raise BenchHubAPIError(resp.status_code, payload)
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        f.write(chunk)
+
 
 class BenchHubAPIError(Exception):
     """Raised when the server returns a non-2xx response."""
@@ -207,7 +231,96 @@ class Client:
             leaderboard_id, token=self.token or None,
         )
 
-    def iter_samples(self, leaderboard_id: int):
+    def _inputs_cache_dir(self, leaderboard_id: int) -> Path:
+        """Local dir holding this LB's extracted input files. Defaults
+        to ~/.cache/benchhub; override the root with BENCHHUB_CACHE_DIR
+        (tests point it at a per-run tempdir for isolation)."""
+        root = os.environ.get("BENCHHUB_CACHE_DIR") or os.path.join(
+            os.path.expanduser("~"), ".cache", "benchhub"
+        )
+        # Namespace by base_url host so two servers (prod vs local) with
+        # colliding LB ids don't share a cache.
+        host = self.base_url.replace("://", "_").replace("/", "_").replace(":", "_")
+        return Path(root) / host / f"lb_{leaderboard_id}"
+
+    def _ensure_inputs_cached(self, leaderboard_id: int, samples: list[dict],
+                              cache_token: str, *,
+                              force_download: bool) -> Path | None:
+        """Make sure every file-backed input for `samples` is extracted
+        under the cache dir. Downloads the bulk ZIP once when the cache
+        is missing/stale/forced; returns the cache dir, or None if the
+        bulk archive route is unavailable (caller falls back per-sample).
+
+        Staleness is decided by a manifest carrying the server's
+        `cache_token` (busts when a materialisation is rebuilt) plus the
+        sorted `<field>/<sample>` entry list (busts if the subset
+        changed). `force_download=True` always re-fetches."""
+        cache_dir = self._inputs_cache_dir(leaderboard_id)
+        expected = sorted(
+            f"{fname}/{s['name']}"
+            for s in samples
+            for fname, entry in (s.get("inputs") or {}).items()
+            if "url" in entry
+        )
+        manifest_path = cache_dir / ".manifest.json"
+        if not force_download and manifest_path.is_file():
+            try:
+                have = json.loads(manifest_path.read_text())
+                if (have.get("cache_token") == cache_token
+                        and have.get("entries") == expected):
+                    return cache_dir  # warm + valid
+            except Exception:
+                pass  # corrupt manifest → re-download
+
+        # (Re)download. Wipe first so a stale subset can't linger.
+        import shutil
+        import tempfile
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_zip = tempfile.mkstemp(suffix=".zip", dir=str(cache_dir))
+        os.close(tmp_fd)
+        try:
+            self.transport.download_inputs_archive(
+                leaderboard_id, tmp_zip, token=self.token or None,
+            )
+        except BenchHubAPIError:
+            # Older server with no /inputs.zip route, or a build error —
+            # signal the caller to use the per-sample fallback.
+            try:
+                os.remove(tmp_zip)
+            except OSError:
+                pass
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            return None
+        with zipfile.ZipFile(tmp_zip) as zf:
+            zf.extractall(cache_dir)
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            pass
+        manifest_path.write_text(
+            json.dumps({"cache_token": cache_token, "entries": expected})
+        )
+        return cache_dir
+
+    @staticmethod
+    def _index_cached_inputs(cache_dir: Path,
+                             field_names: list[str]) -> dict[str, dict[str, Path]]:
+        """Walk each field subdir once → {field: {sample_stem: path}}.
+        O(files) up front so the per-sample lookup in the loop is O(1)
+        instead of re-globbing 10k times."""
+        index: dict[str, dict[str, Path]] = {}
+        for fname in field_names:
+            fdir = cache_dir / fname
+            bucket: dict[str, Path] = {}
+            if fdir.is_dir():
+                for p in fdir.iterdir():
+                    if p.is_file():
+                        bucket[p.stem] = p
+            index[fname] = bucket
+        return index
+
+    def iter_samples(self, leaderboard_id: int, *, force_download: bool = False):
         """Yield `(sample_name, inputs_dict)` for every sample on the
         leaderboard's bound dataset (or its materialised subset, if
         any). The dict is keyed by input-field name; values are
@@ -223,6 +336,12 @@ class Client:
           * **label**:                  int / str (raw value)
           * **text / json / label_list**: decoded value (str / dict / list)
 
+        File-backed inputs are downloaded ONCE as a single bulk ZIP and
+        cached on disk (under ~/.cache/benchhub, or $BENCHHUB_CACHE_DIR),
+        so a re-run — or a second submission to the same LB — reads from
+        disk with no network. Pass `force_download=True` to bypass the
+        cache and re-fetch (e.g. you suspect the local copy is corrupt).
+
         Designed for the generated submission notebook: the user
         plugs in their model, calls `sub.predict(name, …)`. No
         torchvision / HF datasets dependency.
@@ -230,21 +349,50 @@ class Client:
         payload = self.transport.get_leaderboard_samples(
             leaderboard_id, token=self.token or None,
         )
-        for s in payload.get('samples', []):
+        samples = payload.get("samples", [])
+        cache_token = payload.get("cache_token") or ""
+
+        # Which fields are file-backed (carry a 'url')? If none, every
+        # input is inline — skip the archive download entirely.
+        file_field_names = sorted({
+            fname
+            for s in samples
+            for fname, entry in (s.get("inputs") or {}).items()
+            if "url" in entry
+        })
+
+        cache_dir = None
+        index: dict[str, dict[str, Path]] = {}
+        if file_field_names:
+            cache_dir = self._ensure_inputs_cached(
+                leaderboard_id, samples, cache_token,
+                force_download=force_download,
+            )
+            if cache_dir is not None:
+                index = self._index_cached_inputs(cache_dir, file_field_names)
+
+        for s in samples:
             inputs: dict[str, Any] = {}
-            for field_name, entry in (s.get('inputs') or {}).items():
-                kind = entry.get('kind') or ''
-                params = entry.get('params') or {}
-                if 'url' in entry:
+            for field_name, entry in (s.get("inputs") or {}).items():
+                kind = entry.get("kind") or ""
+                params = entry.get("params") or {}
+                if "url" not in entry:
+                    inputs[field_name] = entry.get("value")
+                    continue
+                blob: bytes | None = None
+                cached = index.get(field_name, {}).get(s["name"])
+                if cached is not None:
+                    blob = cached.read_bytes()
+                elif cache_dir is None:
+                    # Bulk archive unavailable → legacy per-sample fetch.
                     blob = self.transport.fetch_bytes(
-                        entry['url'], token=self.token or None,
+                        entry["url"], token=self.token or None,
                     )
-                    inputs[field_name] = _decode_input_bytes(
-                        kind, blob, params,
-                    )
-                else:
-                    inputs[field_name] = entry.get('value')
-            yield s['name'], inputs
+                inputs[field_name] = (
+                    _decode_input_bytes(kind, blob, params)
+                    if blob is not None else None
+                )
+            yield s["name"], inputs
 
     def create_dataset(
         self,
@@ -778,6 +926,19 @@ class FlaskTestClientTransport:
             raise BenchHubAPIError(resp.status_code,
                                     {"error": resp.data.decode("utf-8", "replace")})
         return resp.data
+
+    def download_inputs_archive(self, leaderboard_id: int, dest_path: str,
+                                token: str | None = None) -> None:
+        resp = self.test_client.get(
+            f"/api/leaderboard/{leaderboard_id}/inputs.zip"
+        )
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(
+                resp.status_code,
+                {"error": resp.data.decode("utf-8", "replace")},
+            )
+        with open(dest_path, "wb") as f:
+            f.write(resp.data)
 
     def post_submission_zip(self, leaderboard_id: int, name: str | None,
                             zip_bytes: bytes, token: str) -> dict:

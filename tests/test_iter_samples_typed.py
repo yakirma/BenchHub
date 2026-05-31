@@ -155,3 +155,111 @@ def test_iter_samples_inline_kinds_unwrap_to_raw_values(client, db_session):
     out = list(bhc.iter_samples(lb.id))
     _, inputs = out[0]
     assert inputs['caption'] == 'a quick brown fox'
+
+
+def test_iter_samples_yields_bh_mask_from_raw_class_index_png(client, db_session):
+    """A mask input packs the raw class-index PNG (mode L) in the bulk
+    archive, so the client decodes a real bh.Mask — not the palette-RGB
+    bh.Image the per-URL serve route would have produced."""
+    user = User(email='itsm@bench.local', display_name='itsm',
+                oauth_provider='github', oauth_sub='itsm-1',
+                api_token='itsmtok')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='itsm_ds', visibility='public', owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    db.session.add(DatasetField(dataset_id=ds.id, name='seg',
+                                kind='mask', role='input'))
+    db.session.add(DatasetField(dataset_id=ds.id, name='label',
+                                kind='label', role='gt'))
+    s = Sample(dataset_id=ds.id, name='s0')
+    db.session.add(s); db.session.flush()
+    seg_dir = os.path.join(flask_app.config['UPLOAD_FOLDER'],
+                           'datasets', str(ds.id), 'seg')
+    os.makedirs(seg_dir, exist_ok=True)
+    rel = os.path.join('datasets', str(ds.id), 'seg', 's0.png')
+    abs_path = os.path.join(flask_app.config['UPLOAD_FOLDER'], rel)
+    # Mode-L class-index map: a 8x8 block of 0s and 1s.
+    cls = np.zeros((8, 8), dtype=np.uint8)
+    cls[4:, 4:] = 1
+    PILImage.fromarray(cls, mode='L').save(abs_path)
+    db.session.add(CustomField(
+        sample_id=s.id, name='seg', data_type='mask', value_text=rel,
+    ))
+    lb = Leaderboard(name='itsm_lb', visibility='public', owner_user_id=user.id)
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+
+    bhc = Client(token='itsmtok',
+                 transport=FlaskTestClientTransport(client))
+    _, inputs = list(bhc.iter_samples(lb.id))[0]
+    seg = inputs['seg']
+    assert isinstance(seg, bh.Mask), f"expected bh.Mask, got {type(seg).__name__}"
+    assert seg.array.shape == (8, 8)
+    assert set(np.unique(seg.array).tolist()) == {0, 1}
+
+
+class _CountingTransport(FlaskTestClientTransport):
+    """Wraps the test transport to count bulk-archive downloads."""
+
+    def __init__(self, test_client):
+        super().__init__(test_client)
+        self.archive_downloads = 0
+        self.per_sample_fetches = 0
+
+    def download_inputs_archive(self, leaderboard_id, dest_path, token=None):
+        self.archive_downloads += 1
+        return super().download_inputs_archive(leaderboard_id, dest_path, token)
+
+    def fetch_bytes(self, url, token=None):
+        self.per_sample_fetches += 1
+        return super().fetch_bytes(url, token)
+
+
+def test_iter_samples_downloads_bulk_archive_once_and_caches(client, db_session):
+    """First iter_samples downloads the bulk ZIP once (not per-sample);
+    a second call reads from the on-disk cache with zero downloads."""
+    _, lb, _ = _seed_image_lb(client)
+    tr = _CountingTransport(client)
+    bhc = Client(token='itstok', transport=tr)
+
+    first = list(bhc.iter_samples(lb.id))
+    assert len(first) == 1
+    assert tr.archive_downloads == 1          # one bulk download
+    assert tr.per_sample_fetches == 0         # NOT N per-sample GETs
+
+    second = list(bhc.iter_samples(lb.id))
+    assert len(second) == 1
+    assert tr.archive_downloads == 1          # cache hit — no re-download
+    # Bytes still decode to the same typed instance.
+    assert isinstance(second[0][1]['img'], bh.Image)
+
+
+def test_force_download_busts_the_cache(client, db_session):
+    """force_download=True re-fetches the bulk archive even when a
+    valid cache exists."""
+    _, lb, _ = _seed_image_lb(client)
+    tr = _CountingTransport(client)
+    bhc = Client(token='itstok', transport=tr)
+
+    list(bhc.iter_samples(lb.id))
+    assert tr.archive_downloads == 1
+    list(bhc.iter_samples(lb.id, force_download=True))
+    assert tr.archive_downloads == 2          # forced re-download
+
+
+def test_iter_samples_falls_back_to_per_sample_when_no_archive(client, db_session):
+    """If the bulk archive route is unavailable (older server), the
+    client transparently falls back to per-sample fetches."""
+    _, lb, _ = _seed_image_lb(client)
+    tr = _CountingTransport(client)
+
+    def _no_archive(leaderboard_id, dest_path, token=None):
+        from benchhub.client import BenchHubAPIError
+        raise BenchHubAPIError(404, {"error": "no such route"})
+
+    tr.download_inputs_archive = _no_archive  # type: ignore[assignment]
+    bhc = Client(token='itstok', transport=tr)
+    out = list(bhc.iter_samples(lb.id))
+    assert len(out) == 1
+    assert isinstance(out[0][1]['img'], bh.Image)
+    assert tr.per_sample_fetches == 1          # legacy path kicked in

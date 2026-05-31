@@ -17,7 +17,7 @@ The legacy folder-name ZIP path is gone; the strict typed contract is the spine 
 **Key files:**
 - `benchhub/types.py` — 9 `DataType` subclasses (`Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`). Source of truth.
 - `benchhub/manifest.py` — manifest spec + `import_typed_dataset` + `import_typed_submission` + `check_submission_matches_contract`.
-- `benchhub/client.py` — `Client`, `SubmissionBuilder`, `FlaskTestClientTransport` (the in-process transport tests use).
+- `benchhub/client.py` — `Client`, `SubmissionBuilder`, `FlaskTestClientTransport` (the in-process transport tests use). `Client.iter_samples(lb_id, *, force_download=False)` pulls all file-backed inputs as ONE bulk ZIP from `/api/leaderboard/<id>/inputs.zip` (server route `api_leaderboard_inputs_archive`, `ZIP_STORED`), extracts to `~/.cache/benchhub/<host>/lb_<id>/` (override root via `$BENCHHUB_CACHE_DIR`), and yields decoded `bh.<Kind>` instances. Cache is keyed on the `cache_token` from `/samples` (busts when a materialisation is rebuilt) + the sorted `<field>/<sample>` entry list; `force_download=True` re-fetches. Masks pack the raw `.classid.png` so they decode to `bh.Mask`, not the palette `bh.Image`. Falls back to per-sample `fetch_bytes` if the archive route 404s (older server). Tests must isolate the cache — `conftest` points `$BENCHHUB_CACHE_DIR` at the session tmp and wipes it per test (LB ids repeat across tests).
 - `scripts/import_typed_dataset.py` — admin CLI.
 - `scripts/seed_reference_metrics.py` — idempotent typed-metric seed.
 - `metric_engine.py:_typed_for_cf` / `_stash_typed` / `_metric_wants_typed` — the typed-instance plumbing.

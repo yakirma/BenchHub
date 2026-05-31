@@ -17,6 +17,12 @@ import pytest
 _TEST_DATA_DIR = tempfile.mkdtemp(prefix="benchhub-tests-")
 os.environ["BENCHHUB_DATA_DIR"] = _TEST_DATA_DIR
 
+# Isolate the benchhub-client input cache under the test data dir so a
+# previous test's lb_1 archive can't be reused for the next test's lb_1
+# (the per-test DB reset reuses ids). The db_session fixture wipes it.
+_TEST_CACHE_DIR = os.path.join(_TEST_DATA_DIR, "client_cache")
+os.environ["BENCHHUB_CACHE_DIR"] = _TEST_CACHE_DIR
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -70,6 +76,10 @@ def db_session(app):
     if os.path.isdir(upload_folder):
         shutil.rmtree(upload_folder, ignore_errors=True)
     os.makedirs(upload_folder, exist_ok=True)
+
+    # Drop the client input cache so bulk-archive tests don't see a
+    # stale extraction from a prior test reusing the same LB id.
+    shutil.rmtree(_TEST_CACHE_DIR, ignore_errors=True)
 
     yield db.session
 

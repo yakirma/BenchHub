@@ -5870,58 +5870,26 @@ def feature_request_new():
     return redirect(url_for('feature_requests_list'))
 
 
-@app.route('/api/leaderboard/<int:leaderboard_id>/samples', methods=['GET'])
-def api_leaderboard_samples(leaderboard_id):
-    """List the samples a submission to this LB should produce
-    predictions for, plus URLs / inline values for every `role=input`
-    field on the attached dataset.
+def _resolve_lb_input_samples(lb):
+    """Shared resolution for the /samples + /inputs.zip endpoints.
 
-    Response shape:
-      {
-        "leaderboard_id": int,
-        "input_fields": [{name, kind}, ...],
-        "samples": [
-          {"name": "s000000",
-           "inputs": {
-              "img":   {"kind": "image", "url": "/custom_field_image/<cf_id>"},
-              "tags":  {"kind": "text",  "value": "foo,bar"},
-           }},
-          ...
-        ]
-      }
-
-    File-backed kinds (image / mask / depth / audio) are returned as
-    URLs the client GETs lazily; inline kinds (text / scalar / label /
-    json / label_list) embed the decoded value directly.
-
-    When the LB has a ready materialisation the sample list is the
-    materialised subset; otherwise it falls back to the bound
-    dataset's full sample list. Visibility-gated via cookie OR
-    Bearer auth, same as /contract."""
-    lb = Leaderboard.query.get_or_404(leaderboard_id)
-    user = getattr(g, 'current_user', None)
-    if user is None:
-        bearer = _bearer_token_from_request()
-        if bearer:
-            user, _ = _resolve_api_token(bearer)
-    if not _can_view_parent(user, lb):
-        abort(404)
-
-    # Resolve the dataset behind this LB. Prefer the primary
-    # DatasetField-bearing dataset (Leaderboard.datasets is a list).
+    Returns `(ds, input_fields, samples_rows, cfs_by_sample, cache_token)`.
+    `ds` is None when the LB has no bound dataset. `cache_token` changes
+    whenever the materialised subset is rebuilt (or the dataset sample
+    set changes), so the client can key its on-disk input cache on it
+    and re-download only when the underlying data actually moved."""
     dss = list(lb.datasets) if lb.datasets else []
     if not dss:
-        return jsonify({'leaderboard_id': lb.id, 'input_fields': [],
-                         'samples': []})
+        return None, [], [], {}, f'empty:{lb.id}'
     ds = dss[0]
-
     input_fields = [df for df in ds.fields
                     if (df.role or 'gt').lower() == 'input']
 
     # Materialised subset filter (if the LB has a ready materialisation)
     sample_filter = None
     mat = getattr(lb, 'materialization', None)
-    if mat and mat.status == 'ready':
+    mat_ready = bool(mat and mat.status == 'ready')
+    if mat_ready:
         from benchhub.lb_materialize import list_materialized_samples
         mat_names = list_materialized_samples(
             app.config['UPLOAD_FOLDER'], lb.id,
@@ -5938,7 +5906,7 @@ def api_leaderboard_samples(leaderboard_id):
     sample_ids = [s.id for s in samples_rows]
 
     # Bulk-load the CustomField rows for the input fields across these
-    # samples in one query — avoids N+1 lookups in the loop below.
+    # samples in one query — avoids N+1 lookups in the caller's loop.
     input_names = [df.name for df in input_fields]
     cfs_by_sample: dict[int, dict[str, CustomField]] = {}
     if sample_ids and input_names:
@@ -5949,6 +5917,60 @@ def api_leaderboard_samples(leaderboard_id):
                    .all())
         for cf in cf_rows:
             cfs_by_sample.setdefault(cf.sample_id, {})[cf.name] = cf
+
+    if mat_ready and getattr(mat, 'materialized_at', None):
+        cache_token = f'mat:{lb.id}:{mat.materialized_at.isoformat()}'
+    else:
+        cache_token = f'ds:{ds.id}:{len(samples_rows)}'
+    return ds, input_fields, samples_rows, cfs_by_sample, cache_token
+
+
+@app.route('/api/leaderboard/<int:leaderboard_id>/samples', methods=['GET'])
+def api_leaderboard_samples(leaderboard_id):
+    """List the samples a submission to this LB should produce
+    predictions for, plus URLs / inline values for every `role=input`
+    field on the attached dataset.
+
+    Response shape:
+      {
+        "leaderboard_id": int,
+        "cache_token": "ds:<id>:<n>" | "mat:<lb>:<iso>",
+        "input_fields": [{name, kind, params}, ...],
+        "samples": [
+          {"name": "s000000",
+           "inputs": {
+              "img":   {"kind": "image", "url": "/custom_field_image/<cf_id>"},
+              "tags":  {"kind": "text",  "value": "foo,bar"},
+           }},
+          ...
+        ]
+      }
+
+    File-backed kinds (image / mask / depth / audio) are returned as
+    URLs the client GETs lazily; inline kinds (text / scalar / label /
+    json / label_list) embed the decoded value directly. For the bulk
+    path the client prefers `/inputs.zip` (one request) and only falls
+    back to these per-URL fetches when the archive endpoint is absent.
+
+    When the LB has a ready materialisation the sample list is the
+    materialised subset; otherwise it falls back to the bound
+    dataset's full sample list. Visibility-gated via cookie OR
+    Bearer auth, same as /contract."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if not _can_view_parent(user, lb):
+        abort(404)
+
+    ds, input_fields, samples_rows, cfs_by_sample, cache_token = (
+        _resolve_lb_input_samples(lb)
+    )
+    if ds is None:
+        return jsonify({'leaderboard_id': lb.id, 'input_fields': [],
+                         'samples': [], 'cache_token': cache_token})
 
     # Per-field params (Depth.unit, Mask.num_classes, LabelList.k, ...)
     # ride alongside the value/url so the client can reconstruct the
@@ -5991,11 +6013,105 @@ def api_leaderboard_samples(leaderboard_id):
 
     return jsonify({
         'leaderboard_id': lb.id,
+        'cache_token': cache_token,
         'input_fields': [{'name': df.name, 'kind': df.kind,
                           'params': input_params[df.name]}
                           for df in input_fields],
         'samples': out_samples,
     })
+
+
+@app.route('/api/leaderboard/<int:leaderboard_id>/inputs.zip', methods=['GET'])
+def api_leaderboard_inputs_archive(leaderboard_id):
+    """Stream ONE ZIP of every file-backed `role=input` field for the
+    LB's sample set (materialised subset if present, else the full
+    bound dataset). Layout mirrors the on-disk format: `<field>/<sample><ext>`.
+
+    This is the bulk alternative to the per-sample fetch the client
+    used to do — one request + one connection instead of N. The client
+    extracts the archive into a local cache keyed on the `cache_token`
+    from /samples, so a re-run (or a second submission to the same LB)
+    skips the download entirely.
+
+    Archive notes:
+      * `ZIP_STORED` (no compression) — the payloads are already
+        PNG/JPG/NPZ-compressed, so DEFLATE would burn CPU for ~0 gain.
+        That makes the server-side pack near-free (essentially a copy).
+      * Inline kinds (scalar / label / text / json / label_list) are NOT
+        in the ZIP — they're tiny and ride in the /samples JSON.
+      * Masks: the raw class-index sidecar (`.classid.png`, mode I;16)
+        is packed in preference to the palette-applied display `.jpg`,
+        so the client decodes a real `bh.Mask` instead of a `bh.Image`.
+
+    Visibility-gated via cookie OR Bearer auth, same as /samples."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if not _can_view_parent(user, lb):
+        abort(404)
+
+    ds, input_fields, samples_rows, cfs_by_sample, _ = (
+        _resolve_lb_input_samples(lb)
+    )
+    file_fields = [df for df in input_fields
+                   if df.kind in ('image', 'mask', 'depth', 'audio')]
+
+    from benchhub.lb_materialize import materialized_or_preview_path
+    import tempfile
+    import zipfile
+    upload_folder = app.config['UPLOAD_FOLDER']
+
+    tmp_file = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
+    tmp_path = tmp_file.name
+    tmp_file.close()
+    try:
+        with zipfile.ZipFile(tmp_path, 'w',
+                             compression=zipfile.ZIP_STORED) as zf:
+            for s in samples_rows:
+                bucket = cfs_by_sample.get(s.id, {})
+                for df in file_fields:
+                    cf = bucket.get(df.name)
+                    if cf is None or not cf.value_text:
+                        continue
+                    rel = materialized_or_preview_path(
+                        upload_folder, lb.id, df.name, s.name, cf.value_text,
+                    )
+                    abs_path = os.path.join(upload_folder, rel)
+                    if df.kind == 'mask':
+                        # Prefer the raw class-index sidecar; the display
+                        # file is palette-RGB and only round-trips as an
+                        # Image. Both BH-uploaded (raw value_text) and
+                        # preview (.classid.png sidecar) cases land here.
+                        stem = os.path.splitext(abs_path)[0]
+                        sidecar = stem + '.classid.png'
+                        if os.path.isfile(sidecar):
+                            zf.write(sidecar, arcname=f'{df.name}/{s.name}.png')
+                            continue
+                    if not os.path.isfile(abs_path):
+                        continue
+                    ext = os.path.splitext(abs_path)[1] or ''
+                    zf.write(abs_path, arcname=f'{df.name}/{s.name}{ext}')
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        app.logger.error(f'inputs.zip build failed for lb {lb.id}: {e}')
+        abort(500)
+
+    @after_this_request
+    def _cleanup_inputs_zip(response):
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception as err:
+            app.logger.error(f'Error removing temp inputs.zip: {err}')
+        return response
+
+    return send_file(tmp_path, as_attachment=True,
+                     download_name=f'lb_{lb.id}_inputs.zip',
+                     mimetype='application/zip')
 
 
 @app.route('/api/leaderboard/<int:leaderboard_id>/contract', methods=['GET'])
