@@ -183,6 +183,37 @@ def test_end_to_end_submit_via_flask_transport(client, lb_with_depth_pred, api_u
     assert {cf.sample_name for cf in cfs} == {"s0", "s1"}
 
 
+def test_submit_accepts_name_override(client, lb_with_depth_pred, api_user):
+    """`submit(name=...)` works (the generated script + LB-page snippet
+    call it that way) and overrides any name set at submission() time."""
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    # Opened WITHOUT a name — name supplied only at submit() time.
+    sub = bh_client.submission(lb_with_depth_pred.id)
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    result = sub.submit(name='my submission')
+    persisted = Submission.query.get(result["submission_id"])
+    assert persisted.name == "my submission"
+
+
+def test_submit_name_arg_overrides_builder_name(client, lb_with_depth_pred, api_user):
+    bh_client = bh.Client(
+        token=api_user.api_token,
+        base_url='http://test',
+        transport=bh.FlaskTestClientTransport(client),
+    )
+    sub = bh_client.submission(lb_with_depth_pred.id, name='builder-name')
+    arr = np.ones((4, 4), dtype=np.float32)
+    sub.predict('s0', depth_pred=bh.Depth(arr, unit='meters'))
+    result = sub.submit(name='override-name')
+    persisted = Submission.query.get(result["submission_id"])
+    assert persisted.name == "override-name"
+
+
 def test_end_to_end_submit_propagates_contract_violation(client, lb_with_depth_pred, api_user):
     """A submission that violates the LB contract gets a 400 from the
     server; the client surfaces it as BenchHubAPIError."""

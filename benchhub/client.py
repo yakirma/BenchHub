@@ -664,9 +664,16 @@ class SubmissionBuilder:
                     zf.writestr(f"{p['name']}/{sample_name}{ext}", inst.encode())
         return buf.getvalue()
 
-    def submit(self) -> dict:
-        """Build the ZIP and POST it. Returns the server's response payload."""
-        return self.client._post_zip(self.leaderboard_id, self.name, self.build_zip())
+    def submit(self, name: str | None = None) -> dict:
+        """Build the ZIP and POST it. Returns the server's response payload.
+
+        `name` is the submission's display name. It overrides any name
+        passed to `client.submission(lb_id, name=...)`; pass it here if
+        you opened the builder without one (which is what the generated
+        submission script + LB-page snippet do)."""
+        return self.client._post_zip(
+            self.leaderboard_id, name or self.name, self.build_zip(),
+        )
 
 
 # ---------------------------------------------------------------------------
