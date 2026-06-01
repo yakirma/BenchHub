@@ -1391,14 +1391,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <th scope="col" style="width: calc({{ global_settings.name_width }} + {{ global_settings.tags_width }}); cursor: pointer;"
                                 data-lb-column="name" draggable="true" onclick="changeSort('name')">Name
                                 {% if sort_metric == 'name' %}
-                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }}"></i>
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
                                 data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')">
                                 Date Uploaded
                                 {% if sort_metric == 'date_uploaded' %}
-                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }}"></i>
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
                             <th scope="col" style="width: {{ global_settings.config_width }};" data-lb-column="description"
@@ -1445,7 +1445,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     metric_agg_info[metric] }}</small>
                                 {% endif %}
                                 {% if sort_metric == metric %}
-                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }}"></i>
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
                             {% endfor %}
@@ -1583,6 +1583,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% set value = dynamic_values.get(submission.id, {}).get(metric) %}
                             {% endif %}
                             <td id="metric-{{ submission.id }}-{{ metric }}" data-lb-column="metric_{{ metric }}"
+                                data-sort-value="{{ value if (value is not none and value is not string) else '' }}"
                                 style="{{ get_color(value, metric, metrics_ranges, metric_directions) }}">
                                 {% if value is string %}
                                 <a href="data:text/plain;charset=utf-8,{{ value }}"
@@ -2432,41 +2433,99 @@ print(sub.submit(
         recalculateAsync(allIds, true);
     }, 1000); // Slightly longer debounce for async text input? 500 is fine.
 
-    function changeSort(metric) {
-        const form = document.getElementById('leaderboard-filter-form');
-        if (!form) return;
+    // Track the current client-side sort so a repeat click toggles
+    // direction. Seeded from the server-rendered sort on load.
+    let _currentSortKey = {{ sort_metric|tojson }};
+    let _currentSortOrder = {{ sort_order|tojson }} || 'asc';
 
-        // Ensure the sort inputs exist (don't assume — a missing input
-        // would throw on .value and silently kill the click).
-        const ensure = (name) => {
-            let inp = form.querySelector(`input[name="${name}"]`);
-            if (!inp) {
-                inp = document.createElement('input');
-                inp.type = 'hidden';
-                inp.name = name;
-                form.appendChild(inp);
+    // Read a row's comparable value for a column key. Metric columns
+    // carry a raw `data-sort-value` (unformatted number); name/date
+    // sort on cell text. Returns {num, str}; num=null means "no value"
+    // (missing / Not-computed) and always sinks to the bottom.
+    function _rowSortValue(row, key) {
+        if (key === 'name' || key === 'date_uploaded') {
+            const c = row.querySelector(`td[data-lb-column="${key}"]`);
+            return { num: null, str: (c ? c.innerText : '').trim().toLowerCase() };
+        }
+        const c = row.querySelector(`td[data-lb-column="metric_${CSS.escape(key)}"]`);
+        const raw = c ? c.getAttribute('data-sort-value') : '';
+        if (raw === null || raw === '') return { num: null, str: null };
+        const n = parseFloat(raw);
+        return { num: isNaN(n) ? null : n, str: null };
+    }
+
+    function sortTableByColumn(key, order) {
+        const tbody = document.querySelector('#leaderboard-table tbody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const dir = order === 'desc' ? -1 : 1;
+        rows.sort((a, b) => {
+            const va = _rowSortValue(a, key);
+            const vb = _rowSortValue(b, key);
+            if (key === 'name' || key === 'date_uploaded') {
+                if (va.str < vb.str) return -1 * dir;
+                if (va.str > vb.str) return 1 * dir;
+                return 0;
             }
-            return inp;
-        };
-        const metricInput = ensure('sort_metric');
-        const orderInput = ensure('sort_order');
+            // Numeric: missing values always sink, regardless of dir.
+            if (va.num === null && vb.num === null) return 0;
+            if (va.num === null) return 1;
+            if (vb.num === null) return -1;
+            return (va.num - vb.num) * dir;
+        });
+        rows.forEach(r => tbody.appendChild(r));
+    }
 
-        if (metricInput.value === metric) {
-            orderInput.value = orderInput.value === 'asc' ? 'desc' : 'asc';
+    function updateSortIndicator(key, order) {
+        // Clear every existing indicator, then mark the active header.
+        document.querySelectorAll('#leaderboard-table thead .sort-indicator')
+            .forEach(el => el.remove());
+        let th = document.querySelector(
+            `#leaderboard-table thead th[data-lb-column="${(key === 'name' || key === 'date_uploaded') ? key : 'metric_' + CSS.escape(key)}"]`
+        );
+        if (!th) return;
+        const icon = document.createElement('i');
+        const updown = order === 'asc' ? 'down' : 'up';
+        icon.className = `bi bi-sort-${key === 'name' ? 'alpha' : 'numeric'}-${updown} sort-indicator ms-1`;
+        th.appendChild(icon);
+    }
+
+    function changeSort(metric) {
+        // Toggle direction on a repeat click; default ascending on a new column.
+        if (_currentSortKey === metric) {
+            _currentSortOrder = _currentSortOrder === 'asc' ? 'desc' : 'asc';
         } else {
-            metricInput.value = metric;
-            orderInput.value = 'asc';
+            _currentSortKey = metric;
+            _currentSortOrder = 'asc';
         }
 
-        // Best-effort persistence + filter-state gathering. These touch
-        // optional tag controllers that may not exist on every LB; a
-        // throw here must NOT block the actual sort submit below.
-        try { saveSortPreference(metricInput.value, orderInput.value); } catch (e) {}
-        try { saveSubmissionFilters(); } catch (e) {}
-        try { updateURLParams(false); } catch (e) {}
+        // Reorder the rows in place — no page reload, no scroll jump.
+        sortTableByColumn(_currentSortKey, _currentSortOrder);
+        updateSortIndicator(_currentSortKey, _currentSortOrder);
 
-        // Always submit — this is what applies the sort server-side.
-        form.submit();
+        // Keep the hidden inputs + URL + saved pref in sync so a manual
+        // reload (or a later filter submit) reproduces the same order
+        // server-side — but never reload here.
+        const form = document.getElementById('leaderboard-filter-form');
+        if (form) {
+            const ensure = (name) => {
+                let inp = form.querySelector(`input[name="${name}"]`);
+                if (!inp) {
+                    inp = document.createElement('input');
+                    inp.type = 'hidden'; inp.name = name; form.appendChild(inp);
+                }
+                return inp;
+            };
+            ensure('sort_metric').value = _currentSortKey;
+            ensure('sort_order').value = _currentSortOrder;
+        }
+        try { saveSortPreference(_currentSortKey, _currentSortOrder); } catch (e) {}
+        try {
+            const u = new URL(window.location.href);
+            u.searchParams.set('sort_metric', _currentSortKey);
+            u.searchParams.set('sort_order', _currentSortOrder);
+            window.history.replaceState({ path: u.toString() }, '', u.toString());
+        } catch (e) {}
     }
 
     function updateURLParams(doSubmit = true) {
