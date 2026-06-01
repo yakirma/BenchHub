@@ -204,3 +204,33 @@ def test_leaderboard_view_sorts_by_metric_value(client, project, lb_with_subs):
         f"/leaderboard/{lb.id}?sort_metric=lm_{lm.id}&sort_order=asc"
     ).data.decode()
     assert body_asc.index("alpha") < body_asc.index("beta")
+
+
+def test_leaderboard_view_defaults_to_first_metric_best_first(client, project, lb_with_subs):
+    """With no sort params, the board defaults to best-first by the first
+    metric: higher_is_better → the higher value lands on top."""
+    import json
+    from app import GlobalMetric, LeaderboardMetric, MetricResult
+
+    lb = lb_with_subs["lb"]
+    subs = lb_with_subs["subs"]
+    gm = GlobalMetric(name="acc_def", python_code="def acc_def(x): return x",
+                      visibility="public")
+    db.session.add(gm); db.session.flush()
+    lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
+                           target_name="acc_def", arg_mappings=json.dumps({}),
+                           pooling_type="mean", sort_direction="higher_is_better")
+    db.session.add(lm); db.session.flush()
+    lb.summary_metrics = f"lm_{lm.id}"
+    db.session.add(MetricResult(submission_id=subs[0].id,
+                                leaderboard_metric_id=lm.id, value=0.2))  # alpha
+    db.session.add(MetricResult(submission_id=subs[1].id,
+                                leaderboard_metric_id=lm.id, value=0.8))  # beta
+    db.session.commit()
+
+    # No sort params at all.
+    body = client.get(f"/leaderboard/{lb.id}").data.decode()
+    # beta (0.8) on top for higher_is_better default.
+    assert body.index("beta") < body.index("alpha")
+    # The first-metric header is marked as the active (desc) sort.
+    assert f'data-sort-order="desc"' in body

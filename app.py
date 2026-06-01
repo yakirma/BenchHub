@@ -7700,7 +7700,12 @@ def leaderboard_view(leaderboard_id):
     show_archived = request.args.get('show_archived', 'false').lower() == 'true'
     sort_metric = request.args.get('sort_metric', '')
     sort_order = request.args.get('sort_order', 'asc')
-    
+    # Did the viewer explicitly pick a sort? When not, we default to
+    # best-first by the leaderboard's first metric (set once all_metrics
+    # is known, below).
+    _sort_metric_explicit = bool(sort_metric)
+    _sort_order_explicit = 'sort_order' in request.args
+
     # Submission Filter Params
     search_query = request.args.get('search_query', '')
     enable_include = request.args.get('enable_include', 'false') == 'true'
@@ -7876,7 +7881,18 @@ def leaderboard_view(leaderboard_id):
     # discovered_metrics contains lm_ids (strings) and custom_metrics (names)
     discovered_metrics = set(custom_metrics) | set(leaderboard_metrics_map.keys())
     all_metrics = list(selected_metrics)
-    
+
+    # Default sort: when the viewer hasn't picked a column, sort
+    # best-first by the leaderboard's FIRST metric. Direction follows
+    # that metric's own sort_direction (lower_is_better → ascending,
+    # else descending) so the top row is the best submission.
+    if not _sort_metric_explicit and all_metrics:
+        sort_metric = all_metrics[0]
+        if not _sort_order_explicit:
+            _lm0 = leaderboard_metrics_map.get(sort_metric)
+            _direction = getattr(_lm0, 'sort_direction', None) or 'higher_is_better'
+            sort_order = 'asc' if _direction == 'lower_is_better' else 'desc'
+
     metrics_ranges = {}
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
