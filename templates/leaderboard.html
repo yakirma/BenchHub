@@ -2436,8 +2436,20 @@ print(sub.submit(
         const form = document.getElementById('leaderboard-filter-form');
         if (!form) return;
 
-        let metricInput = form.querySelector('input[name="sort_metric"]');
-        let orderInput = form.querySelector('input[name="sort_order"]');
+        // Ensure the sort inputs exist (don't assume — a missing input
+        // would throw on .value and silently kill the click).
+        const ensure = (name) => {
+            let inp = form.querySelector(`input[name="${name}"]`);
+            if (!inp) {
+                inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = name;
+                form.appendChild(inp);
+            }
+            return inp;
+        };
+        const metricInput = ensure('sort_metric');
+        const orderInput = ensure('sort_order');
 
         if (metricInput.value === metric) {
             orderInput.value = orderInput.value === 'asc' ? 'desc' : 'asc';
@@ -2446,9 +2458,15 @@ print(sub.submit(
             orderInput.value = 'asc';
         }
 
-        saveSortPreference(metricInput.value, orderInput.value); // Persist sort independently
-        saveSubmissionFilters(); // Persist other filters if enabled
-        updateURLParams(true);
+        // Best-effort persistence + filter-state gathering. These touch
+        // optional tag controllers that may not exist on every LB; a
+        // throw here must NOT block the actual sort submit below.
+        try { saveSortPreference(metricInput.value, orderInput.value); } catch (e) {}
+        try { saveSubmissionFilters(); } catch (e) {}
+        try { updateURLParams(false); } catch (e) {}
+
+        // Always submit — this is what applies the sort server-side.
+        form.submit();
     }
 
     function updateURLParams(doSubmit = true) {
@@ -3155,6 +3173,10 @@ print(sub.submit(
 
             // Add event listeners
             handle.addEventListener('mousedown', initResize);
+            // A click on the handle would otherwise bubble to the header
+            // and trigger changeSort() — suppress it so grabbing the
+            // resize grip never accidentally re-sorts the table.
+            handle.addEventListener('click', (e) => e.stopPropagation());
 
             th.appendChild(handle);
         });

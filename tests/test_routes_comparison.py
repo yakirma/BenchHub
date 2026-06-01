@@ -168,3 +168,39 @@ def test_leaderboard_view_search_filters_submissions(
     # alpha is present; beta name should not appear in submission rows.
     # (We can't fully assert because tag-search also goes here; weak check.)
     assert b"alpha" in resp.data
+
+
+def test_leaderboard_view_sorts_by_metric_value(client, project, lb_with_subs):
+    """?sort_metric=lm_<id>&sort_order=desc orders the submission rows by
+    that metric's value. Pins the server side of the click-to-sort
+    behaviour on metric columns."""
+    import json
+    from app import GlobalMetric, LeaderboardMetric, MetricResult
+
+    lb = lb_with_subs["lb"]
+    subs = lb_with_subs["subs"]  # alpha, beta, gamma(archived)
+    gm = GlobalMetric(name="acc_sort", python_code="def acc_sort(x): return x",
+                      visibility="public")
+    db.session.add(gm); db.session.flush()
+    lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
+                           target_name="acc_sort", arg_mappings=json.dumps({}),
+                           pooling_type="mean", sort_direction="higher_is_better")
+    db.session.add(lm); db.session.flush()
+    lb.summary_metrics = f"lm_{lm.id}"
+    # alpha=0.1, beta=0.9 — so desc order should put beta before alpha.
+    db.session.add(MetricResult(submission_id=subs[0].id,
+                                leaderboard_metric_id=lm.id, value=0.1))
+    db.session.add(MetricResult(submission_id=subs[1].id,
+                                leaderboard_metric_id=lm.id, value=0.9))
+    db.session.commit()
+
+    body = client.get(
+        f"/leaderboard/{lb.id}?sort_metric=lm_{lm.id}&sort_order=desc"
+    ).data.decode()
+    # beta (0.9) must appear before alpha (0.1) in the rendered rows.
+    assert body.index("beta") < body.index("alpha")
+    # asc flips it.
+    body_asc = client.get(
+        f"/leaderboard/{lb.id}?sort_metric=lm_{lm.id}&sort_order=asc"
+    ).data.decode()
+    assert body_asc.index("alpha") < body_asc.index("beta")
