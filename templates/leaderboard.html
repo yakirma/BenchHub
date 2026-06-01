@@ -1389,13 +1389,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <th scope="col" style="width: 5%;"><input class="form-check-input" type="checkbox"
                                     id="select_all"></th>
                             <th scope="col" style="width: calc({{ global_settings.name_width }} + {{ global_settings.tags_width }}); cursor: pointer;"
-                                data-lb-column="name" draggable="true" onclick="changeSort('name')">Name
+                                data-lb-column="name" draggable="true" onclick="changeSort('name')"
+                                {% if sort_metric == 'name' %}data-sort-order="{{ sort_order }}"{% endif %}>Name
                                 {% if sort_metric == 'name' %}
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
-                                data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')">
+                                data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')"
+                                {% if sort_metric == 'date_uploaded' %}data-sort-order="{{ sort_order }}"{% endif %}>
                                 Date Uploaded
                                 {% if sort_metric == 'date_uploaded' %}
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }} sort-indicator"></i>
@@ -1414,7 +1416,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% endif %}
                             <th scope="col" style="width: {{ global_settings.scalar_width }}; cursor: pointer;"
                                 data-lb-column="metric_{{ metric }}" draggable="true"
-                                onclick="changeSort('{{ metric }}')">
+                                onclick="changeSort('{{ metric }}')"
+                                {% if sort_metric == metric %}data-sort-order="{{ sort_order }}"{% endif %}>
                                 {{ display_label }}
                                 {% if metric_config %}
                                 <div class="mt-1 fw-normal" style="line-height: 1.1;">
@@ -2433,10 +2436,17 @@ print(sub.submit(
         recalculateAsync(allIds, true);
     }, 1000); // Slightly longer debounce for async text input? 500 is fine.
 
-    // Track the current client-side sort so a repeat click toggles
-    // direction. Seeded from the server-rendered sort on load.
-    let _currentSortKey = {{ sort_metric|tojson }};
-    let _currentSortOrder = {{ sort_order|tojson }} || 'asc';
+    // The sort key + direction live on the active header's
+    // `data-sort-order` attribute (seeded server-side, updated on each
+    // click) — a single DOM source of truth, so repeat clicks can't
+    // desync from a stale JS variable.
+    function _thForKey(key) {
+        const col = (key === 'name' || key === 'date_uploaded')
+            ? key : 'metric_' + key;
+        return document.querySelector(
+            `#leaderboard-table thead th[data-lb-column="${CSS.escape(col)}"]`
+        );
+    }
 
     // Read a row's comparable value for a column key. Metric columns
     // carry a raw `data-sort-value` (unformatted number); name/date
@@ -2491,17 +2501,20 @@ print(sub.submit(
     }
 
     function changeSort(metric) {
-        // Toggle direction on a repeat click; default ascending on a new column.
-        if (_currentSortKey === metric) {
-            _currentSortOrder = _currentSortOrder === 'asc' ? 'desc' : 'asc';
-        } else {
-            _currentSortKey = metric;
-            _currentSortOrder = 'asc';
-        }
+        const th = _thForKey(metric);
+        // Current direction is whatever this header last recorded; a
+        // repeat click flips it, a fresh column starts ascending.
+        const prev = th ? th.getAttribute('data-sort-order') : null;
+        const order = (prev === 'asc') ? 'desc' : (prev === 'desc') ? 'asc' : 'asc';
+
+        // Move the active marker to this column only.
+        document.querySelectorAll('#leaderboard-table thead th[data-sort-order]')
+            .forEach(h => h.removeAttribute('data-sort-order'));
+        if (th) th.setAttribute('data-sort-order', order);
 
         // Reorder the rows in place — no page reload, no scroll jump.
-        sortTableByColumn(_currentSortKey, _currentSortOrder);
-        updateSortIndicator(_currentSortKey, _currentSortOrder);
+        sortTableByColumn(metric, order);
+        updateSortIndicator(metric, order);
 
         // Keep the hidden inputs + URL + saved pref in sync so a manual
         // reload (or a later filter submit) reproduces the same order
@@ -2516,14 +2529,14 @@ print(sub.submit(
                 }
                 return inp;
             };
-            ensure('sort_metric').value = _currentSortKey;
-            ensure('sort_order').value = _currentSortOrder;
+            ensure('sort_metric').value = metric;
+            ensure('sort_order').value = order;
         }
-        try { saveSortPreference(_currentSortKey, _currentSortOrder); } catch (e) {}
+        try { saveSortPreference(metric, order); } catch (e) {}
         try {
             const u = new URL(window.location.href);
-            u.searchParams.set('sort_metric', _currentSortKey);
-            u.searchParams.set('sort_order', _currentSortOrder);
+            u.searchParams.set('sort_metric', metric);
+            u.searchParams.set('sort_order', order);
             window.history.replaceState({ path: u.toString() }, '', u.toString());
         } catch (e) {}
     }
