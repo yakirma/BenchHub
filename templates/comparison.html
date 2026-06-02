@@ -451,7 +451,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     </select>
 
                     <label for="sort_by_select" class="form-label ms-3 me-2 mb-0">Sort by:</label>
-                    <select id="sort_by_select" name="sort_by" onchange="saveScrollAndSubmit(this.form)"
+                    <select id="sort_by_select" name="sort_by" onchange="onSortByChange(this)"
                         class="form-select form-select-sm me-2" style="width: auto;">
                         <optgroup label="General">
                             <option value="name" {% if sort_by=='name' %}selected{% endif %}>Name</option>
@@ -1468,6 +1468,26 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             console.error('SessionStorage error:', e);
         }
         form.submit();
+    };
+
+    // Picking a sort column auto-orients the direction to the most useful
+    // default: a per-sample metric sorts WORST-first (opposite of the
+    // metric's "good" direction), and disagreement sorts HIGH→LOW. The
+    // user can still flip the order dropdown afterwards.
+    window.onSortByChange = function (sel) {
+        var v = sel.value || '';
+        var orderSel = sel.form.querySelector('select[name="sort_order"]');
+        if (orderSel && v) {
+            if (v.indexOf('disagreement:') === 0) {
+                orderSel.value = 'desc';                 // most disagreement first
+            } else if (v.indexOf(':') !== -1) {
+                var key = v.split(':')[0];               // metric key (e.g. lm_3)
+                var dir = (metricDirections || {})[key];
+                if (dir === 'higher_is_better') orderSel.value = 'asc';   // low→high = worst first
+                else if (dir === 'lower_is_better') orderSel.value = 'desc';
+            }
+        }
+        saveScrollAndSubmit(sel.form);
     };
 
     window.saveScrollPos = function () {

@@ -11108,8 +11108,13 @@ def comparison_view(leaderboard_id):
         metric_labels[m] = m
     
     leaderboard_metrics_map = { f"lm_{lm.id}": lm for lm in leaderboard.leaderboard_metrics }
+    # Friendly display label only — never expose the internal lm_<id> key
+    # to users. Disambiguate same-named metrics with a numeric suffix.
+    _label_seen = {}
     for lmid, lm in leaderboard_metrics_map.items():
-        metric_labels[lmid] = f"{lm.target_name if lm.target_name else lm.global_metric.name} ({lmid})"
+        base = lm.target_name if lm.target_name else lm.global_metric.name
+        _label_seen[base] = _label_seen.get(base, 0) + 1
+        metric_labels[lmid] = base if _label_seen[base] == 1 else f"{base} #{_label_seen[base]}"
         all_field_types[lmid] = 'metric'
     
     custom_scalar_metric_names = [name for name, ftype in all_field_types.items() if ftype in ['scalar', 'metric']]
@@ -11908,6 +11913,13 @@ def comparison_view(leaderboard_id):
 
     # Pass metric directions for coloring
     metric_directions = json.loads(leaderboard.metric_directions) if leaderboard.metric_directions else {}
+    # Merge each bound metric's own sort_direction (keyed by lm_<id>) so
+    # the client knows the "good" direction for every metric — used to
+    # orient the default sample-sort (worst-first) and disagreement sort.
+    for lm in (leaderboard.leaderboard_metrics or []):
+        # Default unset metrics to higher_is_better so the client always
+        # has a direction to orient the worst-first sample sort.
+        metric_directions[f"lm_{lm.id}"] = lm.sort_direction or 'higher_is_better'
 
     # True iff every submission being rendered is a mirrored PWC row
     # (no per-sample predictions on disk). The template uses this to
