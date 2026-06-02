@@ -123,3 +123,40 @@ def test_oauth_login_redirects_to_home(client, db_session):
     # surfaces. Either way, the next-URL stash is what we care about, which
     # is verified indirectly by the /home + login_required test above.
     assert resp.status_code in (302, 503)
+
+
+def test_home_shows_recent_public_and_own_submissions(auth_client, logged_in_user, db_session):
+    """The two activity rails: latest verified submissions on public LBs,
+    and the signed-in user's own latest submissions."""
+    from app import Submission
+
+    other = User(email='other@bench.local', display_name='Other',
+                 oauth_provider='github', oauth_sub='other-sub-1')
+    db.session.add(other); db.session.flush()
+
+    pub_lb = Leaderboard(name='public_board', visibility='public',
+                         owner_user_id=other.id)
+    mine_lb = Leaderboard(name='private_board', visibility='private',
+                          owner_user_id=logged_in_user.id)
+    db.session.add_all([pub_lb, mine_lb]); db.session.flush()
+
+    # A verified public submission by someone else → public rail only.
+    db.session.add(Submission(name='alpha_sub', leaderboard_id=pub_lb.id,
+                              owner_user_id=other.id, kind='verified',
+                              processing_status='Processed'))
+    # The user's own submission on their private LB → user rail only.
+    db.session.add(Submission(name='beta_sub', leaderboard_id=mine_lb.id,
+                              owner_user_id=logged_in_user.id, kind='verified',
+                              processing_status='Processed'))
+    # Archived public submission → in neither rail.
+    db.session.add(Submission(name='gamma_archived', leaderboard_id=pub_lb.id,
+                              owner_user_id=other.id, kind='verified',
+                              is_archived=True))
+    db.session.commit()
+
+    resp = auth_client.get('/home')
+    assert resp.status_code == 200
+    body = resp.data
+    assert b'alpha_sub' in body          # public rail
+    assert b'beta_sub' in body           # user rail
+    assert b'gamma_archived' not in body # archived excluded

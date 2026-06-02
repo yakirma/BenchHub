@@ -2892,6 +2892,30 @@ def home():
         leaderboard_thumbs[lb.id] = (
             _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
         )
+
+    # Recent-activity rails: the 5 newest verified submissions on public
+    # leaderboards (the community feed) and the 5 newest the user made
+    # themselves (their own feed). Both skip archived + mirrored rows so
+    # only real, live submissions show.
+    recent_public_submissions = (
+        Submission.query
+        .join(Leaderboard, Submission.leaderboard_id == Leaderboard.id)
+        .filter(Leaderboard.visibility == 'public',
+                Submission.is_archived.is_(False),
+                Submission.kind == 'verified')
+        .order_by(Submission.upload_date.desc())
+        .limit(5)
+        .all()
+    )
+    recent_user_submissions = (
+        Submission.query
+        .filter(Submission.owner_user_id == user.id,
+                Submission.is_archived.is_(False))
+        .order_by(Submission.upload_date.desc())
+        .limit(5)
+        .all()
+    )
+
     return render_template(
         'home.html',
         datasets=datasets,
@@ -2900,6 +2924,8 @@ def home():
         personal_lbs=personal_lbs,
         dataset_thumbs=dataset_thumbs,
         leaderboard_thumbs=leaderboard_thumbs,
+        recent_public_submissions=recent_public_submissions,
+        recent_user_submissions=recent_user_submissions,
     )
 
 
