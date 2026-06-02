@@ -256,12 +256,14 @@
 
     {# ---- Recent submission activity (two rails) ---- #}
     {% macro submission_row(sub, show_owner, score=None) %}
+    {% set _box_color = score.color if score else None %}
     <a href="{{ url_for('leaderboard_view', leaderboard_id=sub.leaderboard_id) }}"
-       class="list-group-item list-group-item-action d-flex align-items-center gap-2 py-2">
+       class="list-group-item list-group-item-action d-flex align-items-center gap-2 py-2"
+       style="{% if _box_color %}background-color: {{ _box_color }};{% endif %}">
         <div class="flex-grow-1" style="min-width: 0;">
-            <div class="text-body fw-semibold text-truncate" style="max-width: 18rem;"
+            <div class="fw-semibold text-truncate {{ 'text-dark' if _box_color else 'text-body' }}" style="max-width: 18rem;"
                  title="{{ sub.name }}">{{ sub.name }}</div>
-            <div class="small text-body-secondary text-truncate">
+            <div class="small text-truncate {{ 'text-dark opacity-75' if _box_color else 'text-body-secondary' }}">
                 <i class="bi bi-trophy me-1"></i>{{ sub.leaderboard.name if sub.leaderboard else 'leaderboard' }}
                 {% if show_owner %}
                     · <i class="bi bi-person me-1"></i>{{ (sub.owner.display_name if sub.owner else None) or sub.git_author or 'anon' }}
@@ -270,22 +272,18 @@
         </div>
         {% if score %}
         {% if score.rank %}
-        <div class="text-end flex-shrink-0 rounded px-2 py-1"
-             style="{% if score.color %}background-color: {{ score.color }};{% endif %}"
-             title="Rank {{ score.rank }} of {{ score.total }} by {{ score.label }}">
-            <div class="fw-semibold {{ 'text-dark' if score.color else 'text-body' }}">#{{ score.rank }}</div>
-            <div class="small {{ 'text-dark opacity-75' if score.color else 'text-body-secondary' }}">of {{ score.total }}</div>
+        <div class="text-end flex-shrink-0" title="Rank {{ score.rank }} of {{ score.total }} by {{ score.label }}">
+            <div class="fw-semibold {{ 'text-dark' if _box_color else 'text-body' }}">#{{ score.rank }}</div>
+            <div class="small {{ 'text-dark opacity-75' if _box_color else 'text-body-secondary' }}">of {{ score.total }}</div>
         </div>
         {% endif %}
-        <div class="text-end flex-shrink-0 rounded px-2 py-1"
-             style="{% if score.color %}background-color: {{ score.color }};{% endif %}"
-             title="{{ score.label }}: {{ score.value|smart_num }}">
-            <div class="fw-semibold font-monospace {{ 'text-dark' if score.color else 'text-primary' }}">{{ score.value|smart_num }}</div>
-            <div class="small text-truncate {{ 'text-dark opacity-75' if score.color else 'text-body-secondary' }}" style="max-width: 9rem;">{{ score.label }}</div>
+        <div class="text-end flex-shrink-0" title="{{ score.label }}: {{ score.value|smart_num }}">
+            <div class="fw-semibold font-monospace {{ 'text-dark' if _box_color else 'text-primary' }}">{{ score.value|smart_num }}</div>
+            <div class="small text-truncate {{ 'text-dark opacity-75' if _box_color else 'text-body-secondary' }}" style="max-width: 9rem;">{{ score.label }}</div>
         </div>
         {% endif %}
         <div class="text-end flex-shrink-0">
-            <div class="small text-body-secondary">{{ sub.upload_date.strftime('%Y-%m-%d %H:%M') if sub.upload_date else '—' }}</div>
+            <div class="small {{ 'text-dark opacity-75' if _box_color else 'text-body-secondary' }}">{{ sub.upload_date.strftime('%Y-%m-%d %H:%M') if sub.upload_date else '—' }}</div>
             {% set _st = sub.processing_status or 'Pending' %}
             <span class="badge rounded-pill {{ 'text-bg-success' if _st == 'Processed' else ('text-bg-danger' if _st.startswith('Error') else 'text-bg-secondary') }}">{{ _st }}</span>
         </div>
