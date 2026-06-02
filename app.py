@@ -5976,6 +5976,12 @@ def _resolve_lb_input_samples(lb):
         return (_role_overrides.get(df.name) or df.role or 'gt').lower()
 
     input_fields = [df for df in ds.fields if _eff_role(df) == 'input']
+    # Default: when nothing is explicitly an input but the dataset has
+    # image field(s), treat those as the inputs (everything else is gt).
+    # "An image field present ⇒ it's the input." Only fires when no
+    # explicit input exists, so it never overrides a real designation.
+    if not input_fields:
+        input_fields = [df for df in ds.fields if df.kind == 'image']
 
     # Materialised subset filter (if the LB has a ready materialisation)
     sample_filter = None

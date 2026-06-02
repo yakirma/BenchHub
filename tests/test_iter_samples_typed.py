@@ -295,3 +295,31 @@ def test_samples_api_honors_lb_field_role_override(client, db_session):
 
     payload = client.get(f'/api/leaderboard/{lb.id}/samples').get_json()
     assert [f['name'] for f in payload['input_fields']] == ['img']
+
+
+def test_samples_api_defaults_image_to_input_when_no_explicit_input(client, db_session):
+    """When no field is marked input (and no LB override), an image field
+    is treated as the input by default — 'image present => input'."""
+    import os as _os
+    import numpy as _np
+    from PIL import Image as _PILImage
+    user = User(email='imgdef@bench.local', display_name='id',
+                oauth_provider='github', oauth_sub='imgdef-1', api_token='idtok')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='imgdef_ds', visibility='public', owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    # Everything gt; no input, no field_roles override.
+    db.session.add(DatasetField(dataset_id=ds.id, name='image', kind='image', role='gt'))
+    db.session.add(DatasetField(dataset_id=ds.id, name='caption', kind='text', role='gt'))
+    s = Sample(dataset_id=ds.id, name='s0'); db.session.add(s); db.session.flush()
+    img_dir = _os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id), 'image')
+    _os.makedirs(img_dir, exist_ok=True)
+    rel = _os.path.join('datasets', str(ds.id), 'image', 's0.png')
+    _PILImage.fromarray(_np.zeros((8, 8, 3), dtype=_np.uint8)).save(
+        _os.path.join(flask_app.config['UPLOAD_FOLDER'], rel))
+    db.session.add(CustomField(sample_id=s.id, name='image', data_type='image', value_text=rel))
+    lb = Leaderboard(name='imgdef_lb', visibility='public', owner_user_id=user.id)
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    payload = client.get(f'/api/leaderboard/{lb.id}/samples').get_json()
+    assert [f['name'] for f in payload['input_fields']] == ['image']
