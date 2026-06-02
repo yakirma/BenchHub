@@ -429,3 +429,60 @@ def test_catalog_shows_distinct_user_and_submission_counts(client, db_session):
     assert 'bi-people' in body and 'bi-send' in body
     assert '2 users submitted' in body
     assert '3 submissions' in body
+
+
+def test_rematerialize_blocked_when_lb_has_submissions(auth_client, logged_in_user, db_session):
+    """Editing/retrying materialization is refused once the LB has a real
+    (non-mirrored) submission — it would change the scored input set."""
+    from app import Leaderboard, LeaderboardMaterialization, Submission
+
+    lb = Leaderboard(name='mat_lock_lb', summary_metrics='',
+                     owner_user_id=logged_in_user.id)
+    db.session.add(lb); db.session.flush()
+    mat = LeaderboardMaterialization(leaderboard_id=lb.id, sample_cap=100,
+                                     sampling='random', sampling_seed=42,
+                                     status='ready')
+    db.session.add(mat)
+    db.session.add(Submission(name='real_sub', leaderboard_id=lb.id,
+                              owner_user_id=logged_in_user.id, kind='verified'))
+    db.session.commit()
+
+    r = auth_client.post(f'/leaderboard/{lb.id}/materialize/edit',
+                         data={'sample_cap': '50', 'sampling': 'head'},
+                         follow_redirects=False)
+    assert r.status_code == 302
+    r2 = auth_client.post(f'/leaderboard/{lb.id}/materialize/retry',
+                          follow_redirects=False)
+    assert r2.status_code == 302
+
+    # Params + status untouched — nothing was re-queued.
+    refreshed = LeaderboardMaterialization.query.filter_by(leaderboard_id=lb.id).first()
+    assert refreshed.status == 'ready'
+    assert refreshed.sample_cap == 100
+
+
+def test_rematerialize_allowed_with_only_mirrored_submissions(auth_client, logged_in_user, db_session, monkeypatch):
+    """Mirrored (PWC) score rows don't lock materialization."""
+    import tasks as _tasks
+    from app import Leaderboard, LeaderboardMaterialization, Submission
+
+    monkeypatch.setattr(_tasks.materialize_leaderboard, 'delay', lambda *a, **k: None)
+
+    lb = Leaderboard(name='mat_mirror_lb', summary_metrics='',
+                     owner_user_id=logged_in_user.id)
+    db.session.add(lb); db.session.flush()
+    db.session.add(LeaderboardMaterialization(leaderboard_id=lb.id, sample_cap=100,
+                                              sampling='random', sampling_seed=42,
+                                              status='ready'))
+    db.session.add(Submission(name='pwc_row', leaderboard_id=lb.id,
+                              owner_user_id=logged_in_user.id, kind='mirrored'))
+    db.session.commit()
+
+    r = auth_client.post(f'/leaderboard/{lb.id}/materialize/edit',
+                         data={'sample_cap': '50', 'sampling': 'head'},
+                         follow_redirects=False)
+    assert r.status_code == 302
+    refreshed = LeaderboardMaterialization.query.filter_by(leaderboard_id=lb.id).first()
+    # Edit went through: params updated + re-queued (status reset to pending).
+    assert refreshed.sample_cap == 50
+    assert refreshed.status == 'pending'

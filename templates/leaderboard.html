@@ -356,6 +356,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                with different sample_cap/sampling without recreating
                the LB. #}
             {% if materialization %}
+            {% set _mat_locked = (leaderboard.submissions | rejectattr('kind', 'equalto', 'mirrored') | list | length) > 0 %}
             <div id="lb-materialization-panel"
                  class="alert alert-{{ 'success' if materialization.status == 'ready'
                                        else 'warning' if materialization.status in ('pending','running')
@@ -395,7 +396,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endif %}
                     </span>
                     {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin) %}
-                    <div class="ms-auto d-flex gap-1">
+                    <div class="ms-auto d-flex gap-1 align-items-center">
+                        {% if _mat_locked %}
+                        <span class="text-body-secondary small"
+                              title="Re-materializing would change the inputs existing submissions were scored against. Delete the submissions to unlock.">
+                            <i class="bi bi-lock-fill me-1"></i>Locked — has submissions
+                        </span>
+                        {% else %}
                         {% if materialization.status == 'failed' %}
                         <form method="post"
                               action="{{ url_for('retry_lb_materialization', leaderboard_id=leaderboard.id) }}"
@@ -411,6 +418,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 data-bs-target="#lb-mat-edit-pane">
                             <i class="bi bi-pencil me-1"></i>Edit
                         </button>
+                        {% endif %}
                     </div>
                     {% endif %}
                 </div>
@@ -429,7 +437,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {# Edit-params form. Owner/admin only. POSTs to a route
                    that wipes the existing materialised bytes + re-queues
                    with the new sample_cap / sampling / seed. #}
-                {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin) %}
+                {% if current_user and (current_user.id == leaderboard.owner_user_id or current_user_is_admin) and not _mat_locked %}
                 <div class="collapse mt-2" id="lb-mat-edit-pane">
                     <form method="post"
                           action="{{ url_for('edit_lb_materialization', leaderboard_id=leaderboard.id) }}"

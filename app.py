@@ -12809,6 +12809,17 @@ def lb_materialization_status(leaderboard_id: int):
     })
 
 
+def _lb_has_real_submissions(lb):
+    """True if the LB has any non-mirrored (real, submitter-uploaded)
+    submission. Mirrored PWC score rows don't count — they have no
+    on-disk predictions tied to the materialised inputs. Same notion of
+    'frozen' the pred-field schema editor uses."""
+    return any(
+        (getattr(s, 'kind', 'verified') or 'verified') != 'mirrored'
+        for s in (lb.submissions or [])
+    )
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/materialize/edit', methods=['POST'])
 @login_required
 def edit_lb_materialization(leaderboard_id: int):
@@ -12824,6 +12835,13 @@ def edit_lb_materialization(leaderboard_id: int):
     matrow = lb.materialization
     if matrow is None:
         flash('No materialization configured for this LB.', 'warning')
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    if _lb_has_real_submissions(lb):
+        # Re-materialising would pick a different sample subset, silently
+        # changing the inputs existing submissions were scored against.
+        flash("Can't re-materialize — this leaderboard already has "
+              "submissions. Delete them first to change the sample set.",
+              'warning')
         return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
 
     try:
@@ -12884,6 +12902,11 @@ def retry_lb_materialization(leaderboard_id: int):
     matrow = lb.materialization
     if matrow is None:
         flash('No materialization configured for this LB.', 'warning')
+        return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    if _lb_has_real_submissions(lb):
+        flash("Can't re-materialize — this leaderboard already has "
+              "submissions. Delete them first to re-run materialization.",
+              'warning')
         return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
     matrow.status = 'pending'
     matrow.error_message = None
