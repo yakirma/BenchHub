@@ -11192,6 +11192,36 @@ def comparison_view(leaderboard_id):
                     func.length(Sample.name).asc(), Sample.name.asc())
             total = samples_query.count()
             paginated_items = samples_query.offset((page-1)*per_page).limit(per_page).all()
+        elif sort_by.startswith('disagreement:'):
+            # Sort samples by how much the submissions DISAGREE on a
+            # per-sample metric: spread = max(value) - min(value) across
+            # all compared submissions for that sample. Highest spread =
+            # most contentious sample. Samples where <2 submissions have a
+            # value get spread 0 (no disagreement to measure).
+            metric_key = sort_by.split(':', 1)[1]
+            sub_ids = [s.id for s in submissions]
+            by_sample = {}
+            if sub_ids:
+                rows = db.session.query(
+                    CustomField.sample_name, CustomField.value_float,
+                ).filter(
+                    CustomField.submission_id.in_(sub_ids),
+                    CustomField.name == metric_key,
+                    CustomField.data_type.in_(['scalar', 'metric']),
+                    CustomField.value_float.isnot(None),
+                ).all()
+                for s_name, val in rows:
+                    by_sample.setdefault(s_name, []).append(val)
+
+            def _spread(s):
+                vals = by_sample.get(s.name, [])
+                return (max(vals) - min(vals)) if len(vals) >= 2 else 0.0
+
+            all_filtered_samples = samples_query.all()
+            # Respect the order dropdown (High→Low = most disagreement first).
+            all_filtered_samples.sort(key=_spread, reverse=(sort_order == 'desc'))
+            total = len(all_filtered_samples)
+            paginated_items = all_filtered_samples[(page-1)*per_page : page*per_page]
         elif ':' in sort_by:
             # Sort by submission metric - this is still heavy if not pre-calculated
             # For now, we fetch ALL to sort, but we should optimize this later with MetricResult joins

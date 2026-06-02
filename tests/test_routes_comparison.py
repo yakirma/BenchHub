@@ -109,6 +109,48 @@ def test_comparison_view_shows_gt_and_pred_labels_in_stats(client, project, db_s
     assert "label_pred" in body
 
 
+def test_comparison_view_disagreement_sort_orders_by_spread(client, project, db_session):
+    """sort_by=disagreement:lm_<id> ranks samples by max-min of a
+    per-sample metric across submissions (most contentious first)."""
+    import json
+    from app import (CustomField, GlobalMetric, LeaderboardMetric)
+
+    ds = Dataset(name="dis_ds"); db.session.add(ds); db.session.flush()
+    for nm in ["s_hi", "s_lo"]:
+        db.session.add(Sample(dataset_id=ds.id, name=nm))
+    db.session.flush()
+    lb = Leaderboard(name="dis_lb", summary_metrics=""); lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    gm = GlobalMetric(name="acc_dis", python_code="def acc_dis(x): return x",
+                      visibility="public")
+    db.session.add(gm); db.session.flush()
+    lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
+                           target_name="acc_dis", arg_mappings=json.dumps({}),
+                           pooling_type="mean")
+    db.session.add(lm); db.session.flush()
+    key = f"lm_{lm.id}"
+    subs = []
+    for nm in ["a", "b"]:
+        s = Submission(name=nm, leaderboard_id=lb.id, processing_status="Processed")
+        db.session.add(s); db.session.flush(); subs.append(s)
+    # s_hi: submissions disagree a lot (0.1 vs 0.9 -> spread 0.8);
+    # s_lo: agree (0.5 vs 0.5 -> spread 0.0).
+    vals = {("a", "s_hi"): 0.1, ("b", "s_hi"): 0.9,
+            ("a", "s_lo"): 0.5, ("b", "s_lo"): 0.5}
+    for (sub_name, s_name), v in vals.items():
+        sub = next(x for x in subs if x.name == sub_name)
+        db.session.add(CustomField(submission_id=sub.id, sample_name=s_name,
+                                   name=key, data_type="metric", value_float=v))
+    db.session.commit()
+
+    # High→Low: most-disagreement sample (s_hi) first.
+    body = client.get(f"/comparison/{lb.id}?sort_by=disagreement:{key}&sort_order=desc").data.decode()
+    assert body.index("s_hi") < body.index("s_lo")
+    # Low→High flips it.
+    body_asc = client.get(f"/comparison/{lb.id}?sort_by=disagreement:{key}&sort_order=asc").data.decode()
+    assert body_asc.index("s_lo") < body_asc.index("s_hi")
+
+
 def test_comparison_view_pagination_preserves_compare_ids(
     client, project, lb_with_subs
 ):

@@ -466,6 +466,19 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% endfor %}
                         </optgroup>
                         <option value="" {% if not sort_by %}selected{% endif %}>Default (No Sort)</option>
+                        {# Rank samples by how much the submissions disagree on a
+                           per-sample metric (spread = max - min across submissions).
+                           Only meaningful with 2+ submissions. #}
+                        {% if submissions|length > 1 and active_metrics %}
+                        <optgroup label="Disagreement (across submissions)">
+                            {% for m in active_metrics %}
+                            <option value="disagreement:{{ m }}"
+                                {% if sort_by == 'disagreement:' ~ m %}selected{% endif %}>
+                                ⇅ {{ metric_labels.get(m, m)|capitalize }} spread
+                            </option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endif %}
                         {% for sub in submissions %}
                         <optgroup label="{{ sub.name }}">
                             <option value="peak:{{ sub.id }}" {% if sort_by=='peak:' ~ sub.id %}selected{% endif %}>Peak
