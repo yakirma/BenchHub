@@ -2280,13 +2280,29 @@ def _send_email(to_email, subject, body):
     on success. When SMTP isn't configured (no SMTP_HOST), logs and
     returns False — the caller decides how to degrade (dev shows the code
     on-page; prod tells the user to retry)."""
-    host = os.environ.get('SMTP_HOST')
-    sender = (os.environ.get('MAIL_FROM') or os.environ.get('SMTP_USER')
+    def _clean(name):
+        # systemd EnvironmentFile has no inline-comment support — the whole
+        # value after `=` is kept. Be forgiving anyway: drop a trailing
+        # " # comment" and surrounding quotes/space so a copy-paste typo in
+        # .env degrades to a logged failure, not an uncaught 500.
+        v = os.environ.get(name)
+        if v is None:
+            return None
+        return v.split(' #', 1)[0].strip().strip('"').strip("'") or None
+
+    host = _clean('SMTP_HOST')
+    sender = (_clean('MAIL_FROM') or _clean('SMTP_USER')
               or 'no-reply@runbenchhub.com')
     if not host:
         app.logger.warning("SMTP not configured; email to %s NOT sent (subject=%r)",
                            to_email, subject)
         return False
+    raw_port = _clean('SMTP_PORT') or '587'
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError):
+        app.logger.warning("Invalid SMTP_PORT %r; falling back to 587", raw_port)
+        port = 587
     import smtplib
     from email.message import EmailMessage
     msg = EmailMessage()
@@ -2294,9 +2310,8 @@ def _send_email(to_email, subject, body):
     msg['From'] = sender
     msg['To'] = to_email
     msg.set_content(body)
-    port = int(os.environ.get('SMTP_PORT', '587'))
-    user = os.environ.get('SMTP_USER')
-    pw = os.environ.get('SMTP_PASS')
+    user = _clean('SMTP_USER')
+    pw = os.environ.get('SMTP_PASS')  # passwords may legitimately contain '#'
     try:
         if port == 465:
             srv = smtplib.SMTP_SSL(host, port, timeout=15)

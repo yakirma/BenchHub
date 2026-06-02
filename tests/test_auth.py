@@ -437,3 +437,21 @@ def test_email_login_links_to_existing_oauth_account(client, db_session):
     assert User.query.filter_by(email='dual@example.com').count() == 1
     with client.session_transaction() as s:
         assert s.get('user_id') == existing.id
+
+
+def test_send_email_tolerates_malformed_smtp_port(monkeypatch):
+    """A copy-paste typo in SMTP_PORT (inline comment) must not raise an
+    uncaught ValueError — it should fall back / fail soft to False."""
+    from app import _send_email
+    monkeypatch.setenv('SMTP_HOST', 'smtp.invalid.localhost')
+    monkeypatch.setenv('SMTP_PORT', '465  # implicit SSL')   # the exact bad paste
+    monkeypatch.setenv('MAIL_FROM', 'no-reply@runbenchhub.com  # comment')
+    # Unreachable host → send fails, but the function must return False
+    # (caught), never propagate an exception.
+    assert _send_email('x@example.com', 'subj', 'body') is False
+
+
+def test_send_email_unconfigured_returns_false(monkeypatch):
+    from app import _send_email
+    monkeypatch.delenv('SMTP_HOST', raising=False)
+    assert _send_email('x@example.com', 'subj', 'body') is False
