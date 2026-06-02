@@ -2960,6 +2960,9 @@ def home():
     leaderboards = public_lbs + personal_lbs  # legacy template var
 
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
+    # Leaderboards-using-this-dataset count for the dataset cards' trophy
+    # stat (ds.leaderboards is a dynamic relationship → .count()).
+    dataset_lb_counts = {ds.id: ds.leaderboards.count() for ds in datasets}
     leaderboard_thumbs = {}
     for lb in leaderboards:
         lb_datasets = list(lb.datasets)
@@ -3005,6 +3008,7 @@ def home():
         public_lbs=public_lbs,
         personal_lbs=personal_lbs,
         dataset_thumbs=dataset_thumbs,
+        dataset_lb_counts=dataset_lb_counts,
         leaderboard_thumbs=leaderboard_thumbs,
         recent_public_submissions=recent_public_submissions,
         recent_user_submissions=recent_user_submissions,

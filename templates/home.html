@@ -122,11 +122,10 @@
                             <span title="Samples">
                                 <i class="bi bi-card-image me-1"></i>{{ ds.samples|length }}
                             </span>
-                            {% if ds.active_leaderboards %}
-                            <span title="Leaderboards using this">
-                                <i class="bi bi-trophy me-1"></i>{{ ds.active_leaderboards|length }}
+                            {% set _lb_count = dataset_lb_counts.get(ds.id, 0) %}
+                            <span title="{{ _lb_count }} leaderboard{{ '' if _lb_count == 1 else 's' }} using this dataset">
+                                <i class="bi bi-trophy me-1"></i>{{ _lb_count }}
                             </span>
-                            {% endif %}
                             <span class="ms-auto opacity-75">
                                 {{ ds.upload_date.strftime('%Y-%m-%d') if ds.upload_date else '—' }}
                             </span>

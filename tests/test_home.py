@@ -209,3 +209,19 @@ def test_home_rails_show_primary_metric_score_and_rank(auth_client, logged_in_us
     assert 'of 2' in body
     # Score cell carries the LB's green gradient color.
     assert 'hsl(120, 70%' in body
+
+
+def test_home_dataset_card_shows_leaderboard_count(auth_client, logged_in_user, db_session):
+    """The /home dataset card shows a trophy with the number of
+    leaderboards using that dataset."""
+    ds = Dataset(name='counted_ds', owner_user_id=logged_in_user.id)
+    db.session.add(ds); db.session.flush()
+    lb = Leaderboard(name='counted_lb', summary_metrics='',
+                     owner_user_id=logged_in_user.id)
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+
+    body = auth_client.get('/home').data.decode()
+    assert 'counted_ds' in body
+    assert 'bi-trophy' in body
+    assert '1 leaderboard using this dataset' in body
