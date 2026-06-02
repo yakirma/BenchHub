@@ -616,13 +616,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 <div class="card-body">
                     {% for viz in aggregated_viz_list %}
                     <div class="mb-4">
-                        <h6 class="border-bottom pb-2">{{ viz.target_name or viz.global_visualization.name }}</h6>
-                        <div class="d-flex flex-wrap gap-3 agg-viz-container">
+                        <div class="d-flex align-items-center justify-content-between border-bottom pb-2 mb-2">
+                            <h6 class="mb-0">{{ viz.target_name or viz.global_visualization.name }}</h6>
+                            {% if submissions|length > 1 %}
+                            <button type="button" class="btn btn-outline-primary btn-sm agg-compare-btn"
+                                    data-viz-id="{{ viz.id }}" disabled
+                                    title="Tick two or more, or Shift-click thumbnails, then compare side by side.">
+                                <i class="bi bi-columns-gap me-1"></i>Compare side-by-side
+                                (<span class="agg-compare-count">0</span>)
+                            </button>
+                            {% endif %}
+                        </div>
+                        <div class="d-flex flex-wrap gap-3 agg-viz-container" data-viz-id="{{ viz.id }}">
                             {% for sub in submissions %}
                             <div class="text-center">
                                 <div class="card shadow-sm h-100">
-                                    <div class="card-header py-1 small bg-body-secondary">
-                                        <strong>Sub{{ loop.index }}:</strong> {{ sub.name }}
+                                    <div class="card-header py-1 small bg-body-secondary d-flex align-items-center justify-content-between gap-2">
+                                        <span><strong>Sub{{ loop.index }}:</strong> {{ sub.name }}</span>
+                                        {% if submissions|length > 1 %}
+                                        <input type="checkbox" class="form-check-input agg-viz-select mt-0"
+                                               title="Select for side-by-side compare"
+                                               data-src="{{ url_for('execute_aggregated_visualization', lv_id=viz.id, submission_id=sub.id) }}"
+                                               data-label="Sub{{ loop.index }}: {{ sub.name }}">
+                                        {% endif %}
                                     </div>
                                     <div class="card-body p-1">
                                         <img src="{{ url_for('execute_aggregated_visualization', lv_id=viz.id, submission_id=sub.id) }}"
@@ -630,7 +646,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             style="height: 200px; object-fit: contain; cursor: pointer;" loading="lazy"
                                             alt="{{ viz.target_name }} - {{ sub.name }}"
                                             data-sub-name="Sub{{ loop.index }}"
-                                            onclick="updateAggVisGallery(this); bootstrap.Modal.getOrCreateInstance(document.getElementById('vis-modal')).show(this);"
+                                            onclick="aggImgClick(event, this);"
                                             onerror="this.onerror=null; this.src='/static/img/error_placeholder.png';">
                                     </div>
                                 </div>
@@ -1340,6 +1356,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 {% endif %}
 
 <!-- Visualization Modal -->
+<div class="modal fade" id="agg-compare-modal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-fullscreen-lg-down">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-columns-gap me-2"></i>Side-by-side comparison</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="agg-compare-body" class="d-flex flex-row gap-3 overflow-auto"
+                     style="align-items: flex-start;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="vis-modal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
@@ -3161,6 +3192,66 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
         }
     };
+
+    // ---- Aggregated-viz side-by-side compare ----
+    // Tick 2+ thumbnails (or Shift-click them), then "Compare side-by-side"
+    // lays the selected images in a horizontal row. A plain click still
+    // opens the single-image zoom.
+    window.aggImgClick = function (event, img) {
+        if (event.shiftKey) {
+            event.preventDefault();
+            const card = img.closest('.card');
+            const cb = card ? card.querySelector('.agg-viz-select') : null;
+            if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+            return;
+        }
+        if (typeof updateAggVisGallery === 'function') updateAggVisGallery(img);
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('vis-modal')).show(img);
+    };
+
+    (function () {
+        const selectsIn = (container) => Array.from(container.querySelectorAll('.agg-viz-select'));
+        function refreshCompareBtn(container) {
+            const vizId = container.dataset.vizId;
+            const btn = document.querySelector(`.agg-compare-btn[data-viz-id="${vizId}"]`);
+            if (!btn) return;
+            const n = selectsIn(container).filter(cb => cb.checked).length;
+            const cnt = btn.querySelector('.agg-compare-count');
+            if (cnt) cnt.textContent = n;
+            btn.disabled = n < 2;
+        }
+        document.addEventListener('change', (e) => {
+            if (e.target.classList && e.target.classList.contains('agg-viz-select')) {
+                const container = e.target.closest('.agg-viz-container');
+                if (container) refreshCompareBtn(container);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.agg-compare-btn');
+            if (!btn) return;
+            const container = document.querySelector(`.agg-viz-container[data-viz-id="${btn.dataset.vizId}"]`);
+            if (!container) return;
+            const chosen = selectsIn(container).filter(cb => cb.checked);
+            if (chosen.length < 2) return;
+            const body = document.getElementById('agg-compare-body');
+            body.innerHTML = '';
+            chosen.forEach(cb => {
+                const col = document.createElement('div');
+                col.className = 'text-center';
+                col.style.cssText = 'flex: 0 0 auto; max-width: 48vw;';
+                const lbl = document.createElement('div');
+                lbl.className = 'small fw-semibold mb-1 text-truncate';
+                lbl.textContent = cb.dataset.label || '';
+                const im = document.createElement('img');
+                im.src = cb.dataset.src;
+                im.className = 'img-fluid border rounded';
+                im.style.maxHeight = '80vh';
+                col.appendChild(lbl); col.appendChild(im);
+                body.appendChild(col);
+            });
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('agg-compare-modal')).show();
+        });
+    })();
 
     window.updateHistGallery = function (trigger) {
         // Row-based grouping: Find all histogram containers in the same row
