@@ -439,8 +439,7 @@
                             {% for lm in leaderboard.leaderboard_metrics %}
                             <tr>
                                 <td>
-                                    <strong>{{ lm.target_name if lm.target_name else lm.global_metric.name }}</strong>
-                                    <span class="text-muted small font-monospace ms-1">({{ lm.id }})</span><br>
+                                    <strong>{{ lm.target_name if lm.target_name else lm.global_metric.name }}</strong><br>
                                     {% if lm.target_name and lm.target_name != lm.global_metric.name %}
                                     <small class="text-muted">{{ lm.global_metric.name }}</small>
                                     {% endif %}
