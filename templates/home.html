@@ -270,9 +270,11 @@
         </div>
         {% if score %}
         {% if score.rank %}
-        <div class="text-end flex-shrink-0" title="Rank {{ score.rank }} of {{ score.total }} by {{ score.label }}">
-            <div class="fw-semibold {{ 'text-warning' if score.rank == 1 else 'text-body' }}">#{{ score.rank }}</div>
-            <div class="small text-body-secondary">of {{ score.total }}</div>
+        <div class="text-end flex-shrink-0 rounded px-2 py-1"
+             style="{% if score.color %}background-color: {{ score.color }};{% endif %}"
+             title="Rank {{ score.rank }} of {{ score.total }} by {{ score.label }}">
+            <div class="fw-semibold {{ 'text-dark' if score.color else 'text-body' }}">#{{ score.rank }}</div>
+            <div class="small {{ 'text-dark opacity-75' if score.color else 'text-body-secondary' }}">of {{ score.total }}</div>
         </div>
         {% endif %}
         <div class="text-end flex-shrink-0 rounded px-2 py-1"
