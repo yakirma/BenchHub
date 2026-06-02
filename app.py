@@ -2865,6 +2865,8 @@ def _submission_primary_scores(submissions):
             lms = list(lb.leaderboard_metrics)
             primary = lms[0] if lms else None
             order, total = {}, 0
+            higher_better = True
+            vmin = vmax = None
             if primary is not None:
                 rows = (
                     db.session.query(MetricResult.submission_id, MetricResult.value)
@@ -2880,7 +2882,12 @@ def _submission_primary_scores(submissions):
                 total = len(ranked)
                 for idx, (sid, _val) in enumerate(ranked, start=1):
                     order[sid] = idx
-            lb_rankings[lb.id] = {'primary': primary, 'order': order, 'total': total}
+                if ranked:
+                    vals = [v for _s, v in ranked]
+                    vmin, vmax = min(vals), max(vals)
+            lb_rankings[lb.id] = {'primary': primary, 'order': order,
+                                  'total': total, 'higher_better': higher_better,
+                                  'vmin': vmin, 'vmax': vmax}
 
         info = lb_rankings[lb.id]
         primary = info['primary']
@@ -2891,11 +2898,24 @@ def _submission_primary_scores(submissions):
         ).first()
         if mr is None or mr.value is None:
             continue
+        # Same green gradient the LB table uses: hsl(120,70%,L%), lighter
+        # for worse, more saturated for better; flipped for lower-is-better.
+        color = None
+        vmin, vmax = info['vmin'], info['vmax']
+        if vmin is not None and vmax is not None and vmax != vmin:
+            normalized = (mr.value - vmin) / (vmax - vmin)
+            if not info['higher_better']:
+                normalized = 1.0 - normalized
+            lightness = int(95 - (normalized * 45))
+            color = f'hsl(120, 70%, {lightness}%)'
+        elif vmin is not None:
+            color = 'hsl(120, 70%, 85%)'  # single value → light green
         out[sub.id] = {
             'label': primary.target_name or primary.global_metric.name,
             'value': mr.value,
             'rank': info['order'].get(sub.id),
             'total': info['total'],
+            'color': color,
         }
     return out
 

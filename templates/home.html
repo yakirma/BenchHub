@@ -275,9 +275,11 @@
             <div class="small text-body-secondary">of {{ score.total }}</div>
         </div>
         {% endif %}
-        <div class="text-end flex-shrink-0">
-            <div class="fw-semibold text-primary font-monospace">{{ score.value|smart_num }}</div>
-            <div class="small text-body-secondary text-truncate" style="max-width: 9rem;">{{ score.label }}</div>
+        <div class="text-end flex-shrink-0 rounded px-2 py-1"
+             style="{% if score.color %}background-color: {{ score.color }};{% endif %}"
+             title="{{ score.label }}: {{ score.value|smart_num }}">
+            <div class="fw-semibold font-monospace {{ 'text-dark' if score.color else 'text-primary' }}">{{ score.value|smart_num }}</div>
+            <div class="small text-truncate {{ 'text-dark opacity-75' if score.color else 'text-body-secondary' }}" style="max-width: 9rem;">{{ score.label }}</div>
         </div>
         {% endif %}
         <div class="text-end flex-shrink-0">

@@ -207,3 +207,5 @@ def test_home_rails_show_primary_metric_score_and_rank(auth_client, logged_in_us
     assert '#1' in body
     assert '#2' in body
     assert 'of 2' in body
+    # Score cell carries the LB's green gradient color.
+    assert 'hsl(120, 70%' in body
