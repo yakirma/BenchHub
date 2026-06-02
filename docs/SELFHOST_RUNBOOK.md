@@ -87,6 +87,7 @@ was destroyed); current values live only on the box.
 | `BENCHHUB_GITHUB_GIST_TOKEN` | Used to push SOTA notebooks as gists. Scope: `gist`. |
 | `ANTHROPIC_API_KEY` | LLM-authored metric + SOTA-notebook generation (`_llm_generate_metric_code`, `admin_lb_sota_notebook`). |
 | `HF_TOKEN` | Optional; used by `datasets.load_dataset` for gated repos. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `MAIL_FROM` | SMTP relay for passwordless email sign-in (the 6-digit verification code). **Required for email login to actually deliver** — without `SMTP_HOST` the code is only logged (and shown on-page in dev/test); in prod the user gets a "couldn't send" error and must fall back to GitHub/Google. Port 465 → implicit SSL; anything else → STARTTLS. `MAIL_FROM` defaults to `no-reply@runbenchhub.com`. |
 
 ## Deploy procedure
 
