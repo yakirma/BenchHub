@@ -331,7 +331,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {% if materialization.status == 'ready' %}
                 <span class="badge text-bg-success-subtle text-success-emphasis border align-middle"
                       style="font-size: 0.5em;"
-                      title="{{ materialization.sample_cap }} samples materialized at full resolution ({{ materialization.sampling }} sampling)">
+                      title="{{ materialization.sample_cap }} samples materialized at full resolution — {{ materialization.sampling }}{% if materialization.sampling == 'stratified' and materialization.stratify_field %} by {{ materialization.stratify_field }}{% endif %} sampling, seed {{ materialization.sampling_seed }}">
                     <i class="bi bi-hdd-check me-1"></i>materialized
                 </span>
                 {% elif materialization.status in ('pending', 'running') %}
@@ -368,9 +368,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <span id="lb-mat-summary">
                         {% if materialization.status == 'ready' %}
                             <strong>Materialized.</strong>
-                            {{ '{:,}'.format(materialization.sample_cap) }} samples,
-                            {{ materialization.sampling }} sampling, seed
-                            {{ materialization.sampling_seed }}.
+                            {{ '{:,}'.format(materialization.sample_cap) }} samples —
+                            {% if materialization.sampling == 'stratified' %}
+                                stratified sampling{% if materialization.stratify_field %} by
+                                <code>{{ materialization.stratify_field }}</code>{% endif %}
+                                (seed {{ materialization.sampling_seed }})
+                            {% elif materialization.sampling == 'random' %}
+                                random sampling (seed {{ materialization.sampling_seed }})
+                            {% elif materialization.sampling == 'head' %}
+                                first {{ '{:,}'.format(materialization.sample_cap) }} (head order)
+                            {% else %}
+                                {{ materialization.sampling }} sampling (seed {{ materialization.sampling_seed }})
+                            {% endif %}.
                             {% if materialization.storage_bytes %}
                             Disk usage: {{ (materialization.storage_bytes / 1024 / 1024)|round(1) }} MB.
                             {% endif %}
