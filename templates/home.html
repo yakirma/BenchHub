@@ -268,6 +268,12 @@
             </div>
         </div>
         {% if score %}
+        {% if score.rank %}
+        <div class="text-end flex-shrink-0" title="Rank {{ score.rank }} of {{ score.total }} by {{ score.label }}">
+            <div class="fw-semibold {{ 'text-warning' if score.rank == 1 else 'text-body' }}">#{{ score.rank }}</div>
+            <div class="small text-body-secondary">of {{ score.total }}</div>
+        </div>
+        {% endif %}
         <div class="text-end flex-shrink-0">
             <div class="fw-semibold text-primary font-monospace">{{ score.value|smart_num }}</div>
             <div class="small text-body-secondary text-truncate" style="max-width: 9rem;">{{ score.label }}</div>
@@ -307,7 +313,7 @@
                 </div>
                 {% if recent_user_submissions %}
                 <div class="list-group shadow-sm">
-                    {% for sub in recent_user_submissions %}{{ submission_row(sub, False) }}{% endfor %}
+                    {% for sub in recent_user_submissions %}{{ submission_row(sub, False, user_submission_scores.get(sub.id)) }}{% endfor %}
                 </div>
                 {% else %}
                 <div class="text-center py-4 text-body-secondary border rounded">

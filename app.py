@@ -2846,6 +2846,60 @@ def _dataset_thumb_url(ds):
     return url_for('serve_custom_field_image', field_id=cf.id)
 
 
+def _submission_primary_scores(submissions):
+    """For each submission, return the value + rank of its leaderboard's
+    first (primary) metric. Rank is the position among all verified,
+    non-archived submissions on the same LB ordered by that metric
+    (respecting its sort_direction; rank 1 = best). Returns
+    {sub_id: {'label', 'value', 'rank', 'total'}}; submissions with no
+    primary metric or no result are omitted."""
+    out = {}
+    # Cache per-LB primary metric + its full ranking so several
+    # submissions on the same board don't each re-query.
+    lb_rankings = {}  # lb_id -> {'primary', 'order': {sub_id: rank}, 'total'}
+    for sub in submissions:
+        lb = sub.leaderboard
+        if lb is None:
+            continue
+        if lb.id not in lb_rankings:
+            lms = list(lb.leaderboard_metrics)
+            primary = lms[0] if lms else None
+            order, total = {}, 0
+            if primary is not None:
+                rows = (
+                    db.session.query(MetricResult.submission_id, MetricResult.value)
+                    .join(Submission, MetricResult.submission_id == Submission.id)
+                    .filter(MetricResult.leaderboard_metric_id == primary.id,
+                            MetricResult.value.isnot(None),
+                            Submission.is_archived.is_(False),
+                            Submission.kind == 'verified')
+                    .all()
+                )
+                higher_better = (primary.sort_direction or 'higher_is_better') != 'lower_is_better'
+                ranked = sorted(rows, key=lambda r: r[1], reverse=higher_better)
+                total = len(ranked)
+                for idx, (sid, _val) in enumerate(ranked, start=1):
+                    order[sid] = idx
+            lb_rankings[lb.id] = {'primary': primary, 'order': order, 'total': total}
+
+        info = lb_rankings[lb.id]
+        primary = info['primary']
+        if primary is None:
+            continue
+        mr = MetricResult.query.filter_by(
+            submission_id=sub.id, leaderboard_metric_id=primary.id
+        ).first()
+        if mr is None or mr.value is None:
+            continue
+        out[sub.id] = {
+            'label': primary.target_name or primary.global_metric.name,
+            'value': mr.value,
+            'rank': info['order'].get(sub.id),
+            'total': info['total'],
+        }
+    return out
+
+
 @app.route('/home')
 @login_required
 def home():
@@ -2916,25 +2970,13 @@ def home():
         .all()
     )
 
-    # Headline score for each public submission: the value of the
+    # Headline score + rank for each submission: the value of the
     # leaderboard's first (primary) metric — same metric the LB table
-    # defaults its best-first sort to. {sub_id: {'label', 'value'}}.
-    public_submission_scores = {}
-    for sub in recent_public_submissions:
-        lb = sub.leaderboard
-        lms = list(lb.leaderboard_metrics) if lb else []
-        if not lms:
-            continue
-        primary = lms[0]
-        mr = MetricResult.query.filter_by(
-            submission_id=sub.id, leaderboard_metric_id=primary.id
-        ).first()
-        if mr is None or mr.value is None:
-            continue
-        public_submission_scores[sub.id] = {
-            'label': primary.target_name or primary.global_metric.name,
-            'value': mr.value,
-        }
+    # defaults its best-first sort to — plus the submission's rank among
+    # all verified entries on that LB by that metric.
+    # {sub_id: {'label', 'value', 'rank', 'total'}}.
+    public_submission_scores = _submission_primary_scores(recent_public_submissions)
+    user_submission_scores = _submission_primary_scores(recent_user_submissions)
 
     return render_template(
         'home.html',
@@ -2947,6 +2989,7 @@ def home():
         recent_public_submissions=recent_public_submissions,
         recent_user_submissions=recent_user_submissions,
         public_submission_scores=public_submission_scores,
+        user_submission_scores=user_submission_scores,
     )
 
 

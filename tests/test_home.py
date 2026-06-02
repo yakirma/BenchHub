@@ -162,9 +162,9 @@ def test_home_shows_recent_public_and_own_submissions(auth_client, logged_in_use
     assert b'gamma_archived' not in body # archived excluded
 
 
-def test_home_public_rail_shows_primary_metric_score(auth_client, logged_in_user, db_session):
-    """The public submissions rail surfaces the value of the LB's first
-    (primary) metric for each submission."""
+def test_home_rails_show_primary_metric_score_and_rank(auth_client, logged_in_user, db_session):
+    """Both rails surface the LB's first (primary) metric value plus the
+    submission's rank among verified entries on that LB."""
     from app import (Submission, GlobalMetric, LeaderboardMetric,
                      MetricResult)
 
@@ -179,18 +179,31 @@ def test_home_public_rail_shows_primary_metric_score(auth_client, logged_in_user
     gm = GlobalMetric(name='top_1_accuracy', python_code='def f(): return 0')
     db.session.add(gm); db.session.flush()
     lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
-                           arg_mappings='{}', target_name='top_1_accuracy')
+                           arg_mappings='{}', target_name='top_1_accuracy',
+                           sort_direction='higher_is_better')
     db.session.add(lm); db.session.flush()
 
-    sub = Submission(name='scored_sub', leaderboard_id=lb.id,
-                     owner_user_id=other.id, kind='verified',
-                     processing_status='Processed')
-    db.session.add(sub); db.session.flush()
-    db.session.add(MetricResult(submission_id=sub.id,
+    # The logged-in user's own submission (user rail) is the BEST score
+    # on a public board → rank #1; another submission scores lower.
+    mine = Submission(name='scored_sub_mine', leaderboard_id=lb.id,
+                      owner_user_id=logged_in_user.id, kind='verified',
+                      processing_status='Processed')
+    rival = Submission(name='scored_sub_rival', leaderboard_id=lb.id,
+                       owner_user_id=other.id, kind='verified',
+                       processing_status='Processed')
+    db.session.add_all([mine, rival]); db.session.flush()
+    db.session.add(MetricResult(submission_id=mine.id,
                                 leaderboard_metric_id=lm.id, value=0.9123))
+    db.session.add(MetricResult(submission_id=rival.id,
+                                leaderboard_metric_id=lm.id, value=0.5000))
     db.session.commit()
 
     body = auth_client.get('/home').data.decode()
-    assert 'scored_sub' in body
+    # Score + label render (public rail picks up rival; user rail picks mine)
+    assert 'scored_sub_mine' in body
     assert 'top_1_accuracy' in body
     assert '0.9123' in body
+    # Rank badges: best is #1 of 2, the lower one is #2 of 2.
+    assert '#1' in body
+    assert '#2' in body
+    assert 'of 2' in body
