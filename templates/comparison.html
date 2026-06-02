@@ -1357,15 +1357,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 <!-- Visualization Modal -->
 <div class="modal fade" id="agg-compare-modal" tabindex="-1">
-    <div class="modal-dialog modal-xl modal-dialog-centered modal-fullscreen-lg-down">
+    <div class="modal-dialog modal-fullscreen">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title"><i class="bi bi-columns-gap me-2"></i>Side-by-side comparison</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div id="agg-compare-body" class="d-flex flex-row gap-3 overflow-auto"
-                     style="align-items: flex-start;"></div>
+                <div id="agg-compare-body" class="d-flex flex-row gap-3 align-items-start w-100"></div>
             </div>
         </div>
     </div>
@@ -3626,17 +3625,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             var body = document.getElementById('agg-compare-body');
             if (!body) return;
             body.innerHTML = '';
+            // Share the modal width equally so all N fit side by side and
+            // scale down to the window (no horizontal scrolling).
+            var maxH = Math.round(window.innerHeight * 0.78);
             chosen.forEach(function (cb) {
                 var col = document.createElement('div');
                 col.className = 'text-center';
-                col.style.cssText = 'flex: 0 0 auto; max-width: 48vw;';
+                // flex:1 1 0 + min-width:0 => equal columns that can shrink.
+                col.style.cssText = 'flex: 1 1 0; min-width: 0;';
                 var lbl = document.createElement('div');
                 lbl.className = 'small fw-semibold mb-1 text-truncate';
                 lbl.textContent = cb.dataset.label || '';
                 var im = document.createElement('img');
                 im.src = cb.dataset.src;
-                im.className = 'img-fluid border rounded';
-                im.style.maxHeight = '80vh';
+                im.className = 'border rounded';
+                // Fit the column width AND cap height to the viewport.
+                im.style.cssText = 'max-width: 100%; max-height: ' + maxH + 'px; width: auto; height: auto; object-fit: contain;';
                 col.appendChild(lbl);
                 col.appendChild(im);
                 body.appendChild(col);
