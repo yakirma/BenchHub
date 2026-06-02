@@ -17665,6 +17665,15 @@ def run_migrations():
         except Exception as e:
             print(f"seed_reference_metrics failed (non-fatal): {e}")
 
+        # Same idempotent upsert for the curated reference visualizations
+        # (currently: confusion_matrix). Appears in the /visualizations
+        # catalog for everyone; bind per-LB on the LB settings page.
+        try:
+            from scripts.seed_reference_visualizations import seed_reference_visualizations
+            seed_reference_visualizations()
+        except Exception as e:
+            print(f"seed_reference_visualizations failed (non-fatal): {e}")
+
 
 # Auto-run migrations at module import time when the env var is set. On the
 # home-box deploy this is what makes a schema ALTER apply on `systemctl
