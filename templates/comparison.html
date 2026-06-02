@@ -483,11 +483,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <optgroup label="{{ sub.name }}">
                             <option value="peak:{{ sub.id }}" {% if sort_by=='peak:' ~ sub.id %}selected{% endif %}>Peak
                             </option>
-                            {% for m in selected_metrics %}
-                            <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
-                                {{ metric_labels.get(m, m)|capitalize }}</option>
-                            {% endfor %}
-                            {% for m in active_metrics %}
+                            {# selected_metrics + active_metrics now hold the same
+                               per-sample metrics — union + unique so each appears once. #}
+                            {% for m in (selected_metrics + active_metrics)|unique %}
                             <option value="{{ m }}:{{ sub.id }}" {% if sort_by==m ~ ':' ~ sub.id %}selected{% endif %}>
                                 {{ metric_labels.get(m, sample_metric_options.get(m, m))|capitalize }}</option>
                             {% endfor %}
