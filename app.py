@@ -11830,11 +11830,31 @@ def comparison_view(leaderboard_id):
         for s in submissions
     )
 
+    # Class-name vocab per label field (GT + pred), so the stats panel
+    # can render `cat` instead of the raw class index `3`. Pulled from
+    # the dataset fields' params and the LB's declared pred fields.
+    label_vocabs = {}
+    for _ds in (leaderboard.datasets or []):
+        for _df in getattr(_ds, 'fields', []) or []:
+            if _df.kind in ('label', 'label_list'):
+                _names = (_df.get_params() or {}).get('names')
+                if _names:
+                    label_vocabs[_df.name] = _names
+    try:
+        for _entry in (json.loads(leaderboard.required_pred_fields_json or '[]') or []):
+            if isinstance(_entry, dict) and _entry.get('kind') in ('label', 'label_list'):
+                _names = (_entry.get('params') or {}).get('names')
+                if _names:
+                    label_vocabs[_entry['name']] = _names
+    except (TypeError, ValueError):
+        pass
+
     return render_template('comparison.html',
                            leaderboard=leaderboard,
                            submissions=submissions,
                            all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
+                           label_vocabs=label_vocabs,
                            selected_metrics=all_selected_metrics,
                            chart_metrics_data=chart_metrics_data, 
                            submissions_json=submissions_json,
@@ -15857,6 +15877,21 @@ def _accent_bg_for(name) -> str:
     g = int(round(ag * mix + base[1] * (1 - mix)))
     b = int(round(ab * mix + base[2] * (1 - mix)))
     return f"rgb({r},{g},{b})"
+
+
+@app.template_filter('label_name')
+def label_name_filter(value, names):
+    """Map a label index to its class name via the field's `names`
+    vocab. `value` is an int (class index); `names` the vocab list.
+    Falls back to the raw value when there's no vocab, the value isn't a
+    valid index, or it's already a string class name."""
+    try:
+        if names and isinstance(value, bool) is False and isinstance(value, int) \
+                and 0 <= value < len(names):
+            return names[value]
+    except Exception:
+        pass
+    return value
 
 
 @app.template_filter('accent_color')
