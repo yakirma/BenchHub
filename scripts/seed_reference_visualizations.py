@@ -19,7 +19,7 @@ from app import GlobalVisualization, User, app, db
 # JSON-encoded int like "3", or a top-K JSON list "[3, 5, ...]" for
 # label_list). Returns a PIL.Image heatmap.
 _CONFUSION_MATRIX_CODE = '''
-def confusion_matrix(gt, pred):
+def confusion_matrix(gt, pred, gt_names=None, pred_names=None):
     import json
     import io
     import numpy as np
@@ -55,15 +55,25 @@ def confusion_matrix(gt, pred):
     for g, p in pairs:
         cm[g, p] += 1
 
-    side = min(1.2 + 0.55 * n, 12)
+    # Class-name axis labels (fall back to indices). gt_names labels rows,
+    # pred_names labels columns; default each to the other when only one
+    # vocab is supplied.
+    names = gt_names or pred_names
+    col_names = pred_names or names
+    row_names = gt_names or names
+
+    def _ticklabels(vocab):
+        return [str(vocab[i]) if vocab and i < len(vocab) else str(i) for i in range(n)]
+
+    side = min(1.6 + 0.55 * n, 14)
     fig, ax = plt.subplots(figsize=(side, side))
     im = ax.imshow(cm, cmap="Blues")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Ground truth")
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
-    ax.set_xticklabels(range(n), fontsize=7, rotation=45, ha="right")
-    ax.set_yticklabels(range(n), fontsize=7)
+    ax.set_xticklabels(_ticklabels(col_names), fontsize=7, rotation=45, ha="right")
+    ax.set_yticklabels(_ticklabels(row_names), fontsize=7)
     thresh = cm.max() / 2.0 if cm.max() else 0
     if n <= 25:
         for i in range(n):

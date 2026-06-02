@@ -4134,6 +4134,29 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
         traceback.print_exc()
         return create_error_image(str(e)[:50])
 
+def _lb_label_vocabs(leaderboard):
+    """{field_name: [class names]} for every label / label_list field on
+    the LB — GT fields (from dataset field params) + declared pred fields
+    (from required_pred_fields_json). Used to label viz axes / stats with
+    class names instead of raw indices."""
+    vocabs = {}
+    for ds in (leaderboard.datasets or []):
+        for df in getattr(ds, 'fields', []) or []:
+            if df.kind in ('label', 'label_list'):
+                names = (df.get_params() or {}).get('names')
+                if names:
+                    vocabs[df.name] = names
+    try:
+        for entry in (json.loads(leaderboard.required_pred_fields_json or '[]') or []):
+            if isinstance(entry, dict) and entry.get('kind') in ('label', 'label_list'):
+                names = (entry.get('params') or {}).get('names')
+                if names:
+                    vocabs[entry['name']] = names
+    except (TypeError, ValueError):
+        pass
+    return vocabs
+
+
 def generate_and_cache_agg_viz(lv, submission=None):
     """Generates an aggregated visualization and saves it to cache. Returns the cache path."""
     import hashlib
@@ -4166,6 +4189,11 @@ def generate_and_cache_agg_viz(lv, submission=None):
         # Parse arg mappings
         arg_mappings = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
 
+        # Per-field class-name vocab (label / label_list fields), so a
+        # viz can label its axes with `cat` instead of `3`. Keyed by
+        # bare field name (e.g. 'label', 'label_pred').
+        label_vocabs = _lb_label_vocabs(leaderboard)
+
         # Build argument values - LISTS of values across all samples
         kwargs = {}
         for arg_name, field_key in arg_mappings.items():
@@ -4178,6 +4206,10 @@ def generate_and_cache_agg_viz(lv, submission=None):
                     val = extract_viz_arg_value(sample, submission, field_key)
                     values_list.append(val)
                 kwargs[arg_name] = values_list
+                # Offer the class vocab as `<arg>_names` for label fields.
+                bare = field_key.split('_', 1)[1] if ('_' in field_key and field_key.split('_', 1)[0] in ('gt', 'sub')) else field_key
+                if bare in label_vocabs:
+                    kwargs[f'{arg_name}_names'] = label_vocabs[bare]
 
         # Execute Code
         # We need the same execution logic as non-aggregated
@@ -4196,6 +4228,21 @@ def generate_and_cache_agg_viz(lv, submission=None):
 
         if func_name and func_name in exec_globals:
             viz_func = exec_globals[func_name]
+            # Pass only kwargs the function accepts (drop injected
+            # `<arg>_names` for funcs that don't declare them), unless it
+            # takes **kwargs.
+            import inspect as _inspect
+            try:
+                _sig = _inspect.signature(viz_func)
+                _accepts_var_kw = any(
+                    p.kind == _inspect.Parameter.VAR_KEYWORD
+                    for p in _sig.parameters.values()
+                )
+                if not _accepts_var_kw:
+                    _allowed = set(_sig.parameters.keys())
+                    kwargs = {k: v for k, v in kwargs.items() if k in _allowed}
+            except (TypeError, ValueError):
+                pass
             result_image = viz_func(**kwargs)
 
             if isinstance(result_image, Image.Image):
