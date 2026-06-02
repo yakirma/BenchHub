@@ -462,8 +462,10 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                             <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
                                  style="font-size: 0.7rem;">
                                 <span><i class="bi bi-card-image me-1"></i>{{ hf.sample_count }}</span>
-                                {% if hf.hf_split %}<span class="opacity-75">{{ hf.hf_split }}</span>{% endif %}
-                                <span class="ms-auto opacity-75">{{ hf.leaderboards|length }} LB{{ '' if hf.leaderboards|length == 1 else 's' }}</span>
+                                <span title="{{ hf.leaderboards|length }} leaderboard{{ '' if hf.leaderboards|length == 1 else 's' }} using this">
+                                    <i class="bi bi-trophy me-1"></i>{{ hf.leaderboards|length }}
+                                </span>
+                                {% if hf.hf_split %}<span class="ms-auto opacity-75">{{ hf.hf_split }}</span>{% endif %}
                             </div>
                         </div>
                     </div>
