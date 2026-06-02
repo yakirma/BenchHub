@@ -2916,6 +2916,26 @@ def home():
         .all()
     )
 
+    # Headline score for each public submission: the value of the
+    # leaderboard's first (primary) metric — same metric the LB table
+    # defaults its best-first sort to. {sub_id: {'label', 'value'}}.
+    public_submission_scores = {}
+    for sub in recent_public_submissions:
+        lb = sub.leaderboard
+        lms = list(lb.leaderboard_metrics) if lb else []
+        if not lms:
+            continue
+        primary = lms[0]
+        mr = MetricResult.query.filter_by(
+            submission_id=sub.id, leaderboard_metric_id=primary.id
+        ).first()
+        if mr is None or mr.value is None:
+            continue
+        public_submission_scores[sub.id] = {
+            'label': primary.target_name or primary.global_metric.name,
+            'value': mr.value,
+        }
+
     return render_template(
         'home.html',
         datasets=datasets,
@@ -2926,6 +2946,7 @@ def home():
         leaderboard_thumbs=leaderboard_thumbs,
         recent_public_submissions=recent_public_submissions,
         recent_user_submissions=recent_user_submissions,
+        public_submission_scores=public_submission_scores,
     )
 
 

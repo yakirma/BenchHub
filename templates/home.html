@@ -255,7 +255,7 @@
     </section>
 
     {# ---- Recent submission activity (two rails) ---- #}
-    {% macro submission_row(sub, show_owner) %}
+    {% macro submission_row(sub, show_owner, score=None) %}
     <a href="{{ url_for('leaderboard_view', leaderboard_id=sub.leaderboard_id) }}"
        class="list-group-item list-group-item-action d-flex align-items-center gap-2 py-2">
         <div class="flex-grow-1 min-w-0">
@@ -267,6 +267,12 @@
                 {% endif %}
             </div>
         </div>
+        {% if score %}
+        <div class="text-end flex-shrink-0">
+            <div class="fw-semibold text-primary font-monospace">{{ score.value|smart_num }}</div>
+            <div class="small text-body-secondary text-truncate" style="max-width: 9rem;">{{ score.label }}</div>
+        </div>
+        {% endif %}
         <div class="text-end flex-shrink-0">
             <div class="small text-body-secondary">{{ sub.upload_date.strftime('%Y-%m-%d %H:%M') if sub.upload_date else '—' }}</div>
             {% set _st = sub.processing_status or 'Pending' %}
@@ -285,7 +291,7 @@
                 </div>
                 {% if recent_public_submissions %}
                 <div class="list-group shadow-sm">
-                    {% for sub in recent_public_submissions %}{{ submission_row(sub, True) }}{% endfor %}
+                    {% for sub in recent_public_submissions %}{{ submission_row(sub, True, public_submission_scores.get(sub.id)) }}{% endfor %}
                 </div>
                 {% else %}
                 <div class="text-center py-4 text-body-secondary border rounded">

@@ -160,3 +160,37 @@ def test_home_shows_recent_public_and_own_submissions(auth_client, logged_in_use
     assert b'alpha_sub' in body          # public rail
     assert b'beta_sub' in body           # user rail
     assert b'gamma_archived' not in body # archived excluded
+
+
+def test_home_public_rail_shows_primary_metric_score(auth_client, logged_in_user, db_session):
+    """The public submissions rail surfaces the value of the LB's first
+    (primary) metric for each submission."""
+    from app import (Submission, GlobalMetric, LeaderboardMetric,
+                     MetricResult)
+
+    other = User(email='scorer@bench.local', display_name='Scorer',
+                 oauth_provider='github', oauth_sub='scorer-sub')
+    db.session.add(other); db.session.flush()
+
+    lb = Leaderboard(name='scored_board', visibility='public',
+                     owner_user_id=other.id)
+    db.session.add(lb); db.session.flush()
+
+    gm = GlobalMetric(name='top_1_accuracy', python_code='def f(): return 0')
+    db.session.add(gm); db.session.flush()
+    lm = LeaderboardMetric(leaderboard_id=lb.id, global_metric_id=gm.id,
+                           arg_mappings='{}', target_name='top_1_accuracy')
+    db.session.add(lm); db.session.flush()
+
+    sub = Submission(name='scored_sub', leaderboard_id=lb.id,
+                     owner_user_id=other.id, kind='verified',
+                     processing_status='Processed')
+    db.session.add(sub); db.session.flush()
+    db.session.add(MetricResult(submission_id=sub.id,
+                                leaderboard_metric_id=lm.id, value=0.9123))
+    db.session.commit()
+
+    body = auth_client.get('/home').data.decode()
+    assert 'scored_sub' in body
+    assert 'top_1_accuracy' in body
+    assert '0.9123' in body
