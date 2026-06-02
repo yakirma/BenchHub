@@ -336,8 +336,11 @@
                     {% endif %}
                     <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
                          style="font-size: 0.7rem;">
-                        <span title="Submissions">
-                            <i class="bi bi-people me-1"></i>{{ row.total }}
+                        <span title="{{ row.users }} user{{ '' if row.users == 1 else 's' }} submitted">
+                            <i class="bi bi-people me-1"></i>{{ row.users }}
+                        </span>
+                        <span title="{{ row.total }} submission{{ '' if row.total == 1 else 's' }}">
+                            <i class="bi bi-send me-1"></i>{{ row.total }}
                         </span>
                         {% if _bh_ds_count %}
                         <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">

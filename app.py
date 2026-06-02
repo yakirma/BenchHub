@@ -3059,6 +3059,7 @@ def leaderboards():
         db.session.query(
             Submission.leaderboard_id.label('lb_id'),
             func.count(Submission.id).label('total_count'),
+            func.count(func.distinct(Submission.owner_user_id)).label('user_count'),
         )
         .filter(Submission.is_archived.is_(False))
         .group_by(Submission.leaderboard_id)
@@ -3070,6 +3071,7 @@ def leaderboards():
             Leaderboard,
             func.coalesce(recent_activity.c.recent_count, 0).label('recent_count'),
             func.coalesce(total_activity.c.total_count, 0).label('total_count'),
+            func.coalesce(total_activity.c.user_count, 0).label('user_count'),
         )
         .outerjoin(recent_activity, Leaderboard.id == recent_activity.c.lb_id)
         .outerjoin(total_activity, Leaderboard.id == total_activity.c.lb_id)
@@ -3118,8 +3120,8 @@ def leaderboards():
         )
 
     rows = [
-        {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0)}
-        for lb, r, t in base.limit(60).all()
+        {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0), 'users': int(u or 0)}
+        for lb, r, t, u in base.limit(60).all()
     ]
     # Stable secondary sort by category so the template can render
     # Area > Task headers over contiguous runs. The DB-side sort

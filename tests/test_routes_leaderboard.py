@@ -399,3 +399,33 @@ def test_suggest_name_keeps_incrementing(client, project, dataset, leaderboard):
 def test_suggest_name_400_when_blank(client):
     resp = client.get("/api/leaderboard/suggest_name?name=")
     assert resp.status_code == 400
+
+
+def test_catalog_shows_distinct_user_and_submission_counts(client, db_session):
+    """The /leaderboards card people-icon shows DISTINCT submitting users;
+    a separate send-icon shows the total submission count."""
+    from app import User, Submission
+
+    u1 = User(email='cu1@bench.local', display_name='CU1',
+              oauth_provider='github', oauth_sub='cu1')
+    u2 = User(email='cu2@bench.local', display_name='CU2',
+              oauth_provider='github', oauth_sub='cu2')
+    db.session.add_all([u1, u2]); db.session.flush()
+
+    lb = Leaderboard(name='catalog_counts_lb', summary_metrics='',
+                     visibility='public', owner_user_id=u1.id)
+    db.session.add(lb); db.session.flush()
+
+    # 3 submissions from 2 distinct users → users=2, total=3.
+    db.session.add_all([
+        Submission(name='s1', leaderboard_id=lb.id, owner_user_id=u1.id, kind='verified'),
+        Submission(name='s2', leaderboard_id=lb.id, owner_user_id=u1.id, kind='verified'),
+        Submission(name='s3', leaderboard_id=lb.id, owner_user_id=u2.id, kind='verified'),
+    ])
+    db.session.commit()
+
+    body = client.get('/leaderboards').data.decode()
+    assert 'catalog_counts_lb' in body
+    assert 'bi-people' in body and 'bi-send' in body
+    assert '2 users submitted' in body
+    assert '3 submissions' in body
