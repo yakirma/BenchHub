@@ -10944,7 +10944,9 @@ def comparison_view(leaderboard_id):
     # with an empty compare_ids parameter AND no submissions on the
     # LB. The template suppresses submission-side columns and shows
     # an empty-state banner.
-    samples_only_mode = bool(request.args.get('samples_only'))
+    # Parse properly: ?samples_only=0/false/no/'' is FALSE. Plain
+    # bool(request.args.get(...)) treated the string '0' as truthy.
+    samples_only_mode = (request.args.get('samples_only', '') or '').strip().lower() in ('1', 'true', 'yes', 'on')
     if samples_only_mode:
         # Explicit ?samples_only=1 wins over a stale session.compare_ids.
         # Without this gate, clicking "Explore samples" on a PWC LB while
@@ -11413,9 +11415,14 @@ def comparison_view(leaderboard_id):
     # if 'hist_entropy' in custom_metrics:
     #     custom_metrics.remove('hist_entropy')
 
-    # Combine standard metrics with custom metrics
-    standard_metrics = [m for m in leaderboard.summary_metrics.split(',') if m.strip()]
-    all_selected_metrics = standard_metrics + sorted(list(custom_metrics))
+    # Always include every per-sample metric (no manual "Add Metric"
+    # selection in the comparison view). The chart + sort options draw
+    # from this full set rather than leaderboard.summary_metrics.
+    _per_sample_lm_ids = [
+        f"lm_{lm.id}" for lm in leaderboard.leaderboard_metrics
+        if not lm.global_metric.is_aggregated
+    ]
+    all_selected_metrics = _per_sample_lm_ids + sorted(list(custom_metrics))
     
     # Prune hist_entropy from custom_metrics if no submission has it?
     # No, it's per submission. The Chart rendering iterates per submission.
@@ -11514,18 +11521,19 @@ def comparison_view(leaderboard_id):
             'global_viz_id': lv.global_visualization.id,
         }
     
-    # Filter active_metrics to ONLY include per-sample metrics for the detailed charts
-    # Aggregated metrics should only appear in the summary chart/table
+    # Aggregated metrics only appear in the summary chart/table, never
+    # in the per-sample comparison detail.
     agg_lm_ids = {f"lm_{lm.id}" for lm in leaderboard.leaderboard_metrics if lm.global_metric.is_aggregated}
     agg_metric_names = {lm.global_metric.name for lm in leaderboard.leaderboard_metrics if lm.global_metric.is_aggregated}
-    
-    raw_selected_metrics = [m for m in leaderboard.selected_metrics.split(',') if m.strip()]
-    
-    active_metrics = []
-    for m in raw_selected_metrics:
-        if m in agg_lm_ids: continue
-        if m in agg_metric_names: continue
-        active_metrics.append(m)
+
+    # The comparison view ALWAYS shows every per-sample metric — there is
+    # no manual selection. active_metrics = all non-aggregated LB metrics
+    # (lm_<id>) + any custom per-sample metric fields discovered on the
+    # submissions. (Ignores leaderboard.selected_metrics entirely.)
+    active_metrics = [
+        f"lm_{lm.id}" for lm in leaderboard.leaderboard_metrics
+        if not lm.global_metric.is_aggregated
+    ] + sorted(m for m in custom_metrics if m not in agg_metric_names)
     
  
     # Fix: Deduplicate sort options. Remove active_metrics from all_custom_fields

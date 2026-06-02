@@ -526,20 +526,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </button>
             </form>
 
-            {% if sample_metric_options %}
-            <form method="post"
-                action="{{ url_for('update_leaderboard_metrics', leaderboard_id=leaderboard.id) }}"
-                class="d-flex align-items-center ms-3">
-                <strong class="me-3">Add Metric:</strong>
-                {% for key, label in sample_metric_options.items() %}
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="checkbox" name="metrics" value="{{ key }}" id="met_{{ key }}"
-                        {% if key in active_metrics %}checked{% endif %} onchange="saveScrollAndSubmit(this.form)">
-                    <label class="form-check-label" for="met_{{ key }}">{{ label }}</label>
-                </div>
-                {% endfor %}
-            </form>
-            {% endif %}
+            {# "Add Metric" selector removed — the comparison view always
+               shows every per-sample metric (see active_metrics in the
+               route). #}
 
         </div>
     </div>
