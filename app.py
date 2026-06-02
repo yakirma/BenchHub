@@ -14825,6 +14825,13 @@ def download_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
     # Optional submission IDs to include in the zip
     submission_ids = request.args.getlist('submission_id', type=int)
+    # Optional leaderboard id → pull the full-resolution MATERIALISED
+    # bytes for file-backed fields instead of the preview tier. Falls
+    # back to the preview when a field wasn't materialised.
+    lb_id = request.args.get('lb', type=int)
+    _materialized = bool(lb_id)
+    if lb_id:
+        from benchhub.lb_materialize import materialized_or_preview_path
 
     # The typed registry tells us how each kind is persisted:
     # `file_ext is None` → inline value (stash in value_float /
@@ -14884,10 +14891,23 @@ def download_sample(sample_id):
             # Depth files carry a `_<W>x<H>` suffix the importer needs
             # on round-trip, so keep the original filename.
             rel = cf.value_text or ''
+            if _materialized and rel:
+                # Prefer the LB's full-resolution materialised copy.
+                rel = materialized_or_preview_path(
+                    app.config['UPLOAD_FOLDER'], lb_id, cf.name, sample.name, rel,
+                )
             src_path = os.path.join(app.config['UPLOAD_FOLDER'], rel)
             if rel and os.path.exists(src_path):
                 arc_filename = os.path.basename(rel)
                 zf.write(src_path, f'ground_truth/{cf.name}/{arc_filename}')
+                # Masks: include the raw class-index sidecar (the display
+                # file is palette-RGB and only round-trips as an Image).
+                if kind == 'mask':
+                    sidecar = os.path.splitext(src_path)[0] + '.classid.png'
+                    if os.path.isfile(sidecar):
+                        zf.write(sidecar,
+                                 f'ground_truth/{cf.name}/'
+                                 f'{os.path.splitext(arc_filename)[0]}.classid.png')
 
 
         # 2. Add Submission fields from disk
@@ -14941,7 +14961,10 @@ def download_sample(sample_id):
                     zf.writestr(f'visualizations/submission_{sub.name}_{vis_type}_{sample.name}.png', img_data)
 
     memory_file.seek(0)
-    return send_file(memory_file, download_name=f'{sample.name}_data.zip', as_attachment=True)
+    suffix = '_materialized' if _materialized else ''
+    return send_file(memory_file,
+                     download_name=f'{sample.name}{suffix}_data.zip',
+                     as_attachment=True)
 
     
 def get_all_sample_tags(dataset_ids):

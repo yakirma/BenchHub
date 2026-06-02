@@ -132,3 +132,37 @@ def test_download_sample_handles_missing_file_backed_payload(client, db_session,
     names = _zip_names(client.get(f'/sample/{sample.id}/download'))
     assert 'ground_truth/score/s001.txt' in names
     assert not any(n.startswith('ground_truth/image/') for n in names)
+
+
+def test_download_sample_materialized_prefers_full_res(client, db_session, tmp_path, monkeypatch):
+    """With ?lb=<id>, file-backed fields are pulled from the LB's
+    materialised dir (full-res) rather than the preview tier."""
+    from app import Leaderboard
+    from benchhub.lb_materialize import materialization_dir
+
+    ds, sample, uploads = _make_dataset_with_sample(tmp_path, monkeypatch)
+    lb = Leaderboard(name='dl_mat_lb', summary_metrics='')
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.commit()
+
+    # Preview file (small) + materialised file (full-res) for the same field.
+    preview_rel = _write_file(uploads, f'datasets/{ds.id}/image/s001.jpg', b'PREVIEW')
+    db.session.add(CustomField(sample_id=sample.id, name='image',
+                               data_type='image', value_text=preview_rel))
+    db.session.commit()
+
+    mat_dir = materialization_dir(str(uploads), lb.id)
+    full = mat_dir / 'image' / 's001.jpg'
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(b'FULL_RESOLUTION_BYTES')
+
+    # Preview download → preview bytes.
+    z_prev = zipfile.ZipFile(io.BytesIO(client.get(
+        f'/sample/{sample.id}/download').data))
+    assert z_prev.read('ground_truth/image/s001.jpg') == b'PREVIEW'
+
+    # Materialised download → full-res bytes.
+    resp = client.get(f'/sample/{sample.id}/download?lb={lb.id}')
+    assert resp.headers['Content-Disposition'].count('materialized') == 1
+    z_mat = zipfile.ZipFile(io.BytesIO(resp.data))
+    assert z_mat.read('ground_truth/image/s001.jpg') == b'FULL_RESOLUTION_BYTES'

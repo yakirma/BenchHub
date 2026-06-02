@@ -1023,6 +1023,14 @@
                                     <i class="bi bi-download me-2"></i>Download Sample
                                 </a>
                             </li>
+                            {% if lb_filter %}
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('download_sample', sample_id=sample.id, lb=lb_filter.id) }}"
+                                   title="Full-resolution bytes materialised for {{ lb_filter.name }}">
+                                    <i class="bi bi-hdd-fill me-2"></i>Download materialised sample
+                                </a>
+                            </li>
+                            {% endif %}
                             <li>
                                 <hr class="dropdown-divider">
                             </li>
