@@ -558,7 +558,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         Samples <strong>{{ _range_start }}</strong>–<strong>{{ _range_end }}</strong>
         of <strong>{{ '{:,}'.format(paginated_samples.total) }}</strong>
         {% if sort_by %}
-        <span class="ms-2">(sorted by <code>{{ sort_by }}</code> {{ sort_order }})</span>
+        <span class="ms-2 text-body-secondary">(sorted by <strong>{{ sort_by_label }}</strong>,
+            {{ 'high → low' if sort_order == 'desc' else 'low → high' }})</span>
         {% endif %}
     </span>
     {% else %}

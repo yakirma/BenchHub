@@ -11949,8 +11949,27 @@ def comparison_view(leaderboard_id):
     except (TypeError, ValueError):
         pass
 
+    # Human-readable description of the active sort (never expose the
+    # internal lm_<id> keys). Used by the "(sorted by …)" caption.
+    def _sort_by_label():
+        if not sort_by:
+            return ''
+        if sort_by == 'name':
+            return 'Name'
+        if sort_by.startswith('disagreement:'):
+            k = sort_by.split(':', 1)[1]
+            return 'Disagreement: ' + str(metric_labels.get(k, k))
+        if ':' in sort_by:
+            mk, _, sid = sort_by.partition(':')
+            label = metric_labels.get(mk, mk)
+            idx = next((i + 1 for i, s in enumerate(submissions) if str(s.id) == sid), None)
+            return f"{label} (Sub{idx})" if idx else str(label)
+        return str(metric_labels.get(sort_by, sort_by))
+    sort_by_label = _sort_by_label()
+
     return render_template('comparison.html',
                            leaderboard=leaderboard,
+                           sort_by_label=sort_by_label,
                            submissions=submissions,
                            all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
