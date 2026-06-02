@@ -1305,6 +1305,25 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
+def _gt_stats_custom_fields(sample):
+    """Values for the comparison view's GT-stats panel: scalar + metric
+    GT fields (value_float) plus label / label_list GT fields (decoded
+    from the JSON value_text). Submission-side CustomFields are skipped
+    (sample.custom_fields are GT-only when submission_id is None)."""
+    out = {}
+    for cf in sample.custom_fields:
+        if cf.submission_id is not None:
+            continue
+        if cf.data_type in ('scalar', 'metric'):
+            out[cf.name] = cf.value_float
+        elif cf.data_type in ('label', 'label_list'):
+            try:
+                out[cf.name] = json.loads(cf.value_text) if cf.value_text else None
+            except Exception:
+                out[cf.name] = cf.value_text
+    return out
+
+
 # Canonical folder-name → data_type prefix convention.
 # Each known kind has a prefix; a folder named `<prefix>_<field_name>`
 def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, active_metrics):
@@ -1376,11 +1395,19 @@ def calculate_submission_metrics(submission, sample, gt_pick, signal_shape, acti
         if cf.data_type == 'image':
             # Store image path
             pred_data[cf.name] = cf.value_text
+        elif cf.data_type in ('label', 'label_list'):
+            # Inline-stored label (int/str) or top-K list — decode the
+            # JSON so the prediction-stats panel shows the value, not a
+            # raw JSON string.
+            try:
+                pred_data[cf.name] = json.loads(cf.value_text) if cf.value_text else None
+            except Exception:
+                pred_data[cf.name] = cf.value_text
         elif cf.data_type in ['scalar', 'metric']:
             # Store scalar/metric value
             pred_data[cf.name] = cf.value_float
             metrics[cf.name] = cf.value_float
-            
+
             # [FIX] If the field name is lm_{id}, also register it under its friendly name for backward compatibility
             # and to satisfy consumers expecting friendly names.
             if cf.name.startswith('lm_'):
@@ -11002,7 +11029,7 @@ def comparison_view(leaderboard_id):
     submission_custom_fields = {}
     submission_field_types = {}
     for sub_id, name, ftype in submission_custom_fields_query:
-        if ftype in ['image', 'depth', 'scalar', 'metric']:
+        if ftype in ['image', 'depth', 'scalar', 'metric', 'label', 'label_list']:
             if sub_id not in submission_custom_fields:
                 submission_custom_fields[sub_id] = set()
             submission_custom_fields[sub_id].add(name)
@@ -11229,7 +11256,10 @@ def comparison_view(leaderboard_id):
                 'config': None.parsed_config if None else {},
                 'bins': gt_bins,
                 'counts': gt_counts,
-                'custom_fields': {cf.name: cf.value_float for cf in sample.custom_fields if cf.data_type in ['scalar', 'metric'] and cf.submission_id is None}
+                # GT stats panel: scalars + metrics (value_float) plus
+                # labels / top-K lists (decoded from value_text), so the
+                # ground-truth class shows alongside scalar GT.
+                'custom_fields': _gt_stats_custom_fields(sample),
             },
             'predictions': [],
             'custom_fields': {},
@@ -11539,21 +11569,45 @@ def comparison_view(leaderboard_id):
     custom_image_fields = []
     dataset_fields_dict = {}
     submission_fields_dict = {}
-    
+
     for field_name in all_custom_fields:
         data_type = all_field_types.get(field_name, 'image')
         if field_name in dataset_custom_fields:
             dataset_fields_dict[field_name] = data_type
         else:
             submission_fields_dict[field_name] = data_type
-    
-    # Add dataset fields first. Only skip `metric` — those go through
-    # the per_sample_metrics chart panel. Scalar GT (e.g. WN18RR's
-    # `head`/`tail` entity IDs, ImageNet's `label`) IS the ground truth
-    # for many LBs and needs to be togglable as a column.
+
+    # Which field names actually carry a value for some sample on THIS
+    # page? Used to drop empty columns (a field declared on the LB but
+    # with nothing to show for the current page's samples). Built from
+    # the already-assembled comparison_data: GT visual fields land in
+    # `custom_fields`; pred values land in each prediction dict.
+    fields_with_data = set()
+    for sd in comparison_data:
+        for k in (sd.get('custom_fields') or {}):
+            fields_with_data.add(k)
+        for k, v in ((sd.get('ground_truth') or {}).get('custom_fields') or {}).items():
+            if v is not None:
+                fields_with_data.add(k)
+        for pred in (sd.get('predictions') or []):
+            if not pred:
+                continue
+            for k, v in pred.items():
+                if v is not None:
+                    fields_with_data.add(k)
+
+    # Kinds that DON'T get their own column: `metric` (→ chart panel) and
+    # `label` / `label_list` (→ per_source_stats, alongside scalars). A
+    # column is also skipped when no sample on this page has a value for
+    # it (don't show empty columns).
+    _NON_COLUMN_KINDS = ('metric', 'label', 'label_list')
+
+    # Add dataset fields first. Scalar GT (e.g. WN18RR's `head`/`tail`
+    # entity IDs) IS the ground truth for many LBs and stays a column.
     for field_name in sorted(dataset_fields_dict.keys()):
         data_type = dataset_fields_dict[field_name]
-        if data_type == 'metric': continue
+        if data_type in _NON_COLUMN_KINDS: continue
+        if field_name not in fields_with_data: continue
         # Narrower column for scalars since they render as a single
         # numeric/text value, not a 300px-wide image preview.
         default_width = '120px' if data_type == 'scalar' else '300px'
@@ -11574,7 +11628,8 @@ def comparison_view(leaderboard_id):
         sorted_entries = sorted(submission_field_map[base_name], key=lambda x: x[0])
         for sub_id, field_name in sorted_entries:
             data_type = all_field_types.get(field_name, 'image')
-            if data_type == 'metric': continue
+            if data_type in _NON_COLUMN_KINDS: continue
+            if field_name not in fields_with_data: continue
             default_width = '120px' if data_type == 'scalar' else '300px'
             available_display_options[field_name] = {
                 'label': field_name, 'type': data_type, 'default_width': default_width,
@@ -11593,12 +11648,15 @@ def comparison_view(leaderboard_id):
     # GT-side / Submission-side scalar+metric presence drives whether
     # the two per_source_stats columns render in the template. If both
     # sides are empty the whole option goes away from View Options too.
+    # The per_source_stats panel now also surfaces label / label_list
+    # (GT class + predicted class), so labels alone are enough to show it.
+    _STATS_KINDS = ('scalar', 'metric', 'label', 'label_list')
     has_gt_scalars_or_metrics = any(
-        all_field_types.get(fn) in ('scalar', 'metric')
+        all_field_types.get(fn) in _STATS_KINDS
         for fn in dataset_custom_fields
     )
     has_pred_scalars_or_metrics = any(
-        all_field_types.get(fn) in ('scalar', 'metric')
+        all_field_types.get(fn) in _STATS_KINDS
         for sub_id, fns in submission_custom_fields.items()
         for fn in fns
         if fn not in dataset_custom_fields

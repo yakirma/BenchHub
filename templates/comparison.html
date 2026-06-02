@@ -826,6 +826,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                            cell skipping doesn't strand them undefined. #}
                         {% set display_metrics = [] %}
                         {% set display_scalars = [] %}
+                        {% set display_labels = [] %}
                         {% if data.ground_truth.custom_fields %}
                         {% for k, v in data.ground_truth.custom_fields.items() %}
                         {% if all_field_types.get(k) == 'metric' and k not in display_metrics %}
@@ -833,6 +834,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endif %}
                         {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
                         {% set _ = display_scalars.append(k) %}
+                        {% endif %}
+                        {% if all_field_types.get(k) in ['label', 'label_list'] and k not in display_labels %}
+                        {% set _ = display_labels.append(k) %}
                         {% endif %}
                         {% endfor %}
                         {% endif %}
@@ -844,6 +848,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endif %}
                         {% if all_field_types.get(k) == 'scalar' and k not in display_scalars %}
                         {% set _ = display_scalars.append(k) %}
+                        {% endif %}
+                        {% if all_field_types.get(k) in ['label', 'label_list'] and k not in display_labels %}
+                        {% set _ = display_labels.append(k) %}
                         {% endif %}
                         {% endfor %}
                         {% endif %}
@@ -906,6 +913,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             <td class="text-truncate" style="max-width: 100px;" title="{{ s }}">{{ s }}
                                             </td>
                                             <td>{{ "%.4f"|format(gt_val) if gt_val is number else gt_val }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                        {% endif %}
+                                        {% endif %}
+
+                                        {% if display_labels %}
+                                        {% set gt_labels_present = [] %}
+                                        {% for lbl in display_labels|sort %}
+                                        {% set gt_val = data.ground_truth.custom_fields.get(lbl) if
+                                        data.ground_truth.custom_fields else none %}
+                                        {% if gt_val is not none %}
+                                        {% set _ = gt_labels_present.append((lbl, gt_val)) %}
+                                        {% endif %}
+                                        {% endfor %}
+                                        {% if gt_labels_present %}
+                                        <tr>
+                                            <td colspan="2" class="fw-bold bg-body-secondary">Labels</td>
+                                        </tr>
+                                        {% for lbl, gt_val in gt_labels_present %}
+                                        <tr>
+                                            <td class="text-truncate" style="max-width: 100px;" title="{{ lbl }}">{{ lbl }}
+                                            </td>
+                                            <td>{{ gt_val|join(', ') if gt_val is iterable and gt_val is not string else gt_val }}</td>
                                         </tr>
                                         {% endfor %}
                                         {% endif %}
@@ -1006,6 +1036,43 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                                 {% if val is not none %}
                                                 {{ "%.4f"|format(val) if val is number else val }}
                                                 {% else %}-{% endif %}
+                                            </td>
+                                            {% endfor %}
+                                        </tr>
+                                        {% endfor %}
+                                        {% endif %}
+
+                                        {# Predicted labels (class / top-K). Non-numeric →
+                                           shown plainly, with a green tint when the prediction
+                                           matches the GT label for this sample. #}
+                                        {% set sub_labels_present = [] %}
+                                        {% for lbl in display_labels|sort %}
+                                        {% set _has = [] %}
+                                        {% for pred in data.predictions %}
+                                        {% if pred and pred[lbl] is defined and pred[lbl] is not none %}
+                                        {% set _ = _has.append(1) %}
+                                        {% endif %}
+                                        {% endfor %}
+                                        {% if _has %}{% set _ = sub_labels_present.append(lbl) %}{% endif %}
+                                        {% endfor %}
+                                        {% if sub_labels_present %}
+                                        <tr>
+                                            <td colspan="{{ submissions|length + 1 }}"
+                                                class="fw-bold bg-body-secondary">Labels</td>
+                                        </tr>
+                                        {% for lbl in sub_labels_present %}
+                                        {% set gt_lbl = data.ground_truth.custom_fields.get(lbl) if data.ground_truth.custom_fields else none %}
+                                        <tr>
+                                            <td class="text-truncate" style="max-width: 100px;" title="{{ lbl }}">{{ lbl }}
+                                            </td>
+                                            {% for sub in submissions %}
+                                            {% set pred = data.predictions[loop.index0] %}
+                                            {% set val = pred[lbl] if pred and pred[lbl] is defined else none %}
+                                            {% set _top = (val[0] if val is iterable and val is not string and val|length else val) %}
+                                            <td {% if val is not none and gt_lbl is not none and _top == gt_lbl %}class="table-success"{% endif %}>
+                                                {% if val is none %}-
+                                                {% elif val is iterable and val is not string %}{{ val|join(', ') }}
+                                                {% else %}{{ val }}{% endif %}
                                             </td>
                                             {% endfor %}
                                         </tr>

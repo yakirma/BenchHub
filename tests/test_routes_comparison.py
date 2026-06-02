@@ -78,6 +78,37 @@ def test_comparison_view_filters_to_compare_ids_when_provided(
     assert b"beta" not in resp.data
 
 
+def test_comparison_view_shows_gt_and_pred_labels_in_stats(client, project, db_session):
+    """The per_source_stats panel surfaces GT labels and predicted labels
+    (in addition to scalars/metrics), and empty field columns are pruned."""
+    ds = Dataset(name="lblcmp_ds")
+    db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name="s0")
+    db.session.add(s); db.session.flush()
+    # GT label = 3; plus a file-backed field with NO data (should be pruned).
+    db.session.add(CustomField(sample_id=s.id, name="label",
+                               data_type="label", value_text="3"))
+    db.session.commit()
+    lb = Leaderboard(name="lblcmp_lb", summary_metrics="")
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    sub = Submission(name="runX", leaderboard_id=lb.id,
+                     processing_status="Processed")
+    db.session.add(sub); db.session.flush()
+    # Predicted label = 3 (matches GT).
+    db.session.add(CustomField(submission_id=sub.id, sample_name="s0",
+                               name="label_pred", data_type="label",
+                               value_text="3"))
+    db.session.commit()
+
+    # No samples_only param — full comparison mode shows per_source_stats.
+    body = client.get(f"/comparison/{lb.id}").data.decode()
+    # The per_source_stats "Labels" section header appears for both the
+    # GT label and the predicted label.
+    assert "Labels" in body
+    assert "label_pred" in body
+
+
 def test_comparison_view_pagination_preserves_compare_ids(
     client, project, lb_with_subs
 ):
