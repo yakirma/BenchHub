@@ -11033,6 +11033,17 @@ def comparison_view(leaderboard_id):
     hf_stub_mode = not has_real_dataset and bool(leaderboard.attachments)
     samples_query = Sample.query.filter(Sample.dataset_id.in_(dataset_ids))
 
+    # Restrict to the materialised subset when the LB has one — those are
+    # the only samples submitters can predict (iter_samples streams the
+    # subset), so showing the other dataset rows just yields empty
+    # prediction columns (e.g. s000002 on cifar, which isn't materialised).
+    _mat = getattr(leaderboard, 'materialization', None)
+    if _mat and getattr(_mat, 'status', None) == 'ready':
+        from benchhub.lb_materialize import list_materialized_samples
+        _mat_names = list_materialized_samples(app.config['UPLOAD_FOLDER'], leaderboard.id)
+        if _mat_names:
+            samples_query = samples_query.filter(Sample.name.in_(_mat_names))
+
     # Apply search filter
     if search_query:
         samples_query = samples_query.filter(Sample.name.ilike(f'%{search_query}%'))

@@ -151,6 +151,35 @@ def test_comparison_view_disagreement_sort_orders_by_spread(client, project, db_
     assert body_asc.index("s_lo") < body_asc.index("s_hi")
 
 
+def test_comparison_view_restricts_to_materialized_subset(client, project, db_session):
+    """Samples not in the LB's materialised subset aren't shown — they
+    can't have predictions (submitters only get the subset), so listing
+    them yields empty columns (regression: s000002 on cifar)."""
+    import os
+    from app import LeaderboardMaterialization
+    from benchhub.lb_materialize import materialization_dir
+    from app import app as flask_app
+
+    ds = Dataset(name="mat_cmp_ds"); db.session.add(ds); db.session.flush()
+    for nm in ["s000000", "s000001", "s000002"]:
+        db.session.add(Sample(dataset_id=ds.id, name=nm))
+    lb = Leaderboard(name="mat_cmp_lb", summary_metrics=""); lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    db.session.add(LeaderboardMaterialization(
+        leaderboard_id=lb.id, status="ready", sample_cap=2,
+        sampling="head", sampling_seed=42))
+    # Materialise only s000000 + s000001 (NOT s000002).
+    fdir = materialization_dir(flask_app.config["UPLOAD_FOLDER"], lb.id) / "img"
+    os.makedirs(fdir, exist_ok=True)
+    for nm in ["s000000", "s000001"]:
+        (fdir / f"{nm}.jpg").write_bytes(b"x")
+    db.session.commit()
+
+    body = client.get(f"/comparison/{lb.id}").data.decode()
+    assert "s000000" in body
+    assert "s000002" not in body  # not materialised → excluded
+
+
 def test_comparison_view_pagination_preserves_compare_ids(
     client, project, lb_with_subs
 ):
