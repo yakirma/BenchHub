@@ -2610,20 +2610,25 @@ print(sub.submit(
 
         const leaderboardId = GLOBAL_LEADERBOARD_ID;
 
-        // 2. Gather Sample Filters
+        // 2. Gather Sample Filters — null-safe. A missing element or an
+        // uninitialised tag controller must NOT throw here, or the whole
+        // recalc click silently dies before the fetch below.
+        const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+        const _chk = (id) => { const el = document.getElementById(id); return !!(el && el.checked); };
+        const _tags = (ctrl) => { try { return (ctrl && ctrl.getTags) ? ctrl.getTags() : []; } catch (e) { return []; } };
         const sampleFilters = {
-            search: document.getElementById('sample-search-query').value,
+            search: _val('sample-search-query'),
             include: {
-                enabled: document.getElementById('enable-sample-include-tags').checked,
-                tags: window.sampleIncludeTagsCtrl.getTags()
+                enabled: _chk('enable-sample-include-tags'),
+                tags: _tags(window.sampleIncludeTagsCtrl)
             },
             exclude: {
-                enabled: document.getElementById('enable-sample-exclude-tags').checked,
-                tags: window.sampleExcludeTagsCtrl.getTags()
+                enabled: _chk('enable-sample-exclude-tags'),
+                tags: _tags(window.sampleExcludeTagsCtrl)
             },
             prefix: {
-                enabled: document.getElementById('enable-sample-prefix-tags').checked,
-                tags: window.samplePrefixTagsCtrl.getTags()
+                enabled: _chk('enable-sample-prefix-tags'),
+                tags: _tags(window.samplePrefixTagsCtrl)
             }
         };
 
@@ -2690,6 +2695,14 @@ print(sub.submit(
                         statusBadge.className = 'badge ' + (subData.status === 'Processed' ? 'bg-success' : 'bg-warning');
                     }
 
+                    // Restore the recalc button once this submission is
+                    // finished — on error too, not only on Processed, so
+                    // it never gets stuck spinning.
+                    if (subData.status === 'Processed' || subData.status.startsWith('Error')) {
+                        const _b = document.getElementById(`recalc-btn-${subId}`);
+                        if (_b) _b.innerHTML = '↻';
+                    }
+
                     if (subData.status === 'Processed' && subData.metrics_formatted) {
                         // Update Metric Cells for this submission
                         Object.entries(subData.metrics_formatted).forEach(([metricName, valFormatted]) => {
@@ -2746,6 +2759,11 @@ print(sub.submit(
                     clearInterval(pollingInterval);
                     pollingInterval = null;
                 }
+                // Don't leave buttons spinning forever on a poll failure.
+                (submissionIds || []).forEach(id => {
+                    const b = document.getElementById(`recalc-btn-${id}`);
+                    if (b) b.innerHTML = '↻';
+                });
             });
     }
 
