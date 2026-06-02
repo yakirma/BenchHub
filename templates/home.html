@@ -213,17 +213,17 @@
                 {% set _user_count = lb.submissions|map(attribute='owner_user_id')|select|unique|list|length %}
                 <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
                      style="font-size: 0.7rem;">
+                    {% if _bh_ds_count %}
+                    <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
+                        <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
+                    </span>
+                    {% endif %}
                     <span title="{{ _user_count }} user{{ '' if _user_count == 1 else 's' }} submitted">
                         <i class="bi bi-people me-1"></i>{{ _user_count }}
                     </span>
                     <span title="{{ lb.submissions|length }} submission{{ '' if lb.submissions|length == 1 else 's' }}">
                         <i class="bi bi-send me-1"></i>{{ lb.submissions|length }}
                     </span>
-                    {% if _bh_ds_count %}
-                    <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
-                        <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
-                    </span>
-                    {% endif %}
                     {% if _hf_atts %}
                     <span title="{{ _hf_atts|length }} HF dataset{{ '' if _hf_atts|length == 1 else 's' }}">
                         <i class="bi bi-link-45deg me-1"></i>{{ _hf_atts|length }}
