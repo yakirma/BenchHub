@@ -1200,6 +1200,20 @@ class User(db.Model):
     )
 
 
+class EmailLoginCode(db.Model):
+    """Passwordless email sign-in / sign-up. A short-lived 6-digit code is
+    emailed to verify the user owns an address; no password is ever stored.
+    Brand-new table → created by db.create_all() at boot, no manual
+    migration block needed."""
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    code_hash = db.Column(db.String(64), nullable=False)  # sha256 of the code
+    expires_at = db.Column(db.DateTime, nullable=False)
+    attempts = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    consumed = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
 # Default cap on how many rows we iterate from an HF-ref attachment
 # during metric eval. Override per-attachment via Attachment.hf_sample_cap.
 HF_DEFAULT_SAMPLE_CAP = 10_000
@@ -2256,6 +2270,153 @@ def logout():
     session.pop('oauth_next', None)
     flash("Logged out.", "info")
     return redirect(url_for('login'))
+
+
+# ===================== Passwordless email sign-in (verification code) =====
+
+def _send_email(to_email, subject, body):
+    """Send a plain-text email via SMTP. Reads SMTP_HOST / SMTP_PORT /
+    SMTP_USER / SMTP_PASS / MAIL_FROM from the environment. Returns True
+    on success. When SMTP isn't configured (no SMTP_HOST), logs and
+    returns False — the caller decides how to degrade (dev shows the code
+    on-page; prod tells the user to retry)."""
+    host = os.environ.get('SMTP_HOST')
+    sender = (os.environ.get('MAIL_FROM') or os.environ.get('SMTP_USER')
+              or 'no-reply@runbenchhub.com')
+    if not host:
+        app.logger.warning("SMTP not configured; email to %s NOT sent (subject=%r)",
+                           to_email, subject)
+        return False
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = to_email
+    msg.set_content(body)
+    port = int(os.environ.get('SMTP_PORT', '587'))
+    user = os.environ.get('SMTP_USER')
+    pw = os.environ.get('SMTP_PASS')
+    try:
+        if port == 465:
+            srv = smtplib.SMTP_SSL(host, port, timeout=15)
+        else:
+            srv = smtplib.SMTP(host, port, timeout=15)
+            srv.starttls()
+        if user and pw:
+            srv.login(user, pw)
+        srv.send_message(msg)
+        srv.quit()
+        return True
+    except Exception as e:
+        app.logger.error("Failed to send email to %s: %s", to_email, e)
+        return False
+
+
+def _hash_login_code(code):
+    import hashlib
+    return hashlib.sha256(code.encode('utf-8')).hexdigest()
+
+
+@app.route('/login/email', methods=['POST'])
+def login_email_request():
+    """Step 1 of passwordless login: user submits an email, we mint a
+    6-digit code, email it, and send them to the verify page."""
+    email = (request.form.get('email') or '').strip().lower()
+    next_url = (request.form.get('next') or '').strip()
+    if not email or '@' not in email or '.' not in email.split('@')[-1]:
+        flash("Enter a valid email address.", "warning")
+        return redirect(url_for('login', next=next_url))
+
+    # Invalidate any outstanding codes for this address (one live code).
+    EmailLoginCode.query.filter_by(email=email, consumed=False).update(
+        {'consumed': True}, synchronize_session=False)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.session.add(EmailLoginCode(
+        email=email,
+        code_hash=_hash_login_code(code),
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+    ))
+    db.session.commit()
+
+    sent = _send_email(
+        email,
+        "Your BenchHub sign-in code",
+        f"Your BenchHub verification code is: {code}\n\n"
+        f"It expires in 10 minutes. If you didn't request this, ignore this email.",
+    )
+    session['email_login_pending'] = email
+    session['oauth_next'] = next_url or url_for('home')
+
+    if not sent:
+        if app.debug or app.config.get('TESTING'):
+            # Dev / test convenience when SMTP isn't wired up.
+            flash(f"Email delivery not configured — your code is {code}", "info")
+        else:
+            flash("We couldn't send the email right now. Try again shortly, "
+                  "or use GitHub / Google.", "danger")
+            return redirect(url_for('login', next=next_url))
+    else:
+        flash(f"We sent a 6-digit code to {email}. It expires in 10 minutes.", "success")
+    return redirect(url_for('login_email_verify'))
+
+
+@app.route('/login/email/verify', methods=['GET'])
+def login_email_verify():
+    email = session.get('email_login_pending')
+    if not email:
+        return redirect(url_for('login'))
+    return render_template('login_verify.html', email=email,
+                           next=session.get('oauth_next', ''))
+
+
+@app.route('/login/email/verify', methods=['POST'])
+def login_email_verify_post():
+    """Step 2: validate the submitted code, then upsert + sign in."""
+    email = session.get('email_login_pending')
+    if not email:
+        flash("Your sign-in session expired. Please start again.", "warning")
+        return redirect(url_for('login'))
+    code = (request.form.get('code') or '').strip()
+
+    row = (EmailLoginCode.query
+           .filter_by(email=email, consumed=False)
+           .order_by(EmailLoginCode.id.desc())
+           .first())
+    if row is None or row.expires_at < datetime.utcnow():
+        flash("That code expired. Request a new one.", "warning")
+        return redirect(url_for('login'))
+    if row.attempts >= 5:
+        row.consumed = True
+        db.session.commit()
+        flash("Too many incorrect attempts. Request a new code.", "danger")
+        return redirect(url_for('login'))
+    if not code or _hash_login_code(code) != row.code_hash:
+        row.attempts += 1
+        db.session.commit()
+        flash("Incorrect code. Please try again.", "danger")
+        return redirect(url_for('login_email_verify'))
+
+    # Verified. Upsert the account (email is now proven owned).
+    row.consumed = True
+    user = User.query.filter(func.lower(User.email) == email).first()
+    if user is None:
+        user = User(
+            email=email,
+            display_name=email.split('@')[0],
+            oauth_provider='email',
+            oauth_sub=email,
+        )
+        db.session.add(user)
+    user.last_login_at = datetime.utcnow()
+    if email in _admin_emails() and not user.is_admin:
+        user.is_admin = True
+    db.session.commit()
+
+    session.pop('email_login_pending', None)
+    session['user_id'] = user.id
+    flash(f"Logged in as {user.display_name}.", "success")
+    return redirect(session.pop('oauth_next', None) or url_for('home'))
 
 
 # ===================== Settings: API tokens (Phase 8) =====================

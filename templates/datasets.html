@@ -424,9 +424,8 @@ print(result[&quot;dataset_id&quot;])</code></pre>
                             <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
                                  style="font-size: 0.7rem;">
                                 <span title="Samples"><i class="bi bi-card-image me-1"></i>{{ e.sample_count }}</span>
-                                {% if dataset.active_leaderboards %}
-                                <span title="Leaderboards using this"><i class="bi bi-trophy me-1"></i>{{ dataset.active_leaderboards|length }}</span>
-                                {% endif %}
+                                {% set _lbn = dataset.active_leaderboards|length %}
+                                <span title="{{ _lbn }} leaderboard{{ '' if _lbn == 1 else 's' }} using this dataset"><i class="bi bi-trophy me-1"></i>{{ _lbn }}</span>
                                 {% if e.categories and e.categories|length > 1 %}
                                 <span title="Also in {{ e.categories[1:]|join(', ') }}"
                                       class="badge text-bg-light border fw-normal"

@@ -357,3 +357,83 @@ def test_check_and_migrate_db_creates_user_table_on_old_install(app, monkeypatch
 
     cols = {row[1] for row in rows}
     assert {'id', 'email', 'display_name', 'oauth_provider', 'oauth_sub'} <= cols
+
+
+# --- Passwordless email sign-in (verification code) ---
+
+def _latest_code_hash(email):
+    from app import EmailLoginCode
+    row = (EmailLoginCode.query.filter_by(email=email, consumed=False)
+           .order_by(EmailLoginCode.id.desc()).first())
+    return row
+
+
+def test_email_login_full_flow_creates_user_and_session(client, db_session):
+    from app import User, EmailLoginCode
+    import hashlib
+
+    # Step 1: request a code (SMTP unconfigured → TESTING shows it in flash).
+    r = client.post('/login/email', data={'email': 'New.User@Example.com'},
+                    follow_redirects=False)
+    assert r.status_code == 302 and '/login/email/verify' in r.headers['Location']
+    row = EmailLoginCode.query.filter_by(email='new.user@example.com').first()
+    assert row is not None and not row.consumed
+
+    # Recover the plaintext code by brute-checking the flashed hash isn't
+    # exposed — instead, mint our own known code path: re-derive by trying
+    # the 6-digit space is silly, so read it from the dev flash instead.
+    # The dev/test branch flashes "your code is NNNNNN".
+    with client.session_transaction() as s:
+        flashes = dict(s.get('_flashes', []))
+    msg = ' '.join(flashes.values())
+    import re
+    m = re.search(r'code is (\d{6})', msg)
+    assert m, f'code not surfaced in test mode: {msg!r}'
+    code = m.group(1)
+    assert hashlib.sha256(code.encode()).hexdigest() == row.code_hash
+
+    # Step 2: verify.
+    r2 = client.post('/login/email/verify', data={'code': code},
+                     follow_redirects=False)
+    assert r2.status_code == 302
+    u = User.query.filter_by(email='new.user@example.com').first()
+    assert u is not None and u.oauth_provider == 'email'
+    with client.session_transaction() as s:
+        assert s.get('user_id') == u.id
+
+
+def test_email_login_wrong_code_rejected(client, db_session):
+    client.post('/login/email', data={'email': 'a@b.com'})
+    r = client.post('/login/email/verify', data={'code': '000000'},
+                    follow_redirects=False)
+    # Wrong code → back to verify page, no session.
+    assert '/login/email/verify' in r.headers['Location']
+    with client.session_transaction() as s:
+        assert 'user_id' not in s
+
+
+def test_email_login_invalid_email_rejected(client, db_session):
+    from app import EmailLoginCode
+    r = client.post('/login/email', data={'email': 'notanemail'},
+                    follow_redirects=False)
+    assert '/login' in r.headers['Location']
+    assert EmailLoginCode.query.count() == 0
+
+
+def test_email_login_links_to_existing_oauth_account(client, db_session):
+    """An email that already belongs to a GitHub/Google user logs into
+    THAT account rather than creating a duplicate."""
+    from app import User, EmailLoginCode
+    existing = User(email='dual@example.com', display_name='Dual',
+                    oauth_provider='github', oauth_sub='gh-dual')
+    db.session.add(existing); db.session.commit()
+
+    client.post('/login/email', data={'email': 'dual@example.com'})
+    with client.session_transaction() as s:
+        import re
+        code = re.search(r'code is (\d{6})', ' '.join(dict(s['_flashes']).values())).group(1)
+    client.post('/login/email/verify', data={'code': code})
+
+    assert User.query.filter_by(email='dual@example.com').count() == 1
+    with client.session_transaction() as s:
+        assert s.get('user_id') == existing.id

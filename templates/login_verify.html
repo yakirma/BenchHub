@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Verify email — BenchHub{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 480px;">
+    <div class="card shadow-sm mt-5">
+        <div class="card-body p-4 p-md-5">
+            <h1 class="h3 mb-3 text-center">Check your email</h1>
+            <p class="text-muted text-center mb-4 small">
+                We sent a 6-digit code to <strong>{{ email }}</strong>.
+                Enter it below to finish signing in.
+            </p>
+
+            <form method="post" action="{{ url_for('login_email_verify_post') }}">
+                <label for="code" class="form-label small mb-1">Verification code</label>
+                <input type="text" name="code" id="code" required
+                       inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                       autocomplete="one-time-code" autofocus
+                       class="form-control form-control-lg text-center"
+                       style="letter-spacing: 0.4em; font-variant-numeric: tabular-nums;"
+                       placeholder="------">
+                <button type="submit" class="btn btn-primary w-100 mt-3">
+                    Verify &amp; sign in
+                </button>
+            </form>
+
+            <form method="post" action="{{ url_for('login_email_request') }}" class="mt-3 text-center">
+                <input type="hidden" name="email" value="{{ email }}">
+                <input type="hidden" name="next" value="{{ next }}">
+                <button type="submit" class="btn btn-link btn-sm text-muted p-0">
+                    Didn't get it? Send a new code
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <p class="text-muted text-center small mt-4">
+        <a href="{{ url_for('login') }}" class="text-decoration-none">&larr; Back to all sign-in options</a>
+    </p>
+</div>
+{% endblock %}
