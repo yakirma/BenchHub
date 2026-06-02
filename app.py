@@ -5962,8 +5962,20 @@ def _resolve_lb_input_samples(lb):
     if not dss:
         return None, [], [], {}, f'empty:{lb.id}'
     ds = dss[0]
-    input_fields = [df for df in ds.fields
-                    if (df.role or 'gt').lower() == 'input']
+    # Per-LB role overrides (Leaderboard.field_roles_json) win over the
+    # dataset field's own role — that's how an LB marks e.g. `img` as an
+    # input even when the dataset declared it gt.
+    try:
+        _role_overrides = json.loads(lb.field_roles_json or '{}')
+        if not isinstance(_role_overrides, dict):
+            _role_overrides = {}
+    except (TypeError, ValueError):
+        _role_overrides = {}
+
+    def _eff_role(df):
+        return (_role_overrides.get(df.name) or df.role or 'gt').lower()
+
+    input_fields = [df for df in ds.fields if _eff_role(df) == 'input']
 
     # Materialised subset filter (if the LB has a ready materialisation)
     sample_filter = None

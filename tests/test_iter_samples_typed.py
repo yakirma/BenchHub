@@ -263,3 +263,35 @@ def test_iter_samples_falls_back_to_per_sample_when_no_archive(client, db_sessio
     assert len(out) == 1
     assert isinstance(out[0][1]['img'], bh.Image)
     assert tr.per_sample_fetches == 1          # legacy path kicked in
+
+
+def test_samples_api_honors_lb_field_role_override(client, db_session):
+    """A field declared role='gt' on the dataset but overridden to
+    'input' via Leaderboard.field_roles_json is treated as an input by
+    the /samples API (regression: cifar100's `img` was gt on the
+    dataset)."""
+    import json as _json
+    import os as _os
+    import numpy as _np
+    from PIL import Image as _PILImage
+    user = User(email='roleov@bench.local', display_name='ro',
+                oauth_provider='github', oauth_sub='roleov-1', api_token='rotok')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='roleov_ds', visibility='public', owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    # img declared as gt on the dataset (like cifar100).
+    db.session.add(DatasetField(dataset_id=ds.id, name='img', kind='image', role='gt'))
+    db.session.add(DatasetField(dataset_id=ds.id, name='label', kind='label', role='gt'))
+    s = Sample(dataset_id=ds.id, name='s0'); db.session.add(s); db.session.flush()
+    img_dir = _os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id), 'img')
+    _os.makedirs(img_dir, exist_ok=True)
+    rel = _os.path.join('datasets', str(ds.id), 'img', 's0.png')
+    _PILImage.fromarray(_np.zeros((8, 8, 3), dtype=_np.uint8)).save(
+        _os.path.join(flask_app.config['UPLOAD_FOLDER'], rel))
+    db.session.add(CustomField(sample_id=s.id, name='img', data_type='image', value_text=rel))
+    lb = Leaderboard(name='roleov_lb', visibility='public', owner_user_id=user.id,
+                     field_roles_json=_json.dumps({'img': 'input', 'label': 'gt'}))
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    payload = client.get(f'/api/leaderboard/{lb.id}/samples').get_json()
+    assert [f['name'] for f in payload['input_fields']] == ['img']
