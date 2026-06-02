@@ -63,7 +63,14 @@ def confusion_matrix(gt, pred, gt_names=None, pred_names=None):
     row_names = gt_names or names
 
     def _ticklabels(vocab):
-        return [str(vocab[i]) if vocab and i < len(vocab) else str(i) for i in range(n)]
+        # Show both the class name and its index, e.g. "cat (3)".
+        out = []
+        for i in range(n):
+            if vocab and i < len(vocab):
+                out.append("{} ({})".format(vocab[i], i))
+            else:
+                out.append(str(i))
+        return out
 
     side = min(1.6 + 0.55 * n, 14)
     fig, ax = plt.subplots(figsize=(side, side))

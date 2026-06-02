@@ -941,7 +941,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         <tr>
                                             <td class="text-truncate" style="max-width: 100px;" title="{{ lbl }}">{{ lbl }}
                                             </td>
-                                            <td>{% if gt_val is iterable and gt_val is not string %}{{ gt_val|map('label_name', gt_names)|join(', ') }}{% else %}{{ gt_val|label_name(gt_names) }}{% endif %}</td>
+                                            <td>{% if gt_val is iterable and gt_val is not string %}{{ gt_val|map('label_display', gt_names)|join(', ') }}{% else %}{{ gt_val|label_display(gt_names) }}{% endif %}</td>
                                         </tr>
                                         {% endfor %}
                                         {% endif %}
@@ -1082,8 +1082,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             {% set _top = (val[0] if val is iterable and val is not string and val|length else val) %}
                                             <td {% if val is not none and gt_lbl is not none and _top == gt_lbl %}class="table-success"{% endif %}>
                                                 {% if val is none %}-
-                                                {% elif val is iterable and val is not string %}{{ val|map('label_name', lbl_names)|join(', ') }}
-                                                {% else %}{{ val|label_name(lbl_names) }}{% endif %}
+                                                {% elif val is iterable and val is not string %}{{ val|map('label_display', lbl_names)|join(', ') }}
+                                                {% else %}{{ val|label_display(lbl_names) }}{% endif %}
                                             </td>
                                             {% endfor %}
                                         </tr>
@@ -3193,66 +3193,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         }
     };
 
-    // ---- Aggregated-viz side-by-side compare ----
-    // Tick 2+ thumbnails (or Shift-click them), then "Compare side-by-side"
-    // lays the selected images in a horizontal row. A plain click still
-    // opens the single-image zoom.
-    window.aggImgClick = function (event, img) {
-        if (event.shiftKey) {
-            event.preventDefault();
-            const card = img.closest('.card');
-            const cb = card ? card.querySelector('.agg-viz-select') : null;
-            if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-            return;
-        }
-        if (typeof updateAggVisGallery === 'function') updateAggVisGallery(img);
-        bootstrap.Modal.getOrCreateInstance(document.getElementById('vis-modal')).show(img);
-    };
-
-    (function () {
-        const selectsIn = (container) => Array.from(container.querySelectorAll('.agg-viz-select'));
-        function refreshCompareBtn(container) {
-            const vizId = container.dataset.vizId;
-            const btn = document.querySelector(`.agg-compare-btn[data-viz-id="${vizId}"]`);
-            if (!btn) return;
-            const n = selectsIn(container).filter(cb => cb.checked).length;
-            const cnt = btn.querySelector('.agg-compare-count');
-            if (cnt) cnt.textContent = n;
-            btn.disabled = n < 2;
-        }
-        document.addEventListener('change', (e) => {
-            if (e.target.classList && e.target.classList.contains('agg-viz-select')) {
-                const container = e.target.closest('.agg-viz-container');
-                if (container) refreshCompareBtn(container);
-            }
-        });
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('.agg-compare-btn');
-            if (!btn) return;
-            const container = document.querySelector(`.agg-viz-container[data-viz-id="${btn.dataset.vizId}"]`);
-            if (!container) return;
-            const chosen = selectsIn(container).filter(cb => cb.checked);
-            if (chosen.length < 2) return;
-            const body = document.getElementById('agg-compare-body');
-            body.innerHTML = '';
-            chosen.forEach(cb => {
-                const col = document.createElement('div');
-                col.className = 'text-center';
-                col.style.cssText = 'flex: 0 0 auto; max-width: 48vw;';
-                const lbl = document.createElement('div');
-                lbl.className = 'small fw-semibold mb-1 text-truncate';
-                lbl.textContent = cb.dataset.label || '';
-                const im = document.createElement('img');
-                im.src = cb.dataset.src;
-                im.className = 'img-fluid border rounded';
-                im.style.maxHeight = '80vh';
-                col.appendChild(lbl); col.appendChild(im);
-                body.appendChild(col);
-            });
-            bootstrap.Modal.getOrCreateInstance(document.getElementById('agg-compare-modal')).show();
-        });
-    })();
-
     window.updateHistGallery = function (trigger) {
         // Row-based grouping: Find all histogram containers in the same row
         const tr = trigger.closest('tr');
@@ -3634,6 +3574,75 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         document.addEventListener('mousemove', onMove, true);
         document.addEventListener('mouseleave', onLeave, true);
         return { load: load };
+    })();
+</script>
+
+{# Aggregated-viz side-by-side compare — isolated in its OWN script so a
+   runtime error elsewhere on the page can't stop these handlers from
+   registering. Tick 2+ thumbnails (or Shift-click them) → "Compare
+   side-by-side" lays the chosen images in a row. Plain click = zoom. #}
+<script>
+    (function () {
+        function selectsIn(container) {
+            return Array.prototype.slice.call(container.querySelectorAll('.agg-viz-select'));
+        }
+        function refreshCompareBtn(container) {
+            var btn = document.querySelector('.agg-compare-btn[data-viz-id="' + container.dataset.vizId + '"]');
+            if (!btn) return;
+            var n = selectsIn(container).filter(function (cb) { return cb.checked; }).length;
+            var cnt = btn.querySelector('.agg-compare-count');
+            if (cnt) cnt.textContent = n;
+            btn.disabled = n < 2;
+        }
+
+        // Plain click zooms; Shift-click toggles the card's compare checkbox.
+        window.aggImgClick = function (event, img) {
+            if (event.shiftKey) {
+                event.preventDefault();
+                var card = img.closest('.card');
+                var cb = card ? card.querySelector('.agg-viz-select') : null;
+                if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+                return;
+            }
+            if (typeof window.updateAggVisGallery === 'function') window.updateAggVisGallery(img);
+            try { bootstrap.Modal.getOrCreateInstance(document.getElementById('vis-modal')).show(img); }
+            catch (e) { /* zoom modal optional */ }
+        };
+
+        document.addEventListener('change', function (e) {
+            if (e.target && e.target.classList && e.target.classList.contains('agg-viz-select')) {
+                var container = e.target.closest('.agg-viz-container');
+                if (container) refreshCompareBtn(container);
+            }
+        });
+
+        document.addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('.agg-compare-btn') : null;
+            if (!btn) return;
+            var container = document.querySelector('.agg-viz-container[data-viz-id="' + btn.dataset.vizId + '"]');
+            if (!container) return;
+            var chosen = selectsIn(container).filter(function (cb) { return cb.checked; });
+            if (chosen.length < 2) return;
+            var body = document.getElementById('agg-compare-body');
+            if (!body) return;
+            body.innerHTML = '';
+            chosen.forEach(function (cb) {
+                var col = document.createElement('div');
+                col.className = 'text-center';
+                col.style.cssText = 'flex: 0 0 auto; max-width: 48vw;';
+                var lbl = document.createElement('div');
+                lbl.className = 'small fw-semibold mb-1 text-truncate';
+                lbl.textContent = cb.dataset.label || '';
+                var im = document.createElement('img');
+                im.src = cb.dataset.src;
+                im.className = 'img-fluid border rounded';
+                im.style.maxHeight = '80vh';
+                col.appendChild(lbl);
+                col.appendChild(im);
+                body.appendChild(col);
+            });
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('agg-compare-modal')).show();
+        });
     })();
 </script>
 {% endblock %}

@@ -15941,6 +15941,19 @@ def label_name_filter(value, names):
     return value
 
 
+@app.template_filter('label_display')
+def label_display_filter(value, names):
+    """Like `label_name`, but keeps the index too: `cat (3)`. Falls back
+    to the bare value when there's no vocab / it's not a valid index."""
+    try:
+        if names and isinstance(value, bool) is False and isinstance(value, int) \
+                and 0 <= value < len(names):
+            return f"{names[value]} ({value})"
+    except Exception:
+        pass
+    return value
+
+
 @app.template_filter('accent_color')
 def accent_color_filter(s):
     return _accent_color_for(s)
