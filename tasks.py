@@ -17,7 +17,8 @@ from metric_engine import (
 import numpy as np
 
 
-@celery.task(bind=True, name='tasks.run_hf_import')
+@celery.task(bind=True, name='tasks.run_hf_import',
+             soft_time_limit=1800, time_limit=2100)
 def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                   sampling_seed, dataset_name, fields, sample_name_from,
                   hf_token, owner_user_id):

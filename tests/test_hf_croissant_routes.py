@@ -33,8 +33,9 @@ def admin_client(client, admin_user):
     return client
 
 
-def test_get_import_form_admin_only(client, db_session):
-    """Unauthenticated → 302 to login; non-admin → 403."""
+def test_get_import_form_requires_login_open_to_users(client, db_session):
+    """Self-service HF caching: unauthenticated → 302 to login; any
+    signed-in user (not just admins) → 200."""
     r = client.get('/admin/import_from_hf')
     assert r.status_code == 302  # login redirect
     other = User(email='nope@bench.local', display_name='no',
@@ -43,7 +44,7 @@ def test_get_import_form_admin_only(client, db_session):
     with client.session_transaction() as sess:
         sess['user_id'] = other.id
     r = client.get('/admin/import_from_hf')
-    assert r.status_code == 403
+    assert r.status_code == 200
 
 
 def test_get_import_form_renders_for_admin(admin_client):
@@ -432,8 +433,10 @@ def test_preview_redirects_when_repo_id_missing(admin_client):
 # Suggestion endpoints (search + trending)
 # ---------------------------------------------------------------------------
 
-def test_search_route_admin_only(client, db_session):
-    """Unauthenticated → 302 to login; non-admin → 403."""
+def test_search_route_requires_login_open_to_users(client, db_session, monkeypatch):
+    """Unauthenticated → 302 to login; any signed-in user → 200."""
+    from benchhub import hf_search
+    monkeypatch.setattr(hf_search, 'search_datasets', lambda q, **kw: [])
     r = client.get('/admin/import_from_hf/search?q=cifar')
     assert r.status_code == 302
     other = User(email='regular@bench.local', display_name='reg',
@@ -442,7 +445,7 @@ def test_search_route_admin_only(client, db_session):
     with client.session_transaction() as sess:
         sess['user_id'] = other.id
     r = client.get('/admin/import_from_hf/search?q=cifar')
-    assert r.status_code == 403
+    assert r.status_code == 200
 
 
 def test_search_route_returns_normalised_json(admin_client, monkeypatch):
@@ -474,7 +477,10 @@ def test_search_route_empty_query_returns_empty_array(admin_client):
     assert r.get_json() == []
 
 
-def test_trending_route_admin_only(client, db_session):
+def test_trending_route_requires_login_open_to_users(client, db_session, monkeypatch):
+    from benchhub import hf_search
+    monkeypatch.setattr(hf_search, 'trending_by_domain',
+                        lambda **kw: {"Vision": [], "NLP": [], "Audio": [], "Tabular": []})
     r = client.get('/admin/import_from_hf/trending')
     assert r.status_code == 302
     other = User(email='regular2@bench.local', display_name='reg2',
@@ -483,7 +489,7 @@ def test_trending_route_admin_only(client, db_session):
     with client.session_transaction() as sess:
         sess['user_id'] = other.id
     r = client.get('/admin/import_from_hf/trending')
-    assert r.status_code == 403
+    assert r.status_code == 200
 
 
 def test_trending_route_returns_grouped_json(admin_client, monkeypatch):
@@ -506,3 +512,95 @@ def test_trending_route_returns_grouped_json(admin_client, monkeypatch):
     body = r.get_json()
     assert set(body) == {"Vision", "NLP", "Audio", "Tabular"}
     assert body["Vision"][0]["id"] == "v/x"
+
+
+def _mock_hf_import(monkeypatch, tmp_path, captured):
+    """Patch the heavy HF materialize + typed import so the commit route
+    runs end-to-end (eager Celery) without network. Records kwargs."""
+    from app import app as flask_app
+    monkeypatch.setitem(flask_app.config, 'UPLOAD_FOLDER', str(tmp_path))
+    import benchhub.hf_materialize as hfm
+    from benchhub import manifest as bh_manifest
+    from pathlib import Path
+
+    def _fake_materialize(repo_id, *, split, sample_cap, staging_dir,
+                          dataset_name, fields, **kw):
+        captured['sample_cap'] = sample_cap
+        Path(staging_dir, 'manifest.json').write_text(json.dumps({
+            'name': dataset_name, 'version': '1.0',
+            'fields': [{'name': f['name'], 'kind': f['kind'],
+                        'role': f['role'], 'params': f.get('params') or {}}
+                       for f in fields],
+            'samples': ['s0'],
+        }))
+        return {'samples': 1, 'fields': len(fields),
+                'rows_written': 0, 'rows_skipped': 0}
+
+    def _fake_import(source_root, *, db_session, Dataset, Sample, CustomField,
+                     DatasetField=None, upload_folder, owner_user_id=None,
+                     visibility='public', existing_dataset=None, **_kw):
+        ds = existing_dataset
+        db_session.flush()
+        return ds.id, {'dataset_id': ds.id, 'name': ds.name, 'samples': 1,
+                       'fields': 1, 'custom_field_rows': 0, 'files_copied': 0,
+                       'bytes_on_disk': 0}
+
+    monkeypatch.setattr(hfm, 'materialize_hf_to_typed_dir', _fake_materialize)
+    monkeypatch.setattr(bh_manifest, 'import_typed_dataset', _fake_import)
+
+
+def test_user_commit_is_private_and_row_capped(client, db_session, tmp_path, monkeypatch):
+    """A non-admin import lands private and the row count is clamped to
+    USER_HF_IMPORT_MAX_ROWS even if they ask for the whole split (-1)."""
+    from app import Dataset, USER_HF_IMPORT_MAX_ROWS
+    user = User(email='hfuser@bench.local', display_name='u',
+                oauth_provider='github', oauth_sub='hfuser-1', is_admin=False)
+    db.session.add(user); db.session.commit()
+    with client.session_transaction() as sess:
+        sess['user_id'] = user.id
+
+    captured = {}
+    _mock_hf_import(monkeypatch, tmp_path, captured)
+
+    r = client.post('/admin/import_from_hf/commit', data={
+        'repo_id': 'uoft-cs/cifar10', 'dataset_name': 'user-cache',
+        'split': 'test', 'sample_cap': '-1', 'sampling': 'head',
+        'field_name': ['img'], 'field_source_column': ['img'],
+        'field_kind': ['image'], 'field_params': [''],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert captured['sample_cap'] == USER_HF_IMPORT_MAX_ROWS
+    ds = Dataset.query.filter_by(name='user-cache').first()
+    assert ds is not None and ds.visibility == 'private'
+    assert ds.owner_user_id == user.id
+
+
+def test_user_commit_concurrency_guard(client, db_session, tmp_path, monkeypatch):
+    """A non-admin with an in-flight import can't start a second one."""
+    from app import Dataset
+    user = User(email='busy@bench.local', display_name='b',
+                oauth_provider='github', oauth_sub='busy-1', is_admin=False)
+    db.session.add(user)
+    db.session.add(Dataset(name='inflight', owner_user_id=2,
+                           visibility='private', import_status='importing'))
+    db.session.flush()
+    inflight = Dataset.query.filter_by(name='inflight').first()
+    db.session.commit()
+    inflight.owner_user_id = user.id
+    db.session.commit()
+    with client.session_transaction() as sess:
+        sess['user_id'] = user.id
+
+    captured = {}
+    _mock_hf_import(monkeypatch, tmp_path, captured)
+    before = Dataset.query.count()
+    r = client.post('/admin/import_from_hf/commit', data={
+        'repo_id': 'uoft-cs/cifar10', 'dataset_name': 'second',
+        'split': 'test', 'sample_cap': '10',
+        'field_name': ['img'], 'field_source_column': ['img'],
+        'field_kind': ['image'], 'field_params': [''],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    # No new dataset created; materialize never invoked.
+    assert Dataset.query.count() == before
+    assert 'sample_cap' not in captured

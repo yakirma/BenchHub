@@ -164,7 +164,6 @@
                              style="letter-spacing: 0.04em;">
                             Add a dataset
                         </div>
-                        {% if current_user_is_admin %}
                         <button class="btn btn-sm btn-outline-primary w-100 mb-2"
                                 type="button" data-bs-toggle="collapse"
                                 data-bs-target="#hf-import-pane">
@@ -193,14 +192,17 @@
                                 </button>
                                 <div class="small text-body-secondary mt-2">
                                     Reads the repo's Croissant metadata,
-                                    infers field kinds. You'll complete
-                                    roles + params on the next step.
+                                    infers field kinds. You'll review
+                                    roles + types on the next step.
+                                    {% if not current_user_is_admin %}
+                                    Cached as a downscaled preview, up to
+                                    {{ '{:,}'.format(user_hf_import_max_rows) }} samples.
+                                    {% endif %}
                                     <a href="{{ url_for('admin_import_from_hf') }}"
                                        class="d-block mt-1">Browse trending →</a>
                                 </div>
                             </form>
                         </div>
-                        {% endif %}
                         <button class="btn btn-sm btn-outline-secondary w-100"
                                 type="button" data-bs-toggle="collapse"
                                 data-bs-target="#py-snippet-pane">

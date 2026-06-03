@@ -1218,6 +1218,12 @@ class EmailLoginCode(db.Model):
 # during metric eval. Override per-attachment via Attachment.hf_sample_cap.
 HF_DEFAULT_SAMPLE_CAP = 10_000
 
+# Max rows a NON-admin may cache in a single self-service HF import.
+# Admins are unlimited. Keeps a curious user from pulling a 1M-row split
+# onto the shared box; they cache a usable preview and can ask an admin
+# for a bigger pull if needed.
+USER_HF_IMPORT_MAX_ROWS = 2_000
+
 
 class Attachment(db.Model):
     """Replaces the legacy `leaderboard_datasets` association table.
@@ -6813,10 +6819,14 @@ def admin_import_from_hf():
     The form's `repo_id` input is wired to two helper endpoints —
     `admin_import_from_hf_search` for type-ahead suggestions and
     `admin_import_from_hf_trending` for the curated by-domain
-    grid — so the admin doesn't need to memorise repo IDs."""
-    if not is_admin(g.current_user):
-        abort(403)
-    return render_template('admin_import_from_hf.html')
+    grid — so the admin doesn't need to memorise repo IDs.
+
+    Open to any signed-in user (self-service HF caching). Caps + quota +
+    a one-import-at-a-time guard for non-admins live in the commit
+    handler; admins keep the unlimited path."""
+    return render_template('admin_import_from_hf.html',
+                           is_admin_user=is_admin(g.current_user),
+                           user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS)
 
 
 @app.route('/admin/import_from_hf/search')
@@ -6825,8 +6835,6 @@ def admin_import_from_hf_search():
     """JSON proxy over HF Hub's /api/datasets?search=... endpoint.
     Behind an admin gate just so we don't spend our shared IP's
     quota on anonymous traffic — the data itself is public."""
-    if not is_admin(g.current_user):
-        abort(403)
     from benchhub.hf_search import search_datasets
     q = (request.args.get('q') or '').strip()
     return jsonify(search_datasets(q, limit=10))
@@ -6838,8 +6846,6 @@ def admin_import_from_hf_trending():
     """JSON: top-downloaded HF datasets per ML domain (Vision / NLP /
     Audio / Tabular). One-hour TTL cache lives in the helper so the
     grid isn't a fresh HF round-trip on every page reload."""
-    if not is_admin(g.current_user):
-        abort(403)
     from benchhub.hf_search import trending_by_domain
     return jsonify(trending_by_domain(limit_per_domain=5))
 
@@ -6852,9 +6858,26 @@ def admin_import_from_hf_commit():
     standard `import_typed_dataset` to write Dataset + Sample +
     CustomField rows. Heavy lift — can take minutes for large
     datasets; consider running this in a background task once
-    request size grows."""
-    if not is_admin(g.current_user):
-        abort(403)
+    request size grows.
+
+    Open to any signed-in user. Non-admins are constrained: the import
+    lands private, the row count is capped (USER_HF_IMPORT_MAX_ROWS),
+    quota is charged against the private bucket, and only one import may
+    run at a time per user (the box shares web+celery+redis, so an
+    unbounded fan-out of HF downloads would take the site down)."""
+    is_adm = is_admin(g.current_user)
+    import_visibility = 'public' if is_adm else 'private'
+
+    # One-import-at-a-time guard for non-admins: refuse if the user
+    # already has a dataset mid-import.
+    if not is_adm:
+        inflight = Dataset.query.filter_by(
+            owner_user_id=g.current_user.id, import_status='importing',
+        ).count()
+        if inflight:
+            flash("You already have an import running. Let it finish "
+                  "before starting another.", "warning")
+            return redirect(url_for('datasets_list'))
 
     repo_id = (request.form.get('repo_id') or '').strip()
     dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
@@ -6871,6 +6894,11 @@ def admin_import_from_hf_commit():
         pass  # explicit positive cap
     else:
         sample_cap = -1  # canonicalise 0 / negative / missing to -1
+    # Non-admins can't run an unbounded import — force a row cap so a
+    # 100GB repo can't be cached whole on the shared box.
+    if not is_adm:
+        if sample_cap == -1 or sample_cap > USER_HF_IMPORT_MAX_ROWS:
+            sample_cap = USER_HF_IMPORT_MAX_ROWS
     sampling = (request.form.get('sampling') or 'head').strip().lower()
     if sampling not in ('head', 'uniform', 'stratified'):
         sampling = 'head'
@@ -6953,11 +6981,11 @@ def admin_import_from_hf_commit():
             est_bytes = int(split_bytes * min(sample_cap, split_rows) / split_rows)
         est_bytes = int(est_bytes * 1.5)  # materialization headroom
     if est_bytes > 0:
-        # Admin HF imports land as visibility='public' (see Dataset row
-        # below), so charge the public bucket.
+        # Charge the bucket that matches where this dataset will land
+        # (admins → public, users → private).
         ok, msg = check_quota(g.current_user, kind='dataset_create',
                               incoming_bytes=est_bytes,
-                              visibility='public')
+                              visibility=import_visibility)
         if not ok:
             flash(f"{msg} (estimated {_format_bytes(est_bytes)} for this import)",
                   'danger')
@@ -6972,7 +7000,7 @@ def admin_import_from_hf_commit():
         ds_row = Dataset(
             name=dataset_name,
             owner_user_id=g.current_user.id,
-            visibility='public',
+            visibility=import_visibility,
             import_status='importing',
             import_progress_json=json.dumps({
                 'phase': 'queued', 'current': 0, 'total': 0,
@@ -7023,8 +7051,6 @@ def admin_import_from_hf_preview():
     override e.g. image → mask for segmentation columns). Role
     (input / gt / skip) and per-instance params are empty for the
     admin to fill in before the commit step."""
-    if not is_admin(g.current_user):
-        abort(403)
     from benchhub.hf_croissant import (
         CroissantFetchError, fetch_croissant, parse_croissant,
     )
@@ -7101,6 +7127,8 @@ def admin_import_from_hf_preview():
         all_roles=['input', 'gt', 'skip'],
         has_label_field=has_label_field,
         class_label_vocabs=class_label_vocabs,
+        is_admin_user=is_admin(g.current_user),
+        user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS,
     )
 
 
@@ -12856,6 +12884,7 @@ def datasets_list():
                            storage_cap_public=storage_cap_public,
                            storage_cap_private=storage_cap_private,
                            format_bytes=_format_bytes,
+                           user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS,
                            dataset_requests=dataset_requests)
 
 
