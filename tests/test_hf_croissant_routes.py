@@ -549,10 +549,10 @@ def _mock_hf_import(monkeypatch, tmp_path, captured):
     monkeypatch.setattr(bh_manifest, 'import_typed_dataset', _fake_import)
 
 
-def test_user_commit_is_private_and_row_capped(client, db_session, tmp_path, monkeypatch):
-    """A non-admin import lands private and the row count is clamped to
-    USER_HF_IMPORT_MAX_ROWS even if they ask for the whole split (-1)."""
-    from app import Dataset, USER_HF_IMPORT_MAX_ROWS
+def test_user_commit_is_private_and_full_split(client, db_session, tmp_path, monkeypatch):
+    """A non-admin import lands private but caches the FULL split (no row
+    cap — quota is the only bound, per the no-cap policy)."""
+    from app import Dataset
     user = User(email='hfuser@bench.local', display_name='u',
                 oauth_provider='github', oauth_sub='hfuser-1', is_admin=False)
     db.session.add(user); db.session.commit()
@@ -569,7 +569,7 @@ def test_user_commit_is_private_and_row_capped(client, db_session, tmp_path, mon
         'field_kind': ['image'], 'field_params': [''],
     }, follow_redirects=False)
     assert r.status_code == 302
-    assert captured['sample_cap'] == USER_HF_IMPORT_MAX_ROWS
+    assert captured['sample_cap'] == -1   # full split, not truncated
     ds = Dataset.query.filter_by(name='user-cache').first()
     assert ds is not None and ds.visibility == 'private'
     assert ds.owner_user_id == user.id

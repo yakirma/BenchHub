@@ -194,10 +194,8 @@
                                     Reads the repo's Croissant metadata,
                                     infers field kinds. You'll review
                                     roles + types on the next step.
-                                    {% if not current_user_is_admin %}
-                                    Cached as a downscaled preview, up to
-                                    {{ '{:,}'.format(user_hf_import_max_rows) }} samples.
-                                    {% endif %}
+                                    Caches the full split as a downscaled
+                                    preview (bounded by your storage quota).
                                     <a href="{{ url_for('admin_import_from_hf') }}"
                                        class="d-block mt-1">Browse trending →</a>
                                 </div>

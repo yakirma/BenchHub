@@ -1218,12 +1218,6 @@ class EmailLoginCode(db.Model):
 # during metric eval. Override per-attachment via Attachment.hf_sample_cap.
 HF_DEFAULT_SAMPLE_CAP = 10_000
 
-# Max rows a NON-admin may cache in a single self-service HF import.
-# Admins are unlimited. Keeps a curious user from pulling a 1M-row split
-# onto the shared box; they cache a usable preview and can ask an admin
-# for a bigger pull if needed.
-USER_HF_IMPORT_MAX_ROWS = 2_000
-
 
 class Attachment(db.Model):
     """Replaces the legacy `leaderboard_datasets` association table.
@@ -6823,10 +6817,9 @@ def admin_import_from_hf():
 
     Open to any signed-in user (self-service HF caching). Caps + quota +
     a one-import-at-a-time guard for non-admins live in the commit
-    handler; admins keep the unlimited path."""
+    handler."""
     return render_template('admin_import_from_hf.html',
-                           is_admin_user=is_admin(g.current_user),
-                           user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS)
+                           is_admin_user=is_admin(g.current_user))
 
 
 @app.route('/admin/import_from_hf/search')
@@ -6860,11 +6853,12 @@ def admin_import_from_hf_commit():
     datasets; consider running this in a background task once
     request size grows.
 
-    Open to any signed-in user. Non-admins are constrained: the import
-    lands private, the row count is capped (USER_HF_IMPORT_MAX_ROWS),
-    quota is charged against the private bucket, and only one import may
-    run at a time per user (the box shares web+celery+redis, so an
-    unbounded fan-out of HF downloads would take the site down)."""
+    Open to any signed-in user. The dataset caches the full split
+    (preview tier) for everyone — no row cap. Non-admins differ only in:
+    the import lands private, quota is charged against the private
+    bucket, and one import may run at a time per user (the box shares
+    web+celery+redis, so an unbounded fan-out of HF downloads would take
+    the site down). Quota is what bounds a too-big import, not truncation."""
     is_adm = is_admin(g.current_user)
     import_visibility = 'public' if is_adm else 'private'
 
@@ -6894,11 +6888,10 @@ def admin_import_from_hf_commit():
         pass  # explicit positive cap
     else:
         sample_cap = -1  # canonicalise 0 / negative / missing to -1
-    # Non-admins can't run an unbounded import — force a row cap so a
-    # 100GB repo can't be cached whole on the shared box.
-    if not is_adm:
-        if sample_cap == -1 or sample_cap > USER_HF_IMPORT_MAX_ROWS:
-            sample_cap = USER_HF_IMPORT_MAX_ROWS
+    # No row cap — datasets cache the full split (preview tier) for
+    # everyone, per the no-cap policy. Storage quota is the bound: a
+    # too-big import is refused by the pre/post-materialize quota checks,
+    # not by truncating the dataset.
     sampling = (request.form.get('sampling') or 'head').strip().lower()
     if sampling not in ('head', 'uniform', 'stratified'):
         sampling = 'head'
@@ -7128,7 +7121,6 @@ def admin_import_from_hf_preview():
         has_label_field=has_label_field,
         class_label_vocabs=class_label_vocabs,
         is_admin_user=is_admin(g.current_user),
-        user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS,
     )
 
 
@@ -12884,7 +12876,6 @@ def datasets_list():
                            storage_cap_public=storage_cap_public,
                            storage_cap_private=storage_cap_private,
                            format_bytes=_format_bytes,
-                           user_hf_import_max_rows=USER_HF_IMPORT_MAX_ROWS,
                            dataset_requests=dataset_requests)
 
 

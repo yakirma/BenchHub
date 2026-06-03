@@ -187,17 +187,10 @@
                     <label class="form-label fw-semibold mb-1" for="sample-cap">Max samples</label>
                     {# -1 → no cap (import the whole split, subject to
                        the user's storage quota). Any positive integer
-                       caps to that count. Non-admins are clamped to
-                       user_hf_import_max_rows server-side regardless. #}
-                    {% if is_admin_user %}
+                       caps to that count. Applies to everyone — quota is
+                       the only hard bound. #}
                     <input type="number" id="sample-cap" name="sample_cap"
                            class="form-control" value="-1" min="-1">
-                    {% else %}
-                    <input type="number" id="sample-cap" name="sample_cap"
-                           class="form-control" value="{{ user_hf_import_max_rows }}"
-                           min="1" max="{{ user_hf_import_max_rows }}">
-                    <div class="form-text small">Up to {{ '{:,}'.format(user_hf_import_max_rows) }} samples (preview cache).</div>
-                    {% endif %}
                     <div id="sample-cap-hint" class="form-text small mt-1"></div>
                 </div>
             </div>
