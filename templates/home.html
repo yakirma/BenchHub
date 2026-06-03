@@ -234,30 +234,8 @@
     </div>
     {% endmacro %}
 
-    {# Unified leaderboards section — public and private/unlisted live
-       in one grid. Per-card lock/link icons next to the title (and the
-       upper-right visibility-badge for non-public) carry the
-       distinction; no need for two separate headers. #}
-    <section class="mb-5">
-        <div class="d-flex align-items-baseline gap-2 mb-3">
-            <h2 class="h5 fw-semibold mb-0">
-                <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
-            </h2>
-            <span class="text-body-secondary small">({{ leaderboards|length }})</span>
-        </div>
-        {% if leaderboards %}
-        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-lb-grid">
-            {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
-        </div>
-        {% else %}
-        <div class="text-center py-5 text-body-secondary border rounded">
-            <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
-            <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
-        </div>
-        {% endif %}
-    </section>
-
-    {# ---- Recent submission activity (two rails) ---- #}
+    {# ---- Recent submission activity (two rails) — shown above the
+       leaderboards grid so the latest activity is the first thing seen. #}
     {% macro submission_row(sub, show_owner, score=None) %}
     {% set _box_color = score.color if score else None %}
     <a href="{{ url_for('leaderboard_view', leaderboard_id=sub.leaderboard_id) }}"
@@ -328,6 +306,29 @@
                 {% endif %}
             </div>
         </div>
+    </section>
+
+    {# Unified leaderboards section — public and private/unlisted live
+       in one grid. Per-card lock/link icons next to the title (and the
+       upper-right visibility-badge for non-public) carry the
+       distinction; no need for two separate headers. #}
+    <section class="mb-5">
+        <div class="d-flex align-items-baseline gap-2 mb-3">
+            <h2 class="h5 fw-semibold mb-0">
+                <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
+            </h2>
+            <span class="text-body-secondary small">({{ leaderboards|length }})</span>
+        </div>
+        {% if leaderboards %}
+        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-lb-grid">
+            {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center py-5 text-body-secondary border rounded">
+            <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
+            <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
+        </div>
+        {% endif %}
     </section>
 
     {# Datasets render after leaderboards (LBs are the primary surface). #}
