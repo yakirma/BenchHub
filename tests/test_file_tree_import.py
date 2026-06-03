@@ -297,3 +297,117 @@ def test_hdf5_shared_stacked_and_per_sample(tmp_path):
     assert d0.shape == (4, 5) and float(d0[0, 0]) == 0.0
     d2 = np.load(st / "depth" / f"{man['samples'][2]}.npz")["depth"]
     assert float(d2[0, 0]) == 40.0   # frame 2 starts at 2*20
+
+
+# --- token loader (folder → label) + zip/tar/gz containers ---
+
+def test_token_loader_folder_to_label(tmp_path):
+    """`<class>/<id>.png` → image field + a label field from the {class}
+    folder token, stored as an int index with a names vocab."""
+    root = tmp_path / "sig"
+    files = []
+
+    def _w(rel):
+        p = root / rel; p.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.zeros((3, 3, 3), np.uint8)).save(str(p)); files.append(rel)
+
+    for cls in ("Alex_Brush", "Cookie"):
+        for j in range(2):
+            _w(f"{cls}/{j:03d}.png")
+
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "{cls}/{id}.png"},
+        {"name": "font", "kind": "label", "role": "gt",
+         "loader": "token", "token": "cls"},
+    ]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                                 dataset_name="sig")
+    assert summ["samples"] == 4 and summ["rows_written"]["font"] == 4
+    man = json.loads((st / "manifest.json").read_text())
+    font = next(f for f in man["fields"] if f["name"] == "font")
+    assert font["params"]["names"] == ["Alex_Brush", "Cookie"]
+    # sample 0 (Alex_Brush) → index 0; a Cookie sample → index 1.
+    s0 = man["samples"][0]
+    assert (st / "font" / f"{s0}.txt").read_text() == "0"
+    cookie = next(n for n in man["samples"] if n.startswith("Cookie"))
+    assert (st / "font" / f"{cookie}.txt").read_text() == "1"
+
+
+def test_zip_container_member_loader(tmp_path):
+    """A zip holds the images; index is a loose id list file, image read
+    from the zip member by {id}."""
+    import zipfile
+    root = tmp_path / "z"; root.mkdir()
+    # loose index files: ids 0,1,2 as tiny .txt so resolve enumerates them
+    files = []
+    for j in range(3):
+        p = root / "ids" / f"{j}.txt"; p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x"); files.append(f"ids/{j}.txt")
+    # zip of pngs
+    zp = root / "imgs.zip"
+    with zipfile.ZipFile(zp, 'w') as z:
+        for j in range(3):
+            import io as _io
+            b = _io.BytesIO(); Image.fromarray(np.full((3, 3, 3), j, np.uint8)).save(b, 'PNG')
+            z.writestr(f"pics/{j}.png", b.getvalue())
+    files.append("imgs.zip")
+
+    spec = [
+        {"name": "sid", "kind": "text", "role": "gt",
+         "loader": "file", "pattern": "ids/{id}.txt"},
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "zip", "pattern": "imgs.zip", "member": "pics/{id}.png"},
+    ]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                                 dataset_name="z")
+    assert summ["rows_written"]["image"] == 3
+    man = json.loads((st / "manifest.json").read_text())
+    assert (st / "image" / f"{man['samples'][0]}.png").exists()
+
+
+def test_zip_as_index_modality(tmp_path):
+    """No loose files — the zip itself is the index; members enumerate
+    the samples."""
+    import zipfile
+    root = tmp_path / "zi"; root.mkdir()
+    zp = root / "data.zip"
+    with zipfile.ZipFile(zp, 'w') as z:
+        for j in range(3):
+            import io as _io
+            b = _io.BytesIO(); Image.fromarray(np.zeros((3, 3, 3), np.uint8)).save(b, 'PNG')
+            z.writestr(f"frames/{j:02d}.png", b.getvalue())
+    files = ["data.zip"]
+    spec = [{"name": "image", "kind": "image", "role": "input",
+             "loader": "zip", "pattern": "data.zip", "member": "frames/{id}.png"}]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                                 dataset_name="zi")
+    assert summ["samples"] == 3 and summ["rows_written"]["image"] == 3
+
+
+def test_gz_single_file_loader(tmp_path):
+    """A per-sample .json.gz decoded to a json field."""
+    import gzip
+    root = tmp_path / "g"
+    files = []
+    for j in range(2):
+        # index pngs
+        p = root / f"{j}.png"; p.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.zeros((3, 3, 3), np.uint8)).save(str(p)); files.append(f"{j}.png")
+        gp = root / f"{j}.json.gz"
+        with gzip.open(str(gp), 'wb') as gf:
+            gf.write(json.dumps({"v": j}).encode())
+        files.append(f"{j}.json.gz")
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "{id}.png"},
+        {"name": "meta", "kind": "json", "role": "gt",
+         "loader": "gz", "pattern": "{id}.json.gz"},
+    ]
+    st = tmp_path / "s"
+    materialize_file_tree(spec, files, _fetch(str(root)), str(st), dataset_name="g")
+    man = json.loads((st / "manifest.json").read_text())
+    assert json.loads((st / "meta" / f"{man['samples'][0]}.json").read_text()) == {"v": 0}

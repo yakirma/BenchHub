@@ -174,3 +174,59 @@ def test_tabular_preview_failure_redirects_to_file_tree(user_client, monkeypatch
     assert r.status_code == 302
     assert '/import_from_files/inspect' in r.headers['Location']
     assert 'repo_id=x' in r.headers['Location']
+
+
+def test_commit_token_loader_and_filter_parsed(user_client, monkeypatch):
+    """The folder→label `token` loader (no pattern) + a single-value
+    subset filter survive the form round-trip into the task call."""
+    client, u = user_client
+    files = [f'Alex_Brush/{i}.png' for i in range(2)] + \
+            [f'Cookie/{i}.png' for i in range(2)]
+    _stub_hfapi(monkeypatch, files)
+    import tasks as _tasks
+    enq = {}
+    monkeypatch.setattr(_tasks.run_file_tree_import, 'delay',
+                        lambda **kw: enq.update(kw) or types.SimpleNamespace(id='t'))
+
+    r = client.post('/import_from_files/commit', data={
+        'repo_id': 'Benjy/sig', 'dataset_name': 'sig',
+        'filter_token': 'split', 'filter_value': 'test',
+        'field_name': ['image', 'font'],
+        'field_kind': ['image', 'label'],
+        'field_role': ['input', 'gt'],
+        'field_loader': ['file', 'token'],
+        'field_pattern': ['{cls}/{id}.png', ''],   # token row: blank pattern
+        'field_key': ['', ''], 'field_shared': ['0', '0'],
+        'field_axis': ['0', '0'], 'field_pointer': ['', ''],
+        'field_column': ['', ''], 'field_id_column': ['', ''],
+        'field_member': ['', ''], 'field_token': ['', 'cls'],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    spec = enq['spec']
+    assert spec[1]['loader'] == 'token' and spec[1]['token'] == 'cls'
+    assert spec[1]['kind'] == 'label'
+    assert enq['token_filter'] == {'split': 'test'}
+
+
+def test_commit_zip_member_parsed(user_client, monkeypatch):
+    client, u = user_client
+    _stub_hfapi(monkeypatch, ['ids/0.txt', 'imgs.zip'])
+    import tasks as _tasks
+    enq = {}
+    monkeypatch.setattr(_tasks.run_file_tree_import, 'delay',
+                        lambda **kw: enq.update(kw) or types.SimpleNamespace(id='t'))
+    r = client.post('/import_from_files/commit', data={
+        'repo_id': 'a/b', 'dataset_name': 'z',
+        'field_name': ['sid', 'image'],
+        'field_kind': ['text', 'image'],
+        'field_role': ['gt', 'input'],
+        'field_loader': ['file', 'zip'],
+        'field_pattern': ['ids/{id}.txt', 'imgs.zip'],
+        'field_key': ['', ''], 'field_shared': ['0', '0'],
+        'field_axis': ['0', '0'], 'field_pointer': ['', ''],
+        'field_column': ['', ''], 'field_id_column': ['', ''],
+        'field_member': ['', 'pics/{id}.png'], 'field_token': ['', ''],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert enq['spec'][1]['loader'] == 'zip'
+    assert enq['spec'][1]['member'] == 'pics/{id}.png'

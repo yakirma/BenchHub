@@ -146,22 +146,72 @@ def _generalise_dir(d):
     return '/'.join(out)
 
 
-def resolve_samples(spec, files):
-    """Enumerate samples from the index (first `file`) field. Returns
-    (samples, index_field) where each sample is
-    {'name', 'tokens': {...}, '_index_path': str}. Raises ValueError with
-    an actionable message when the spec can't be resolved."""
+def _container_member_names(loader, local_path):
+    """List the (file) member names inside a zip/tar/tar.gz container."""
+    if loader == 'zip':
+        import zipfile
+        with zipfile.ZipFile(local_path) as z:
+            return [n for n in z.namelist() if not n.endswith('/')]
+    import tarfile
+    with tarfile.open(local_path, 'r:*') as t:
+        return [m.name for m in t.getmembers() if m.isfile()]
+
+
+def _match_container_members(field, files, fetch):
+    """Enumerate samples from a container (zip/tar) index field: for each
+    container file matching the field `pattern`, open it and match its
+    members against the `member` pattern. Tokens = container-path tokens
+    ∪ member tokens. Returns (matches, token_names)."""
+    crx, ctoks = _pattern_to_regex(field['pattern'])
+    mrx, mtoks = _pattern_to_regex(field.get('member') or '')
+    names, seen_names = [], set()
+    for t in ctoks + mtoks:
+        if t not in seen_names:
+            seen_names.add(t); names.append(t)
+    matches = []
+    for f in files:
+        cm = crx.match(f)
+        if not cm:
+            continue
+        ctok = cm.groupdict()
+        for mname in _container_member_names(field['loader'], fetch(f)):
+            mm = mrx.match(mname)
+            if not mm:
+                continue
+            d = {**ctok, **mm.groupdict()}
+            d['_path'] = f + '!' + mname
+            matches.append(d)
+    return matches, names
+
+
+def resolve_samples(spec, files, fetch=None):
+    """Enumerate samples from the index modality. The index is the first
+    `file` field, or — when there's none — the first `zip`/`tar` field
+    whose `member` uses `{id}` (container index). Returns (samples,
+    index_field); each sample is {'name', 'tokens', '_index_path'}.
+
+    A container index needs `fetch` to list members; when called without
+    one (route pre-validation), it returns [] rather than raising, leaving
+    the real enumeration to materialize (which has fetch)."""
     file_fields = [f for f in spec if f.get('loader') == 'file']
-    if not file_fields:
-        raise ValueError("Need at least one field with loader 'file' to "
-                         "enumerate samples (the index modality).")
-    index = file_fields[0]
-    matches, names = match_files(index['pattern'], files)
+    container_fields = [f for f in spec if f.get('loader') in ('zip', 'tar')
+                        and '{id}' in (f.get('member') or '')]
+    if file_fields:
+        index = file_fields[0]
+        matches, names = match_files(index['pattern'], files)
+    elif container_fields:
+        index = container_fields[0]
+        if fetch is None:
+            return [], index   # defer enumeration to materialize
+        matches, names = _match_container_members(index, files, fetch)
+    else:
+        raise ValueError("Need an index modality: a field with loader "
+                         "'file', or a 'zip'/'tar' field whose member uses {id}.")
     if not matches:
         raise ValueError(
-            f"Pattern {index['pattern']!r} matched no files in the repo. "
+            f"Pattern {index.get('pattern')!r} matched no files/members. "
             f"Check the path + token placeholders.")
-    matches.sort(key=lambda m: m['_path'])  # sorted-filename order
+    matches.sort(key=lambda m: m['_path'])  # sorted order
     samples = []
     seen = set()
     for m in matches:
@@ -295,7 +345,7 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
             progress_cb({'phase': phase, 'current': cur, 'total': total,
                          'message': msg})
 
-    samples, _index = resolve_samples(spec, files)
+    samples, _index = resolve_samples(spec, files, fetch=fetch)
     # Variant filter: keep only samples whose tokens match (e.g. import
     # just the `normal` quality when token_filter={'quality': 'normal'}).
     if token_filter:
@@ -314,7 +364,7 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
     shared_ordinals = {}
     for f in spec:
         ldr = f.get('loader')
-        if (ldr in ('csv', 'parquet')
+        if (ldr in ('csv', 'parquet', 'zip', 'tar')
                 or (ldr in ('npz', 'json', 'hdf5') and f.get('shared'))):
             gtoks = _TOKEN_RE.findall(f['pattern'])
             groups = defaultdict(list)
@@ -326,6 +376,20 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                 for rank, i in enumerate(idxs):
                     ordinals[i] = rank
             shared_ordinals[f['name']] = ordinals
+
+    # `token` fields take their value from a captured path token (e.g. the
+    # class folder in `<class>/<id>.png`). For label kind, build a vocab so
+    # the value stores an int index + a `names` list (categorical), like
+    # ClassLabel — renders as the class name in the UI.
+    token_vocab = {}
+    for f in spec:
+        if f.get('loader') == 'token' and f.get('kind') == 'label':
+            tok = f.get('token') or 'id'
+            vals = sorted({s['tokens'].get(tok) for s in samples
+                           if s['tokens'].get(tok) is not None})
+            token_vocab[f['name']] = vals
+            f.setdefault('params', {})
+            f['params'].setdefault('names', vals)
 
     os.makedirs(staging_dir, exist_ok=True)
     for f in spec:
@@ -376,6 +440,33 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
             return next((r for r in rows if str(r.get(idcol)) == str(sid)), None)
         ordn = shared_ordinals.get(f['name'], {}).get(i, 0)
         return rows[ordn] if ordn < len(rows) else None
+
+    # Container (zip/tar) handles, opened once and closed after the run.
+    container_cache = {}
+
+    def _open_container(loader, path):
+        key = (loader, path)
+        if key not in container_cache:
+            local = fetch(path)
+            if loader == 'zip':
+                import zipfile
+                container_cache[key] = ('zip', zipfile.ZipFile(local))
+            else:
+                import tarfile
+                container_cache[key] = ('tar', tarfile.open(local, 'r:*'))
+        return container_cache[key]
+
+    def _read_member(loader, path, member):
+        kind_, c = _open_container(loader, path)
+        if kind_ == 'zip':
+            try:
+                return c.read(member)
+            except KeyError:
+                raise FileNotFoundError(member)
+        m = c.extractfile(member)
+        if m is None:
+            raise FileNotFoundError(member)
+        return m.read()
 
     written = defaultdict(int)
     for i, s in enumerate(samples):
@@ -428,6 +519,27 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                     else:
                         val = dset[...]
                     _stage_value(kind, np.asarray(val), dest_noext)
+                elif loader == 'token':
+                    tok = f.get('token') or 'id'
+                    raw = s['tokens'].get(tok)
+                    if raw is None:
+                        raise FileNotFoundError(f'token {tok}')
+                    if kind == 'label' and name in token_vocab:
+                        raw = token_vocab[name].index(raw)  # categorical index
+                    _stage_value(kind, raw, dest_noext)
+                elif loader in ('zip', 'tar'):
+                    subs = {**s['tokens'],
+                            'ordinal': shared_ordinals.get(name, {}).get(i, 0)}
+                    data = _read_member(loader,
+                                        _substitute(f['pattern'], s['tokens']),
+                                        _substitute(f.get('member') or '', subs))
+                    _stage_value(kind, data, dest_noext)
+                elif loader == 'gz':
+                    import gzip
+                    with gzip.open(fetch(_substitute(f['pattern'], s['tokens'])),
+                                   'rb') as gf:
+                        data = gf.read()
+                    _stage_value(kind, data, dest_noext)
                 else:
                     raise ValueError(f"unknown loader {loader!r}")
                 written[name] += 1
@@ -441,6 +553,11 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
     for _h5 in h5_cache.values():
         try:
             _h5.close()
+        except Exception:
+            pass
+    for _kind, _c in container_cache.values():
+        try:
+            _c.close()
         except Exception:
             pass
 

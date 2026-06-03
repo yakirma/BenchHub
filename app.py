@@ -7214,19 +7214,29 @@ def _parse_file_tree_spec(form):
     shareds = form.getlist('field_shared')
     axes = form.getlist('field_axis')
     pointers = form.getlist('field_pointer')       # json
-    columns = form.getlist('field_column')         # csv
-    id_columns = form.getlist('field_id_column')   # csv
+    columns = form.getlist('field_column')         # csv / parquet
+    id_columns = form.getlist('field_id_column')   # csv / parquet
+    members = form.getlist('field_member')         # zip / tar
+    tokens_arr = form.getlist('field_token')       # token loader
 
     def _at(arr, i):
         return (arr[i].strip() if i < len(arr) and arr[i] else '')
+
+    def _axis(i):
+        try:
+            return int(axes[i]) if i < len(axes) and axes[i] else 0
+        except ValueError:
+            return 0
 
     spec = []
     for i, name in enumerate(names):
         name = (name or '').strip()
         pattern = (patterns[i] if i < len(patterns) else '').strip()
-        if not name or not pattern:
-            continue
         loader = (loaders[i] if i < len(loaders) else 'file').strip() or 'file'
+        # `token` fields carry no pattern (value comes from a captured
+        # token); every other loader needs one.
+        if not name or (not pattern and loader != 'token'):
+            continue
         entry = {
             'name': name,
             'kind': (kinds[i] if i < len(kinds) else 'json').strip() or 'json',
@@ -7236,26 +7246,20 @@ def _parse_file_tree_spec(form):
         }
         shared = (i < len(shareds)
                   and str(shareds[i]).lower() in ('1', 'true', 'on'))
-        if loader == 'npz':
+        if loader in ('npz', 'hdf5'):
             entry['key'] = _at(keys, i) or None
             entry['shared'] = shared
-            try:
-                entry['axis'] = int(axes[i]) if i < len(axes) and axes[i] else 0
-            except ValueError:
-                entry['axis'] = 0
+            entry['axis'] = _axis(i)
         elif loader == 'json':
             entry['pointer'] = _at(pointers, i) or None
             entry['shared'] = shared
         elif loader in ('csv', 'parquet'):
             entry['column'] = _at(columns, i) or None
             entry['id_column'] = _at(id_columns, i) or None
-        elif loader == 'hdf5':
-            entry['key'] = _at(keys, i) or None
-            entry['shared'] = shared
-            try:
-                entry['axis'] = int(axes[i]) if i < len(axes) and axes[i] else 0
-            except ValueError:
-                entry['axis'] = 0
+        elif loader in ('zip', 'tar'):
+            entry['member'] = _at(members, i) or None
+        elif loader == 'token':
+            entry['token'] = _at(tokens_arr, i) or 'id'
         spec.append(entry)
     return spec
 
@@ -7323,12 +7327,14 @@ def import_from_files_decode_preview():
         from benchhub.preview import render_preview
         token = getattr(g.current_user, 'hf_token', None) or None
         files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
-        # Resolve just to confirm a sample exists + report the count.
-        samples, _ = resolve_samples(spec, files)
-        n_total = len(samples)
 
         def _fetch(rel):
             return hf_hub_download(repo_id, rel, repo_type='dataset', token=token)
+
+        # Resolve just to confirm a sample exists + report the count
+        # (fetch lets a container-index list its members).
+        samples, _ = resolve_samples(spec, files, fetch=_fetch)
+        n_total = len(samples)
 
         with tempfile.TemporaryDirectory(prefix='bh_ftprev_') as staging:
             materialize_file_tree(spec, files, _fetch, staging,
@@ -7399,6 +7405,12 @@ def import_from_files_commit():
     # Optional variant fan-out: split a token (e.g. quality=low/normal)
     # into one dataset per distinct value.
     variant_token = (request.form.get('variant_token') or '').strip()
+    # Optional single-value subset/split filter (the file-tree analog of
+    # the tabular split dropdown): import only samples where token == value.
+    filter_token = (request.form.get('filter_token') or '').strip()
+    filter_value = (request.form.get('filter_value') or '').strip()
+    single_filter = ({filter_token: filter_value}
+                     if filter_token and filter_value else None)
 
     # Validate the spec resolves before creating any rows.
     try:
@@ -7448,9 +7460,10 @@ def import_from_files_commit():
               f"queue one at a time; watch /datasets.", "success")
         return redirect(url_for('datasets_list'))
 
-    ds_row = _enqueue(dataset_name, None)
-    flash(f"Importing {repo_id} in the background — progress shows on the "
-          f"dataset page.", "success")
+    ds_row = _enqueue(dataset_name, single_filter)
+    _suffix = (f" (only {filter_token}={filter_value})" if single_filter else "")
+    flash(f"Importing {repo_id}{_suffix} in the background — progress shows "
+          f"on the dataset page.", "success")
     return redirect(url_for('dataset_view', dataset_id=ds_row.id))
 
 

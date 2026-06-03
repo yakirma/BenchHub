@@ -70,6 +70,24 @@
                             (<code>&lt;name&gt;_low</code>, <code>&lt;name&gt;_normal</code>).
                             Leave blank to import a single dataset.
                         </div>
+
+                        <hr class="my-2">
+                        <label class="form-label small fw-semibold mb-1">
+                            Import only one split / subset <span class="text-body-secondary fw-normal">(optional)</span>
+                        </label>
+                        <div class="d-flex gap-2">
+                            <input type="text" name="filter_token"
+                                   class="form-control form-control-sm font-monospace" placeholder="split">
+                            <span class="align-self-center small">=</span>
+                            <input type="text" name="filter_value"
+                                   class="form-control form-control-sm font-monospace" placeholder="test">
+                        </div>
+                        <div class="form-text small">
+                            Keeps only samples where that token equals the value —
+                            the file-tree way to pick a split (e.g.
+                            <code>{split}</code> = <code>test</code>). One dataset.
+                            Ignored when the variant split above is set.
+                        </div>
                     </div>
                 </div>
 
@@ -111,11 +129,15 @@
                     <label class="form-label small mb-0">Loader</label>
                     <select name="field_loader" class="form-select form-select-sm row-loader">
                         <option value="file">file</option>
+                        <option value="token">token (folder/path → value)</option>
                         <option value="npz">npz</option>
                         <option value="json">json</option>
                         <option value="csv">csv</option>
                         <option value="parquet">parquet</option>
                         <option value="hdf5">hdf5</option>
+                        <option value="zip">zip</option>
+                        <option value="tar">tar / tar.gz</option>
+                        <option value="gz">gz</option>
                     </select>
                 </div>
                 <div class="col-md-3 text-end">
@@ -123,10 +145,22 @@
                         <i class="bi bi-trash"></i>
                     </button>
                 </div>
-                <div class="col-12">
+                <div class="col-12 pattern-col">
                     <label class="form-label small mb-0">Pattern <span class="text-body-secondary">(use {id}, {seq}…)</span></label>
                     <input type="text" name="field_pattern" class="form-control form-control-sm font-monospace row-pattern"
                            placeholder="train/{seq}/normal/{id}.png">
+                </div>
+                <!-- token -->
+                <div class="col-md-5 lo lo-token d-none">
+                    <label class="form-label small mb-0">Token → value <span class="text-body-secondary">(captured path token)</span></label>
+                    <input type="text" name="field_token" class="form-control form-control-sm font-monospace"
+                           placeholder="class  (e.g. the folder in {class}/{id}.png)">
+                </div>
+                <!-- zip / tar member -->
+                <div class="col-md-6 lo lo-zip lo-tar d-none">
+                    <label class="form-label small mb-0">Member inside archive <span class="text-body-secondary">(use {id}, {ordinal})</span></label>
+                    <input type="text" name="field_member" class="form-control form-control-sm font-monospace"
+                           placeholder="images/{id}.png">
                 </div>
                 <!-- npz / hdf5 key -->
                 <div class="col-md-4 lo lo-npz lo-json lo-hdf5 d-none">
@@ -173,8 +207,14 @@
 
     function wire(row) {
         const loader = row.querySelector('.row-loader');
-        const toggle = () => row.querySelectorAll('.lo').forEach(el =>
-            el.classList.toggle('d-none', !el.classList.contains('lo-' + loader.value)));
+        const patCol = row.querySelector('.pattern-col');
+        const toggle = () => {
+            row.querySelectorAll('.lo').forEach(el =>
+                el.classList.toggle('d-none', !el.classList.contains('lo-' + loader.value)));
+            // `token` derives its value from a captured path token (from
+            // the index field's pattern), so it needs no pattern of its own.
+            if (patCol) patCol.classList.toggle('d-none', loader.value === 'token');
+        };
         loader.addEventListener('change', toggle); toggle();
         const cb = row.querySelector('.row-shared-cb');
         const hidden = row.querySelector('.row-shared-val');
@@ -248,14 +288,14 @@
         rows.querySelectorAll('.field-row').forEach(r => {
             const name = r.querySelector('[name=field_name]').value.trim();
             const pattern = r.querySelector('[name=field_pattern]').value.trim();
-            if (!name || !pattern) return;
             const loader = r.querySelector('[name=field_loader]').value;
+            if (!name || (!pattern && loader !== 'token')) return;
             const e = {
                 name, pattern, loader,
                 kind: r.querySelector('[name=field_kind]').value,
                 role: r.querySelector('[name=field_role]').value,
             };
-            if (loader === 'npz') {
+            if (loader === 'npz' || loader === 'hdf5') {
                 e.key = r.querySelector('[name=field_key]').value.trim() || null;
                 e.shared = r.querySelector('.row-shared-cb').checked;
                 e.axis = parseInt(r.querySelector('[name=field_axis]').value || '0', 10);
@@ -265,10 +305,10 @@
             } else if (loader === 'csv' || loader === 'parquet') {
                 e.column = r.querySelector('[name=field_column]').value.trim() || null;
                 e.id_column = r.querySelector('[name=field_id_column]').value.trim() || null;
-            } else if (loader === 'hdf5') {
-                e.key = r.querySelector('[name=field_key]').value.trim() || null;
-                e.shared = r.querySelector('.row-shared-cb').checked;
-                e.axis = parseInt(r.querySelector('[name=field_axis]').value || '0', 10);
+            } else if (loader === 'zip' || loader === 'tar') {
+                e.member = r.querySelector('[name=field_member]').value.trim() || null;
+            } else if (loader === 'token') {
+                e.token = r.querySelector('[name=field_token]').value.trim() || 'id';
             }
             spec.push(e);
         });
