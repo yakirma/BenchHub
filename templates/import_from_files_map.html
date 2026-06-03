@@ -109,6 +109,8 @@
                         <option value="npz">npz</option>
                         <option value="json">json</option>
                         <option value="csv">csv</option>
+                        <option value="parquet">parquet</option>
+                        <option value="hdf5">hdf5</option>
                     </select>
                 </div>
                 <div class="col-md-3 text-end">
@@ -121,12 +123,12 @@
                     <input type="text" name="field_pattern" class="form-control form-control-sm font-monospace row-pattern"
                            placeholder="train/{seq}/normal/{id}.png">
                 </div>
-                <!-- npz -->
-                <div class="col-md-4 lo lo-npz lo-json d-none">
-                    <label class="form-label small mb-0">npz key</label>
-                    <input type="text" name="field_key" class="form-control form-control-sm" placeholder="depth / arr_0">
+                <!-- npz / hdf5 key -->
+                <div class="col-md-4 lo lo-npz lo-json lo-hdf5 d-none">
+                    <label class="form-label small mb-0">key <span class="text-body-secondary">(npz/json/h5)</span></label>
+                    <input type="text" name="field_key" class="form-control form-control-sm" placeholder="depth / arr_0 / group/depth">
                 </div>
-                <div class="col-md-4 lo lo-npz lo-json d-none">
+                <div class="col-md-4 lo lo-npz lo-json lo-hdf5 d-none">
                     <label class="form-label small mb-0">Shared archive?</label>
                     <div class="form-check">
                         <input class="form-check-input row-shared-cb" type="checkbox">
@@ -134,7 +136,7 @@
                         <label class="form-check-label small">one file holds all samples (stacked / keyed)</label>
                     </div>
                 </div>
-                <div class="col-md-4 lo lo-npz d-none">
+                <div class="col-md-4 lo lo-npz lo-hdf5 d-none">
                     <label class="form-label small mb-0">Split axis</label>
                     <input type="number" name="field_axis" class="form-control form-control-sm" value="0" min="0">
                 </div>
@@ -144,12 +146,12 @@
                     <input type="text" name="field_pointer" class="form-control form-control-sm font-monospace"
                            placeholder="frames.{id}.pose  ·  ordered.{ordinal}.q">
                 </div>
-                <!-- csv -->
-                <div class="col-md-4 lo lo-csv d-none">
-                    <label class="form-label small mb-0">CSV column</label>
+                <!-- csv / parquet -->
+                <div class="col-md-4 lo lo-csv lo-parquet d-none">
+                    <label class="form-label small mb-0">column</label>
                     <input type="text" name="field_column" class="form-control form-control-sm" placeholder="score">
                 </div>
-                <div class="col-md-4 lo lo-csv d-none">
+                <div class="col-md-4 lo lo-csv lo-parquet d-none">
                     <label class="form-label small mb-0">Match by id column <span class="text-body-secondary">(blank = row order)</span></label>
                     <input type="text" name="field_id_column" class="form-control form-control-sm" placeholder="id">
                 </div>
@@ -255,9 +257,13 @@
             } else if (loader === 'json') {
                 e.pointer = r.querySelector('[name=field_pointer]').value.trim() || null;
                 e.shared = r.querySelector('.row-shared-cb').checked;
-            } else if (loader === 'csv') {
+            } else if (loader === 'csv' || loader === 'parquet') {
                 e.column = r.querySelector('[name=field_column]').value.trim() || null;
                 e.id_column = r.querySelector('[name=field_id_column]').value.trim() || null;
+            } else if (loader === 'hdf5') {
+                e.key = r.querySelector('[name=field_key]').value.trim() || null;
+                e.shared = r.querySelector('.row-shared-cb').checked;
+                e.axis = parseInt(r.querySelector('[name=field_axis]').value || '0', 10);
             }
             spec.push(e);
         });

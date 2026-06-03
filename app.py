@@ -7247,9 +7247,16 @@ def _parse_file_tree_spec(form):
         elif loader == 'json':
             entry['pointer'] = _at(pointers, i) or None
             entry['shared'] = shared
-        elif loader == 'csv':
+        elif loader in ('csv', 'parquet'):
             entry['column'] = _at(columns, i) or None
             entry['id_column'] = _at(id_columns, i) or None
+        elif loader == 'hdf5':
+            entry['key'] = _at(keys, i) or None
+            entry['shared'] = shared
+            try:
+                entry['axis'] = int(axes[i]) if i < len(axes) and axes[i] else 0
+            except ValueError:
+                entry['axis'] = 0
         spec.append(entry)
     return spec
 

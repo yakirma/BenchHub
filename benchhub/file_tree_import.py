@@ -314,7 +314,8 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
     shared_ordinals = {}
     for f in spec:
         ldr = f.get('loader')
-        if (ldr == 'csv') or (ldr in ('npz', 'json') and f.get('shared')):
+        if (ldr in ('csv', 'parquet')
+                or (ldr in ('npz', 'json', 'hdf5') and f.get('shared'))):
             gtoks = _TOKEN_RE.findall(f['pattern'])
             groups = defaultdict(list)
             for i, s in enumerate(samples):
@@ -352,6 +353,30 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                 csv_cache[path] = list(_csv.DictReader(fh))
         return csv_cache[path]
 
+    parquet_cache, h5_cache = {}, {}
+
+    def _load_parquet(path):
+        if path not in parquet_cache:
+            import pandas as pd
+            parquet_cache[path] = pd.read_parquet(fetch(path)).to_dict('records')
+        return parquet_cache[path]
+
+    def _load_h5(path):
+        if path not in h5_cache:
+            import h5py
+            h5_cache[path] = h5py.File(fetch(path), 'r')
+        return h5_cache[path]
+
+    def _table_row(rows, f, s, i):
+        """Pick a sample's row from a shared table (csv/parquet): by an
+        id column matched to the sample's id token, else by sorted order."""
+        idcol = (f.get('id_column') or '').strip()
+        if idcol:
+            sid = s['tokens'].get(f.get('id_token') or 'id')
+            return next((r for r in rows if str(r.get(idcol)) == str(sid)), None)
+        ordn = shared_ordinals.get(f['name'], {}).get(i, 0)
+        return rows[ordn] if ordn < len(rows) else None
+
     written = defaultdict(int)
     for i, s in enumerate(samples):
         for f in spec:
@@ -385,21 +410,24 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                             'ordinal': shared_ordinals.get(name, {}).get(i, 0)}
                     val = _resolve_json_pointer(doc, f.get('pointer') or '', subs)
                     _stage_value(kind, val, dest_noext)
-                elif loader == 'csv':
-                    rows = _load_csv(_substitute(f['pattern'], s['tokens']))
-                    idcol = (f.get('id_column') or '').strip()
-                    if idcol:
-                        sid = s['tokens'].get(f.get('id_token') or 'id')
-                        row = next((r for r in rows
-                                    if str(r.get(idcol)) == str(sid)), None)
-                    else:  # align by sorted order
-                        ordn = shared_ordinals.get(name, {}).get(i, 0)
-                        row = rows[ordn] if ordn < len(rows) else None
+                elif loader in ('csv', 'parquet'):
+                    rows = (_load_csv if loader == 'csv' else _load_parquet)(
+                        _substitute(f['pattern'], s['tokens']))
+                    row = _table_row(rows, f, s, i)
                     if row is None:
-                        raise FileNotFoundError('csv row')
+                        raise FileNotFoundError(f'{loader} row')
                     col = (f.get('column') or '').strip()
                     val = row.get(col) if col else row
                     _stage_value(kind, val, dest_noext)
+                elif loader == 'hdf5':
+                    h5 = _load_h5(_substitute(f['pattern'], s['tokens']))
+                    dset = h5[f.get('key') or list(h5.keys())[0]]
+                    if f.get('shared'):
+                        val = np.take(dset[...], shared_ordinals[name][i],
+                                      axis=int(f.get('axis', 0)))
+                    else:
+                        val = dset[...]
+                    _stage_value(kind, np.asarray(val), dest_noext)
                 else:
                     raise ValueError(f"unknown loader {loader!r}")
                 written[name] += 1
@@ -409,6 +437,12 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                 continue
         if (i + 1) % 100 == 0 or i + 1 == n:
             _progress('decoding', i + 1, n, f"Decoded {i + 1}/{n} samples")
+
+    for _h5 in h5_cache.values():
+        try:
+            _h5.close()
+        except Exception:
+            pass
 
     manifest = {
         'name': dataset_name, 'version': '1.0',

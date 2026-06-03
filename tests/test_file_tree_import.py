@@ -242,3 +242,58 @@ def test_token_filter_restricts_samples(fake_repo, tmp_path):
                                  token_filter={"quality": "normal"}, dataset_name="v")
     # Only the 6 normal-quality pngs (2 seqs × 3), not the low ones.
     assert summ["samples"] == 6
+
+
+# --- Phase 3: parquet + hdf5 loaders ---
+
+def test_parquet_loader_by_order(fake_repo_v2, tmp_path):
+    pytest.importorskip("pandas")
+    root, files = fake_repo_v2
+    import pandas as pd
+    pq = os.path.join(root, "seq", "meta.parquet")
+    pd.DataFrame({"score": [1.0, 2.0, 3.0]}).to_parquet(pq)
+    files = files + ["seq/meta.parquet"]
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "seq/{id}.png"},
+        {"name": "score", "kind": "scalar", "role": "gt", "loader": "parquet",
+         "pattern": "seq/meta.parquet", "column": "score"},  # row order
+    ]
+    st = tmp_path / "s"
+    materialize_file_tree(spec, files, _fetch(root), str(st), dataset_name="pq")
+    man = json.loads((st / "manifest.json").read_text())
+    assert (st / "score" / f"{man['samples'][1]}.txt").read_text() == "2.0"
+
+
+def test_hdf5_shared_stacked_and_per_sample(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    root = tmp_path / "repo3"
+    files = []
+
+    def _w(rel, writer):
+        p = root / rel; p.parent.mkdir(parents=True, exist_ok=True)
+        writer(str(p)); files.append(rel)
+
+    ids = [f"t{j}" for j in range(3)]
+    for k, sid in enumerate(ids):
+        _w(f"seq/{sid}.png",
+           lambda p, k=k: Image.fromarray(np.full((4, 5, 3), k, np.uint8)).save(p))
+    # shared depth.h5: dataset 'depth' shape (3,4,5)
+    _w("seq/depth.h5", lambda p: h5py.File(p, 'w').create_dataset(
+        'depth', data=np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)))
+
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "seq/{id}.png"},
+        {"name": "depth", "kind": "depth", "role": "gt", "loader": "hdf5",
+         "pattern": "seq/depth.h5", "key": "depth", "shared": True, "axis": 0},
+    ]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                                 dataset_name="h5")
+    assert summ["rows_written"]["depth"] == 3
+    man = json.loads((st / "manifest.json").read_text())
+    d0 = np.load(st / "depth" / f"{man['samples'][0]}.npz")["depth"]
+    assert d0.shape == (4, 5) and float(d0[0, 0]) == 0.0
+    d2 = np.load(st / "depth" / f"{man['samples'][2]}.npz")["depth"]
+    assert float(d2[0, 0]) == 40.0   # frame 2 starts at 2*20
