@@ -88,3 +88,63 @@ def test_commit_rejects_unresolvable_pattern(user_client, monkeypatch):
     }, follow_redirects=False)
     assert r.status_code == 302
     assert Dataset.query.count() == before  # nothing created
+
+
+def test_commit_variant_fanout_creates_one_dataset_per_value(user_client, monkeypatch):
+    """A variant_token splits the import into one dataset per distinct
+    token value, each with a token_filter."""
+    client, u = user_client
+    files = [f'train/i_0/{q}/{i}.png' for q in ('low', 'normal') for i in range(2)]
+    _stub_hfapi(monkeypatch, files)
+
+    import tasks as _tasks
+    enq = []
+    monkeypatch.setattr(_tasks.run_file_tree_import, 'delay',
+                        lambda **kw: enq.append(kw) or types.SimpleNamespace(id='t'))
+
+    r = client.post('/import_from_files/commit', data={
+        'repo_id': 'a/b', 'dataset_name': 'eccv', 'variant_token': 'quality',
+        'field_name': ['image'], 'field_kind': ['image'],
+        'field_role': ['input'], 'field_loader': ['file'],
+        'field_pattern': ['train/{seq}/{quality}/{id}.png'],
+        'field_key': [''], 'field_shared': ['0'], 'field_axis': ['0'],
+        'field_pointer': [''], 'field_column': [''], 'field_id_column': [''],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    names = sorted(d.name for d in Dataset.query.all())
+    assert names == ['eccv_low', 'eccv_normal']
+    filters = sorted(json.dumps(k['token_filter']) for k in enq)
+    assert filters == [json.dumps({'quality': 'low'}),
+                       json.dumps({'quality': 'normal'})]
+
+
+def test_commit_json_csv_spec_parsed(user_client, monkeypatch):
+    """json pointer + csv column/id_column survive the form round-trip."""
+    client, u = user_client
+    files = ['seq/0.png', 'seq/manifest.json', 'seq/meta.csv']
+    _stub_hfapi(monkeypatch, files)
+    import tasks as _tasks
+    enq = {}
+    monkeypatch.setattr(_tasks.run_file_tree_import, 'delay',
+                        lambda **kw: enq.update(kw) or types.SimpleNamespace(id='t'))
+
+    r = client.post('/import_from_files/commit', data={
+        'repo_id': 'a/b', 'dataset_name': 'm',
+        'field_name': ['image', 'pose', 'score'],
+        'field_kind': ['image', 'json', 'scalar'],
+        'field_role': ['input', 'gt', 'gt'],
+        'field_loader': ['file', 'json', 'csv'],
+        'field_pattern': ['seq/{id}.png', 'seq/manifest.json', 'seq/meta.csv'],
+        'field_key': ['', '', ''],
+        'field_shared': ['0', '1', '0'],
+        'field_axis': ['0', '0', '0'],
+        'field_pointer': ['', 'frames.{id}.pose', ''],
+        'field_column': ['', '', 'score'],
+        'field_id_column': ['', '', 'id'],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    spec = enq['spec']
+    assert spec[1]['loader'] == 'json' and spec[1]['pointer'] == 'frames.{id}.pose'
+    assert spec[1]['shared'] is True
+    assert spec[2]['loader'] == 'csv' and spec[2]['column'] == 'score'
+    assert spec[2]['id_column'] == 'id'

@@ -238,9 +238,50 @@ def _load_array_bytes(b):
     return obj
 
 
+class _SafeFmt(dict):
+    def __missing__(self, k):
+        return '{' + k + '}'
+
+
+def _resolve_json_pointer(obj, pointer, subs):
+    """Walk a dotted pointer into a decoded JSON object. Each segment is
+    a dict key or (if all-digits) a list index; `{token}`/`{ordinal}`
+    placeholders are substituted from `subs` first. Empty pointer → whole
+    object."""
+    cur = obj
+    if not pointer:
+        return cur
+    for part in pointer.split('.'):
+        if part == '':
+            continue
+        if '{' in part:
+            part = part.format_map(_SafeFmt(subs))
+        if isinstance(cur, list):
+            cur = cur[int(part)]
+        elif isinstance(cur, dict):
+            cur = cur[part]
+        else:
+            raise KeyError(f"can't descend into {type(cur).__name__} at {part!r}")
+    return cur
+
+
+def distinct_token_values(spec, files, token):
+    """Distinct values a token takes across the index modality's matched
+    files — used to enumerate variant folders (e.g. quality=low/normal)."""
+    samples, _ = resolve_samples(spec, files)
+    vals = []
+    seen = set()
+    for s in samples:
+        v = s['tokens'].get(token)
+        if v is not None and v not in seen:
+            seen.add(v)
+            vals.append(v)
+    return vals
+
+
 def materialize_file_tree(spec, files, fetch, staging_dir, *,
                           sample_cap=-1, dataset_name='dataset',
-                          progress_cb=None):
+                          token_filter=None, progress_cb=None):
     """Resolve + decode every field into a typed-manifest staging dir.
 
     `fetch(repo_relpath) -> local filesystem path` downloads (or locates)
@@ -255,18 +296,25 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                          'message': msg})
 
     samples, _index = resolve_samples(spec, files)
+    # Variant filter: keep only samples whose tokens match (e.g. import
+    # just the `normal` quality when token_filter={'quality': 'normal'}).
+    if token_filter:
+        samples = [s for s in samples
+                   if all(s['tokens'].get(k) == v for k, v in token_filter.items())]
     total_in_split = len(samples)
     if sample_cap and sample_cap > 0:
         samples = samples[:sample_cap]
     n = len(samples)
     _progress('resolving', 0, n, f"{n} samples across {len(spec)} field(s)")
 
-    # Pre-compute ordinals per shared-archive field: group samples by the
-    # tokens that field's pattern actually references, then rank within
-    # group in (already sorted) order.
+    # Pre-compute ordinals for any field that reads from a shared source
+    # (one archive/file holding many samples): group samples by the tokens
+    # that field's pattern references, rank within group in sorted order.
+    # Covers shared npz, shared json, and csv (always table-shaped).
     shared_ordinals = {}
     for f in spec:
-        if f.get('loader') == 'npz' and f.get('shared'):
+        ldr = f.get('loader')
+        if (ldr == 'csv') or (ldr in ('npz', 'json') and f.get('shared')):
             gtoks = _TOKEN_RE.findall(f['pattern'])
             groups = defaultdict(list)
             for i, s in enumerate(samples):
@@ -282,13 +330,27 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
     for f in spec:
         os.makedirs(os.path.join(staging_dir, f['name']), exist_ok=True)
 
-    # Cache shared archives so we load each .npz once, not per sample.
-    archive_cache = {}
+    # Cache shared sources so a .npz / .json / .csv is loaded once, not
+    # per sample.
+    archive_cache, json_cache, csv_cache = {}, {}, {}
 
     def _load_archive(path):
         if path not in archive_cache:
             archive_cache[path] = np.load(fetch(path), allow_pickle=True)
         return archive_cache[path]
+
+    def _load_json(path):
+        if path not in json_cache:
+            with open(fetch(path)) as fh:
+                json_cache[path] = json.load(fh)
+        return json_cache[path]
+
+    def _load_csv(path):
+        if path not in csv_cache:
+            import csv as _csv
+            with open(fetch(path), newline='') as fh:
+                csv_cache[path] = list(_csv.DictReader(fh))
+        return csv_cache[path]
 
     written = defaultdict(int)
     for i, s in enumerate(samples):
@@ -316,6 +378,27 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                         arc = np.load(fetch(_substitute(f['pattern'], s['tokens'])),
                                       allow_pickle=True)
                         val = arc[f.get('key') or arc.files[0]]
+                    _stage_value(kind, val, dest_noext)
+                elif loader == 'json':
+                    doc = _load_json(_substitute(f['pattern'], s['tokens']))
+                    subs = {**s['tokens'],
+                            'ordinal': shared_ordinals.get(name, {}).get(i, 0)}
+                    val = _resolve_json_pointer(doc, f.get('pointer') or '', subs)
+                    _stage_value(kind, val, dest_noext)
+                elif loader == 'csv':
+                    rows = _load_csv(_substitute(f['pattern'], s['tokens']))
+                    idcol = (f.get('id_column') or '').strip()
+                    if idcol:
+                        sid = s['tokens'].get(f.get('id_token') or 'id')
+                        row = next((r for r in rows
+                                    if str(r.get(idcol)) == str(sid)), None)
+                    else:  # align by sorted order
+                        ordn = shared_ordinals.get(name, {}).get(i, 0)
+                        row = rows[ordn] if ordn < len(rows) else None
+                    if row is None:
+                        raise FileNotFoundError('csv row')
+                    col = (f.get('column') or '').strip()
+                    val = row.get(col) if col else row
                     _stage_value(kind, val, dest_noext)
                 else:
                     raise ValueError(f"unknown loader {loader!r}")

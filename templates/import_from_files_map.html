@@ -26,6 +26,12 @@
                             style="font-size: 0.72rem;" data-pattern="{{ s.pattern }}"
                             title="{{ s.count }} files">{{ s.pattern }}</button>
                     {% endfor %}
+
+                    <h2 class="h6 fw-semibold mt-3">File tree
+                        <span class="text-body-secondary small fw-normal">(first {{ file_sample|length }})</span></h2>
+                    <p class="small text-body-secondary mb-2">Click a file to fill the pattern (its leaf becomes <code>{id}</code>).</p>
+                    <div id="file-tree" class="border rounded p-2 font-monospace"
+                         style="font-size: 0.7rem; max-height: 360px; overflow:auto;"></div>
                 </div>
             </div>
         </div>
@@ -45,6 +51,22 @@
                 <button type="button" class="btn btn-sm btn-outline-primary mb-3" id="add-field">
                     <i class="bi bi-plus-lg me-1"></i>Add modality
                 </button>
+
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3">
+                        <label class="form-label small fw-semibold mb-1" for="variant_token">
+                            Split into separate datasets by token <span class="text-body-secondary fw-normal">(optional)</span>
+                        </label>
+                        <input type="text" id="variant_token" name="variant_token"
+                               class="form-control form-control-sm font-monospace" placeholder="quality">
+                        <div class="form-text small">
+                            E.g. a <code>{quality}</code> token with values
+                            <code>low</code>/<code>normal</code> → one dataset per value
+                            (<code>&lt;name&gt;_low</code>, <code>&lt;name&gt;_normal</code>).
+                            Leave blank to import a single dataset.
+                        </div>
+                    </div>
+                </div>
 
                 <div class="d-flex gap-2 mb-3">
                     <button type="button" class="btn btn-outline-secondary" id="decode-preview-btn">
@@ -85,6 +107,8 @@
                     <select name="field_loader" class="form-select form-select-sm row-loader">
                         <option value="file">file</option>
                         <option value="npz">npz</option>
+                        <option value="json">json</option>
+                        <option value="csv">csv</option>
                     </select>
                 </div>
                 <div class="col-md-3 text-end">
@@ -97,21 +121,37 @@
                     <input type="text" name="field_pattern" class="form-control form-control-sm font-monospace row-pattern"
                            placeholder="train/{seq}/normal/{id}.png">
                 </div>
-                <div class="col-md-4 npz-only d-none">
+                <!-- npz -->
+                <div class="col-md-4 lo lo-npz lo-json d-none">
                     <label class="form-label small mb-0">npz key</label>
                     <input type="text" name="field_key" class="form-control form-control-sm" placeholder="depth / arr_0">
                 </div>
-                <div class="col-md-4 npz-only d-none">
+                <div class="col-md-4 lo lo-npz lo-json d-none">
                     <label class="form-label small mb-0">Shared archive?</label>
                     <div class="form-check">
                         <input class="form-check-input row-shared-cb" type="checkbox">
                         <input type="hidden" name="field_shared" value="0" class="row-shared-val">
-                        <label class="form-check-label small">one archive holds all samples (stacked)</label>
+                        <label class="form-check-label small">one file holds all samples (stacked / keyed)</label>
                     </div>
                 </div>
-                <div class="col-md-4 npz-only d-none">
+                <div class="col-md-4 lo lo-npz d-none">
                     <label class="form-label small mb-0">Split axis</label>
                     <input type="number" name="field_axis" class="form-control form-control-sm" value="0" min="0">
+                </div>
+                <!-- json -->
+                <div class="col-md-6 lo lo-json d-none">
+                    <label class="form-label small mb-0">JSON pointer <span class="text-body-secondary">(use {id}, {ordinal})</span></label>
+                    <input type="text" name="field_pointer" class="form-control form-control-sm font-monospace"
+                           placeholder="frames.{id}.pose  ·  ordered.{ordinal}.q">
+                </div>
+                <!-- csv -->
+                <div class="col-md-4 lo lo-csv d-none">
+                    <label class="form-label small mb-0">CSV column</label>
+                    <input type="text" name="field_column" class="form-control form-control-sm" placeholder="score">
+                </div>
+                <div class="col-md-4 lo lo-csv d-none">
+                    <label class="form-label small mb-0">Match by id column <span class="text-body-secondary">(blank = row order)</span></label>
+                    <input type="text" name="field_id_column" class="form-control form-control-sm" placeholder="id">
                 </div>
             </div>
         </div>
@@ -126,9 +166,9 @@
 
     function wire(row) {
         const loader = row.querySelector('.row-loader');
-        const toggleNpz = () => row.querySelectorAll('.npz-only').forEach(
-            el => el.classList.toggle('d-none', loader.value !== 'npz'));
-        loader.addEventListener('change', toggleNpz); toggleNpz();
+        const toggle = () => row.querySelectorAll('.lo').forEach(el =>
+            el.classList.toggle('d-none', !el.classList.contains('lo-' + loader.value)));
+        loader.addEventListener('change', toggle); toggle();
         const cb = row.querySelector('.row-shared-cb');
         const hidden = row.querySelector('.row-shared-val');
         cb.addEventListener('change', () => { hidden.value = cb.checked ? '1' : '0'; });
@@ -144,11 +184,57 @@
     document.getElementById('add-field').addEventListener('click', addRow);
     addRow();  // start with one
 
+    function fillPattern(value) {
+        const target = lastFocusedPattern || rows.querySelector('.row-pattern');
+        if (target) { target.value = value; target.focus(); }
+    }
     document.querySelectorAll('.suggest-pat').forEach(b =>
-        b.addEventListener('click', () => {
-            const target = lastFocusedPattern || rows.querySelector('.row-pattern');
-            if (target) { target.value = b.dataset.pattern; target.focus(); }
-        }));
+        b.addEventListener('click', () => fillPattern(b.dataset.pattern)));
+
+    // --- Visual file tree (collapsible). Clicking a file fills the
+    //     pattern, generalising the leaf stem to {id}. ---
+    const FILES = {{ file_sample | tojson }};
+    function buildTree(paths) {
+        const root = {};
+        paths.forEach(p => {
+            let node = root;
+            p.split('/').forEach((seg, i, arr) => {
+                node[seg] = node[seg] || (i === arr.length - 1 ? null : {});
+                if (node[seg] !== null) node = node[seg];
+            });
+        });
+        return root;
+    }
+    function render(node, prefix, container) {
+        Object.keys(node).sort().forEach(name => {
+            const full = prefix ? prefix + '/' + name : name;
+            if (node[name] === null) {  // file
+                const a = document.createElement('a');
+                a.href = '#'; a.className = 'd-block text-decoration-none text-body';
+                a.textContent = '📄 ' + name;
+                a.addEventListener('click', ev => {
+                    ev.preventDefault();
+                    // leaf stem → {id}, keep extension
+                    const dot = name.lastIndexOf('.');
+                    const ext = dot >= 0 ? name.slice(dot) : '';
+                    fillPattern((prefix ? prefix + '/' : '') + '{id}' + ext);
+                });
+                container.appendChild(a);
+            } else {  // dir
+                const det = document.createElement('details');
+                const sum = document.createElement('summary');
+                sum.textContent = '📁 ' + name; sum.style.cursor = 'pointer';
+                det.appendChild(sum);
+                const inner = document.createElement('div');
+                inner.style.paddingLeft = '0.8rem';
+                det.appendChild(inner);
+                render(node[name], full, inner);
+                container.appendChild(det);
+            }
+        });
+    }
+    const treeEl = document.getElementById('file-tree');
+    if (treeEl) render(buildTree(FILES), '', treeEl);
 
     function collectSpec() {
         const spec = [];
@@ -166,6 +252,12 @@
                 e.key = r.querySelector('[name=field_key]').value.trim() || null;
                 e.shared = r.querySelector('.row-shared-cb').checked;
                 e.axis = parseInt(r.querySelector('[name=field_axis]').value || '0', 10);
+            } else if (loader === 'json') {
+                e.pointer = r.querySelector('[name=field_pointer]').value.trim() || null;
+                e.shared = r.querySelector('.row-shared-cb').checked;
+            } else if (loader === 'csv') {
+                e.column = r.querySelector('[name=field_column]').value.trim() || null;
+                e.id_column = r.querySelector('[name=field_id_column]').value.trim() || null;
             }
             spec.push(e);
         });

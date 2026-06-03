@@ -13,6 +13,7 @@ from PIL import Image
 
 from benchhub.file_tree_import import (
     inspect_repo, match_files, resolve_samples, materialize_file_tree,
+    distinct_token_values, _resolve_json_pointer, _SafeFmt,
 )
 
 
@@ -144,3 +145,100 @@ def test_resolve_raises_on_no_match(fake_repo):
              "pattern": "nope/{id}.png"}]
     with pytest.raises(ValueError, match="matched no files"):
         resolve_samples(spec, files)
+
+
+# --- Phase 2: json / csv loaders + variant automation ---
+
+@pytest.fixture
+def fake_repo_v2(tmp_path):
+    """One sequence: pngs + a shared manifest.json (per-frame poses keyed
+    by id, and a list aligned by order) + a meta.csv (one row per frame)."""
+    root = tmp_path / "repo2"
+    files = []
+
+    def _w(rel, writer):
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        writer(str(p)); files.append(rel)
+
+    ids = [f"t{j:02d}" for j in range(3)]
+    for k, sid in enumerate(ids):
+        _w(f"seq/{sid}.png",
+           lambda p, k=k: Image.fromarray(np.full((4, 5, 3), k, np.uint8)).save(p))
+    manifest = {"frames": {sid: {"pose": [k, k, k]} for k, sid in enumerate(ids)},
+                "ordered": [{"q": k * 10} for k in range(3)]}
+    _w("seq/manifest.json", lambda p: open(p, "w").write(json.dumps(manifest)))
+    csv_text = "id,score\n" + "\n".join(f"{sid},{k*0.5}" for k, sid in enumerate(ids))
+    _w("seq/meta.csv", lambda p: open(p, "w").write(csv_text))
+    return str(root), files
+
+
+def _fetch(root):
+    def f(rel):
+        p = os.path.join(root, rel)
+        if not os.path.exists(p):
+            raise FileNotFoundError(rel)
+        return p
+    return f
+
+
+def test_json_pointer_resolver():
+    obj = {"frames": {"t01": {"pose": [1, 2, 3]}}, "list": [{"v": 9}]}
+    assert _resolve_json_pointer(obj, "frames.{id}.pose", {"id": "t01"}) == [1, 2, 3]
+    assert _resolve_json_pointer(obj, "list.{ordinal}.v", {"ordinal": 0}) == 9
+    assert _resolve_json_pointer(obj, "", {}) is obj
+
+
+def test_json_loader_keyed_and_ordered(fake_repo_v2, tmp_path):
+    root, files = fake_repo_v2
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "seq/{id}.png"},
+        {"name": "pose", "kind": "json", "role": "gt", "loader": "json",
+         "pattern": "seq/manifest.json", "pointer": "frames.{id}.pose", "shared": True},
+        {"name": "q", "kind": "scalar", "role": "gt", "loader": "json",
+         "pattern": "seq/manifest.json", "pointer": "ordered.{ordinal}.q", "shared": True},
+    ]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(root), str(st), dataset_name="v2")
+    assert summ["rows_written"]["pose"] == 3 and summ["rows_written"]["q"] == 3
+    man = json.loads((st / "manifest.json").read_text())
+    s0 = man["samples"][0]
+    assert json.loads((st / "pose" / f"{s0}.json").read_text()) == [0, 0, 0]
+    assert (st / "q" / f"{s0}.txt").read_text() == "0"   # ordered[0].q == 0
+    s2 = man["samples"][2]
+    assert (st / "q" / f"{s2}.txt").read_text() == "20"  # ordered[2].q == 20
+
+
+def test_csv_loader_by_id_column(fake_repo_v2, tmp_path):
+    root, files = fake_repo_v2
+    spec = [
+        {"name": "image", "kind": "image", "role": "input",
+         "loader": "file", "pattern": "seq/{id}.png"},
+        {"name": "score", "kind": "scalar", "role": "gt", "loader": "csv",
+         "pattern": "seq/meta.csv", "column": "score", "id_column": "id"},
+    ]
+    st = tmp_path / "s"
+    materialize_file_tree(spec, files, _fetch(root), str(st), dataset_name="v2")
+    man = json.loads((st / "manifest.json").read_text())
+    s1 = man["samples"][1]
+    assert (st / "score" / f"{s1}.txt").read_text() == "0.5"
+
+
+def test_distinct_token_values_for_variants(fake_repo):
+    _root, files = fake_repo
+    spec = [{"name": "image", "kind": "image", "loader": "file",
+             "pattern": "train/{seq}/{quality}/{id}.png"}]
+    assert sorted(distinct_token_values(spec, files, "quality")) == ["low", "normal"]
+
+
+def test_token_filter_restricts_samples(fake_repo, tmp_path):
+    _root, files = fake_repo
+    root = _root
+    spec = [{"name": "image", "kind": "image", "role": "input", "loader": "file",
+             "pattern": "train/{seq}/{quality}/{id}.png"}]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(root), str(st),
+                                 token_filter={"quality": "normal"}, dataset_name="v")
+    # Only the 6 normal-quality pngs (2 seqs × 3), not the low ones.
+    assert summ["samples"] == 6

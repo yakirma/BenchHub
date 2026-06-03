@@ -177,7 +177,7 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
 @celery.task(bind=True, name='tasks.run_file_tree_import',
              soft_time_limit=3600, time_limit=4200)
 def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
-                         sample_cap, hf_token, owner_user_id):
+                         sample_cap, hf_token, owner_user_id, token_filter=None):
     """Background importer for the user-declared file-tree mapping. The
     Dataset row is pre-created ('importing') by the route. Fetches the
     declared source files via hf_hub_download, decodes them through
@@ -215,7 +215,7 @@ def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
                 mat = materialize_file_tree(
                     spec, files, _fetch, staging,
                     sample_cap=sample_cap, dataset_name=dataset_name,
-                    progress_cb=_persist,
+                    token_filter=token_filter, progress_cb=_persist,
                 )
                 # Quota check against actual staged bytes.
                 _persist({'phase': 'quota-check', 'current': 0, 'total': 0,

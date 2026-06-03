@@ -7214,6 +7214,13 @@ def _parse_file_tree_spec(form):
     # rows and desync the columns).
     shareds = form.getlist('field_shared')
     axes = form.getlist('field_axis')
+    pointers = form.getlist('field_pointer')       # json
+    columns = form.getlist('field_column')         # csv
+    id_columns = form.getlist('field_id_column')   # csv
+
+    def _at(arr, i):
+        return (arr[i].strip() if i < len(arr) and arr[i] else '')
+
     spec = []
     for i, name in enumerate(names):
         name = (name or '').strip()
@@ -7228,14 +7235,21 @@ def _parse_file_tree_spec(form):
             'loader': loader,
             'pattern': pattern,
         }
+        shared = (i < len(shareds)
+                  and str(shareds[i]).lower() in ('1', 'true', 'on'))
         if loader == 'npz':
-            entry['key'] = (keys[i] if i < len(keys) else '').strip() or None
-            entry['shared'] = (i < len(shareds)
-                               and str(shareds[i]).lower() in ('1', 'true', 'on'))
+            entry['key'] = _at(keys, i) or None
+            entry['shared'] = shared
             try:
                 entry['axis'] = int(axes[i]) if i < len(axes) and axes[i] else 0
             except ValueError:
                 entry['axis'] = 0
+        elif loader == 'json':
+            entry['pointer'] = _at(pointers, i) or None
+            entry['shared'] = shared
+        elif loader == 'csv':
+            entry['column'] = _at(columns, i) or None
+            entry['id_column'] = _at(id_columns, i) or None
         spec.append(entry)
     return spec
 
@@ -7374,36 +7388,59 @@ def import_from_files_commit():
             flash("You already have an import running — let it finish first.",
                   "warning")
             return redirect(url_for('datasets_list'))
+    # Optional variant fan-out: split a token (e.g. quality=low/normal)
+    # into one dataset per distinct value.
+    variant_token = (request.form.get('variant_token') or '').strip()
+
     # Validate the spec resolves before creating any rows.
     try:
         from huggingface_hub import HfApi
-        from benchhub.file_tree_import import resolve_samples
+        from benchhub.file_tree_import import resolve_samples, distinct_token_values
         token = getattr(g.current_user, 'hf_token', None) or None
         files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
         resolve_samples(spec, files)
+        variant_values = (distinct_token_values(spec, files, variant_token)
+                          if variant_token else [])
     except Exception as e:
         flash(f"Couldn't resolve the mapping: {e}", "danger")
         return redirect(url_for('import_from_files'))
 
     visibility = 'public' if is_adm else 'private'
-    ds_row = Dataset(name=dataset_name, owner_user_id=g.current_user.id,
-                     visibility=visibility, import_status='importing',
-                     import_progress_json=json.dumps({
-                         'phase': 'queued', 'current': 0, 'total': 0,
-                         'message': 'Waiting for a worker…'}))
-    db.session.add(ds_row)
-    db.session.commit()
-
     import tasks as _tasks
-    res = _tasks.run_file_tree_import.delay(
-        dataset_id=ds_row.id, repo_id=repo_id, spec=spec,
-        dataset_name=dataset_name, sample_cap=-1,
-        hf_token=token, owner_user_id=g.current_user.id)
-    try:
-        ds_row.import_task_id = res.id
+
+    def _enqueue(name, token_filter):
+        row = Dataset(name=name, owner_user_id=g.current_user.id,
+                      visibility=visibility, import_status='importing',
+                      import_progress_json=json.dumps({
+                          'phase': 'queued', 'current': 0, 'total': 0,
+                          'message': 'Waiting for a worker…'}))
+        db.session.add(row)
         db.session.commit()
-    except Exception:
-        db.session.rollback()
+        res = _tasks.run_file_tree_import.delay(
+            dataset_id=row.id, repo_id=repo_id, spec=spec,
+            dataset_name=name, sample_cap=-1, token_filter=token_filter,
+            hf_token=token, owner_user_id=g.current_user.id)
+        try:
+            row.import_task_id = res.id
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return row
+
+    if variant_token and variant_values:
+        # Cap the fan-out — these queue on the shared single worker.
+        MAX_VARIANTS = 12
+        capped = variant_values[:MAX_VARIANTS]
+        for v in capped:
+            _enqueue(f"{dataset_name}_{v}", {variant_token: v})
+        extra = (f" ({len(variant_values) - MAX_VARIANTS} more skipped — "
+                 f"cap {MAX_VARIANTS})" if len(variant_values) > MAX_VARIANTS else "")
+        flash(f"Importing {len(capped)} variant dataset(s) for "
+              f"{variant_token} = {', '.join(map(str, capped))}{extra}. They "
+              f"queue one at a time; watch /datasets.", "success")
+        return redirect(url_for('datasets_list'))
+
+    ds_row = _enqueue(dataset_name, None)
     flash(f"Importing {repo_id} in the background — progress shows on the "
           f"dataset page.", "success")
     return redirect(url_for('dataset_view', dataset_id=ds_row.id))
