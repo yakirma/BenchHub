@@ -158,6 +158,13 @@
     </div>
     {% endif %}
 
+    <div class="alert alert-light border d-flex align-items-center gap-2 mb-4 py-2 small">
+        <i class="bi bi-diagram-3"></i>
+        <span>Mapping look wrong, or columns missing? Map the raw files instead with the</span>
+        <a class="fw-semibold text-decoration-none"
+           href="{{ url_for('import_from_files_inspect', repo_id=repo_id) }}">file-tree importer →</a>
+    </div>
+
     <form id="hf-import-form" method="post"
           action="{{ url_for('admin_import_from_hf_commit') }}"
           class="card border-0 shadow-sm">

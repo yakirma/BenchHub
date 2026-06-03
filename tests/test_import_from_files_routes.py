@@ -148,3 +148,29 @@ def test_commit_json_csv_spec_parsed(user_client, monkeypatch):
     assert spec[1]['shared'] is True
     assert spec[2]['loader'] == 'csv' and spec[2]['column'] == 'score'
     assert spec[2]['id_column'] == 'id'
+
+
+def test_inspect_accepts_get_with_repo_id(user_client, monkeypatch):
+    """The tabular importer hands off here via GET ?repo_id=."""
+    client, _ = user_client
+    _stub_hfapi(monkeypatch, ['seq/0.png', 'seq/1.png'])
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    r = client.get('/import_from_files/inspect?repo_id=a/b')
+    assert r.status_code == 200
+    assert 'Map the modalities' in r.data.decode()
+
+
+def test_tabular_preview_failure_redirects_to_file_tree(user_client, monkeypatch):
+    """When no Croissant/info schema exists, the tabular preview hands off
+    to the file-tree importer for the same repo."""
+    client, _ = user_client
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+    monkeypatch.setattr(hfc, 'fetch_croissant',
+                        lambda r, **k: (_ for _ in ()).throw(hfc.CroissantFetchError('none')))
+    monkeypatch.setattr(hfs, 'fetch_dataset_info', lambda r, **k: None)
+    r = client.post('/admin/import_from_hf/preview', data={'repo_id': 'x/y'},
+                    follow_redirects=False)
+    assert r.status_code == 302
+    assert '/import_from_files/inspect' in r.headers['Location']
+    assert 'repo_id=x' in r.headers['Location']

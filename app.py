@@ -7144,13 +7144,12 @@ def admin_import_from_hf_preview():
         # error since that's the primary path; the /info fallback's
         # silent failure isn't user-actionable.
         flash(
-            f"Couldn't read schema for {repo_id!r}: {croissant_err}. "
-            "No Croissant document and no /info schema available — "
-            "the dataset may need a parquet conversion or a config fix "
-            "upstream.",
-            "danger",
+            f"{repo_id} isn't a tabular/Croissant dataset "
+            f"({croissant_err}). Switched you to the file-tree importer — "
+            f"declare each modality and point it at its files.",
+            "info",
         )
-        return redirect(url_for('admin_import_from_hf'))
+        return redirect(url_for('import_from_files_inspect', repo_id=repo_id))
 
     # Per-split row counts so the form can show "500 out of 10,000"
     # next to the max-samples input. Best-effort: an empty dict
@@ -7268,12 +7267,14 @@ def import_from_files():
     return render_template('import_from_files.html')
 
 
-@app.route('/import_from_files/inspect', methods=['POST'])
+@app.route('/import_from_files/inspect', methods=['GET', 'POST'])
 @login_required
 def import_from_files_inspect():
     """List the repo's file tree, summarise it (ext histogram + suggested
-    `<dir>/{id}.<ext>` patterns), and render the mapping builder."""
-    repo_id = (request.form.get('repo_id') or '').strip()
+    `<dir>/{id}.<ext>` patterns), and render the mapping builder. Accepts
+    GET `?repo_id=` so the tabular importer can hand off here (on failure
+    or when the user wants to remap)."""
+    repo_id = (request.values.get('repo_id') or '').strip()
     if not repo_id:
         flash("Enter an HF dataset repo ID.", "warning")
         return redirect(url_for('import_from_files'))

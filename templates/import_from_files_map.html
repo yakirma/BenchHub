@@ -2,9 +2,14 @@
 {% block title %}Map {{ repo_id }} — BenchHub{% endblock %}
 {% block content %}
 <div class="container py-4" style="max-width: 1080px;">
-    <div class="d-flex align-items-baseline mb-1">
+    <div class="d-flex align-items-baseline gap-3 mb-1">
         <h1 class="fw-bold mb-0">Map the modalities</h1>
-        <a href="{{ url_for('import_from_files') }}" class="ms-auto small">← change repo</a>
+        <form method="post" action="{{ url_for('admin_import_from_hf_preview') }}" class="ms-auto m-0">
+            <input type="hidden" name="repo_id" value="{{ repo_id }}">
+            <button type="submit" class="btn btn-link btn-sm p-0 small text-decoration-none">
+                Tabular dataset? Try the schema importer →</button>
+        </form>
+        <a href="{{ url_for('import_from_files') }}" class="small">← change repo</a>
     </div>
     <p class="lead text-body-secondary mb-3"><span class="font-monospace">{{ repo_id }}</span>
         <span class="small">· {{ '{:,}'.format(total_files) }} files</span></p>

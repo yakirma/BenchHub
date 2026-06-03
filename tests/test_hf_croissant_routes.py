@@ -406,21 +406,23 @@ def test_commit_drops_field_used_as_sample_name_source(client, db_session, tmp_p
     assert 'img' in by_name and 'label' in by_name
 
 
-def test_preview_404_when_croissant_fetch_fails(admin_client, monkeypatch):
+def test_preview_hands_off_to_file_tree_when_no_schema(admin_client, monkeypatch):
     from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
 
     def _boom(repo_id, **kw):
         raise hfc.CroissantFetchError("no such repo")
 
     monkeypatch.setattr(hfc, 'fetch_croissant', _boom)
+    monkeypatch.setattr(hfs, 'fetch_dataset_info', lambda r, **k: None)
     r = admin_client.post(
         '/admin/import_from_hf/preview',
         data={'repo_id': 'private/secret'},
         follow_redirects=False,
     )
-    # On error we flash + redirect back to the form, not 5xx.
+    # No tabular schema → hand off to the file-tree importer, not 5xx.
     assert r.status_code == 302
-    assert '/admin/import_from_hf' in r.headers['Location']
+    assert '/import_from_files/inspect' in r.headers['Location']
 
 
 def test_preview_redirects_when_repo_id_missing(admin_client):
