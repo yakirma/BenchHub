@@ -6874,6 +6874,16 @@ def admin_import_from_hf_commit():
             return redirect(url_for('datasets_list'))
 
     repo_id = (request.form.get('repo_id') or '').strip()
+    # Defensive re-screen (a direct POST could skip the preview): block
+    # gated/private repos when no token is available.
+    if repo_id and not _hf_import_has_token():
+        from benchhub.hf_search import fetch_dataset_card
+        _card = fetch_dataset_card(repo_id) or {}
+        if _card.get('gated') or _card.get('private'):
+            flash("This dataset is gated or private on HuggingFace. Save "
+                  "your HF access token on the Settings page, then retry.",
+                  "danger")
+            return redirect(url_for('admin_import_from_hf'))
     dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
     split = (request.form.get('split') or '').strip() or None
     # sample_cap = -1 (or 0) → no cap, import everything. Anything ≥1
@@ -7034,6 +7044,59 @@ def admin_import_from_hf_commit():
     return redirect(url_for('dataset_view', dataset_id=ds_row.id))
 
 
+def _hf_import_has_token():
+    """True when an HF access token is available for gated repos —
+    either the user's saved token or the box-wide HF_TOKEN."""
+    return bool(getattr(g.current_user, 'hf_token', None)
+                or os.environ.get('HF_TOKEN'))
+
+
+def _screen_hf_import(repo_id, schema, *, has_token):
+    """Pre-flight screen for datasets the import mechanism can't handle.
+
+    Returns (blocks, warnings) — lists of human-readable strings. A
+    non-empty `blocks` means the import shouldn't proceed; `warnings`
+    are advisory (the import can still run). Cheap metadata probes only,
+    no dataset download."""
+    blocks, warns = [], []
+    from benchhub.hf_search import fetch_dataset_card, fetch_dataset_info
+
+    card = fetch_dataset_card(repo_id) or {}
+    if (card.get('gated') or card.get('private')) and not has_token:
+        blocks.append(
+            "This dataset is gated or private on HuggingFace. Save your "
+            "HF access token on the Settings page, then retry — the "
+            "importer can't read it without one."
+        )
+
+    # datasets-server /info only indexes auto-converted (parquet)
+    # datasets. Its absence strongly implies a loader-script-only repo,
+    # which load_dataset can't run without trust_remote_code (we never
+    # enable that). Croissant may still have given us a schema, so this
+    # is a warning, not a hard block.
+    if fetch_dataset_info(repo_id) is None:
+        warns.append(
+            "Couldn't confirm this dataset is parquet-backed. If it "
+            "ships only a loading script, the import will fail (dataset "
+            "scripts aren't executed). A parquet-converted mirror, if "
+            "one exists, will import cleanly."
+        )
+
+    # Fields that fall through to raw JSON: complex/unknown feature
+    # types (Sequence(Image), Video, Array*, nested structs). They
+    # import but land as opaque JSON — not a typed image/mask/label —
+    # so they won't render in views or be scorable by typed metrics.
+    json_fields = [f.name for f in (schema.fields if schema else []) if f.kind == 'json']
+    if json_fields:
+        shown = ", ".join(json_fields[:6]) + ("…" if len(json_fields) > 6 else "")
+        warns.append(
+            f"{len(json_fields)} field(s) will import as raw JSON rather "
+            f"than a typed kind, so they won't render or be scorable as-is "
+            f"({shown}). Adjust the kind below where one applies."
+        )
+    return blocks, warns
+
+
 @app.route('/admin/import_from_hf/preview', methods=['POST'])
 @login_required
 def admin_import_from_hf_preview():
@@ -7106,8 +7169,19 @@ def admin_import_from_hf_preview():
     # uniform / head on the form.
     has_label_field = any(f.kind == 'label' for f in schema.fields)
 
+    # Screen for unsupported datasets: hard-block gated/private without a
+    # token; surface advisory warnings (not parquet-backed, JSON-fallback
+    # fields) on the review page so the user knows before committing.
+    blocks, import_warnings = _screen_hf_import(
+        repo_id, schema, has_token=_hf_import_has_token())
+    if blocks:
+        for b in blocks:
+            flash(b, 'danger')
+        return redirect(url_for('admin_import_from_hf'))
+
     return render_template(
         'admin_import_from_hf_preview.html',
+        import_warnings=import_warnings,
         repo_id=repo_id,
         schema=schema,
         split_counts=split_counts,

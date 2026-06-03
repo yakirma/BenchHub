@@ -604,3 +604,61 @@ def test_user_commit_concurrency_guard(client, db_session, tmp_path, monkeypatch
     # No new dataset created; materialize never invoked.
     assert Dataset.query.count() == before
     assert 'sample_cap' not in captured
+
+
+def test_preview_blocks_gated_dataset_without_token(client, db_session, monkeypatch):
+    """A gated/private repo with no available HF token is hard-blocked at
+    preview with a redirect back to the form."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+    import app as _app
+    fixture = json.loads((FIXTURES / 'croissant_cifar10.json').read_text())
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda repo_id, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda r, **kw: {})
+    monkeypatch.setattr(_app, 'fetch_dataset_card', None, raising=False)
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card',
+                        lambda r, **kw: {'gated': 'manual'})
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_info',
+                        lambda r, **kw: {'features': {}})
+    monkeypatch.delenv('HF_TOKEN', raising=False)
+
+    u = User(email='notoken@bench.local', display_name='nt',
+             oauth_provider='github', oauth_sub='nt-1', is_admin=False)
+    db.session.add(u); db.session.commit()
+    with client.session_transaction() as s:
+        s['user_id'] = u.id
+
+    r = client.post('/admin/import_from_hf/preview',
+                    data={'repo_id': 'secret/repo'}, follow_redirects=False)
+    assert r.status_code == 302
+    assert '/admin/import_from_hf' in r.headers['Location']
+    with client.session_transaction() as s:
+        flashes = ' '.join(v for _, v in s.get('_flashes', []))
+    assert 'gated or private' in flashes
+
+
+def test_preview_warns_on_json_fallback_fields(admin_client, monkeypatch):
+    """Fields that map to raw JSON get an advisory warning banner (not a
+    block)."""
+    from benchhub import hf_croissant as hfc
+    from benchhub import hf_search as hfs
+    # A field whose Croissant type isn't a typed kind → json.
+    fixture = {
+        "@type": "sc:Dataset", "name": "synth",
+        "recordSet": [{"@id": "rs", "@type": "cr:RecordSet", "field": [
+            {"@id": "rs/img", "@type": "cr:Field", "dataType": "sc:ImageObject",
+             "source": {"extract": {"column": "img"}}},
+            {"@id": "rs/meta", "@type": "cr:Field", "dataType": "sc:VideoObject",
+             "source": {"extract": {"column": "meta"}}},
+        ]}],
+    }
+    monkeypatch.setattr(hfc, 'fetch_croissant', lambda r, **kw: fixture)
+    monkeypatch.setattr(hfs, 'fetch_split_row_counts', lambda r, **kw: {})
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **kw: {})
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_info',
+                        lambda r, **kw: {'features': {}})
+
+    body = admin_client.post('/admin/import_from_hf/preview',
+                             data={'repo_id': 'x/y'}).data.decode()
+    assert 'Heads up before you import' in body
+    assert 'raw JSON' in body
