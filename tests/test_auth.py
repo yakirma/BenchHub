@@ -455,3 +455,36 @@ def test_send_email_unconfigured_returns_false(monkeypatch):
     from app import _send_email
     monkeypatch.delenv('SMTP_HOST', raising=False)
     assert _send_email('x@example.com', 'subj', 'body') is False
+
+
+def test_email_login_notifies_on_bounce(client, db_session, monkeypatch):
+    """When Resend reports the address bounced (doesn't exist / rejected),
+    the user is sent back to /login with a clear notice — not to the
+    code-entry page — and the code is invalidated."""
+    import app as _app
+    from app import EmailLoginCode
+    monkeypatch.setattr(_app, '_resend_send', lambda *a, **k: 'fake-id')
+    monkeypatch.setattr(_app, '_resend_wait_event', lambda *a, **k: 'bounced')
+
+    r = client.post('/login/email', data={'email': 'ghost@nope.example'},
+                    follow_redirects=False)
+    assert r.status_code == 302
+    assert '/login/email/verify' not in r.headers['Location']  # NOT the code page
+    with client.session_transaction() as s:
+        assert 'user_id' not in s
+        flashes = ' '.join(v for _, v in s.get('_flashes', []))
+    assert "couldn't deliver" in flashes and 'ghost@nope.example' in flashes
+    # Code invalidated so it can't be used later.
+    row = EmailLoginCode.query.filter_by(email='ghost@nope.example').first()
+    assert row is not None and row.consumed is True
+
+
+def test_email_login_proceeds_on_delivered(client, db_session, monkeypatch):
+    """A delivered (non-bounce) send takes the user to the verify page."""
+    import app as _app
+    monkeypatch.setattr(_app, '_resend_send', lambda *a, **k: 'fake-id')
+    monkeypatch.setattr(_app, '_resend_wait_event', lambda *a, **k: 'delivered')
+
+    r = client.post('/login/email', data={'email': 'real@example.com'},
+                    follow_redirects=False)
+    assert '/login/email/verify' in r.headers['Location']

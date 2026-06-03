@@ -2274,22 +2274,84 @@ def logout():
 
 # ===================== Passwordless email sign-in (verification code) =====
 
+def _clean_env(name):
+    """Read an env var, tolerant of a copy-pasted inline `# comment`
+    (systemd EnvironmentFile keeps the whole value after `=`) and stray
+    surrounding quotes/space. Returns None when unset/empty."""
+    v = os.environ.get(name)
+    if v is None:
+        return None
+    return v.split(' #', 1)[0].strip().strip('"').strip("'") or None
+
+
+def _resend_api_key():
+    """The Resend API key, when this deployment sends through Resend.
+    On the SMTP relay, SMTP_PASS *is* the API key; otherwise honour an
+    explicit RESEND_API_KEY."""
+    host = (_clean_env('SMTP_HOST') or '').lower()
+    if 'resend.com' in host:
+        return os.environ.get('SMTP_PASS', '').strip() or None
+    return _clean_env('RESEND_API_KEY')
+
+
+def _resend_send(to_email, subject, body):
+    """Send via Resend's HTTP API (so we get a message id to track
+    delivery). Returns the id, or None if not configured / failed."""
+    key = _resend_api_key()
+    if not key:
+        return None
+    sender = _clean_env('MAIL_FROM') or 'no-reply@runbenchhub.com'
+    import urllib.request, urllib.error
+    payload = json.dumps({'from': sender, 'to': [to_email],
+                          'subject': subject, 'text': body}).encode()
+    req = urllib.request.Request(
+        'https://api.resend.com/emails', data=payload, method='POST',
+        headers={'Authorization': 'Bearer ' + key,
+                 'Content-Type': 'application/json',
+                 'User-Agent': 'BenchHub/1.0'})
+    try:
+        resp = json.loads(urllib.request.urlopen(req, timeout=15).read().decode())
+        return resp.get('id')
+    except Exception as e:
+        app.logger.error("Resend API send to %s failed: %s", to_email, e)
+        return None
+
+
+def _resend_wait_event(email_id, timeout=6.0):
+    """Poll a Resend message's delivery status for up to `timeout`
+    seconds. Returns the last_event seen ('delivered' / 'bounced' /
+    'complained' / 'queued' / ...) or None. Lets the login flow catch a
+    fast hard-bounce (e.g. non-existent mailbox) before telling the user
+    'we sent a code'."""
+    key = _resend_api_key()
+    if not key or not email_id:
+        return None
+    import urllib.request, urllib.error, time
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(
+                'https://api.resend.com/emails/' + email_id,
+                headers={'Authorization': 'Bearer ' + key,
+                         'User-Agent': 'BenchHub/1.0'})
+            obj = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            last = obj.get('last_event')
+            if last in ('delivered', 'bounced', 'complained'):
+                return last
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return last
+
+
 def _send_email(to_email, subject, body):
     """Send a plain-text email via SMTP. Reads SMTP_HOST / SMTP_PORT /
     SMTP_USER / SMTP_PASS / MAIL_FROM from the environment. Returns True
     on success. When SMTP isn't configured (no SMTP_HOST), logs and
     returns False — the caller decides how to degrade (dev shows the code
     on-page; prod tells the user to retry)."""
-    def _clean(name):
-        # systemd EnvironmentFile has no inline-comment support — the whole
-        # value after `=` is kept. Be forgiving anyway: drop a trailing
-        # " # comment" and surrounding quotes/space so a copy-paste typo in
-        # .env degrades to a logged failure, not an uncaught 500.
-        v = os.environ.get(name)
-        if v is None:
-            return None
-        return v.split(' #', 1)[0].strip().strip('"').strip("'") or None
-
+    _clean = _clean_env
     host = _clean('SMTP_HOST')
     sender = (_clean('MAIL_FROM') or _clean('SMTP_USER')
               or 'no-reply@runbenchhub.com')
@@ -2354,12 +2416,30 @@ def login_email_request():
     ))
     db.session.commit()
 
-    sent = _send_email(
-        email,
-        "Your BenchHub sign-in code",
-        f"Your BenchHub verification code is: {code}\n\n"
-        f"It expires in 10 minutes. If you didn't request this, ignore this email.",
-    )
+    subject = "Your BenchHub sign-in code"
+    body = (f"Your BenchHub verification code is: {code}\n\n"
+            f"It expires in 10 minutes. If you didn't request this, ignore this email.")
+
+    # Prefer the Resend HTTP API so we can track delivery and catch a
+    # hard bounce (non-existent mailbox / rejected address) before
+    # promising the user a code. Falls back to plain SMTP otherwise.
+    email_id = _resend_send(email, subject, body)
+    if email_id is not None:
+        event = _resend_wait_event(email_id, timeout=6.0)
+        if event == 'bounced':
+            # Mark the code dead and bounce the user back with a clear
+            # "this address can't receive mail" notice.
+            EmailLoginCode.query.filter_by(email=email, consumed=False).update(
+                {'consumed': True}, synchronize_session=False)
+            db.session.commit()
+            flash(f"We couldn't deliver a code to {email} — the address "
+                  f"doesn't exist or is rejecting our mail. Check the "
+                  f"address, or sign in with GitHub / Google.", "danger")
+            return redirect(url_for('login', next=next_url))
+        sent = True
+    else:
+        sent = _send_email(email, subject, body)
+
     session['email_login_pending'] = email
     session['oauth_next'] = next_url or url_for('home')
 
