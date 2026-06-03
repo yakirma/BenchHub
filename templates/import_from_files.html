@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Import file-tree dataset — BenchHub{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+    <h1 class="fw-bold mb-1">Import a file-tree dataset</h1>
+    <p class="text-body-secondary mb-4">
+        For HuggingFace repos that aren't tabular/parquet — a tree of paired
+        files (RGB <code>.png</code> + packed <code>.npz</code>, per-sequence
+        folders, etc.). You declare each modality and point it at its source;
+        we decode it to a BenchHub type. For plain tabular datasets use
+        <a href="{{ url_for('admin_import_from_hf') }}">Import from HuggingFace</a> instead.
+    </p>
+    <form method="post" action="{{ url_for('import_from_files_inspect') }}"
+          class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <label class="form-label fw-semibold" for="repo_id">HF dataset repo ID</label>
+            <input type="text" id="repo_id" name="repo_id" required
+                   class="form-control font-monospace"
+                   placeholder="Ethanliang99/ECCV_Event_Video_Depth_Estimation">
+            <button type="submit" class="btn btn-primary mt-3">
+                <i class="bi bi-diagram-3 me-1"></i>Inspect file tree
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -173,6 +173,113 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                 # the row carries the truth.
                 return {'dataset_id': dataset_id, 'error': str(e)}
 
+
+@celery.task(bind=True, name='tasks.run_file_tree_import',
+             soft_time_limit=3600, time_limit=4200)
+def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
+                         sample_cap, hf_token, owner_user_id):
+    """Background importer for the user-declared file-tree mapping. The
+    Dataset row is pre-created ('importing') by the route. Fetches the
+    declared source files via hf_hub_download, decodes them through
+    benchhub.file_tree_import.materialize_file_tree into a typed-manifest
+    staging dir, then imports preview-only — same downstream path as the
+    Croissant importer."""
+    from huggingface_hub import HfApi, hf_hub_download
+    from benchhub.file_tree_import import materialize_file_tree
+    from benchhub.manifest import import_typed_dataset
+
+    with app.app_context():
+        def _persist(state):
+            ds = Dataset.query.get(dataset_id)
+            if ds is None:
+                return
+            ds.import_progress_json = json.dumps(state)
+            db.session.commit()
+            try:
+                self.update_state(state='PROGRESS', meta=state)
+            except Exception:
+                pass
+
+        _persist({'phase': 'starting', 'current': 0, 'total': 0,
+                  'message': 'Listing repo files…'})
+        try:
+            api = HfApi()
+            files = api.list_repo_files(repo_id, repo_type='dataset',
+                                        token=hf_token or None)
+
+            def _fetch(rel):
+                return hf_hub_download(repo_id, rel, repo_type='dataset',
+                                       token=hf_token or None)
+
+            with tempfile.TemporaryDirectory(prefix='bh_ft_import_') as staging:
+                mat = materialize_file_tree(
+                    spec, files, _fetch, staging,
+                    sample_cap=sample_cap, dataset_name=dataset_name,
+                    progress_cb=_persist,
+                )
+                # Quota check against actual staged bytes.
+                _persist({'phase': 'quota-check', 'current': 0, 'total': 0,
+                          'message': 'Checking storage quota…'})
+                staged_bytes = 0
+                for dp, _, fns in os.walk(staging):
+                    for fn in fns:
+                        try:
+                            staged_bytes += os.path.getsize(os.path.join(dp, fn))
+                        except OSError:
+                            continue
+                from app import check_quota, User, _format_bytes
+                owner = User.query.get(owner_user_id) if owner_user_id else None
+                if owner is not None:
+                    ok, msg = check_quota(owner, kind='dataset_create',
+                                          incoming_bytes=staged_bytes,
+                                          visibility='private')
+                    if not ok:
+                        raise RuntimeError(
+                            f"{msg} (this import would write "
+                            f"{_format_bytes(staged_bytes)})")
+
+                _persist({'phase': 'importing', 'current': 0, 'total': 0,
+                          'message': 'Writing rows to the database…'})
+                existing = Dataset.query.get(dataset_id)
+                _, summary = import_typed_dataset(
+                    staging, db_session=db.session,
+                    Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                    DatasetField=DatasetField,
+                    upload_folder=app.config['UPLOAD_FOLDER'],
+                    existing_dataset=existing, preview_only=True,
+                )
+                existing.preview_only = True
+                existing.source_kind = 'hf'
+                existing.source_url = f'https://huggingface.co/datasets/{repo_id}'
+                existing.source_metadata = json.dumps({
+                    'repo_id': repo_id, 'importer': 'file_tree',
+                    'spec': spec, 'samples_imported': summary['samples'],
+                    'total_rows_in_split': mat.get('total_rows_in_split'),
+                })
+                existing.import_status = 'ready'
+                existing.import_error = None
+                existing.import_progress_json = json.dumps({
+                    'phase': 'done', 'current': summary['samples'],
+                    'total': summary['samples'],
+                    'message': f"Imported {summary['samples']} sample(s)."})
+                db.session.commit()
+                return {'dataset_id': dataset_id, **summary}
+        except Exception as e:
+            db.session.rollback()
+            ds = Dataset.query.get(dataset_id)
+            if ds is not None:
+                ds.import_status = 'failed'
+                ds.import_error = str(e)
+                ds.import_progress_json = json.dumps({
+                    'phase': 'failed', 'current': 0, 'total': 0,
+                    'message': str(e)})
+                folder = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets',
+                                      str(dataset_id))
+                shutil.rmtree(folder, ignore_errors=True)
+                db.session.commit()
+            return {'dataset_id': dataset_id, 'error': str(e)}
+
+
 # Configure logging
 logger = logging.getLogger(__name__)
 

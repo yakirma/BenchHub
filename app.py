@@ -7198,6 +7198,217 @@ def admin_import_from_hf_preview():
     )
 
 
+# ===================== File-tree HF importer (user-declared sources) =====
+
+def _parse_file_tree_spec(form):
+    """Build the field-descriptor list from the mapping form's repeatable
+    inputs. Empty rows (no name/pattern) are dropped."""
+    names = form.getlist('field_name')
+    kinds = form.getlist('field_kind')
+    roles = form.getlist('field_role')
+    loaders = form.getlist('field_loader')
+    patterns = form.getlist('field_pattern')
+    keys = form.getlist('field_key')
+    # One hidden field_shared per row ('1'/'0') so it aligns positionally
+    # with the other parallel arrays (a bare checkbox would drop unchecked
+    # rows and desync the columns).
+    shareds = form.getlist('field_shared')
+    axes = form.getlist('field_axis')
+    spec = []
+    for i, name in enumerate(names):
+        name = (name or '').strip()
+        pattern = (patterns[i] if i < len(patterns) else '').strip()
+        if not name or not pattern:
+            continue
+        loader = (loaders[i] if i < len(loaders) else 'file').strip() or 'file'
+        entry = {
+            'name': name,
+            'kind': (kinds[i] if i < len(kinds) else 'json').strip() or 'json',
+            'role': (roles[i] if i < len(roles) else 'gt').strip() or 'gt',
+            'loader': loader,
+            'pattern': pattern,
+        }
+        if loader == 'npz':
+            entry['key'] = (keys[i] if i < len(keys) else '').strip() or None
+            entry['shared'] = (i < len(shareds)
+                               and str(shareds[i]).lower() in ('1', 'true', 'on'))
+            try:
+                entry['axis'] = int(axes[i]) if i < len(axes) and axes[i] else 0
+            except ValueError:
+                entry['axis'] = 0
+        spec.append(entry)
+    return spec
+
+
+@app.route('/import_from_files', methods=['GET'])
+@login_required
+def import_from_files():
+    """Entry page for the file-tree importer: enter an HF repo id."""
+    return render_template('import_from_files.html')
+
+
+@app.route('/import_from_files/inspect', methods=['POST'])
+@login_required
+def import_from_files_inspect():
+    """List the repo's file tree, summarise it (ext histogram + suggested
+    `<dir>/{id}.<ext>` patterns), and render the mapping builder."""
+    repo_id = (request.form.get('repo_id') or '').strip()
+    if not repo_id:
+        flash("Enter an HF dataset repo ID.", "warning")
+        return redirect(url_for('import_from_files'))
+    if not _hf_import_has_token():
+        from benchhub.hf_search import fetch_dataset_card
+        card = fetch_dataset_card(repo_id) or {}
+        if card.get('gated') or card.get('private'):
+            flash("This dataset is gated or private — save your HF token on "
+                  "the Settings page first.", "danger")
+            return redirect(url_for('import_from_files'))
+    try:
+        from huggingface_hub import HfApi
+        files = HfApi().list_repo_files(
+            repo_id, repo_type='dataset',
+            token=getattr(g.current_user, 'hf_token', None) or None)
+    except Exception as e:
+        flash(f"Couldn't list files for {repo_id!r}: {e}", "danger")
+        return redirect(url_for('import_from_files'))
+
+    from benchhub.file_tree_import import inspect_repo
+    from benchhub.types import DTYPES
+    info = inspect_repo(files)
+    # A capped slice of the raw tree for the browser (76k files is a lot).
+    return render_template(
+        'import_from_files_map.html',
+        repo_id=repo_id, info=info,
+        file_sample=files[:400], total_files=len(files),
+        all_kinds=sorted(DTYPES), all_roles=['input', 'gt', 'skip'],
+    )
+
+
+@app.route('/import_from_files/decode_preview', methods=['POST'])
+@login_required
+def import_from_files_decode_preview():
+    """Decode the FIRST resolved sample through the declared spec and
+    return per-field previews so the user can confirm the interpretation
+    (e.g. that depth frame 0 lines up with image 0) before committing."""
+    import tempfile
+    repo_id = (request.json or {}).get('repo_id', '').strip()
+    spec = (request.json or {}).get('spec') or []
+    if not repo_id or not spec:
+        return jsonify({'error': 'repo_id and spec required'}), 400
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        from benchhub.file_tree_import import materialize_file_tree, resolve_samples
+        from benchhub.preview import render_preview
+        token = getattr(g.current_user, 'hf_token', None) or None
+        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
+        # Resolve just to confirm a sample exists + report the count.
+        samples, _ = resolve_samples(spec, files)
+        n_total = len(samples)
+
+        def _fetch(rel):
+            return hf_hub_download(repo_id, rel, repo_type='dataset', token=token)
+
+        with tempfile.TemporaryDirectory(prefix='bh_ftprev_') as staging:
+            materialize_file_tree(spec, files, _fetch, staging,
+                                  sample_cap=1, dataset_name='preview')
+            import json as _json
+            manifest = _json.load(open(os.path.join(staging, 'manifest.json')))
+            sname = manifest['samples'][0] if manifest['samples'] else None
+            fields_out = []
+            for f in spec:
+                entry = {'name': f['name'], 'kind': f['kind'], 'ok': False}
+                # Find the staged file for this field/sample.
+                fdir = os.path.join(staging, f['name'])
+                hit = None
+                if sname and os.path.isdir(fdir):
+                    for fn in os.listdir(fdir):
+                        if os.path.splitext(fn)[0] == sname:
+                            hit = os.path.join(fdir, fn); break
+                if hit is None:
+                    entry['error'] = 'no file resolved for the first sample'
+                    fields_out.append(entry); continue
+                try:
+                    if f['kind'] in ('image', 'mask', 'depth'):
+                        with open(hit, 'rb') as fh:
+                            png, _ext = render_preview(f['kind'], fh.read()
+                                                       if f['kind'] != 'depth' else
+                                                       __import__('numpy').load(hit)['depth'])
+                        import base64
+                        entry['image'] = ('data:image/jpeg;base64,'
+                                          + base64.b64encode(png).decode())
+                        entry['ok'] = True
+                    else:
+                        with open(hit, 'r', errors='replace') as fh:
+                            txt = fh.read(500)
+                        entry['text'] = txt
+                        entry['ok'] = True
+                except Exception as de:
+                    entry['error'] = f'decode failed: {de}'
+                fields_out.append(entry)
+        return jsonify({'sample_name': sname, 'total_samples': n_total,
+                        'fields': fields_out})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'preview failed: {e}'}), 500
+
+
+@app.route('/import_from_files/commit', methods=['POST'])
+@login_required
+def import_from_files_commit():
+    """Validate the spec, create the Dataset row, and enqueue the
+    file-tree import. Same guardrails as the Croissant importer: full
+    split (quota-bounded), private for non-admins, one import at a time."""
+    repo_id = (request.form.get('repo_id') or '').strip()
+    dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
+    spec = _parse_file_tree_spec(request.form)
+    if not repo_id or not spec:
+        flash("Add at least one modality with a name + pattern.", "warning")
+        return redirect(url_for('import_from_files'))
+
+    is_adm = is_admin(g.current_user)
+    if not is_adm:
+        inflight = Dataset.query.filter_by(
+            owner_user_id=g.current_user.id, import_status='importing').count()
+        if inflight:
+            flash("You already have an import running — let it finish first.",
+                  "warning")
+            return redirect(url_for('datasets_list'))
+    # Validate the spec resolves before creating any rows.
+    try:
+        from huggingface_hub import HfApi
+        from benchhub.file_tree_import import resolve_samples
+        token = getattr(g.current_user, 'hf_token', None) or None
+        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
+        resolve_samples(spec, files)
+    except Exception as e:
+        flash(f"Couldn't resolve the mapping: {e}", "danger")
+        return redirect(url_for('import_from_files'))
+
+    visibility = 'public' if is_adm else 'private'
+    ds_row = Dataset(name=dataset_name, owner_user_id=g.current_user.id,
+                     visibility=visibility, import_status='importing',
+                     import_progress_json=json.dumps({
+                         'phase': 'queued', 'current': 0, 'total': 0,
+                         'message': 'Waiting for a worker…'}))
+    db.session.add(ds_row)
+    db.session.commit()
+
+    import tasks as _tasks
+    res = _tasks.run_file_tree_import.delay(
+        dataset_id=ds_row.id, repo_id=repo_id, spec=spec,
+        dataset_name=dataset_name, sample_cap=-1,
+        hf_token=token, owner_user_id=g.current_user.id)
+    try:
+        ds_row.import_task_id = res.id
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    flash(f"Importing {repo_id} in the background — progress shows on the "
+          f"dataset page.", "success")
+    return redirect(url_for('dataset_view', dataset_id=ds_row.id))
+
+
 def _ingest_typed_dataset_zip(upload, *, owner_user, visibility):
     """Common ZIP → typed-import pipeline used by both the bearer-
     token API route and the cookie-auth browser-upload route.

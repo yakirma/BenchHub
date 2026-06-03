@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Map {{ repo_id }} — BenchHub{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 1080px;">
+    <div class="d-flex align-items-baseline mb-1">
+        <h1 class="fw-bold mb-0">Map the modalities</h1>
+        <a href="{{ url_for('import_from_files') }}" class="ms-auto small">← change repo</a>
+    </div>
+    <p class="lead text-body-secondary mb-3"><span class="font-monospace">{{ repo_id }}</span>
+        <span class="small">· {{ '{:,}'.format(total_files) }} files</span></p>
+
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="card border-0 shadow-sm mb-3">
+                <div class="card-body p-3">
+                    <h2 class="h6 fw-semibold">File types</h2>
+                    <div class="small">
+                        {% for ext, n in info.ext_histogram.items() %}
+                        <span class="badge text-bg-light border me-1 mb-1">.{{ ext }} × {{ '{:,}'.format(n) }}</span>
+                        {% endfor %}
+                    </div>
+                    <h2 class="h6 fw-semibold mt-3">Suggested patterns</h2>
+                    <p class="small text-body-secondary mb-2">Click to copy into the focused pattern box.</p>
+                    {% for s in info.suggested_patterns %}
+                    <button type="button" class="btn btn-sm btn-outline-secondary w-100 text-start mb-1 font-monospace suggest-pat"
+                            style="font-size: 0.72rem;" data-pattern="{{ s.pattern }}"
+                            title="{{ s.count }} files">{{ s.pattern }}</button>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <form method="post" action="{{ url_for('import_from_files_commit') }}" id="map-form">
+                <input type="hidden" name="repo_id" value="{{ repo_id }}">
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3">
+                        <label class="form-label fw-semibold mb-1" for="dataset_name">Dataset name</label>
+                        <input type="text" id="dataset_name" name="dataset_name"
+                               class="form-control form-control-sm" value="{{ repo_id }}">
+                    </div>
+                </div>
+
+                <div id="field-rows"></div>
+                <button type="button" class="btn btn-sm btn-outline-primary mb-3" id="add-field">
+                    <i class="bi bi-plus-lg me-1"></i>Add modality
+                </button>
+
+                <div class="d-flex gap-2 mb-3">
+                    <button type="button" class="btn btn-outline-secondary" id="decode-preview-btn">
+                        <i class="bi bi-eye me-1"></i>Decode preview (1 sample)
+                    </button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-download me-1"></i>Import (full split)
+                    </button>
+                </div>
+                <div id="preview-out"></div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<template id="field-row-tpl">
+    <div class="card border shadow-sm mb-2 field-row">
+        <div class="card-body p-2">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label small mb-0">Name</label>
+                    <input type="text" name="field_name" class="form-control form-control-sm" placeholder="image">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Kind</label>
+                    <select name="field_kind" class="form-select form-select-sm">
+                        {% for k in all_kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Role</label>
+                    <select name="field_role" class="form-select form-select-sm">
+                        {% for r in all_roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small mb-0">Loader</label>
+                    <select name="field_loader" class="form-select form-select-sm row-loader">
+                        <option value="file">file</option>
+                        <option value="npz">npz</option>
+                    </select>
+                </div>
+                <div class="col-md-3 text-end">
+                    <button type="button" class="btn btn-sm btn-outline-danger remove-field">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+                <div class="col-12">
+                    <label class="form-label small mb-0">Pattern <span class="text-body-secondary">(use {id}, {seq}…)</span></label>
+                    <input type="text" name="field_pattern" class="form-control form-control-sm font-monospace row-pattern"
+                           placeholder="train/{seq}/normal/{id}.png">
+                </div>
+                <div class="col-md-4 npz-only d-none">
+                    <label class="form-label small mb-0">npz key</label>
+                    <input type="text" name="field_key" class="form-control form-control-sm" placeholder="depth / arr_0">
+                </div>
+                <div class="col-md-4 npz-only d-none">
+                    <label class="form-label small mb-0">Shared archive?</label>
+                    <div class="form-check">
+                        <input class="form-check-input row-shared-cb" type="checkbox">
+                        <input type="hidden" name="field_shared" value="0" class="row-shared-val">
+                        <label class="form-check-label small">one archive holds all samples (stacked)</label>
+                    </div>
+                </div>
+                <div class="col-md-4 npz-only d-none">
+                    <label class="form-label small mb-0">Split axis</label>
+                    <input type="number" name="field_axis" class="form-control form-control-sm" value="0" min="0">
+                </div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<script>
+(function () {
+    const rows = document.getElementById('field-rows');
+    const tpl = document.getElementById('field-row-tpl');
+    let lastFocusedPattern = null;
+
+    function wire(row) {
+        const loader = row.querySelector('.row-loader');
+        const toggleNpz = () => row.querySelectorAll('.npz-only').forEach(
+            el => el.classList.toggle('d-none', loader.value !== 'npz'));
+        loader.addEventListener('change', toggleNpz); toggleNpz();
+        const cb = row.querySelector('.row-shared-cb');
+        const hidden = row.querySelector('.row-shared-val');
+        cb.addEventListener('change', () => { hidden.value = cb.checked ? '1' : '0'; });
+        row.querySelector('.remove-field').addEventListener('click', () => row.remove());
+        const pat = row.querySelector('.row-pattern');
+        pat.addEventListener('focus', () => { lastFocusedPattern = pat; });
+    }
+    function addRow() {
+        const node = tpl.content.cloneNode(true);
+        rows.appendChild(node);
+        wire(rows.lastElementChild);
+    }
+    document.getElementById('add-field').addEventListener('click', addRow);
+    addRow();  // start with one
+
+    document.querySelectorAll('.suggest-pat').forEach(b =>
+        b.addEventListener('click', () => {
+            const target = lastFocusedPattern || rows.querySelector('.row-pattern');
+            if (target) { target.value = b.dataset.pattern; target.focus(); }
+        }));
+
+    function collectSpec() {
+        const spec = [];
+        rows.querySelectorAll('.field-row').forEach(r => {
+            const name = r.querySelector('[name=field_name]').value.trim();
+            const pattern = r.querySelector('[name=field_pattern]').value.trim();
+            if (!name || !pattern) return;
+            const loader = r.querySelector('[name=field_loader]').value;
+            const e = {
+                name, pattern, loader,
+                kind: r.querySelector('[name=field_kind]').value,
+                role: r.querySelector('[name=field_role]').value,
+            };
+            if (loader === 'npz') {
+                e.key = r.querySelector('[name=field_key]').value.trim() || null;
+                e.shared = r.querySelector('.row-shared-cb').checked;
+                e.axis = parseInt(r.querySelector('[name=field_axis]').value || '0', 10);
+            }
+            spec.push(e);
+        });
+        return spec;
+    }
+
+    document.getElementById('decode-preview-btn').addEventListener('click', async () => {
+        const out = document.getElementById('preview-out');
+        const spec = collectSpec();
+        if (!spec.length) { out.innerHTML = '<div class="alert alert-warning">Add a modality first.</div>'; return; }
+        out.innerHTML = '<div class="text-body-secondary small">Decoding first sample…</div>';
+        try {
+            const resp = await fetch('{{ url_for("import_from_files_decode_preview") }}', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({repo_id: '{{ repo_id }}', spec})
+            });
+            const data = await resp.json();
+            if (data.error) { out.innerHTML = '<div class="alert alert-danger">' + data.error + '</div>'; return; }
+            let html = '<div class="card border-0 shadow-sm"><div class="card-body p-3">';
+            html += '<div class="small text-body-secondary mb-2">Sample <code>' + (data.sample_name||'?') +
+                    '</code> · ' + data.total_samples.toLocaleString() + ' samples total</div><div class="row g-3">';
+            data.fields.forEach(f => {
+                html += '<div class="col-md-4"><div class="fw-semibold small">' + f.name +
+                        ' <span class="text-body-secondary">(' + f.kind + ')</span></div>';
+                if (f.ok && f.image) html += '<img src="' + f.image + '" class="img-fluid rounded border mt-1">';
+                else if (f.ok && f.text !== undefined) html += '<pre class="small border rounded p-2 mt-1 mb-0" style="max-height:160px;overflow:auto;">' + (f.text||'') + '</pre>';
+                else html += '<div class="text-danger small mt-1">' + (f.error||'no preview') + '</div>';
+                html += '</div>';
+            });
+            html += '</div></div></div>';
+            out.innerHTML = html;
+        } catch (e) { out.innerHTML = '<div class="alert alert-danger">' + e + '</div>'; }
+    });
+})();
+</script>
+{% endblock %}
