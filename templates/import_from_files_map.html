@@ -14,6 +14,8 @@
     <p class="lead text-body-secondary mb-3"><span class="font-monospace">{{ repo_id }}</span>
         <span class="small">· {{ '{:,}'.format(total_files) }} files</span></p>
 
+    <div id="draft-banner"></div>
+
     <div class="row g-3">
         <div class="col-lg-4">
             <div class="card border-0 shadow-sm mb-3">
@@ -439,7 +441,13 @@
 
     document.getElementById('map-form').addEventListener('submit', (e) => {
         const v = validateRows();
-        if (!v.ok) { e.preventDefault(); showErrors(v); } else { clearErrors(); }
+        if (!v.ok) {
+            e.preventDefault(); showErrors(v);
+        } else {
+            clearErrors();
+            // Valid commit → stop the leave-warning + drop the draft.
+            submitting = true; clearDraft();
+        }
     });
 
     document.getElementById('decode-preview-btn').addEventListener('click', async () => {
@@ -472,6 +480,85 @@
             out.innerHTML = html;
         } catch (e) { out.innerHTML = '<div class="alert alert-danger">' + e + '</div>'; }
     });
+
+    // --- Draft autosave + leave warning + restore ----------------------
+    // Mapping a file-tree dataset is a lot of typing; never silently lose
+    // it. Every edit autosaves to localStorage; navigating away with
+    // unsaved content triggers the browser's leave prompt; coming back
+    // offers to restore.
+    const DRAFT_KEY = 'bh_filetree_draft:{{ repo_id }}';
+    let submitting = false;
+
+    function rowData(r) {
+        const g = sel => { const el = r.querySelector(sel); return el ? el.value : ''; };
+        return {
+            name: g('[name=field_name]'), kind: g('[name=field_kind]'),
+            role: g('[name=field_role]'), loader: g('[name=field_loader]'),
+            pattern: g('[name=field_pattern]'), key: g('[name=field_key]'),
+            axis: g('[name=field_axis]'), pointer: g('[name=field_pointer]'),
+            column: g('[name=field_column]'), id_column: g('[name=field_id_column]'),
+            member: g('[name=field_member]'), token: g('[name=field_token]'),
+            shared: !!(r.querySelector('.row-shared-cb') && r.querySelector('.row-shared-cb').checked),
+        };
+    }
+    const _val = n => { const el = document.querySelector('[name=' + n + ']'); return el ? el.value : ''; };
+    function serializeForm() {
+        return {
+            dataset_name: _val('dataset_name'),
+            variant_token: _val('variant_token'),
+            filter_token: _val('filter_token'), filter_value: _val('filter_value'),
+            rows: [...rows.querySelectorAll('.field-row')].map(rowData),
+        };
+    }
+    function isDirty() {
+        const d = serializeForm();
+        if (d.variant_token || d.filter_token || d.filter_value) return true;
+        if (d.dataset_name && d.dataset_name !== '{{ repo_id }}') return true;
+        return d.rows.some(r => (r.name || '').trim() || (r.pattern || '').trim()
+                               || (r.token || '').trim());
+    }
+    function saveDraft() {
+        try { localStorage.setItem(DRAFT_KEY, JSON.stringify(serializeForm())); } catch (e) {}
+    }
+    function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) {} }
+
+    let _t = null;
+    document.getElementById('map-form').addEventListener('input', () => {
+        clearTimeout(_t); _t = setTimeout(saveDraft, 400);
+    });
+    window.addEventListener('beforeunload', (e) => {
+        if (submitting || !isDirty()) return;
+        saveDraft();
+        e.preventDefault(); e.returnValue = '';
+    });
+
+    function restoreDraft(d) {
+        rows.innerHTML = '';
+        (d.rows || []).forEach(r => { addRow(); setRow(rows.lastElementChild, r); });
+        if (!rows.querySelector('.field-row')) addRow();
+        const setIf = (n, v) => { const el = document.querySelector('[name=' + n + ']'); if (el && v != null) el.value = v; };
+        setIf('dataset_name', d.dataset_name);
+        setIf('variant_token', d.variant_token);
+        setIf('filter_token', d.filter_token);
+        setIf('filter_value', d.filter_value);
+    }
+
+    (function offerRestore() {
+        let raw = null;
+        try { raw = localStorage.getItem(DRAFT_KEY); } catch (e) {}
+        if (!raw) return;
+        let d; try { d = JSON.parse(raw); } catch (e) { clearDraft(); return; }
+        const n = (d.rows || []).filter(r => (r.name || '').trim() || (r.pattern || '').trim()).length;
+        if (!n) { clearDraft(); return; }
+        const b = document.getElementById('draft-banner');
+        b.innerHTML = '<div class="alert alert-info d-flex align-items-center gap-2 py-2">' +
+            '<i class="bi bi-clock-history"></i><span>You have an unsaved draft for this repo (' +
+            n + ' field' + (n > 1 ? 's' : '') + ').</span>' +
+            '<button type="button" class="btn btn-sm btn-primary ms-auto" id="draft-restore">Restore</button>' +
+            '<button type="button" class="btn btn-sm btn-outline-secondary" id="draft-discard">Discard</button></div>';
+        document.getElementById('draft-restore').addEventListener('click', () => { restoreDraft(d); b.innerHTML = ''; });
+        document.getElementById('draft-discard').addEventListener('click', () => { clearDraft(); b.innerHTML = ''; });
+    })();
 })();
 </script>
 {% endblock %}

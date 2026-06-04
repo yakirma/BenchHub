@@ -49,6 +49,8 @@ def test_inspect_renders_mapping_builder(user_client, monkeypatch):
     assert 'Add modality' in body
     assert 'map-form-errors' in body     # client-side validation hook
     assert 'validateRows' in body
+    assert 'draft-banner' in body          # draft autosave/restore
+    assert 'beforeunload' in body
 
 
 def test_commit_enqueues_and_creates_dataset(user_client, monkeypatch):
