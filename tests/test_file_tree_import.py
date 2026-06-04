@@ -437,3 +437,28 @@ def test_inspect_no_label_suggestion_for_single_folder():
     pats = [s["pattern"] for s in info["suggested_patterns"]]
     assert "{label}/{id}.png" not in pats
     assert "images/{id}.png" in pats
+
+
+def test_inspect_keeps_modality_folders_no_label():
+    """Sibling MODALITY folders (image/ + mask/, both png) must keep their
+    individual `folder/{id}` suggestions and NOT be collapsed to {label}
+    — they're separate fields, not class values."""
+    files = [f"image/{i}.png" for i in range(4)] + \
+            [f"mask/{i}.png" for i in range(4)]
+    info = inspect_repo(files)
+    pats = [s["pattern"] for s in info["suggested_patterns"]]
+    assert "{label}/{id}.png" not in pats          # not treated as labels
+    assert "image/{id}.png" in pats                # both modality lines kept
+    assert "mask/{id}.png" in pats
+
+
+def test_inspect_mixed_modalities_different_exts():
+    """image/<id>.png + depth/<id>.npz (the user's example) → each ext has
+    one folder, so no {label}; both individual patterns are suggested."""
+    files = [f"image/{i}.png" for i in range(4)] + \
+            [f"depth/{i}.npz" for i in range(4)]
+    info = inspect_repo(files)
+    pats = [s["pattern"] for s in info["suggested_patterns"]]
+    assert "{label}/{id}.png" not in pats and "{label}/{id}.npz" not in pats
+    assert "image/{id}.png" in pats
+    assert "depth/{id}.npz" in pats

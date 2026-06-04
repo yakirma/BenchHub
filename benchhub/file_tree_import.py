@@ -56,6 +56,20 @@ _STAGE_EXT = {
 
 _TOKEN_RE = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
 
+# Folder names that read as a MODALITY (a separate field) rather than a
+# class label. Used to decide whether `<X>/<id>.ext` siblings are paired
+# modalities (image/ + mask/) or class folders (Alex_Brush/ + Cookie/).
+_MODALITY_WORDS = {
+    'image', 'images', 'img', 'imgs', 'rgb', 'rgba', 'color', 'colour',
+    'photo', 'photos', 'frame', 'frames', 'input', 'inputs',
+    'depth', 'depths', 'disparity', 'mask', 'masks', 'seg', 'segmentation',
+    'semantic', 'instance', 'instances', 'label_map', 'labelmap', 'labels',
+    'gt', 'groundtruth', 'ground_truth', 'target', 'targets', 'annotation',
+    'annotations', 'normal', 'normals', 'flow', 'ir', 'nir', 'thermal',
+    'left', 'right', 'audio', 'video', 'text', 'texts', 'caption', 'captions',
+    'pose', 'keypoints', 'kpts', 'points', 'pointcloud', 'lidar', 'events',
+}
+
 
 def _pattern_to_regex(pattern):
     """Compile a `{token}` pattern into a regex with named groups. Each
@@ -115,10 +129,14 @@ def inspect_repo(files):
     seen_patterns = set()
 
     # Label-folder shape: files like `<X>/<file>.<ext>` (one folder level)
-    # where X varies across siblings → the folder is almost certainly a
-    # class label. Propose `{label}/{id}.<ext>` (pair with a `token` field
-    # on {label}). These go first — most useful — and we suppress the
-    # noisy per-class literal suggestions they'd otherwise generate.
+    # with several sibling folders. Two readings:
+    #   - folders are MODALITIES (image/, depth/, mask/ …) → keep each
+    #     `folder/{id}.ext` suggestion; DON'T propose {label} ({label}
+    #     would wrongly treat each modality file as its own sample).
+    #   - folders are CLASS LABELS (Alex_Brush/, Cookie/ …) → propose
+    #     `{label}/{id}.ext` (pair with a `token` field) and suppress the
+    #     noisy per-class literals.
+    # We tell them apart by name: modality folders are semantic words.
     two_seg = defaultdict(set)
     two_seg_count = defaultdict(int)
     for f in files:
@@ -127,7 +145,14 @@ def inspect_repo(files):
             ext = parts[1].rsplit('.', 1)[-1].lower()
             two_seg[ext].add(parts[0])
             two_seg_count[ext] += 1
-    label_exts = {ext for ext, xs in two_seg.items() if len(xs) >= 2}
+    label_exts = set()
+    for ext, folders in two_seg.items():
+        if len(folders) < 2:
+            continue
+        modality_like = sum(1 for d in folders if d.lower() in _MODALITY_WORDS)
+        # Mostly arbitrary names → class labels.
+        if modality_like / len(folders) < 0.5:
+            label_exts.add(ext)
     for ext in sorted(label_exts, key=lambda e: -two_seg_count[e]):
         pat = '{label}/{id}.' + ext
         seen_patterns.add(pat)
@@ -139,6 +164,8 @@ def inspect_repo(files):
             continue
         # Skip the per-class literal dirs already covered by a
         # `{label}/{id}` suggestion (e.g. Alex_Brush/, Arizonia/ …).
+        # Modality folders (image/, depth/ …) are NOT in label_exts, so
+        # their individual suggestions are kept.
         if '/' not in d and ext in label_exts:
             continue
         # Generalise the directory's variable segments into tokens by
