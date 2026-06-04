@@ -18,6 +18,8 @@ from benchhub.types import (
     LabelList,
     Scalar,
     Json,
+    Sequence,
+    CocoDetections,
     get_type,
 )
 from benchhub.client import (
@@ -41,6 +43,8 @@ __all__ = [
     "LabelList",
     "Scalar",
     "Json",
+    "Sequence",
+    "CocoDetections",
     "get_type",
     "Client",
     "SubmissionBuilder",

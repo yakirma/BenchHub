@@ -271,68 +271,69 @@
     </a>
     {% endmacro %}
 
-    <section class="mb-5">
-        <div class="row g-4">
-            <div class="col-12 col-lg-6">
+    {# Two-column home: main = your leaderboards + datasets; right sidebar
+       = the recent-submission rails (latest public + your latest). #}
+    <div class="row g-4">
+        <div class="col-lg-8 col-xl-9 order-2 order-lg-1">
+            {# Unified leaderboards section — public and private/unlisted
+               live in one grid. Per-card lock/link icons + the upper-right
+               visibility badge carry the distinction. #}
+            <section class="mb-5">
                 <div class="d-flex align-items-baseline gap-2 mb-3">
                     <h2 class="h5 fw-semibold mb-0">
+                        <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
+                    </h2>
+                    <span class="text-body-secondary small">({{ leaderboards|length }})</span>
+                </div>
+                {% if leaderboards %}
+                <div class="row row-cols-2 row-cols-md-3 g-3" id="home-lb-grid">
+                    {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
+                </div>
+                {% else %}
+                <div class="text-center py-5 text-body-secondary border rounded">
+                    <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
+                    <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
+                </div>
+                {% endif %}
+            </section>
+
+            {# Datasets render after leaderboards (LBs are the primary surface). #}
+            {{ datasets_section() }}
+        </div>
+
+        <aside class="col-lg-4 col-xl-3 order-1 order-lg-2">
+            <div class="position-lg-sticky" style="top: 1rem;">
+                <div class="mb-4">
+                    <h2 class="h6 fw-semibold mb-2">
                         <i class="bi bi-activity me-2 text-primary"></i>Latest public submissions
                     </h2>
+                    {% if recent_public_submissions %}
+                    <div class="list-group shadow-sm small">
+                        {% for sub in recent_public_submissions %}{{ submission_row(sub, True, public_submission_scores.get(sub.id)) }}{% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-center py-3 text-body-secondary border rounded small">
+                        No public submissions yet.
+                    </div>
+                    {% endif %}
                 </div>
-                {% if recent_public_submissions %}
-                <div class="list-group shadow-sm">
-                    {% for sub in recent_public_submissions %}{{ submission_row(sub, True, public_submission_scores.get(sub.id)) }}{% endfor %}
-                </div>
-                {% else %}
-                <div class="text-center py-4 text-body-secondary border rounded">
-                    <p class="mb-0">No public submissions yet.</p>
-                </div>
-                {% endif %}
-            </div>
-            <div class="col-12 col-lg-6">
-                <div class="d-flex align-items-baseline gap-2 mb-3">
-                    <h2 class="h5 fw-semibold mb-0">
+                <div class="mb-4">
+                    <h2 class="h6 fw-semibold mb-2">
                         <i class="bi bi-person-up me-2 text-warning"></i>Your latest submissions
                     </h2>
+                    {% if recent_user_submissions %}
+                    <div class="list-group shadow-sm small">
+                        {% for sub in recent_user_submissions %}{{ submission_row(sub, False, user_submission_scores.get(sub.id)) }}{% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-center py-3 text-body-secondary border rounded small">
+                        You haven't made any submissions yet.
+                    </div>
+                    {% endif %}
                 </div>
-                {% if recent_user_submissions %}
-                <div class="list-group shadow-sm">
-                    {% for sub in recent_user_submissions %}{{ submission_row(sub, False, user_submission_scores.get(sub.id)) }}{% endfor %}
-                </div>
-                {% else %}
-                <div class="text-center py-4 text-body-secondary border rounded">
-                    <p class="mb-0">You haven't made any submissions yet.</p>
-                </div>
-                {% endif %}
             </div>
-        </div>
-    </section>
-
-    {# Unified leaderboards section — public and private/unlisted live
-       in one grid. Per-card lock/link icons next to the title (and the
-       upper-right visibility-badge for non-public) carry the
-       distinction; no need for two separate headers. #}
-    <section class="mb-5">
-        <div class="d-flex align-items-baseline gap-2 mb-3">
-            <h2 class="h5 fw-semibold mb-0">
-                <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
-            </h2>
-            <span class="text-body-secondary small">({{ leaderboards|length }})</span>
-        </div>
-        {% if leaderboards %}
-        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-lb-grid">
-            {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
-        </div>
-        {% else %}
-        <div class="text-center py-5 text-body-secondary border rounded">
-            <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
-            <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
-        </div>
-        {% endif %}
-    </section>
-
-    {# Datasets render after leaderboards (LBs are the primary surface). #}
-    {{ datasets_section() }}
+        </aside>
+    </div>
 
     {# ---- Discover others ---- #}
     <div class="text-center pt-3 pb-5 text-body-secondary small">
