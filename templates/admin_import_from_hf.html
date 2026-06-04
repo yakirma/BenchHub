@@ -156,8 +156,11 @@
                 + '<div class="small text-body-secondary mb-2">↓ ' + fmtCount(c.downloads)
                 + ' · ♥ ' + fmtCount(c.likes) + (tags ? ' · ' + tags : '') + '</div>'
                 + (c.description
-                   ? '<p class="small mb-0" style="white-space:pre-wrap;">' + escapeHtml(c.description) + '</p>'
-                   : '<p class="small text-body-secondary fst-italic mb-0">No description on the dataset card.</p>')
+                   ? '<p class="small mb-1" style="white-space:pre-wrap;">' + escapeHtml(c.description) + '</p>'
+                   : '<p class="small text-body-secondary fst-italic mb-1">No description on the dataset card.</p>')
+                + '<p class="small text-body-secondary mb-0">See the full description on the dataset page: '
+                + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                + '" target="_blank" rel="noopener">huggingface.co/datasets/' + escapeHtml(c.id) + '</a></p>'
                 + '</div></div>';
         } catch (_) {
             cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';

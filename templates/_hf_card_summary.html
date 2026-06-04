@@ -23,9 +23,14 @@
                 class="badge text-bg-light border ms-1">{{ t }}</span>{% endfor %}
         </div>
         {% if card.description %}
-        <p class="small mb-0"
+        <p class="small mb-1"
            style="white-space: pre-wrap; max-height: 11rem; overflow: auto;">{{ card.description }}</p>
         {% endif %}
+        <p class="small text-body-secondary mb-0">
+            See the full description on the dataset page:
+            <a href="https://huggingface.co/datasets/{{ card.id }}" target="_blank"
+               rel="noopener">huggingface.co/datasets/{{ card.id }}</a>
+        </p>
     </div>
 </div>
 {% endif %}

@@ -661,7 +661,11 @@ details.dataset-req-card:hover > summary .req-chev {
                     + (c.description
                        ? '<div class="small mt-1" style="max-height:8rem;overflow:auto;white-space:pre-wrap;">'
                          + escapeHtml(c.description) + '</div>'
-                       : '') + '</div>';
+                       : '')
+                    + '<div class="small text-body-secondary mt-1">See the full description on the dataset page: '
+                    + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                    + '" target="_blank" rel="noopener">huggingface.co/datasets/' + escapeHtml(c.id) + '</a></div>'
+                    + '</div>';
             } catch (_) {
                 cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';
             }

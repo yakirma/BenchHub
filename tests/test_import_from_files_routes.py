@@ -478,6 +478,9 @@ def test_card_summary_renders_on_map_stage(user_client, monkeypatch):
     assert 'Fancy DS' in body                       # card title
     assert 'A neat little dataset.' in body         # card description
     assert 'image-classification' in body           # task tag
+    # Link through to the full description on HF.
+    assert 'See the full description on the dataset page' in body
+    assert 'huggingface.co/datasets/a/b' in body
 
 
 def test_commit_threads_path_prefix_to_task(user_client, monkeypatch):
