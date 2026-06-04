@@ -7264,6 +7264,222 @@ def _parse_file_tree_spec(form):
     return spec
 
 
+# File-tree listing is per-directory bound on HF's API (one request per
+# subdir), so a giant, deeply-nested repo (e.g. ibrahimhamamci/CT-RATE —
+# 251k `.nii.gz` files across thousands of dirs) takes >2min to walk fully
+# and would hang the request handler. The request-path routes (inspect /
+# from_roles / decode_preview / commit-validation) only need a
+# REPRESENTATIVE sample to infer structure / preview, so they list under a
+# file cap + wall-clock budget. The authoritative full listing happens in
+# the background Celery task (tasks.run_file_tree_import), which is time-
+# tolerant.
+_FILE_TREE_LIST_CAP = 50000
+_FILE_TREE_LIST_BUDGET = 12.0   # seconds — overall recursive-listing budget
+_FILE_TREE_PROBE_BUDGET = 6.0   # seconds — if 0 files by here, the repo is a
+                                # dir-first giant; bail to the DFS sampler
+_FILE_TREE_SCOPE_BYTES = 10 * 1024 ** 3   # repos bigger than this offer a
+                                # split/subfolder picker before the preview
+
+
+def _hf_repo_used_storage(repo_id, *, token=None):
+    """Cheap (~0.3s) total-bytes probe for an HF dataset repo, or None.
+    Used only for human-readable scale messaging."""
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().dataset_info(repo_id, expand=['usedStorage'], token=token)
+        return getattr(info, 'used_storage', None)
+    except Exception:
+        return None
+
+
+def _dfs_sample_repo_files(repo_id, *, token=None, cap, time_budget,
+                           max_requests=300, prefix=None):
+    """Depth-first per-directory sample of a repo's files. HF's recursive
+    listing emits the ENTIRE directory tree before any file (CT-RATE: 150k+
+    dirs first), so for a huge repo it never reaches a file inside a budget.
+    A non-recursive listing of one dir is ~0.2-0.5s; descending the tree
+    depth-first reaches leaf files in a handful of requests, giving a
+    representative file sample (enough to infer the ext histogram / shape)
+    without walking the whole tree. Starts at `prefix` (repo root if None)."""
+    import time as _time
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
+    api = HfApi()
+    t0 = _time.monotonic()
+    files, stack, reqs = [], [prefix or None], 0   # start dir (None = root)
+    while stack and len(files) < cap and reqs < max_requests:
+        if _time.monotonic() - t0 > time_budget:
+            break
+        path = stack.pop()
+        reqs += 1
+        try:
+            entries = list(api.list_repo_tree(
+                repo_id, path_in_repo=path, recursive=False,
+                repo_type='dataset', token=token))
+        except Exception:
+            continue
+        subdirs = []
+        for it in entries:
+            if isinstance(it, RepoFile):
+                files.append(it.path)
+            else:
+                subdirs.append(it.path)
+        # Push reversed so pop() descends in natural (sorted) order →
+        # reaches the first branch's leaf files fastest.
+        for d in reversed(subdirs):
+            stack.append(d)
+    return files
+
+
+def _list_hf_subdirs(repo_id, *, token=None, prefix=None, cap=600):
+    """Cheap (~0.3s) non-recursive listing of the immediate subdirectories
+    of `prefix` (repo root when None). Returns `(subdirs, n_files,
+    truncated)`: child directory paths (sorted), the count of files sitting
+    directly in this dir, and whether the directory list was capped. Powers
+    the split/subfolder chooser shown before a heavy preview."""
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile, RepoFolder
+    api = HfApi()
+    subdirs, n_files, truncated = [], 0, False
+    try:
+        for item in api.list_repo_tree(
+                repo_id, path_in_repo=prefix or None, recursive=False,
+                repo_type='dataset', token=token):
+            if isinstance(item, RepoFolder):
+                subdirs.append(item.path)
+                if len(subdirs) >= cap:
+                    truncated = True
+                    break
+            elif isinstance(item, RepoFile):
+                n_files += 1
+    except Exception:
+        pass
+    return sorted(subdirs), n_files, truncated
+
+
+def _list_hf_repo_files(repo_id, *, token=None,
+                        cap=_FILE_TREE_LIST_CAP,
+                        time_budget=_FILE_TREE_LIST_BUDGET,
+                        path_prefix=None):
+    """List a dataset repo's files bounded by a file cap AND a wall-clock
+    budget, so a huge repo can't hang the request. Returns
+    `(files, truncated)`; `truncated` is True when we stopped early (more
+    files exist than were listed). `path_prefix` scopes the listing to a
+    subtree (the chosen split/subfolder).
+
+    Tries HF's server-paginated recursive listing first (complete + fast
+    for normal repos). If that exhausts the budget without reaching a
+    single file — the pathological huge-directory case — it falls back to a
+    bounded depth-first sample so the caller still gets representative files
+    instead of nothing."""
+    import time as _time
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile
+    api = HfApi()
+    files, truncated = [], False
+    t0 = _time.monotonic()
+    try:
+        for item in api.list_repo_tree(
+                repo_id, path_in_repo=path_prefix or None, recursive=True,
+                repo_type='dataset', token=token):
+            if isinstance(item, RepoFile):
+                files.append(item.path)
+                if len(files) >= cap:
+                    truncated = True
+                    break
+            elapsed = _time.monotonic() - t0
+            # Dir-first giant (CT-RATE emits 150k+ dirs before any file):
+            # bail to the DFS sampler the moment it's clear no file is
+            # coming, instead of burning the whole budget on directories.
+            if not files and elapsed > _FILE_TREE_PROBE_BUDGET:
+                break
+            if elapsed > time_budget:
+                truncated = True
+                break
+    except Exception:
+        # A partial walk that errored late is still usable for inference;
+        # only re-raise when we got nothing at all.
+        if not files:
+            raise
+        truncated = True
+    if files:
+        return files, truncated
+    # Recursive walk never reached a file → huge dir tree. Depth-first
+    # sample so inference (ext histogram, unsupported-kind detection) still
+    # has something to work with.
+    files = _dfs_sample_repo_files(
+        repo_id, token=token, cap=cap, time_budget=8.0, prefix=path_prefix)
+    return files, True
+
+
+# Data extensions the file-tree importer can decode into a renderable typed
+# kind (mirrors benchhub.file_tree_import._EXT_KIND_LOADER's renderable
+# entries + the container loaders). A repo whose data files are dominated
+# by anything else can't be mapped into image/mask/depth/audio/text without
+# a new kind.
+_FILE_TREE_RENDERABLE_EXTS = {
+    'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp', 'gif',  # image/mask
+    'wav', 'mp3', 'flac',                                       # audio
+    'txt', 'json', 'csv', 'parquet',                            # text/table
+    'npz', 'npy',                                               # arrays
+    'zip', 'tar', 'gz', 'h5', 'hdf5',                           # containers
+}
+# Known-unsupported file shapes detected by FULL (compound) extension — the
+# `.gz` last-segment alone is a valid container loader, but `.nii.gz` is a
+# 3D NIfTI medical volume with no BenchHub kind. Matched on the lowercased
+# basename suffix so `.nii.gz` wins over the bare `.gz` loader.
+_FILE_TREE_UNSUPPORTED_SUFFIXES = {
+    '.nii.gz': 'NIfTI medical volumes', '.nii': 'NIfTI medical volumes',
+    '.dcm': 'DICOM medical images', '.dicom': 'DICOM medical images',
+    '.mha': 'MetaImage volumes', '.mhd': 'MetaImage volumes',
+    '.nrrd': 'NRRD volumes', '.dcm.gz': 'DICOM medical images',
+}
+
+
+def _file_tree_unsupported_warning(files):
+    """If the repo's data files are overwhelmingly a shape the importer
+    can't decode into a renderable typed kind, return a human-readable
+    warning; else None. Checks compound suffixes first (`.nii.gz` medical
+    volumes), then the dominant last-extension. Ignores repo-meta files."""
+    from collections import Counter
+    meta = {'md', 'gitattributes', 'gitignore', 'pdf', 'xlsx', 'pt', 'pth',
+            'bin', 'py', 'csv'}
+    data = [f for f in files
+            if '.' in f.rsplit('/', 1)[-1]
+            and f.rsplit('.', 1)[-1].lower() not in meta]
+    total = len(data)
+    if not total:
+        return None
+    # Compound / medical suffixes (override the bare-ext reading).
+    med = Counter()
+    for f in data:
+        low = f.lower()
+        for suf, label in _FILE_TREE_UNSUPPORTED_SUFFIXES.items():
+            if low.endswith(suf):
+                med[label] += 1
+                break
+    if sum(med.values()) / total >= 0.5:
+        label = med.most_common(1)[0][0]
+        return (
+            f"Most files here are {label}, which BenchHub can't decode into a "
+            f"renderable type (image / mask / depth / audio / text) yet — "
+            f"file a data-type request if you need this dataset.")
+    # Generic dominant non-renderable last extension.
+    exts = Counter(f.rsplit('.', 1)[-1].lower() for f in data)
+    unsupported = {e: n for e, n in exts.items()
+                   if e not in _FILE_TREE_RENDERABLE_EXTS}
+    if sum(unsupported.values()) / total < 0.6:
+        return None
+    top = sorted(unsupported.items(), key=lambda kv: -kv[1])[:3]
+    shown = ', '.join(f'.{e}' for e, _ in top)
+    return (
+        f"Most files here are {shown}, which BenchHub can't decode into a "
+        f"renderable type (image / mask / depth / audio / text). You can "
+        f"still map a subset with a precise pattern, but the fields won't "
+        f"render or score until that kind is supported — consider filing a "
+        f"data-type request.")
+
+
 @app.route('/import_from_files', methods=['GET'])
 @login_required
 def import_from_files():
@@ -7277,8 +7493,15 @@ def import_from_files_inspect():
     """List the repo's file tree, summarise it (ext histogram + suggested
     `<dir>/{id}.<ext>` patterns), and render the mapping builder. Accepts
     GET `?repo_id=` so the tabular importer can hand off here (on failure
-    or when the user wants to remap)."""
+    or when the user wants to remap).
+
+    For a large repo it first shows a split/subfolder chooser (`prefix`)
+    so the preview — and the import — are scoped to a subtree instead of
+    walking the whole thing. `scoped=1` skips the chooser and previews the
+    current `prefix` as-is."""
     repo_id = (request.values.get('repo_id') or '').strip()
+    prefix = (request.values.get('prefix') or '').strip().strip('/')
+    scoped = request.values.get('scoped') == '1'
     if not repo_id:
         flash("Enter an HF dataset repo ID.", "warning")
         return redirect(url_for('import_from_files'))
@@ -7289,11 +7512,32 @@ def import_from_files_inspect():
             flash("This dataset is gated or private — save your HF token on "
                   "the Settings page first.", "danger")
             return redirect(url_for('import_from_files'))
+    token = getattr(g.current_user, 'hf_token', None) or None
+    used_storage = _hf_repo_used_storage(repo_id, token=token)
+    size_note = (f" (~{_format_bytes(used_storage)} on HuggingFace)"
+                 if used_storage else "")
+
+    # Large repo + the user hasn't committed to a scope yet → let them pick
+    # a split/subfolder first (cheap shallow listing), so the heavy preview
+    # only walks the chosen subtree.
+    if used_storage and used_storage > _FILE_TREE_SCOPE_BYTES and not scoped:
+        subdirs, here_files, dirs_truncated = _list_hf_subdirs(
+            repo_id, token=token, prefix=prefix or None)
+        if subdirs:
+            # Breadcrumb segments (cumulative paths) for navigating up.
+            crumbs, acc = [], ''
+            for seg in [s for s in prefix.split('/') if s]:
+                acc = f"{acc}/{seg}" if acc else seg
+                crumbs.append({'name': seg, 'path': acc})
+            return render_template(
+                'import_from_files_scope.html',
+                repo_id=repo_id, prefix=prefix, crumbs=crumbs,
+                subdirs=subdirs, here_files=here_files,
+                dirs_truncated=dirs_truncated, size_note=size_note)
+
     try:
-        from huggingface_hub import HfApi
-        files = HfApi().list_repo_files(
-            repo_id, repo_type='dataset',
-            token=getattr(g.current_user, 'hf_token', None) or None)
+        files, truncated = _list_hf_repo_files(
+            repo_id, token=token, path_prefix=prefix or None)
     except Exception as e:
         flash(f"Couldn't list files for {repo_id!r}: {e}", "danger")
         return redirect(url_for('import_from_files'))
@@ -7302,11 +7546,48 @@ def import_from_files_inspect():
     from benchhub.types import DTYPES
     info = inspect_repo(files)
     structure = analyze_levels(files)
+
+    # Even the depth-first fallback couldn't reach data files within budget —
+    # the subtree is too large/deep to map in a request. Block clearly
+    # instead of rendering an empty mapper; if we're not already scoped,
+    # point back at the chooser to narrow down.
+    if not files or not (structure and structure.get('depth')):
+        narrow = (" Narrow to a smaller subfolder."
+                  if prefix else " Pick a smaller split/subfolder first.")
+        flash(
+            f"{repo_id}{(' /' + prefix) if prefix else ''}{size_note} is too "
+            f"large to preview — its directory tree is so big that listing the "
+            f"files doesn't finish in time.{narrow} Or try a parquet-converted "
+            f"mirror via the tabular importer / file a data-type request.",
+            "danger")
+        # Bounce to the chooser at the PARENT level (so they can pick a
+        # sibling/narrower folder) — never back to the same scope, which
+        # would loop.
+        if prefix:
+            parent = prefix.rsplit('/', 1)[0] if '/' in prefix else ''
+            return redirect(url_for('import_from_files_inspect',
+                                    repo_id=repo_id, prefix=parent))
+        return redirect(url_for('import_from_files'))
+
+    warnings = []
+    if truncated:
+        warnings.append(
+            f"This is a very large {'subfolder' if prefix else 'repo'}"
+            f"{size_note} — the file listing was truncated, so the suggestions "
+            f"and structure below are inferred from a sample of {len(files):,} "
+            f"files (more exist). Use a precise pattern (or a narrower "
+            f"split/subfolder) to scope what gets imported; the full subtree is "
+            f"read at import time.")
+    unsupported = _file_tree_unsupported_warning(files)
+    if unsupported:
+        warnings.append(unsupported)
+
     # A capped slice of the raw tree for the browser (76k files is a lot).
     return render_template(
         'import_from_files_map.html',
-        repo_id=repo_id, info=info, structure=structure,
-        file_sample=files[:400], total_files=len(files),
+        repo_id=repo_id, info=info, structure=structure, prefix=prefix,
+        file_sample=files[:400], total_files=len(files), truncated=truncated,
+        warnings=warnings,
         all_kinds=sorted(DTYPES), all_roles=['input', 'gt', 'skip'],
         level_roles=['id', 'modality', 'property', 'split', 'group', 'fixed'],
     )
@@ -7319,14 +7600,15 @@ def import_from_files_from_roles():
     (the 'describe the structure' step)."""
     data = request.json or {}
     repo_id = (data.get('repo_id') or '').strip()
+    prefix = (data.get('prefix') or '').strip().strip('/')
     roles = data.get('roles') or []
     if not repo_id:
         return jsonify({'error': 'repo_id required'}), 400
     try:
-        from huggingface_hub import HfApi
         from benchhub.file_tree_import import generate_spec_from_roles
         token = getattr(g.current_user, 'hf_token', None) or None
-        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
+        files, _ = _list_hf_repo_files(repo_id, token=token,
+                                       path_prefix=prefix or None)
         return jsonify({'spec': generate_spec_from_roles(files, roles)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -7340,15 +7622,17 @@ def import_from_files_decode_preview():
     (e.g. that depth frame 0 lines up with image 0) before committing."""
     import tempfile
     repo_id = (request.json or {}).get('repo_id', '').strip()
+    prefix = ((request.json or {}).get('prefix') or '').strip().strip('/')
     spec = (request.json or {}).get('spec') or []
     if not repo_id or not spec:
         return jsonify({'error': 'repo_id and spec required'}), 400
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import hf_hub_download
         from benchhub.file_tree_import import materialize_file_tree, resolve_samples
         from benchhub.preview import render_preview
         token = getattr(g.current_user, 'hf_token', None) or None
-        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
+        files, _ = _list_hf_repo_files(repo_id, token=token,
+                                       path_prefix=prefix or None)
 
         def _fetch(rel):
             return hf_hub_download(repo_id, rel, repo_type='dataset', token=token)
@@ -7410,6 +7694,7 @@ def import_from_files_commit():
     file-tree import. Same guardrails as the Croissant importer: full
     split (quota-bounded), private for non-admins, one import at a time."""
     repo_id = (request.form.get('repo_id') or '').strip()
+    path_prefix = (request.form.get('path_prefix') or '').strip().strip('/')
     dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
     spec = _parse_file_tree_spec(request.form)
     if not repo_id or not spec:
@@ -7434,13 +7719,24 @@ def import_from_files_commit():
     single_filter = ({filter_token: filter_value}
                      if filter_token and filter_value else None)
 
-    # Validate the spec resolves before creating any rows.
+    # Validate the spec resolves before creating any rows. On a huge repo
+    # the listing is truncated (see _list_hf_repo_files), so a valid spec
+    # may match nothing in the sample — defer that case to the background
+    # task (which lists fully). A spec-shape error still rejects early.
     try:
-        from huggingface_hub import HfApi
         from benchhub.file_tree_import import resolve_samples, distinct_token_values
         token = getattr(g.current_user, 'hf_token', None) or None
-        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
-        resolve_samples(spec, files)
+        files, truncated = _list_hf_repo_files(repo_id, token=token,
+                                               path_prefix=path_prefix or None)
+        try:
+            resolve_samples(spec, files)
+        except ValueError as ve:
+            if not truncated:
+                raise
+            app.logger.info(
+                "file-tree commit: spec didn't resolve on the truncated "
+                "listing for %s (%s) — deferring to the import task.",
+                repo_id, ve)
         variant_values = (distinct_token_values(spec, files, variant_token)
                           if variant_token else [])
     except Exception as e:
@@ -7461,6 +7757,7 @@ def import_from_files_commit():
         res = _tasks.run_file_tree_import.delay(
             dataset_id=row.id, repo_id=repo_id, spec=spec,
             dataset_name=name, sample_cap=-1, token_filter=token_filter,
+            path_prefix=path_prefix or None,
             hf_token=token, owner_user_id=g.current_user.id)
         try:
             row.import_task_id = res.id

@@ -117,6 +117,25 @@ label : loader=token  token=label                       (kind=label)
 # A video clip per sequence
 clip  : loader=sequence  pattern=clips/{id}/{frame}.png  (item_kind=image)</code></pre>
 
+<h3 class="mt-3">Very large repos &mdash; choose a split first</h3>
+<p>For a big repo (tens of GB or more), the mapper first shows a <strong>split /
+    subfolder chooser</strong> instead of walking every file: pick a top-level
+    folder (e.g. <code>dataset/valid</code>), <strong>Browse</strong> to drill in,
+    or <strong>Preview &amp; map</strong> to scope the preview to that subtree. Only
+    the chosen subtree is listed &mdash; and only it gets imported. (A 21&nbsp;TB,
+    250k-file medical repo that times out as a whole lists its <code>valid</code>
+    split completely in a couple of seconds.) You can change the scope from the
+    mapper at any time, or &ldquo;Preview the whole repo as-is&rdquo; to skip the
+    chooser.</p>
+<p>The mapper also lists files under a time budget so nothing can hang the page. If
+    a scope is still enormous, the preview is built from a representative
+    <em>sample</em> with a &ldquo;very large&rdquo; banner (your pattern still
+    imports the full matching set at commit time); if even the sampler can't reach
+    data files, the import is blocked with a pointer to narrow further, the tabular
+    importer, or a data-type request. Repos whose files are an undecodable kind
+    (e.g. <code>.nii.gz</code> NIfTI medical volumes) are flagged so you know they
+    won't render or score.</p>
+
 <h3 class="mt-3">Confirm before you commit</h3>
 <ul>
     <li><strong>Decode preview</strong> &mdash; runs your mapping on the first sample and

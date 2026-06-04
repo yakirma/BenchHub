@@ -177,7 +177,8 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
 @celery.task(bind=True, name='tasks.run_file_tree_import',
              soft_time_limit=3600, time_limit=4200)
 def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
-                         sample_cap, hf_token, owner_user_id, token_filter=None):
+                         sample_cap, hf_token, owner_user_id, token_filter=None,
+                         path_prefix=None):
     """Background importer for the user-declared file-tree mapping. The
     Dataset row is pre-created ('importing') by the route. Fetches the
     declared source files via hf_hub_download, decodes them through
@@ -204,8 +205,17 @@ def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
                   'message': 'Listing repo files…'})
         try:
             api = HfApi()
-            files = api.list_repo_files(repo_id, repo_type='dataset',
-                                        token=hf_token or None)
+            if path_prefix:
+                # Scoped import (user picked a split/subfolder): list only
+                # that subtree's files so a giant repo isn't walked whole.
+                from huggingface_hub.hf_api import RepoFile
+                files = [it.path for it in api.list_repo_tree(
+                    repo_id, path_in_repo=path_prefix, recursive=True,
+                    repo_type='dataset', token=hf_token or None)
+                    if isinstance(it, RepoFile)]
+            else:
+                files = api.list_repo_files(repo_id, repo_type='dataset',
+                                            token=hf_token or None)
 
             def _fetch(rel):
                 return hf_hub_download(repo_id, rel, repo_type='dataset',

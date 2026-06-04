@@ -19,15 +19,62 @@ def user_client(client, db_session):
 
 
 def _stub_hfapi(monkeypatch, files):
-    """Stub huggingface_hub.HfApi so list_repo_files returns `files`."""
+    """Stub huggingface_hub so the importer's listing helpers return
+    `files`: list_repo_files (the background task), list_repo_tree (the
+    bounded request-path lister, recursive + per-dir), and dataset_info
+    (the cheap size probe)."""
     mod = types.ModuleType('huggingface_hub')
+    hf_api_mod = types.ModuleType('huggingface_hub.hf_api')
+
+    class RepoFile:
+        def __init__(self, path):
+            self.path = path
+
+    class RepoFolder:
+        def __init__(self, path):
+            self.path = path
+
+    hf_api_mod.RepoFile = RepoFile
+    hf_api_mod.RepoFolder = RepoFolder
+
+    class _Info:
+        used_storage = None
+        siblings = None
 
     class _Api:
         def list_repo_files(self, repo_id, **kw):
             return files
+
+        def list_repo_tree(self, repo_id, path_in_repo=None,
+                            recursive=False, **kw):
+            # Honours `path_in_repo` scoping for both modes. Recursive →
+            # every file under the prefix; non-recursive → direct children
+            # (folders synthesised from path prefixes so the DFS sampler /
+            # scope chooser can descend).
+            prefix = (path_in_repo + '/') if path_in_repo else ''
+            scoped = [f for f in files if f.startswith(prefix)]
+            seen_dirs = set()
+            for f in scoped:
+                rest = f[len(prefix):]
+                if recursive:
+                    yield RepoFile(f)
+                    continue
+                if '/' in rest:
+                    d = prefix + rest.split('/', 1)[0]
+                    if d not in seen_dirs:
+                        seen_dirs.add(d)
+                        yield RepoFolder(d)
+                else:
+                    yield RepoFile(f)
+
+        def dataset_info(self, repo_id, **kw):
+            return _Info()
+
     mod.HfApi = _Api
+    mod.hf_api = hf_api_mod
     mod.hf_hub_download = lambda *a, **k: '/nonexistent'
     monkeypatch.setitem(sys.modules, 'huggingface_hub', mod)
+    monkeypatch.setitem(sys.modules, 'huggingface_hub.hf_api', hf_api_mod)
 
 
 def test_entry_page_requires_login(client, db_session):
@@ -301,3 +348,130 @@ def test_sequence_cf_streams_video_and_renders(user_client, db_session, tmp_path
     body = client.get(f'/dataset/{ds.id}').data.decode()
     assert '<video' in body
     assert f'/api/viz/{cf.id}' in body
+
+
+# --- Bounded listing + screening for huge / unsupported repos -------------
+
+def test_unsupported_warning_flags_nifti_volumes():
+    """`.nii.gz` files (NIfTI medical volumes) are flagged despite the bare
+    `.gz` last-extension being a valid container loader."""
+    import app
+    files = [f'dataset/train/train_{i}/train_{i}_a/v_{i}.nii.gz'
+             for i in range(8)] + ['dataset/reports/r.txt', 'README.md']
+    warn = app._file_tree_unsupported_warning(files)
+    assert warn and 'NIfTI' in warn and 'data-type request' in warn
+
+
+def test_unsupported_warning_silent_for_images():
+    """A normal image tree raises no unsupported warning."""
+    import app
+    files = [f'cls_{c}/{i}.png' for c in range(3) for i in range(4)]
+    assert app._file_tree_unsupported_warning(files) is None
+
+
+def test_list_repo_files_complete_when_small(monkeypatch):
+    """A small repo lists fully and is not marked truncated."""
+    import app
+    files = [f'image/{i}.png' for i in range(5)]
+    _stub_hfapi(monkeypatch, files)
+    out, truncated = app._list_hf_repo_files('a/b')
+    assert sorted(out) == sorted(files)
+    assert truncated is False
+
+
+def test_inspect_blocks_when_listing_unreachable(user_client, monkeypatch):
+    """When even the depth-first fallback can't reach files in time (a
+    too-large/too-deep repo), inspect redirects with a clear block instead
+    of rendering an empty mapper."""
+    client, _ = user_client
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    monkeypatch.setattr('app._hf_repo_used_storage', lambda *a, **k: 21_000_000_000_000)
+    monkeypatch.setattr('app._list_hf_repo_files', lambda *a, **k: ([], True))
+    r = client.post('/import_from_files/inspect', data={'repo_id': 'big/repo'},
+                    follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers['Location'].endswith('/import_from_files')
+
+
+def test_inspect_surfaces_truncated_and_unsupported_banner(user_client, monkeypatch):
+    """A truncated sample of NIfTI volumes renders the mapper with both the
+    'very large repo' truncation banner and the unsupported-type warning."""
+    client, _ = user_client
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    monkeypatch.setattr('app._hf_repo_used_storage', lambda *a, **k: 21_000_000_000_000)
+    sample = [f'dataset/train/train_{i}/train_{i}_a/v.nii.gz' for i in range(12)]
+    monkeypatch.setattr('app._list_hf_repo_files', lambda *a, **k: (sample, True))
+    body = client.post('/import_from_files/inspect',
+                       data={'repo_id': 'big/repo'}).data.decode()
+    assert 'very large repo' in body
+    assert 'NIfTI' in body
+    assert 'File one' in body          # data-type request link rendered
+
+
+def _stub_large(monkeypatch, files):
+    """Stub a large repo so the split chooser triggers."""
+    _stub_hfapi(monkeypatch, files)
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    monkeypatch.setattr('app._hf_repo_used_storage', lambda *a, **k: 50 * 1024 ** 3)
+
+
+def test_large_repo_shows_split_chooser_before_preview(user_client, monkeypatch):
+    """A large repo first renders the split/subfolder chooser (cheap shallow
+    listing) instead of the heavy mapper."""
+    client, _ = user_client
+    files = [f'data/{split}/{i}.png'
+             for split in ('train', 'valid') for i in range(3)]
+    _stub_large(monkeypatch, files)
+    body = client.post('/import_from_files/inspect',
+                       data={'repo_id': 'big/repo'}).data.decode()
+    assert 'Choose what to import' in body
+    assert 'data' in body              # the single top-level folder
+    assert 'Preview' in body           # preview/browse actions
+    # Not the mapper yet.
+    assert 'Map the modalities' not in body
+
+
+def test_chooser_drilldown_then_scoped_preview(user_client, monkeypatch):
+    """Browsing into a subfolder lists ITS children; scoped=1 renders the
+    mapper for just that subtree."""
+    client, _ = user_client
+    files = [f'data/{split}/{i}.png'
+             for split in ('train', 'valid') for i in range(3)]
+    _stub_large(monkeypatch, files)
+
+    # Browse into data/ → shows train + valid.
+    body = client.post('/import_from_files/inspect',
+                       data={'repo_id': 'big/repo', 'prefix': 'data'}).data.decode()
+    assert 'Choose what to import' in body
+    assert 'train' in body and 'valid' in body
+
+    # Preview data/valid as-is (scoped) → mapper, scoped to that subtree.
+    body = client.post('/import_from_files/inspect',
+                       data={'repo_id': 'big/repo', 'prefix': 'data/valid',
+                             'scoped': '1'}).data.decode()
+    assert 'Map the modalities' in body
+    assert 'scope:' in body            # scope badge
+    assert 'data/valid' in body
+    assert 'path_prefix' in body       # hidden field threads the scope
+
+
+def test_commit_threads_path_prefix_to_task(user_client, monkeypatch):
+    """The chosen scope is passed to the import task so only that subtree is
+    listed/imported."""
+    client, _ = user_client
+    files = [f'data/valid/{i}.png' for i in range(4)]
+    _stub_hfapi(monkeypatch, files)
+    import tasks as _tasks
+    calls = {}
+    monkeypatch.setattr(_tasks.run_file_tree_import, 'delay',
+                        lambda **kw: calls.update(kw) or types.SimpleNamespace(id='t'))
+    r = client.post('/import_from_files/commit', data={
+        'repo_id': 'big/repo', 'dataset_name': 'valid-only',
+        'path_prefix': 'data/valid',
+        'field_name': ['image'], 'field_kind': ['image'],
+        'field_role': ['input'], 'field_loader': ['file'],
+        'field_pattern': ['data/valid/{id}.png'],
+        'field_key': [''], 'field_shared': ['0'], 'field_axis': ['0'],
+    }, follow_redirects=False)
+    assert r.status_code == 302
+    assert calls['path_prefix'] == 'data/valid'

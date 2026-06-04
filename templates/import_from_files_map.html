@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% set prefix = prefix|default('') %}
 {% block title %}Map {{ repo_id }} — BenchHub{% endblock %}
 {% block content %}
 <div class="container py-4" style="max-width: 1080px;">
@@ -11,8 +12,24 @@
         </form>
         <a href="{{ url_for('import_from_files') }}" class="small">← change repo</a>
     </div>
-    <p class="lead text-body-secondary mb-3"><span class="font-monospace">{{ repo_id }}</span>
-        <span class="small">· {{ '{:,}'.format(total_files) }} files</span></p>
+    <p class="lead text-body-secondary mb-1"><span class="font-monospace">{{ repo_id }}</span>
+        <span class="small">· {{ '{:,}'.format(total_files) }}{% if truncated %}+{% endif %} files</span></p>
+    {% if prefix %}
+    <p class="small mb-3">
+        <span class="badge text-bg-light border"><i class="bi bi-folder me-1"></i>scope:
+            <span class="font-monospace">{{ prefix }}</span></span>
+        <a href="{{ url_for('import_from_files_inspect', repo_id=repo_id, prefix=prefix.rsplit('/', 1)[0] if '/' in prefix else '') }}"
+           class="ms-2">change split/subfolder</a>
+    </p>
+    {% endif %}
+
+    {% for w in warnings %}
+    <div class="alert {{ 'alert-warning' if loop.first and truncated else 'alert-info' }} d-flex gap-2 py-2 small">
+        <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
+        <div>{{ w }}{% if 'data-type request' in w %}
+            <a href="{{ url_for('feature_requests_list') }}" class="alert-link">File one →</a>{% endif %}</div>
+    </div>
+    {% endfor %}
 
     <div id="draft-banner"></div>
 
@@ -47,6 +64,7 @@
         <div class="col-lg-8">
             <form method="post" action="{{ url_for('import_from_files_commit') }}" id="map-form">
                 <input type="hidden" name="repo_id" value="{{ repo_id }}">
+                <input type="hidden" name="path_prefix" value="{{ prefix }}">
                 <div class="card border-0 shadow-sm mb-3">
                     <div class="card-body p-3">
                         <label class="form-label fw-semibold mb-1" for="dataset_name">Dataset name</label>
@@ -385,7 +403,7 @@
         try {
             const resp = await fetch('{{ url_for("import_from_files_from_roles") }}', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({repo_id: '{{ repo_id }}', roles})
+                body: JSON.stringify({repo_id: '{{ repo_id }}', prefix: '{{ prefix }}', roles})
             });
             const data = await resp.json();
             if (data.error) { msg.innerHTML = '<span class="text-danger">' + data.error + '</span>'; return; }
@@ -461,7 +479,7 @@
         try {
             const resp = await fetch('{{ url_for("import_from_files_decode_preview") }}', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({repo_id: '{{ repo_id }}', spec})
+                body: JSON.stringify({repo_id: '{{ repo_id }}', prefix: '{{ prefix }}', spec})
             });
             const data = await resp.json();
             if (data.error) { out.innerHTML = '<div class="alert alert-danger">' + data.error + '</div>'; return; }
