@@ -8,6 +8,13 @@ import pytest
 from app import Dataset, User, db
 
 
+@pytest.fixture(autouse=True)
+def _no_card_network(monkeypatch):
+    """The inspect route fetches a dataset-card summary; keep it off the
+    network in these unit tests."""
+    monkeypatch.setattr('benchhub.hf_search.card_summary', lambda *a, **k: None)
+
+
 @pytest.fixture
 def user_client(client, db_session):
     u = User(email='ft@bench.local', display_name='ft',
@@ -453,6 +460,24 @@ def test_chooser_drilldown_then_scoped_preview(user_client, monkeypatch):
     assert 'scope:' in body            # scope badge
     assert 'data/valid' in body
     assert 'path_prefix' in body       # hidden field threads the scope
+
+
+def test_card_summary_renders_on_map_stage(user_client, monkeypatch):
+    """The dataset-card description shows on the file-tree mapper stage."""
+    client, _ = user_client
+    files = [f'image/{i}.png' for i in range(3)]
+    _stub_hfapi(monkeypatch, files)
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    monkeypatch.setattr('benchhub.hf_search.card_summary', lambda *a, **k: {
+        'id': 'a/b', 'title': 'Fancy DS', 'description': 'A neat little dataset.',
+        'gated': False, 'private': False, 'downloads': 5, 'likes': 2,
+        'task_categories': ['image-classification']})
+    body = client.post('/import_from_files/inspect',
+                       data={'repo_id': 'a/b'}).data.decode()
+    assert 'Map the modalities' in body            # the mapper stage
+    assert 'Fancy DS' in body                       # card title
+    assert 'A neat little dataset.' in body         # card description
+    assert 'image-classification' in body           # task tag
 
 
 def test_commit_threads_path_prefix_to_task(user_client, monkeypatch):

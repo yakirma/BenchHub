@@ -23,6 +23,8 @@
     </p>
     {% endif %}
 
+    {% include "_hf_card_summary.html" %}
+
     {% for w in warnings %}
     <div class="alert {{ 'alert-warning' if loop.first and truncated else 'alert-info' }} d-flex gap-2 py-2 small">
         <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>

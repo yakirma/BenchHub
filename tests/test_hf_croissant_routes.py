@@ -15,6 +15,13 @@ from app import Dataset, DatasetField, User, db
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _no_card_network(monkeypatch):
+    """The preview route fetches a dataset-card summary; keep it off the
+    network by default (the dedicated card test overrides this)."""
+    monkeypatch.setattr('benchhub.hf_search.card_summary', lambda *a, **k: None)
+
+
 @pytest.fixture
 def admin_user(db_session):
     u = User(

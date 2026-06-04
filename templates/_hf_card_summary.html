@@ -1,0 +1,31 @@
+{# Dataset-card summary panel, shown at each preview stage so the user
+   keeps context on what they're importing. Expects `card` = the
+   benchhub.hf_search.card_summary() dict (may be None → renders nothing). #}
+{% if card and card.id %}
+<div class="card border-0 bg-body-tertiary shadow-sm mb-3">
+    <div class="card-body p-3">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+            <h2 class="h6 fw-semibold mb-1">
+                {{ card.title or card.id }}
+                {% if card.gated %}<span class="badge text-bg-warning"
+                    title="Gated — requires HuggingFace authorization"><i
+                    class="bi bi-lock-fill"></i> Gated</span>{% endif %}
+            </h2>
+            <a href="https://huggingface.co/datasets/{{ card.id }}" target="_blank"
+               rel="noopener" class="small text-nowrap">View on HF
+                <i class="bi bi-box-arrow-up-right"></i></a>
+        </div>
+        <div class="small text-body-secondary mb-2">
+            <span class="font-monospace">{{ card.id }}</span>
+            · &darr; {{ '{:,}'.format(card.downloads) }}
+            · &hearts; {{ '{:,}'.format(card.likes) }}
+            {% for t in card.task_categories %}<span
+                class="badge text-bg-light border ms-1">{{ t }}</span>{% endfor %}
+        </div>
+        {% if card.description %}
+        <p class="small mb-0"
+           style="white-space: pre-wrap; max-height: 11rem; overflow: auto;">{{ card.description }}</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}

@@ -17,6 +17,13 @@ from benchhub import hf_croissant as hfc
 from benchhub import hf_search as hfs
 
 
+@pytest.fixture(autouse=True)
+def _no_card_network(monkeypatch):
+    """The preview route fetches a dataset-card summary; keep it off the
+    network in these unit tests."""
+    monkeypatch.setattr('benchhub.hf_search.card_summary', lambda *a, **k: None)
+
+
 # ---------------------------------------------------------------------------
 # fetch_dataset_info — /info endpoint shape
 # ---------------------------------------------------------------------------

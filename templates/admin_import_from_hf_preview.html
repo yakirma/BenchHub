@@ -137,13 +137,14 @@
             ← change repo
         </a>
     </div>
+    {% include "_hf_card_summary.html" %}
+    {% if not card %}
     <p class="lead text-body-secondary mb-1">
         <span class="font-monospace">{{ repo_id }}</span>
     </p>
     {% if schema.description %}
     <p class="text-body-secondary small mb-4">{{ schema.description | truncate(280) }}</p>
-    {% else %}
-    <p class="mb-4"></p>
+    {% endif %}
     {% endif %}
 
     {% if import_warnings %}

@@ -87,6 +87,11 @@ _DOMAIN_FILTERS = {
 _TRENDING_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _TRENDING_TTL_SECONDS = 60 * 60  # 1h is plenty — trending barely shifts hour-to-hour
 
+# Per-repo card-summary cache, so the same dataset shown across several
+# preview stages isn't re-fetched from HF each time.
+_CARD_CACHE: dict[str, tuple[float, dict]] = {}
+_CARD_TTL_SECONDS = 60 * 60
+
 
 def trending_by_domain(*, limit_per_domain: int = 5) -> dict[str, list[dict]]:
     """Return top-downloaded HF datasets per ML domain, cached.
@@ -120,9 +125,10 @@ def trending_by_domain(*, limit_per_domain: int = 5) -> dict[str, list[dict]]:
 
 
 def _clear_cache() -> None:
-    """Test-only: drop the trending cache so monkeypatched fetches
-    produce fresh results."""
+    """Test-only: drop the trending + card caches so monkeypatched
+    fetches produce fresh results."""
     _TRENDING_CACHE.clear()
+    _CARD_CACHE.clear()
 
 
 _HF_DATASETS_SERVER = "https://datasets-server.huggingface.co/size"
@@ -307,7 +313,15 @@ def card_summary(repo_id: str, *, timeout: int = 10) -> dict | None:
     The HF detail API's `description` is the card text with markdown
     structure flattened (lots of stray tabs/newlines), so we collapse
     whitespace and, when present, jump past the boilerplate
-    'Dataset Card for X … Dataset Summary' header to the real summary."""
+    'Dataset Card for X … Dataset Summary' header to the real summary.
+    Successful results are memoised for an hour so the same dataset shown
+    across several preview stages isn't re-fetched each time."""
+    if not repo_id:
+        return None
+    now = time.time()
+    cached = _CARD_CACHE.get(repo_id)
+    if cached and (now - cached[0]) < _CARD_TTL_SECONDS:
+        return cached[1]
     doc = fetch_dataset_card(repo_id, timeout=timeout)
     if not doc:
         return None
@@ -321,7 +335,7 @@ def card_summary(repo_id: str, *, timeout: int = 10) -> dict | None:
     tags = [t.split(':', 1)[1] for t in (doc.get('tags') or [])
             if isinstance(t, str) and t.startswith('task_categories:')]
     title = cd.get('pretty_name') or cd.get('title') or repo_id
-    return {
+    summary = {
         'id': repo_id,
         'title': str(title)[:140],
         'description': desc,
@@ -331,6 +345,8 @@ def card_summary(repo_id: str, *, timeout: int = 10) -> dict | None:
         'likes': int(doc.get('likes') or 0),
         'task_categories': tags[:6],
     }
+    _CARD_CACHE[repo_id] = (now, summary)
+    return summary
 
 
 def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:

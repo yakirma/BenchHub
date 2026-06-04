@@ -7233,10 +7233,12 @@ def admin_import_from_hf_preview():
             flash(b, 'danger')
         return redirect(url_for('admin_import_from_hf'))
 
+    from benchhub.hf_search import card_summary
     return render_template(
         'admin_import_from_hf_preview.html',
         import_warnings=import_warnings,
         repo_id=repo_id,
+        card=card_summary(repo_id),
         schema=schema,
         split_counts=split_counts,
         all_kinds=sorted(DTYPES),
@@ -7572,6 +7574,8 @@ def import_from_files_inspect():
     used_storage = _hf_repo_used_storage(repo_id, token=token)
     size_note = (f" (~{_format_bytes(used_storage)} on HuggingFace)"
                  if used_storage else "")
+    from benchhub.hf_search import card_summary
+    card = card_summary(repo_id)   # dataset-card blurb, shown at each stage
 
     # Large repo + the user hasn't committed to a scope yet → let them pick
     # a split/subfolder first (cheap shallow listing), so the heavy preview
@@ -7589,7 +7593,7 @@ def import_from_files_inspect():
                 'import_from_files_scope.html',
                 repo_id=repo_id, prefix=prefix, crumbs=crumbs,
                 subdirs=subdirs, here_files=here_files,
-                dirs_truncated=dirs_truncated, size_note=size_note)
+                dirs_truncated=dirs_truncated, size_note=size_note, card=card)
 
     try:
         files, truncated = _list_hf_repo_files(
@@ -7643,7 +7647,7 @@ def import_from_files_inspect():
         'import_from_files_map.html',
         repo_id=repo_id, info=info, structure=structure, prefix=prefix,
         file_sample=files[:400], total_files=len(files), truncated=truncated,
-        warnings=warnings,
+        warnings=warnings, card=card,
         all_kinds=sorted(DTYPES), all_roles=['input', 'gt', 'skip'],
         level_roles=['id', 'modality', 'property', 'split', 'group', 'fixed'],
     )
