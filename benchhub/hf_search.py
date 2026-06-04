@@ -16,6 +16,7 @@ gated repo's id by hand and proceed through the existing per-user
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -295,6 +296,41 @@ def fetch_dataset_card(repo_id: str, *, timeout: int = 10) -> dict | None:
     except (TypeError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
+
+
+def card_summary(repo_id: str, *, timeout: int = 10) -> dict | None:
+    """A compact, human-readable summary of a dataset's HF card — shown
+    before the user commits to a full preview. Returns
+    `{id, title, description, gated, private, downloads, likes,
+    task_categories}` or None if the repo can't be read.
+
+    The HF detail API's `description` is the card text with markdown
+    structure flattened (lots of stray tabs/newlines), so we collapse
+    whitespace and, when present, jump past the boilerplate
+    'Dataset Card for X … Dataset Summary' header to the real summary."""
+    doc = fetch_dataset_card(repo_id, timeout=timeout)
+    if not doc:
+        return None
+    cd = doc.get('cardData') or {}
+    desc = re.sub(r'\s+', ' ', (doc.get('description') or '')).strip()
+    i = desc.lower().find('dataset summary')
+    if i != -1:
+        desc = desc[i + len('dataset summary'):].strip(' :-–—')
+    if len(desc) > 600:
+        desc = desc[:600].rsplit(' ', 1)[0] + '…'
+    tags = [t.split(':', 1)[1] for t in (doc.get('tags') or [])
+            if isinstance(t, str) and t.startswith('task_categories:')]
+    title = cd.get('pretty_name') or cd.get('title') or repo_id
+    return {
+        'id': repo_id,
+        'title': str(title)[:140],
+        'description': desc,
+        'gated': bool(doc.get('gated') or False),
+        'private': bool(doc.get('private') or False),
+        'downloads': int(doc.get('downloads') or 0),
+        'likes': int(doc.get('likes') or 0),
+        'task_categories': tags[:6],
+    }
 
 
 def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:

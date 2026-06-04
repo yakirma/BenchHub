@@ -190,6 +190,7 @@
                                 <button type="submit" class="btn btn-sm btn-primary w-100">
                                     <i class="bi bi-search me-1"></i>Fetch &amp; preview
                                 </button>
+                                <div id="hf-card-preview" class="mt-2 d-none"></div>
                                 <div id="hf-gated-notice" class="mt-2 d-none"></div>
                                 <div class="small text-body-secondary mt-2">
                                     Reads the repo's Croissant/parquet schema and
@@ -598,9 +599,12 @@ details.dataset-req-card:hover > summary .req-chev {
         const repoInput = document.getElementById('hf-repo-id');
         const suggList  = document.getElementById('hf-repo-suggestions');
         const gatedNotice = document.getElementById('hf-gated-notice');
+        const cardPreview = document.getElementById('hf-card-preview');
         if (!repoInput || !suggList) return;
 
         const HF_TOKEN_URL = '{{ url_for("hf_token_settings") }}';
+        const CARD_URL = '{{ url_for("admin_import_from_hf_card") }}';
+        const REPO_RE = /^[\w.\-]+\/[\w.\-]+$/;
         const fmtCount = (n) => {
             if (!n) return '0';
             if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -627,11 +631,52 @@ details.dataset-req-card:hover > summary .req-chev {
                 + '</div></div>';
             gatedNotice.classList.remove('d-none');
         }
+        // Dataset-card summary shown before the preview.
+        let cardSeq = 0, cardTimer = null;
+        async function loadCard(id) {
+            if (!cardPreview) return;
+            if (!REPO_RE.test(id)) {
+                cardPreview.classList.add('d-none'); cardPreview.innerHTML = ''; return;
+            }
+            const seq = ++cardSeq;
+            cardPreview.classList.remove('d-none');
+            cardPreview.innerHTML = '<div class="text-body-secondary small py-1">'
+                + '<span class="spinner-border spinner-border-sm me-1"></span>Loading card…</div>';
+            try {
+                const resp = await fetch(CARD_URL + '?repo_id=' + encodeURIComponent(id));
+                if (seq !== cardSeq) return;
+                const c = await resp.json();
+                if (seq !== cardSeq) return;
+                if (!c || !c.id) { cardPreview.classList.add('d-none'); cardPreview.innerHTML = ''; return; }
+                const tags = (c.task_categories || []).slice(0, 3).map(t =>
+                    '<span class="badge text-bg-light border me-1">' + escapeHtml(t) + '</span>').join('');
+                cardPreview.innerHTML =
+                    '<div class="border rounded p-2 bg-body-tertiary">'
+                    + '<div class="d-flex justify-content-between align-items-start gap-1">'
+                    + '<div class="fw-semibold small">' + escapeHtml(c.title || c.id) + gatedBadge(c.gated) + '</div>'
+                    + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                    + '" target="_blank" rel="noopener" class="small text-nowrap">HF <i class="bi bi-box-arrow-up-right"></i></a></div>'
+                    + '<div class="text-body-secondary" style="font-size:.72rem;">↓ ' + fmtCount(c.downloads)
+                    + ' · ♥ ' + fmtCount(c.likes) + (tags ? ' · ' + tags : '') + '</div>'
+                    + (c.description
+                       ? '<div class="small mt-1" style="max-height:8rem;overflow:auto;white-space:pre-wrap;">'
+                         + escapeHtml(c.description) + '</div>'
+                       : '') + '</div>';
+            } catch (_) {
+                cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';
+            }
+        }
 
         let seq = 0, timer = null;
         repoInput.addEventListener('input', () => {
             clearTimeout(timer);
             const q = repoInput.value.trim();
+            clearTimeout(cardTimer);
+            if (REPO_RE.test(q)) {
+                cardTimer = setTimeout(() => loadCard(q), 350);
+            } else if (cardPreview) {
+                cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';
+            }
             if (q.length < 2) {
                 suggList.classList.add('d-none');
                 suggList.innerHTML = '';
@@ -673,11 +718,12 @@ details.dataset-req-card:hover > summary .req-chev {
         suggList.addEventListener('click', (e) => {
             const li = e.target.closest('li[data-repo-id]');
             if (li) {
-                repoInput.value = li.getAttribute('data-repo-id');
+                const rid = li.getAttribute('data-repo-id');
+                repoInput.value = rid;
                 suggList.classList.add('d-none');
                 suggList.innerHTML = '';
-                showGatedNotice(li.getAttribute('data-repo-id'),
-                                !!li.getAttribute('data-gated'));
+                showGatedNotice(rid, !!li.getAttribute('data-gated'));
+                loadCard(rid);
                 repoInput.focus();
             }
         });

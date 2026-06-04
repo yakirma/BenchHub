@@ -6867,6 +6867,19 @@ def admin_import_from_hf_search():
     return jsonify(search_datasets(q, limit=10))
 
 
+@app.route('/admin/import_from_hf/card')
+@login_required
+def admin_import_from_hf_card():
+    """JSON dataset-card summary (title + cleaned description + task tags +
+    gated flag) for a repo, shown before the user runs a full preview so
+    they know what the dataset is."""
+    from benchhub.hf_search import card_summary
+    repo_id = (request.args.get('repo_id') or '').strip()
+    if not repo_id:
+        return jsonify({}), 400
+    return jsonify(card_summary(repo_id) or {})
+
+
 @app.route('/admin/import_from_hf/trending')
 @login_required
 def admin_import_from_hf_trending():

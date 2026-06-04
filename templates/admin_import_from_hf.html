@@ -39,6 +39,9 @@
                 it hands off to the file-tree mapper automatically — and you can
                 switch to it from the preview at any time.
             </div>
+            {# Dataset-card summary, shown once a full repo id is chosen,
+               before the user runs the preview (populated by JS). #}
+            <div id="card-preview" class="mt-3 d-none"></div>
             {# Shown when a gated dataset is selected (populated by JS). #}
             <div id="gated-notice" class="mt-3 d-none"></div>
         </div>
@@ -80,9 +83,12 @@
     const suggList = document.getElementById('repo-suggestions');
     const trendingGrid = document.getElementById('trending-grid');
     const gatedNotice = document.getElementById('gated-notice');
+    const cardPreview = document.getElementById('card-preview');
     if (!repoInput || !suggList || !trendingGrid) return;
 
     const HF_TOKEN_URL = '{{ url_for("hf_token_settings") }}';
+    const CARD_URL = '{{ url_for("admin_import_from_hf_card") }}';
+    const REPO_RE = /^[\w.\-]+\/[\w.\-]+$/;
 
     // ---- Helpers --------------------------------------------------
     const fmtCount = (n) => {
@@ -119,20 +125,68 @@
         gatedNotice.classList.remove('d-none');
     }
 
+    // Dataset-card summary shown before the preview, so you know what
+    // you're about to import.
+    let cardSeq = 0;
+    async function loadCard(id) {
+        if (!cardPreview) return;
+        if (!REPO_RE.test(id)) {
+            cardPreview.classList.add('d-none'); cardPreview.innerHTML = ''; return;
+        }
+        const seq = ++cardSeq;
+        cardPreview.classList.remove('d-none');
+        cardPreview.innerHTML = '<div class="text-body-secondary small py-2">'
+            + '<span class="spinner-border spinner-border-sm me-1"></span>'
+            + 'Loading dataset card…</div>';
+        try {
+            const resp = await fetch(CARD_URL + '?repo_id=' + encodeURIComponent(id));
+            if (seq !== cardSeq) return;
+            const c = await resp.json();
+            if (seq !== cardSeq) return;
+            if (!c || !c.id) { cardPreview.classList.add('d-none'); cardPreview.innerHTML = ''; return; }
+            const tags = (c.task_categories || []).map(t =>
+                '<span class="badge text-bg-light border me-1">' + escapeHtml(t) + '</span>').join('');
+            cardPreview.innerHTML =
+                '<div class="card border-0 bg-body-tertiary"><div class="card-body p-3">'
+                + '<div class="d-flex justify-content-between align-items-start gap-2">'
+                + '<h3 class="h6 fw-semibold mb-1">' + escapeHtml(c.title || c.id) + gatedBadge(c.gated) + '</h3>'
+                + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                + '" target="_blank" rel="noopener" class="small text-nowrap">'
+                + 'View on HF <i class="bi bi-box-arrow-up-right"></i></a></div>'
+                + '<div class="small text-body-secondary mb-2">↓ ' + fmtCount(c.downloads)
+                + ' · ♥ ' + fmtCount(c.likes) + (tags ? ' · ' + tags : '') + '</div>'
+                + (c.description
+                   ? '<p class="small mb-0" style="white-space:pre-wrap;">' + escapeHtml(c.description) + '</p>'
+                   : '<p class="small text-body-secondary fst-italic mb-0">No description on the dataset card.</p>')
+                + '</div></div>';
+        } catch (_) {
+            cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';
+        }
+    }
+
     function pickRepo(id, gated) {
         repoInput.value = id;
         suggList.classList.add('d-none');
         suggList.innerHTML = '';
         showGatedNotice(id, gated);
+        loadCard(id);
         repoInput.focus();
     }
 
     // ---- Type-ahead search ---------------------------------------
     let searchSeq = 0;
     let searchTimer = null;
+    let cardTimer = null;
     repoInput.addEventListener('input', () => {
         clearTimeout(searchTimer);
         const q = repoInput.value.trim();
+        // Card preview: when a full `owner/repo` is typed, load it.
+        clearTimeout(cardTimer);
+        if (REPO_RE.test(q)) {
+            cardTimer = setTimeout(() => loadCard(q), 350);
+        } else if (cardPreview) {
+            cardPreview.classList.add('d-none'); cardPreview.innerHTML = '';
+        }
         if (q.length < 2) {
             suggList.classList.add('d-none');
             suggList.innerHTML = '';

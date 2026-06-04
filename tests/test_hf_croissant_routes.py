@@ -516,6 +516,23 @@ def test_trending_route_returns_grouped_json(admin_client, monkeypatch):
     assert body["Vision"][0]["id"] == "v/x"
 
 
+def test_card_route_returns_summary(admin_client, monkeypatch):
+    """The card route serialises the helper's summary; missing repo_id
+    is a 400."""
+    from benchhub import hf_search
+    monkeypatch.setattr(hf_search, 'card_summary', lambda r, **k: {
+        "id": r, "title": "Foo", "description": "A test dataset.",
+        "gated": True, "private": False, "downloads": 9, "likes": 1,
+        "task_categories": ["image-classification"]})
+    r = admin_client.get('/admin/import_from_hf/card?repo_id=me/foo')
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["title"] == "Foo" and body["gated"] is True
+    assert body["description"] == "A test dataset."
+    # No repo_id → 400.
+    assert admin_client.get('/admin/import_from_hf/card').status_code == 400
+
+
 def _mock_hf_import(monkeypatch, tmp_path, captured):
     """Patch the heavy HF materialize + typed import so the commit route
     runs end-to-end (eager Celery) without network. Records kwargs."""

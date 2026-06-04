@@ -1,6 +1,7 @@
 """Tests for benchhub.hf_search — HF Hub /api/datasets wrappers + cache."""
 from __future__ import annotations
 
+import urllib.error
 import urllib.request
 
 import pytest
@@ -180,6 +181,33 @@ def test_trending_cache_keys_on_limit(monkeypatch):
     big = hf_search.trending_by_domain(limit_per_domain=8)
     assert all(len(v) == 3 for v in small.values())
     assert all(len(v) == 8 for v in big.values())
+
+
+# ---------------------------------------------------------------------------
+# card_summary — pre-preview dataset-card blurb
+# ---------------------------------------------------------------------------
+
+def test_card_summary_cleans_and_extracts_summary(monkeypatch):
+    body = (b'{"description":"Dataset Card for Foo\\n\\t\\n\\t\\tDataset Summary'
+            b'\\n\\nFoo is a tiny\\t test set.",'
+            b'"gated":"auto","downloads":1234,"likes":7,'
+            b'"tags":["task_categories:image-classification","language:en"],'
+            b'"cardData":{"pretty_name":"Foo Dataset"}}')
+    _patch_fetch(monkeypatch, {"/api/datasets/me/foo": body})
+    c = hf_search.card_summary("me/foo")
+    assert c["title"] == "Foo Dataset"
+    # boilerplate header dropped, whitespace collapsed
+    assert c["description"] == "Foo is a tiny test set."
+    assert c["gated"] is True                       # "auto" → True
+    assert c["downloads"] == 1234 and c["likes"] == 7
+    assert c["task_categories"] == ["image-classification"]
+
+
+def test_card_summary_none_on_fetch_failure(monkeypatch):
+    def _boom(req, **kw):
+        raise urllib.error.URLError("nope")
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert hf_search.card_summary("me/missing") is None
 
 
 # ---------------------------------------------------------------------------
