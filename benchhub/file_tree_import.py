@@ -113,8 +113,33 @@ def inspect_repo(files):
         by_dir_ext[(d, ext)].append(f)
     suggestions = []
     seen_patterns = set()
+
+    # Label-folder shape: files like `<X>/<file>.<ext>` (one folder level)
+    # where X varies across siblings → the folder is almost certainly a
+    # class label. Propose `{label}/{id}.<ext>` (pair with a `token` field
+    # on {label}). These go first — most useful — and we suppress the
+    # noisy per-class literal suggestions they'd otherwise generate.
+    two_seg = defaultdict(set)
+    two_seg_count = defaultdict(int)
+    for f in files:
+        parts = f.split('/')
+        if len(parts) == 2 and '.' in parts[1]:
+            ext = parts[1].rsplit('.', 1)[-1].lower()
+            two_seg[ext].add(parts[0])
+            two_seg_count[ext] += 1
+    label_exts = {ext for ext, xs in two_seg.items() if len(xs) >= 2}
+    for ext in sorted(label_exts, key=lambda e: -two_seg_count[e]):
+        pat = '{label}/{id}.' + ext
+        seen_patterns.add(pat)
+        suggestions.append({'pattern': pat, 'ext': ext,
+                            'count': two_seg_count[ext], 'label_folder': True})
+
     for (d, ext), fs in sorted(by_dir_ext.items(), key=lambda kv: -len(kv[1])):
         if len(fs) < 2:
+            continue
+        # Skip the per-class literal dirs already covered by a
+        # `{label}/{id}` suggestion (e.g. Alex_Brush/, Arizonia/ …).
+        if '/' not in d and ext in label_exts:
             continue
         # Generalise the directory's variable segments into tokens by
         # comparing two sibling paths — segments that differ become {seg}.

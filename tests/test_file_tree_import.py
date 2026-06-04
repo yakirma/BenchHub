@@ -411,3 +411,29 @@ def test_gz_single_file_loader(tmp_path):
     materialize_file_tree(spec, files, _fetch(str(root)), str(st), dataset_name="g")
     man = json.loads((st / "manifest.json").read_text())
     assert json.loads((st / "meta" / f"{man['samples'][0]}.json").read_text()) == {"v": 0}
+
+
+def test_inspect_suggests_label_folder_pattern():
+    """`<class>/<id>.png` with multiple class folders → a
+    {label}/{id}.png suggestion (folder = label), and no noisy per-class
+    literal suggestions."""
+    files = [f"{cls}/{i:03d}.png" for cls in ("Alex_Brush", "Cookie", "Lobster")
+             for i in range(3)]
+    info = inspect_repo(files)
+    pats = [s["pattern"] for s in info["suggested_patterns"]]
+    assert "{label}/{id}.png" in pats
+    # the label suggestion is flagged + comes first
+    first = info["suggested_patterns"][0]
+    assert first["pattern"] == "{label}/{id}.png" and first.get("label_folder")
+    # no literal per-class suggestions
+    assert not any(p.startswith("Alex_Brush/") for p in pats)
+
+
+def test_inspect_no_label_suggestion_for_single_folder():
+    """A single folder of files (parent doesn't vary) → no {label}
+    suggestion, just the normal `<dir>/{id}` one."""
+    files = [f"images/{i}.png" for i in range(4)]
+    info = inspect_repo(files)
+    pats = [s["pattern"] for s in info["suggested_patterns"]]
+    assert "{label}/{id}.png" not in pats
+    assert "images/{id}.png" in pats

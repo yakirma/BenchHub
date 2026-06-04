@@ -27,9 +27,10 @@
                     <h2 class="h6 fw-semibold mt-3">Suggested patterns</h2>
                     <p class="small text-body-secondary mb-2">Click to copy into the focused pattern box.</p>
                     {% for s in info.suggested_patterns %}
-                    <button type="button" class="btn btn-sm btn-outline-secondary w-100 text-start mb-1 font-monospace suggest-pat"
+                    <button type="button" class="btn btn-sm w-100 text-start mb-1 font-monospace suggest-pat
+                            {{ 'btn-outline-primary' if s.label_folder else 'btn-outline-secondary' }}"
                             style="font-size: 0.72rem;" data-pattern="{{ s.pattern }}"
-                            title="{{ s.count }} files">{{ s.pattern }}</button>
+                            title="{{ s.count }} files{% if s.label_folder %} — folder is the label: add a token field on {label}{% endif %}">{{ s.pattern }}{% if s.label_folder %} <span class="text-body-secondary">· folder→label</span>{% endif %}</button>
                     {% endfor %}
 
                     <h2 class="h6 fw-semibold mt-3">File tree
@@ -91,6 +92,7 @@
                     </div>
                 </div>
 
+                <div id="map-form-errors"></div>
                 <div class="d-flex gap-2 mb-3">
                     <button type="button" class="btn btn-outline-secondary" id="decode-preview-btn">
                         <i class="bi bi-eye me-1"></i>Decode preview (1 sample)
@@ -222,6 +224,11 @@
         row.querySelector('.remove-field').addEventListener('click', () => row.remove());
         const pat = row.querySelector('.row-pattern');
         pat.addEventListener('focus', () => { lastFocusedPattern = pat; });
+        // Clear the red highlight as soon as the user fixes a field.
+        row.querySelectorAll('input, select').forEach(el =>
+            el.addEventListener('input', () => el.classList.remove('is-invalid')));
+        loader.addEventListener('change', () =>
+            row.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid')));
     }
     function addRow() {
         const node = tpl.content.cloneNode(true);
@@ -315,8 +322,57 @@
         return spec;
     }
 
+    // --- Client-side validation: highlight missing required fields. ---
+    const errBox = document.getElementById('map-form-errors');
+
+    function validateRows() {
+        rows.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
+        const fieldRows = [...rows.querySelectorAll('.field-row')];
+        if (!fieldRows.length) return {ok: false, msg: 'Add at least one modality.'};
+        let firstBad = null, missing = 0, hasIndex = false;
+        const bad = el => { if (el) { el.classList.add('is-invalid'); firstBad = firstBad || el; missing++; } };
+        fieldRows.forEach(r => {
+            const nameI = r.querySelector('[name=field_name]');
+            const patI = r.querySelector('[name=field_pattern]');
+            const loader = r.querySelector('[name=field_loader]').value;
+            const name = nameI.value.trim(), pattern = patI.value.trim();
+            if (!name) bad(nameI);
+            if (loader !== 'token' && !pattern) bad(patI);
+            if (loader === 'token' && !r.querySelector('[name=field_token]').value.trim())
+                bad(r.querySelector('[name=field_token]'));
+            let member = '';
+            if (loader === 'zip' || loader === 'tar') {
+                const memI = r.querySelector('[name=field_member]');
+                member = memI.value.trim();
+                if (!member) bad(memI);
+            }
+            if (loader === 'file' && name && pattern) hasIndex = true;
+            if ((loader === 'zip' || loader === 'tar') && member.includes('{id}')) hasIndex = true;
+        });
+        if (missing) return {ok: false, firstBad,
+            msg: `Fill in the ${missing} highlighted field${missing > 1 ? 's' : ''}.`};
+        if (!hasIndex) return {ok: false,
+            msg: 'Add an index modality: a file field with a pattern, or a zip/tar whose member uses {id}.'};
+        return {ok: true};
+    }
+
+    function showErrors(v) {
+        errBox.innerHTML = '<div class="alert alert-danger py-2 small mb-2">' +
+            '<i class="bi bi-exclamation-circle me-1"></i>' + v.msg + '</div>';
+        if (v.firstBad) { v.firstBad.focus(); v.firstBad.scrollIntoView({block: 'center', behavior: 'smooth'}); }
+    }
+    function clearErrors() { errBox.innerHTML = ''; }
+
+    document.getElementById('map-form').addEventListener('submit', (e) => {
+        const v = validateRows();
+        if (!v.ok) { e.preventDefault(); showErrors(v); } else { clearErrors(); }
+    });
+
     document.getElementById('decode-preview-btn').addEventListener('click', async () => {
         const out = document.getElementById('preview-out');
+        const v = validateRows();
+        if (!v.ok) { showErrors(v); return; }
+        clearErrors();
         const spec = collectSpec();
         if (!spec.length) { out.innerHTML = '<div class="alert alert-warning">Add a modality first.</div>'; return; }
         out.innerHTML = '<div class="text-body-secondary small">Decoding first sample…</div>';
