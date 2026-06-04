@@ -1183,6 +1183,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                the raw URL. #}
                             {% set _initial_src = (_src + '?cmap=turbo') if _vis_type == 'depth' else _src %}
                             <div class="text-center depth-cell" data-depth-base="{{ _src }}" data-col-key="{{ col_key }}">
+                                {% if _vis_type == 'sequence' %}
+                                <video src="{{ url_for('api_viz', cf_id=data.custom_fields[col_key].gt_field_id) }}"
+                                       class="border rounded shadow-sm"
+                                       style="width: 300px; height: 150px; object-fit: contain; background:#000;"
+                                       muted loop controls playsinline preload="metadata"
+                                       onmouseover="this.play()" onmouseout="this.pause()"></video>
+                                {% else %}
                                 <img src="{{ _initial_src }}"
                                     class="border rounded shadow-sm clickable-vis depth-img{% if _vis_type == 'mask' %} mask-img{% endif %}"
                                     style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
@@ -1193,6 +1200,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     {% if _vis_type == 'mask' %}data-mask-raw-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}?raw=1"{% endif %}
                                     data-group-id="gt-{{ col_key }}" data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _vis_type }}" alt="{{ col_key }}">
+                                {% endif %}
                                 {% if _vis_type == 'depth' %}
                                 <div class="depth-colorbar" data-cmap="turbo"></div>
                                 <div class="depth-colorbar-labels">
@@ -1236,6 +1244,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% set _sub_src = url_for('serve_custom_field_image', field_id=_sub_field_id) %}
                             {% set _sub_initial_src = (_sub_src + '?cmap=turbo') if _sub_vis_type == 'depth' else _sub_src %}
                             <div class="text-center depth-cell" data-depth-base="{{ _sub_src }}" data-col-key="{{ col_key }}">
+                                {% if _sub_vis_type == 'sequence' %}
+                                <video src="{{ url_for('api_viz', cf_id=_sub_field_id) }}"
+                                       class="border rounded shadow-sm"
+                                       style="width: 300px; height: 150px; object-fit: contain; background:#000;"
+                                       muted loop controls playsinline preload="metadata"
+                                       onmouseover="this.play()" onmouseout="this.pause()"></video>
+                                {% else %}
                                 <img src="{{ _sub_initial_src }}"
                                     class="border rounded shadow-sm clickable-vis{% if _sub_vis_type == 'depth' %} depth-img{% endif %}{% if _sub_vis_type == 'mask' %} mask-img{% endif %}"
                                     style="cursor: pointer; width: 300px !important; min-width: 300px !important; height: 150px !important; object-fit: contain;"
@@ -1247,6 +1262,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     data-group-id="sub-{{ pred.sub_id }}-{{ col_key }}"
                                     data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _sub_vis_type }}" alt="{{ col_key }}">
+                                {% endif %}
                                 {% if _sub_vis_type == 'depth' %}
                                 <div class="depth-colorbar" data-cmap="turbo"></div>
                                 <div class="depth-colorbar-labels">

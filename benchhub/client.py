@@ -387,6 +387,8 @@ class Client:
 
           * **image / mask / depth**:  bh.Image / bh.Mask / bh.Depth
           * **audio**:                  bh.Audio
+          * **sequence**:               bh.Sequence — an iterable clip
+            container; `for frame in inputs['clip']: frame.array …`
           * **bboxes / coco_detections**: bh.BBoxes / bh.CocoDetections
           * **scalar**:                 float
           * **label**:                  int / str (raw value)

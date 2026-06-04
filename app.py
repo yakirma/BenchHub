@@ -6456,7 +6456,7 @@ def api_leaderboard_samples(leaderboard_id):
             entry: dict = {'kind': df.kind, 'params': input_params[df.name]}
             if cf is None:
                 entry['value'] = None
-            elif df.kind in ('image', 'mask', 'depth', 'audio'):
+            elif df.kind in ('image', 'mask', 'depth', 'audio', 'sequence'):
                 # File-backed; the client GETs this URL to download.
                 entry['url'] = url_for(
                     'serve_custom_field_image', field_id=cf.id,
@@ -6527,7 +6527,7 @@ def api_leaderboard_inputs_archive(leaderboard_id):
         _resolve_lb_input_samples(lb)
     )
     file_fields = [df for df in input_fields
-                   if df.kind in ('image', 'mask', 'depth', 'audio')]
+                   if df.kind in ('image', 'mask', 'depth', 'audio', 'sequence')]
 
     from benchhub.lb_materialize import materialized_or_preview_path
     import tempfile
@@ -11417,7 +11417,7 @@ def api_lb_preview_library_metrics():
     ])
 
 
-_EXTRA_PRED_KINDS = ('scalar', 'image', 'mask', 'depth')
+_EXTRA_PRED_KINDS = ('scalar', 'image', 'mask', 'depth', 'sequence')
 
 
 def _merge_pred_field_extras(extra_pred_fields, kind_overrides):

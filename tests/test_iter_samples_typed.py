@@ -323,3 +323,41 @@ def test_samples_api_defaults_image_to_input_when_no_explicit_input(client, db_s
 
     payload = client.get(f'/api/leaderboard/{lb.id}/samples').get_json()
     assert [f['name'] for f in payload['input_fields']] == ['image']
+
+
+def test_iter_samples_yields_bh_sequence_clip(client, db_session):
+    """A sequence input field comes back as an iterable bh.Sequence whose
+    members are decoded bh.Image frames."""
+    from benchhub.types import Sequence as BHSequence, Image as BHImage
+    user = User(email='seqit@bench.local', display_name='seqit',
+                oauth_provider='github', oauth_sub='seqit-1', api_token='seqittok')
+    db.session.add(user); db.session.commit()
+    ds = Dataset(name='seqit_ds', visibility='public', owner_user_id=user.id)
+    db.session.add(ds); db.session.flush()
+    df = DatasetField(dataset_id=ds.id, name='clip', kind='sequence', role='input')
+    df.set_params({'item_kind': 'image', 'fps': 5})
+    db.session.add(df)
+    s = Sample(dataset_id=ds.id, name='c0'); db.session.add(s); db.session.flush()
+
+    cdir = os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id), 'clip')
+    os.makedirs(cdir, exist_ok=True)
+    zpath = os.path.join(cdir, 'c0.zip')
+    seq = BHSequence([BHImage((np.arange(8 * 8 * 3) % 256).astype(np.uint8).reshape(8, 8, 3))
+                      for _ in range(3)], item_kind='image', fps=5)
+    with open(zpath, 'wb') as fh:
+        fh.write(seq.encode())
+    cf = CustomField(sample_id=s.id, name='clip', data_type='sequence', value_text=zpath)
+    cf.set_params({'item_kind': 'image', 'fps': 5})
+    db.session.add(cf)
+    lb = Leaderboard(name='seqit_lb', visibility='public', owner_user_id=user.id)
+    lb.datasets.append(ds); db.session.add(lb); db.session.commit()
+
+    bhc = Client(token='seqittok', transport=FlaskTestClientTransport(client))
+    out = list(bhc.iter_samples(lb.id))
+    assert len(out) == 1
+    name, inputs = out[0]
+    assert name == 'c0'
+    clip = inputs['clip']
+    assert isinstance(clip, BHSequence)
+    assert len(clip) == 3
+    assert list(clip)[0].array.shape == (8, 8, 3)

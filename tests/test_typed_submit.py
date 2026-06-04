@@ -251,3 +251,31 @@ def test_typed_submit_rejects_corrupt_zip(client, lb_with_pred_contract, api_use
     )
     assert resp.status_code == 400
     assert b"ZIP" in resp.data
+
+
+def test_submission_builder_packs_sequence_pred():
+    """A Sequence prediction packs into the submission ZIP as
+    <field>/<sample>.zip and round-trips back to a bh.Sequence."""
+    import io
+    import zipfile
+    import json as _json
+    import numpy as np
+    from benchhub.client import SubmissionBuilder
+    from benchhub.types import Sequence, Image
+
+    sb = SubmissionBuilder(client=None, leaderboard_id=1, name="seqsub")
+    clip = Sequence([Image(np.zeros((6, 6, 3), np.uint8)) for _ in range(4)],
+                    item_kind="image", fps=7)
+    sb.predict("c0", clip=clip)
+
+    manifest = sb.build_manifest()
+    pred = next(p for p in manifest["predictions"] if p["name"] == "clip")
+    assert pred["kind"] == "sequence"
+    assert pred["params"]["item_kind"] == "image" and pred["params"]["fps"] == 7
+
+    zbytes = sb.build_zip()
+    zf = zipfile.ZipFile(io.BytesIO(zbytes))
+    assert "clip/c0.zip" in zf.namelist()
+    inner = zf.read("clip/c0.zip")
+    back = Sequence.decode(inner, pred["params"])
+    assert len(back) == 4
