@@ -6872,9 +6872,16 @@ def admin_import_from_hf_search():
 def admin_import_from_hf_trending():
     """JSON: top-downloaded HF datasets per ML domain (Vision / NLP /
     Audio / Tabular). One-hour TTL cache lives in the helper so the
-    grid isn't a fresh HF round-trip on every page reload."""
+    grid isn't a fresh HF round-trip on every page reload. `?limit=`
+    (default 20, capped 50) sizes each domain's list — the page fetches
+    a deeper list and reveals it behind a per-domain 'Show more'."""
     from benchhub.hf_search import trending_by_domain
-    return jsonify(trending_by_domain(limit_per_domain=5))
+    try:
+        limit = int(request.args.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(5, min(limit, 50))
+    return jsonify(trending_by_domain(limit_per_domain=limit))
 
 
 @app.route('/admin/import_from_hf/commit', methods=['POST'])

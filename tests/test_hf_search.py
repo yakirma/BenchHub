@@ -162,6 +162,26 @@ def test_trending_refetches_when_cache_expired(monkeypatch):
         assert items[0]["id"] == "refreshed/ds"
 
 
+def test_trending_cache_keys_on_limit(monkeypatch):
+    """A larger 'show more' request must not be served the smaller cached
+    page — the cache is keyed on (domain, limit)."""
+    rows = [{"id": f"foo/ds{i}", "downloads": 100 - i} for i in range(10)]
+    import json as _json
+
+    def _fake_fetch(url):
+        # honour the `limit` query param like the real HF endpoint
+        import urllib.parse as up
+        q = up.parse_qs(up.urlparse(url).query)
+        n = int((q.get("limit") or ["1"])[0])
+        return rows[:n]
+
+    monkeypatch.setattr(hf_search, "_fetch_json", _fake_fetch)
+    small = hf_search.trending_by_domain(limit_per_domain=3)
+    big = hf_search.trending_by_domain(limit_per_domain=8)
+    assert all(len(v) == 3 for v in small.values())
+    assert all(len(v) == 8 for v in big.values())
+
+
 # ---------------------------------------------------------------------------
 # fetch_split_row_counts — datasets-server /size endpoint
 # ---------------------------------------------------------------------------

@@ -191,6 +191,18 @@
     });
 
     // ---- Trending grid ------------------------------------------
+    const TRENDING_COLLAPSED = 5;   // rows shown before "Show more"
+    const trendingRow = (it) => `
+        <li class="list-group-item list-group-item-action px-2 py-2"
+            style="cursor:pointer;"
+            data-repo-id="${escapeHtml(it.id)}"
+            data-gated="${it.gated ? '1' : ''}">
+            <div class="d-flex justify-content-between align-items-baseline">
+                <span class="font-monospace small">${escapeHtml(it.id)}${gatedBadge(it.gated)}</span>
+                <span class="small text-body-secondary">↓ ${fmtCount(it.downloads)}</span>
+            </div>
+        </li>`;
+
     function renderTrending(data) {
         const domains = Object.keys(data || {});
         if (!domains.length) {
@@ -200,26 +212,31 @@
                 '</div>';
             return;
         }
-        trendingGrid.innerHTML = domains.map(domain => {
+        trendingGrid.innerHTML = domains.map((domain, di) => {
             const items = data[domain] || [];
-            const rows = items.length
-                ? items.map(it => `
-                    <li class="list-group-item list-group-item-action px-2 py-2"
-                        style="cursor:pointer;"
-                        data-repo-id="${escapeHtml(it.id)}"
-                        data-gated="${it.gated ? '1' : ''}">
-                        <div class="d-flex justify-content-between align-items-baseline">
-                            <span class="font-monospace small">${escapeHtml(it.id)}${gatedBadge(it.gated)}</span>
-                            <span class="small text-body-secondary">↓ ${fmtCount(it.downloads)}</span>
-                        </div>
-                    </li>`).join('')
-                : '<li class="list-group-item small text-body-secondary">(empty)</li>';
+            if (!items.length) {
+                return `<div class="col-md-6"><div class="card border-0 shadow-sm h-100">
+                    <div class="card-body p-3"><h3 class="h6 fw-semibold mb-2">${escapeHtml(domain)}</h3>
+                    <ul class="list-group list-group-flush small">
+                    <li class="list-group-item small text-body-secondary">(empty)</li></ul>
+                    </div></div></div>`;
+            }
+            const head = items.slice(0, TRENDING_COLLAPSED).map(trendingRow).join('');
+            const rest = items.slice(TRENDING_COLLAPSED);
+            const hidden = rest.length
+                ? `<ul class="list-group list-group-flush small d-none" data-more="${di}">
+                       ${rest.map(trendingRow).join('')}</ul>
+                   <button type="button" class="btn btn-link btn-sm p-0 mt-2 trending-more"
+                           data-more-target="${di}">
+                       Show ${rest.length} more <i class="bi bi-chevron-down"></i></button>`
+                : '';
             return `
                 <div class="col-md-6">
                     <div class="card border-0 shadow-sm h-100">
                         <div class="card-body p-3">
                             <h3 class="h6 fw-semibold mb-2">${escapeHtml(domain)}</h3>
-                            <ul class="list-group list-group-flush small">${rows}</ul>
+                            <ul class="list-group list-group-flush small">${head}</ul>
+                            ${hidden}
                         </div>
                     </div>
                 </div>`;
@@ -227,13 +244,21 @@
     }
 
     trendingGrid.addEventListener('click', (e) => {
+        const moreBtn = e.target.closest('.trending-more');
+        if (moreBtn) {
+            const idx = moreBtn.getAttribute('data-more-target');
+            const ul = trendingGrid.querySelector(`ul[data-more="${idx}"]`);
+            if (ul) ul.classList.remove('d-none');
+            moreBtn.remove();
+            return;
+        }
         const li = e.target.closest('li[data-repo-id]');
         if (li) pickRepo(li.getAttribute('data-repo-id'), !!li.getAttribute('data-gated'));
     });
 
     (async () => {
         try {
-            const resp = await fetch('{{ url_for("admin_import_from_hf_trending") }}');
+            const resp = await fetch('{{ url_for("admin_import_from_hf_trending") }}?limit=20');
             if (!resp.ok) throw new Error('non-2xx');
             renderTrending(await resp.json());
         } catch (_) {

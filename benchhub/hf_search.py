@@ -96,8 +96,12 @@ def trending_by_domain(*, limit_per_domain: int = 5) -> dict[str, list[dict]]:
     """
     out: dict[str, list[dict]] = {}
     now = time.time()
+    limit = max(1, int(limit_per_domain))
     for domain, hf_filter in _DOMAIN_FILTERS.items():
-        cached = _TRENDING_CACHE.get(domain)
+        # Cache key includes the limit so a later larger request ("show
+        # more") doesn't get served a smaller cached page.
+        key = f"{domain}:{limit}"
+        cached = _TRENDING_CACHE.get(key)
         if cached and (now - cached[0]) < _TRENDING_TTL_SECONDS:
             out[domain] = cached[1]
             continue
@@ -105,11 +109,11 @@ def trending_by_domain(*, limit_per_domain: int = 5) -> dict[str, list[dict]]:
             "filter": hf_filter,
             "sort": "downloads",
             "direction": "-1",
-            "limit": int(limit_per_domain),
+            "limit": limit,
         })
         items = [_normalize(d) for d in _fetch_json(f"{_HF_API_BASE}?{params}")
                  if isinstance(d, dict)]
-        _TRENDING_CACHE[domain] = (now, items)
+        _TRENDING_CACHE[key] = (now, items)
         out[domain] = items
     return out
 
