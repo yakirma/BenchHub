@@ -89,6 +89,10 @@
     const HF_TOKEN_URL = '{{ url_for("hf_token_settings") }}';
     const CARD_URL = '{{ url_for("admin_import_from_hf_card") }}';
     const REPO_RE = /^[\w.\-]+\/[\w.\-]+$/;
+    // Encode each path segment but KEEP the owner/name slash — using
+    // encodeURIComponent on the whole id turns "/" into %2F and 404s.
+    const hfDatasetUrl = (id) => 'https://huggingface.co/datasets/'
+        + String(id).split('/').map(encodeURIComponent).join('/');
 
     // ---- Helpers --------------------------------------------------
     const fmtCount = (n) => {
@@ -117,7 +121,7 @@
             + '<i class="bi bi-lock-fill flex-shrink-0"></i><div>'
             + '<strong>' + escapeHtml(id) + '</strong> is a <strong>gated</strong> '
             + 'dataset. To import it you must:<ol class="mb-0 mt-1">'
-            + '<li><a href="https://huggingface.co/datasets/' + encodeURIComponent(id)
+            + '<li><a href="' + hfDatasetUrl(id)
             + '" target="_blank" rel="noopener">Request access on HuggingFace</a> '
             + 'and wait to be approved.</li>'
             + '<li>Add your <a href="' + HF_TOKEN_URL + '">HuggingFace access token</a> '
@@ -150,7 +154,7 @@
                 '<div class="card border-0 bg-body-tertiary"><div class="card-body p-3">'
                 + '<div class="d-flex justify-content-between align-items-start gap-2">'
                 + '<h3 class="h6 fw-semibold mb-1">' + escapeHtml(c.title || c.id) + gatedBadge(c.gated) + '</h3>'
-                + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                + '<a href="' + hfDatasetUrl(c.id)
                 + '" target="_blank" rel="noopener" class="small text-nowrap">'
                 + 'View on HF <i class="bi bi-box-arrow-up-right"></i></a></div>'
                 + '<div class="small text-body-secondary mb-2">↓ ' + fmtCount(c.downloads)
@@ -159,7 +163,7 @@
                    ? '<p class="small mb-1" style="white-space:pre-wrap;">' + escapeHtml(c.description) + '</p>'
                    : '<p class="small text-body-secondary fst-italic mb-1">No description on the dataset card.</p>')
                 + '<p class="small text-body-secondary mb-0">See the full description on the dataset page: '
-                + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                + '<a href="' + hfDatasetUrl(c.id)
                 + '" target="_blank" rel="noopener">huggingface.co/datasets/' + escapeHtml(c.id) + '</a></p>'
                 + '</div></div>';
         } catch (_) {

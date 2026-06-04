@@ -605,6 +605,10 @@ details.dataset-req-card:hover > summary .req-chev {
         const HF_TOKEN_URL = '{{ url_for("hf_token_settings") }}';
         const CARD_URL = '{{ url_for("admin_import_from_hf_card") }}';
         const REPO_RE = /^[\w.\-]+\/[\w.\-]+$/;
+        // Encode path segments but keep the owner/name slash (encoding the
+        // whole id turns "/" into %2F → 404).
+        const hfDatasetUrl = (id) => 'https://huggingface.co/datasets/'
+            + String(id).split('/').map(encodeURIComponent).join('/');
         const fmtCount = (n) => {
             if (!n) return '0';
             if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -625,7 +629,7 @@ details.dataset-req-card:hover > summary .req-chev {
                 '<div class="alert alert-warning d-flex gap-2 py-2 small mb-0">'
                 + '<i class="bi bi-lock-fill flex-shrink-0"></i><div>'
                 + '<strong>' + escapeHtml(id) + '</strong> is <strong>gated</strong> — '
-                + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(id)
+                + '<a href="' + hfDatasetUrl(id)
                 + '" target="_blank" rel="noopener">request access on HuggingFace</a>, '
                 + 'then add your <a href="' + HF_TOKEN_URL + '">HF token</a> to import it.'
                 + '</div></div>';
@@ -654,7 +658,7 @@ details.dataset-req-card:hover > summary .req-chev {
                     '<div class="border rounded p-2 bg-body-tertiary">'
                     + '<div class="d-flex justify-content-between align-items-start gap-1">'
                     + '<div class="fw-semibold small">' + escapeHtml(c.title || c.id) + gatedBadge(c.gated) + '</div>'
-                    + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                    + '<a href="' + hfDatasetUrl(c.id)
                     + '" target="_blank" rel="noopener" class="small text-nowrap">HF <i class="bi bi-box-arrow-up-right"></i></a></div>'
                     + '<div class="text-body-secondary" style="font-size:.72rem;">↓ ' + fmtCount(c.downloads)
                     + ' · ♥ ' + fmtCount(c.likes) + (tags ? ' · ' + tags : '') + '</div>'
@@ -663,7 +667,7 @@ details.dataset-req-card:hover > summary .req-chev {
                          + escapeHtml(c.description) + '</div>'
                        : '')
                     + '<div class="small text-body-secondary mt-1">See the full description on the dataset page: '
-                    + '<a href="https://huggingface.co/datasets/' + encodeURIComponent(c.id)
+                    + '<a href="' + hfDatasetUrl(c.id)
                     + '" target="_blank" rel="noopener">huggingface.co/datasets/' + escapeHtml(c.id) + '</a></div>'
                     + '</div>';
             } catch (_) {
