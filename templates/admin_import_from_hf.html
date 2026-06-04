@@ -33,15 +33,11 @@
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-search me-1"></i>Fetch &amp; preview
             </button>
-            <button type="submit" class="btn btn-outline-secondary ms-2"
-                    formaction="{{ url_for('import_from_files_inspect') }}">
-                <i class="bi bi-diagram-3 me-1"></i>Map raw files instead
-            </button>
             <div class="form-text small mt-2">
-                <strong>Fetch &amp; preview</strong> for tabular/parquet datasets.
-                <strong>Map raw files</strong> for file-tree repos (paired files,
-                packed <code>.npz</code>/<code>.h5</code>) where you declare each
-                modality yourself.
+                Tries the tabular/parquet schema first. If the repo isn't
+                tabular (paired files, packed <code>.npz</code>/<code>.h5</code>),
+                it hands off to the file-tree mapper automatically — and you can
+                switch to it from the preview at any time.
             </div>
         </div>
     </form>

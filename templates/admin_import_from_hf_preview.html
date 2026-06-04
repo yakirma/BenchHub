@@ -165,6 +165,8 @@
            href="{{ url_for('import_from_files_inspect', repo_id=repo_id) }}">file-tree importer →</a>
     </div>
 
+    <div id="hf-draft-banner"></div>
+
     <form id="hf-import-form" method="post"
           action="{{ url_for('admin_import_from_hf_commit') }}"
           class="card border-0 shadow-sm">
@@ -850,6 +852,60 @@
             render(collect());
         }
     });
+})();
+
+// --- Draft autosave + leave warning + restore (tabular import) ---------
+// The preview form is prefilled, so "dirty" = changed from the initial
+// render. Every change autosaves to localStorage; leaving while changed
+// warns + saves; returning offers to restore.
+(function () {
+    const form = document.getElementById('hf-import-form');
+    if (!form) return;
+    const KEY = 'bh_tabular_draft:{{ repo_id }}';
+    const bannerEl = document.getElementById('hf-draft-banner');
+    let submitting = false;
+
+    const controls = () => [...form.querySelectorAll('input, select, textarea')]
+        .filter(el => el.name && el.type !== 'hidden' && el.type !== 'file');
+    const serialize = () => controls().map(
+        el => el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
+    const initial = JSON.stringify(serialize());
+    const dirty = () => JSON.stringify(serialize()) !== initial;
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(serialize())); } catch (e) {} };
+    const clear = () => { try { localStorage.removeItem(KEY); } catch (e) {} };
+    function apply(vals) {
+        controls().forEach((el, i) => {
+            if (i >= vals.length) return;
+            if (el.type === 'checkbox') el.checked = (vals[i] === '1');
+            else el.value = vals[i];
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        });
+    }
+
+    let t = null;
+    const onEdit = () => { clearTimeout(t); t = setTimeout(save, 400); };
+    form.addEventListener('input', onEdit);
+    form.addEventListener('change', onEdit);
+    window.addEventListener('beforeunload', (e) => {
+        if (submitting || !dirty()) return;
+        save(); e.preventDefault(); e.returnValue = '';
+    });
+    form.addEventListener('submit', () => { submitting = true; clear(); });
+
+    let raw = null; try { raw = localStorage.getItem(KEY); } catch (e) {}
+    if (raw && bannerEl) {
+        let saved = null; try { saved = JSON.parse(raw); } catch (e) { clear(); }
+        if (saved && JSON.stringify(saved) !== initial) {
+            bannerEl.innerHTML = '<div class="alert alert-info d-flex align-items-center gap-2 py-2">' +
+                '<i class="bi bi-clock-history"></i><span>You have an unsaved draft for this import.</span>' +
+                '<button type="button" class="btn btn-sm btn-primary ms-auto" id="hf-draft-restore">Restore</button>' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary" id="hf-draft-discard">Discard</button></div>';
+            document.getElementById('hf-draft-restore').addEventListener('click', () => { apply(saved); bannerEl.innerHTML = ''; });
+            document.getElementById('hf-draft-discard').addEventListener('click', () => { clear(); bannerEl.innerHTML = ''; });
+        } else if (saved) {
+            clear();
+        }
+    }
 })();
 </script>
 {% endblock %}
