@@ -51,7 +51,7 @@ import numpy as np
 _STAGE_EXT = {
     'image': '.png', 'mask': '.png', 'depth': '.npz', 'audio': '.wav',
     'text': '.txt', 'json': '.json', 'scalar': '.txt', 'label': '.txt',
-    'label_list': '.json',
+    'label_list': '.json', 'sequence': '.zip',
 }
 
 _TOKEN_RE = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
@@ -431,6 +431,8 @@ def resolve_samples(spec, files, fetch=None):
     file_fields = [f for f in spec if f.get('loader') == 'file']
     container_fields = [f for f in spec if f.get('loader') in ('zip', 'tar')
                         and '{id}' in (f.get('member') or '')]
+    seq_fields = [f for f in spec if f.get('loader') == 'sequence'
+                  and 'frame' in _TOKEN_RE.findall(f.get('pattern') or '')]
     if file_fields:
         index = file_fields[0]
         matches, names = match_files(index['pattern'], files)
@@ -439,9 +441,25 @@ def resolve_samples(spec, files, fetch=None):
         if fetch is None:
             return [], index   # defer enumeration to materialize
         matches, names = _match_container_members(index, files, fetch)
+    elif seq_fields:
+        # A sequence is the index: samples are the GROUPS of frames (the
+        # pattern tokens other than {frame}); each group = one sample.
+        index = seq_fields[0]
+        raw, names = match_files(index['pattern'], files)
+        id_toks = [t for t in names if t != 'frame']
+        seen_keys, matches, names = set(), [], id_toks
+        for m in sorted(raw, key=lambda m: m['_path']):
+            key = tuple(m[t] for t in id_toks)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            d = {t: m[t] for t in id_toks}
+            d['_path'] = m['_path']
+            matches.append(d)
     else:
         raise ValueError("Need an index modality: a field with loader "
-                         "'file', or a 'zip'/'tar' field whose member uses {id}.")
+                         "'file', a 'zip'/'tar' field whose member uses {id}, "
+                         "or a 'sequence' field whose pattern uses {frame}.")
     if not matches:
         raise ValueError(
             f"Pattern {index.get('pattern')!r} matched no files/members. "
@@ -612,6 +630,34 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                     ordinals[i] = rank
             shared_ordinals[f['name']] = ordinals
 
+    # `sequence` fields: group all matching frames by the sample-identity
+    # tokens (pattern tokens minus {frame}); per sample we zip the frames
+    # (sorted by {frame}) into one Sequence. Also stamp item_kind/fps onto
+    # the field params so the stored zip decodes/renders correctly.
+    seq_frames = {}
+    for f in spec:
+        if f.get('loader') == 'sequence':
+            rx, names = _pattern_to_regex(f['pattern'])
+            id_toks = [t for t in names if t != 'frame']
+            by_key = defaultdict(list)
+            for path in files:
+                m = rx.match(path)
+                if m:
+                    d = m.groupdict()
+                    by_key[tuple(d.get(t) for t in id_toks)].append(
+                        (d.get('frame', ''), path))
+            for k in by_key:
+                by_key[k].sort(key=lambda fp: fp[0])
+            seq_frames[f['name']] = (id_toks, by_key)
+            # Infer item_kind from the first frame's extension if unset.
+            any_frames = next((v for v in by_key.values() if v), None)
+            ext = (any_frames[0][1].rsplit('.', 1)[-1].lower() if any_frames else 'png')
+            item_kind = f.get('item_kind') or _kind_loader_for_ext(ext)[0]
+            f.setdefault('params', {})
+            f['params'].setdefault('item_kind', item_kind)
+            f['params'].setdefault('fps', int(f.get('fps', 6) or 6))
+            f['_frame_ext'] = ext
+
     # `token` fields take their value from a captured path token (e.g. the
     # class folder in `<class>/<id>.png`). For label kind, build a vocab so
     # the value stores an int index + a `names` list (categorical), like
@@ -775,6 +821,21 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                                    'rb') as gf:
                         data = gf.read()
                     _stage_value(kind, data, dest_noext)
+                elif loader == 'sequence':
+                    import zipfile
+                    id_toks, by_key = seq_frames[name]
+                    key = tuple(s['tokens'].get(t) for t in id_toks)
+                    frame_paths = [p for _fr, p in by_key.get(key, [])]
+                    if not frame_paths:
+                        raise FileNotFoundError('no frames')
+                    fext = f.get('_frame_ext', 'png')
+                    zbuf = io.BytesIO()
+                    with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_STORED) as zf:
+                        for fi, p in enumerate(frame_paths):
+                            with open(fetch(p), 'rb') as fh:
+                                zf.writestr(f"{fi:06d}.{fext}", fh.read())
+                    with open(dest_noext + '.zip', 'wb') as fh:
+                        fh.write(zbuf.getvalue())
                 else:
                     raise ValueError(f"unknown loader {loader!r}")
                 written[name] += 1

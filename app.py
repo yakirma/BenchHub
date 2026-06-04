@@ -14433,6 +14433,10 @@ def dataset_view(dataset_id):
             available_display_options[field_name] = {'label': field_name, 'type': 'depth', 'default_width': '150px'}
         elif data_type == 'audio':
             available_display_options[field_name] = {'label': field_name, 'type': 'audio', 'default_width': '200px'}
+        elif data_type == 'sequence':
+            # A clip (video): rendered as an inline <video> muxed from
+            # the stored frames by the api_viz route.
+            available_display_options[field_name] = {'label': field_name, 'type': 'sequence', 'default_width': '170px'}
         elif data_type == 'json':
             available_display_options[field_name] = {'label': field_name, 'type': 'json', 'default_width': '150px'}
         elif data_type == 'bboxes':

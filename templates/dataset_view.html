@@ -1211,6 +1211,17 @@
                             style="width: 160px; height: 140px; object-fit: contain;"
                             alt="{{ col_key }}">
                     </div>
+                    {% elif field_data.type == 'sequence' %}
+                    {# A clip: the api_viz route muxes the frames to mp4
+                       (or GIF fallback). Render a small inline player. #}
+                    <div class="text-center">
+                        <video src="{{ url_for('api_viz', cf_id=field_data.field_id) }}"
+                               class="border rounded shadow-sm"
+                               style="width: 160px; height: 140px; object-fit: contain; background:#000;"
+                               muted loop controls playsinline preload="metadata"
+                               onmouseover="this.play()" onmouseout="this.pause()">
+                        </video>
+                    </div>
                     {% endif %}
                     {% else %}
                     <span class="text-muted">N/A</span>

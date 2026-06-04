@@ -260,3 +260,42 @@ def test_inspect_renders_structure_panel(user_client, monkeypatch):
     assert 'Describe the structure' in body
     assert 'level-role' in body
     assert 'Generate fields from structure' in body
+
+
+def test_sequence_cf_streams_video_and_renders(user_client, db_session, tmp_path, monkeypatch):
+    """A sequence CustomField streams a video via /api/viz and the
+    dataset_view renders an inline <video>."""
+    import os
+    import numpy as np
+    from app import (app as flask_app, Dataset, Sample, DatasetField,
+                     CustomField, db)
+    from benchhub.types import Sequence, Image
+    monkeypatch.setitem(flask_app.config, 'UPLOAD_FOLDER', str(tmp_path))
+    client, u = user_client
+
+    ds = Dataset(name='clipds', owner_user_id=u.id, visibility='public')
+    db.session.add(ds); db.session.flush()
+    db.session.add(DatasetField(dataset_id=ds.id, name='clip', kind='sequence', role='gt'))
+    s = Sample(dataset_id=ds.id, name='c0'); db.session.add(s); db.session.flush()
+
+    seq = Sequence([Image(np.full((8, 8, 3), i * 50, np.uint8)) for i in range(3)],
+                   item_kind='image', fps=4)
+    rel = f'datasets/{ds.id}/clip/c0.zip'
+    full = os.path.join(str(tmp_path), rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, 'wb') as fh:
+        fh.write(seq.encode())
+    cf = CustomField(sample_id=s.id, name='clip', data_type='sequence', value_text=rel)
+    cf.set_params({'item_kind': 'image', 'fps': 4})
+    db.session.add(cf); db.session.commit()
+
+    # /api/viz streams a clip (mp4 via ffmpeg, or GIF fallback).
+    r = client.get(f'/api/viz/{cf.id}')
+    assert r.status_code == 200
+    assert r.content_type in ('video/mp4', 'image/gif')
+    assert len(r.data) > 0
+
+    # dataset_view renders an inline <video> for the sequence column.
+    body = client.get(f'/dataset/{ds.id}').data.decode()
+    assert '<video' in body
+    assert f'/api/viz/{cf.id}' in body

@@ -592,6 +592,119 @@ class Json(DataType):
             raise ValueError(f"Json data must be JSON-serializable: {e}") from e
 
 
+# ---------------------------------------------------------------------------
+# Sequence — an ordered container of homogeneous frames (a clip): the
+# frames of a video, a stack of depth maps, etc. One sample holds many
+# frames. Stored as a ZIP of the per-frame encodings; rendered as an mp4.
+# ---------------------------------------------------------------------------
+
+class Sequence(DataType):
+    kind = "sequence"
+    file_ext = ".zip"
+    viz_mime = "video/mp4"
+
+    def __init__(self, frames, *, item_kind: str = "image", fps: int = 6,
+                 item_params: dict | None = None):
+        # `frames` is a list of DataType instances (all of `item_kind`).
+        self.frames = list(frames)
+        self.item_kind = item_kind
+        self.fps = int(fps) if fps else 6
+        self.item_params = dict(item_params or {})
+
+    @property
+    def params(self) -> dict:
+        p = {"item_kind": self.item_kind, "fps": self.fps}
+        if self.item_params:
+            p["item_params"] = self.item_params
+        return p
+
+    def __iter__(self):
+        return iter(self.frames)
+
+    def __len__(self):
+        return len(self.frames)
+
+    def encode(self) -> bytes:
+        import zipfile
+        item_cls = DTYPES.get(self.item_kind, Image)
+        ext = item_cls.file_ext or ".bin"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            for i, frame in enumerate(self.frames):
+                zf.writestr(f"{i:06d}{ext}", frame.encode())
+        return buf.getvalue()
+
+    @classmethod
+    def decode(cls, blob: bytes, params: dict | None = None) -> "Sequence":
+        import zipfile
+        params = params or {}
+        item_kind = params.get("item_kind", "image")
+        item_params = params.get("item_params") or {}
+        item_cls = DTYPES.get(item_kind, Image)
+        frames = []
+        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            for name in sorted(n for n in zf.namelist() if not n.endswith("/")):
+                frames.append(item_cls.decode(zf.read(name), item_params))
+        return cls(frames, item_kind=item_kind,
+                   fps=int(params.get("fps", 6) or 6), item_params=item_params)
+
+    def validate(self) -> None:
+        if not self.frames:
+            raise ValueError("Sequence must hold at least one frame")
+        if self.item_kind not in DTYPES:
+            raise ValueError(f"Sequence item_kind {self.item_kind!r} not a known kind")
+        for f in self.frames:
+            f.validate()
+
+    def visualize(self, **_: Any) -> tuple[bytes, str]:
+        """Render the frames as an mp4 (via the system ffmpeg). Each frame
+        is taken through its own `visualize()` (so depth gets its colormap,
+        masks their palette) to a PNG, then muxed. Falls back to an
+        animated GIF when ffmpeg isn't available."""
+        png_frames = []
+        for f in self.frames:
+            data, mime = f.visualize()
+            if "png" in mime or "image" in mime:
+                png_frames.append(data)
+            else:
+                # Non-image frame viz (shouldn't happen for image/mask/
+                # depth); skip rather than break the whole clip.
+                continue
+        if not png_frames:
+            return b"", self.viz_mime
+        return _frames_to_video(png_frames, self.fps)
+
+
+def _frames_to_video(png_frames: list[bytes], fps: int) -> tuple[bytes, str]:
+    """mp4 via system ffmpeg if present, else an animated GIF via PIL."""
+    import shutil
+    import subprocess
+    import tempfile
+    import os as _os
+    if shutil.which("ffmpeg"):
+        with tempfile.TemporaryDirectory(prefix="bh_seq_") as d:
+            for i, png in enumerate(png_frames):
+                with open(_os.path.join(d, f"{i:06d}.png"), "wb") as fh:
+                    fh.write(png)
+            out = _os.path.join(d, "out.mp4")
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps),
+                   "-i", _os.path.join(d, "%06d.png"), "-pix_fmt", "yuv420p",
+                   "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", out]
+            try:
+                subprocess.run(cmd, check=True, timeout=120,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with open(out, "rb") as fh:
+                    return fh.read(), "video/mp4"
+            except Exception:
+                pass  # fall through to GIF
+    # GIF fallback (dependency-free).
+    imgs = [PILImage.open(io.BytesIO(p)).convert("RGB") for p in png_frames]
+    buf = io.BytesIO()
+    imgs[0].save(buf, format="GIF", save_all=True, append_images=imgs[1:],
+                 duration=int(1000 / max(fps, 1)), loop=0)
+    return buf.getvalue(), "image/gif"
+
+
 class CocoDetections(DataType):
     """COCO-style detection annotations for ONE image.
 
@@ -687,6 +800,7 @@ __all__ = [
     "LabelList",
     "Scalar",
     "Json",
+    "Sequence",
     "CocoDetections",
     "get_type",
 ]

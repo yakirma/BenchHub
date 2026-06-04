@@ -520,3 +520,33 @@ def test_generate_spec_file_level_multi_ext_fans_out():
     kinds = {f["name"]: f for f in spec}
     assert kinds["image"]["pattern"] == "{id}.png"
     assert kinds["depth"]["pattern"] == "{id}.npz"
+
+
+# --- sequence loader: group frames into a clip ---
+
+def test_sequence_loader_groups_frames_into_clip(tmp_path):
+    from benchhub.types import Sequence
+    import zipfile
+    root = tmp_path / "r"
+    files = []
+    def _w(rel):
+        p = root / rel; p.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.zeros((4, 5, 3), np.uint8)).save(str(p)); files.append(rel)
+    for clip in ("c0", "c1"):
+        for fr in range(3):
+            _w(f"clips/{clip}/{fr:02d}.png")
+
+    spec = [{"name": "video", "kind": "sequence", "role": "input",
+             "loader": "sequence", "pattern": "clips/{id}/{frame}.png"}]
+    st = tmp_path / "s"
+    summ = materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                                 dataset_name="v")
+    assert summ["samples"] == 2                       # 2 clips, not 6 frames
+    man = json.loads((st / "manifest.json").read_text())
+    vf = next(f for f in man["fields"] if f["name"] == "video")
+    assert vf["kind"] == "sequence" and vf["params"]["item_kind"] == "image"
+    s0 = man["samples"][0]
+    z = zipfile.ZipFile(st / "video" / f"{s0}.zip")
+    assert len(z.namelist()) == 3                     # 3 frames in the clip
+    seq = Sequence.decode((st / "video" / f"{s0}.zip").read_bytes(), vf["params"])
+    assert len(seq.frames) == 3

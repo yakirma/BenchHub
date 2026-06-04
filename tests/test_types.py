@@ -21,7 +21,7 @@ from benchhub.types import DTYPES, get_type
 def test_registry_lists_all_mvp_types():
     expected = {"image", "mask", "depth", "audio", "text", "bboxes",
                 "label", "label_list", "scalar", "json",
-                "coco_detections"}
+                "sequence", "coco_detections"}
     assert set(DTYPES) == expected
 
 
@@ -286,3 +286,28 @@ def test_every_class_declares_file_ext(cls):
     assert cls.file_ext is None or (
         isinstance(cls.file_ext, str) and cls.file_ext.startswith(".")
     )
+
+
+# --- Sequence: a clip of frames stored as a zip, rendered as video ---
+
+def test_sequence_roundtrip_and_video():
+    import numpy as np
+    from benchhub.types import Sequence, Image, DTYPES
+    assert DTYPES.get('sequence') is Sequence
+    frames = [Image(np.full((8, 10, 3), i * 30, np.uint8)) for i in range(4)]
+    seq = Sequence(frames, item_kind='image', fps=5)
+    seq.validate()
+    blob = seq.encode()
+    back = Sequence.decode(blob, seq.params)
+    assert len(back) == 4 and back.item_kind == 'image' and back.fps == 5
+    assert list(back)[0].array.shape == (8, 10, 3)   # iterable over frames
+    body, mime = seq.visualize()
+    # ffmpeg → mp4 on the box; GIF fallback otherwise. Either is non-empty.
+    assert body and mime in ('video/mp4', 'image/gif')
+
+
+def test_sequence_validate_rejects_empty():
+    import pytest
+    from benchhub.types import Sequence
+    with pytest.raises(ValueError):
+        Sequence([], item_kind='image').validate()
