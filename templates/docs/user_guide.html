@@ -1,123 +1,85 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>User Guide</h1>
-<p class="lead">A step-by-step guide to using Bench-Hub for your benchmarking needs.</p>
+<h1>User guide</h1>
+<p class="lead">Accounts, navigation, visibility, and quotas &mdash; everything around the
+    core flow.</p>
 <hr>
 
-<div class="row mt-4">
-    <div class="col-md-12">
-        <h3 id="projects">1. Projects</h3>
-        <p>A <strong>Project</strong> is the top-level container for your work. It groups together related leaderboards,
-            datasets, and metrics.</p>
-        <ul>
-            <li><strong>Creating a Project:</strong> Click the <i class="bi bi-folder-plus"></i> icon on the Projects
-                page. Give it a unique name (e.g., "DepthEstimation").</li>
-            <li><strong>Cloning a Project:</strong> You can duplicate an existing project (including its leaderboards
-                and metric settings) to quickly start a new iteration.</li>
-            <li><strong>Switching Projects:</strong> Use the dropdown in the top navigation bar to switch between active
-                projects.</li>
-        </ul>
+<h3>Signing in</h3>
+<p>There are no passwords. Pick whichever is convenient &mdash; each creates your account
+    on first use and lands you on your home dashboard:</p>
+<ul>
+    <li><strong>Continue with GitHub</strong> / <strong>Continue with Google</strong> &mdash;
+        one-click OAuth.</li>
+    <li><strong>Email</strong> &mdash; type your address; we email a 6-digit code; enter it
+        to verify. Codes expire in 10 minutes and are single-use.</li>
+</ul>
+<p>If you sign in with two providers that share one email, they resolve to the
+    <em>same</em> account.</p>
 
-        <h3 id="datasets" class="mt-5">2. Datasets (Ground Truth)</h3>
-        <p>The <strong>Dataset</strong> serves as the "Ground Truth" for your benchmarks. Submissions are compared
-            against this.</p>
-        <div class="alert alert-warning">
-            <i class="bi bi-globe me-2"></i> <strong>Note:</strong> Datasets are <strong>Global</strong>. They exist
-            outside of projects and can be reused by any leaderboard in any project.
-        </div>
-        <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i> <strong>Structure Definition:</strong> Bench-Hub is largely agnostic
-            to file formats, but creating a consistent directory structure is key.
-        </div>
-        <p><strong>Recommended Structure (ZIP file):</strong></p>
-        <pre>
-my_dataset.zip
-├── sample_001.txt
-├── sample_002.txt
-└── ...
-        </pre>
-        <p>Or with folders:</p>
-        <pre>
-my_dataset.zip
-├── sample_001/
-│   ├── depth.png
-│   └── info.json
-├── sample_002/
-│   ├── depth.png
-│   └── info.json
-└── ...
-        </pre>
-        <p>When you upload this ZIP, Bench-Hub indexes the file paths. You will later use these paths ("fields") to map
-            arguments to your metrics.</p>
+<h3 class="mt-4">Your home dashboard</h3>
+<p><a href="/home"><strong>Home</strong></a> is your workspace: your leaderboards and
+    datasets in the main column, and a sidebar with the latest public submissions and your
+    own latest submissions (each showing the primary-metric score and rank). Dataset cards
+    show sample counts and how many leaderboards use them; leaderboard cards show the
+    dataset / contributor / submission counts.</p>
 
-        <h4 class="mt-4">Data Types</h4>
-        <p>Bench-Hub automatically detects file types (images, scalars, etc.). See the <a
-                href="{{ url_for('docs', page='data_types') }}">Supported Data Types</a> page for details.</p>
+<h3 class="mt-4">Browsing the catalog</h3>
+<ul>
+    <li><a href="/leaderboards"><strong>Leaderboards</strong></a> &mdash; the public
+        catalog. Filter by text, tag, or category; sort by recent activity, newest, or most
+        submissions. A green/yellow pill shows whether a leaderboard's samples are
+        explorable.</li>
+    <li><a href="/datasets"><strong>Datasets</strong></a> &mdash; BH-imported datasets plus
+        cached HuggingFace datasets, grouped by area/task.</li>
+    <li><strong>Public profiles</strong> at <code>/u/&lt;id&gt;</code> show a user's public
+        datasets and leaderboards.</li>
+</ul>
 
-        <h3 id="leaderboards" class="mt-5">3. Leaderboards</h3>
-        <p>A <strong>Leaderboard</strong> defines exactly <em>what</em> is being compared (which dataset) and
-            <em>how</em> (which metrics).
-        </p>
-        <ol>
-            <li>Navigate to the <strong>Leaderboards</strong> tab.</li>
-            <li>Click <strong>Create Leaderboard</strong>.</li>
-            <li>Select the <strong>Dataset</strong> you want to use as the Ground Truth.</li>
-        </ol>
-        <p class="text-muted small"><i class="bi bi-magic me-1"></i> Tip: You can <strong>Import Settings</strong> from
-            another leaderboard during creation to copy all metric definitions and mappings.</p>
+<h3 class="mt-4">Visibility &amp; publishing</h3>
+<p>Datasets, leaderboards, metrics, and visualizations each have a visibility:</p>
+<ul>
+    <li><strong>public</strong> &mdash; in the catalog, visible to all;</li>
+    <li><strong>unlisted</strong> &mdash; reachable by link, hidden from catalogs;</li>
+    <li><strong>private</strong> &mdash; only you (and admins).</li>
+</ul>
+<p>Things you create default to <strong>private</strong>. Flip visibility on the object's
+    settings page (e.g. a dataset's <code>/dataset/&lt;id&gt;/settings</code>). Publishing
+    a private item pre-checks your public storage budget first.</p>
 
-        <h4 class="mt-4">Configuring Metrics</h4>
-        <p>This is the most powerful part of Bench-Hub. Once your leaderboard is created, visit the <strong>Settings
-                (Edit)</strong> page.</p>
-        <ul>
-            <li><strong>Add Metric:</strong> Choose a metric (e.g., <code>L1_Error</code>) from the library.</li>
-            <li><strong>Argument Mapping:</strong> You must tell the system which files to feed into the metric
-                function.
-                <ul>
-                    <li>Arguments named <code>gt</code> or <code>target</code> usually map to a file in your
-                        <strong>Dataset</strong>.
-                    </li>
-                    <li>Arguments named <code>pred</code> or <code>submission</code> map to a file in the
-                        <strong>Submission</strong>.
-                    </li>
-                </ul>
-            </li>
-        </ul>
-        <p><em>Example:</em> If your metric is <code>def calc_error(gt, pred):</code>, you might map:</p>
-        <ul>
-            <li><code>gt</code> → Dataset File: <code>sample_{id}/depth.png</code> (selected as <code>depth.png</code>)
-            </li>
-            <li><code>pred</code> → Submission File: <code>sample_{id}/result.png</code> (selected as
-                <code>result.png</code>)
-            </li>
-        </ul>
+<h3 class="mt-4">Storage quotas</h3>
+<p>Two independent budgets keep working space and shared content from competing:</p>
+<ul>
+    <li><strong>Public</strong> &mdash; <strong>100&nbsp;GB</strong> by default, for
+        anything public.</li>
+    <li><strong>Private</strong> &mdash; <strong>10&nbsp;GB</strong> by default, for
+        private/unlisted content.</li>
+</ul>
+<p>Imports are cheap (the small preview tier); the real cost is per-leaderboard
+    materialization, charged to the leaderboard owner. Submission ZIPs aren't charged to
+    you. Your usage is shown on
+    <a href="/settings/account"><code>Account settings</code></a>.</p>
 
-        <h3 id="submissions" class="mt-5">4. Submissions</h3>
-        <p>A <strong>Submission</strong> represents the output of an algorithm or system you are testing.</p>
-        <ul>
-            <li><strong>Upload:</strong> On the Leaderboard page, click <strong>Upload Submission</strong>.</li>
-            <li><strong>Structure:</strong> The uploaded ZIP file must mirror the structure of the Dataset so that
-                sample 001 in the submission can be matched to sample 001 in the dataset.</li>
-        </ul>
-        <p>Once uploaded, the system automatically calculates all configured metrics for every sample.</p>
+<h3 class="mt-4">Account &amp; tokens</h3>
+<ul>
+    <li><a href="/settings/account"><strong>Account settings</strong></a> &mdash; profile,
+        quota usage, and the danger zone. <strong>Deleting your account</strong> requires
+        typing your email to confirm; it removes your datasets, leaderboards, and the
+        metrics and visualizations you authored, and detaches your submissions on other
+        people's leaderboards.</li>
+    <li><a href="/settings/api_tokens"><strong>API tokens</strong></a> &mdash; create the
+        Bearer token the <a href="{{ url_for('docs', page='submitting') }}">client</a>
+        uses. Regenerating invalidates the old token immediately.</li>
+</ul>
 
-        <h3 id="comparison" class="mt-5">5. Comparison & Analysis</h3>
-        <p>Bench-Hub shines at deep analysis.</p>
-        <ul>
-            <li><strong>Leaderboard Table:</strong> Shows aggregated stats (Mean, Median, etc.). Click headers to sort.
-            </li>
-            <li><strong>Comparison View:</strong> Select multiple submissions and click <strong>Compare</strong>. This
-                opens a
-                side-by-side view where you can see:
-                <ul>
-                    <li>Per-sample metric scores.</li>
-                    <li>Custom Visualizations (e.g., Error Maps, Point Clouds).</li>
-                    <li>Raw file contents (Images, Text, JSON).</li>
-                </ul>
-            </li>
-        </ul>
+<h3 class="mt-4">Requesting features &amp; data types</h3>
+<p>Need a dataset imported or a new capability? File it via
+    <a href="/feature_requests"><strong>Feature requests</strong></a>; admins triage with a
+    status and note.</p>
 
-    </div>
+<div class="alert alert-info mt-4">
+    Ready to build something? Start with <a href="{{ url_for('docs', page='importing') }}" class="alert-link">Importing
+    data</a> or jump to a <a href="{{ url_for('docs', page='tutorials') }}" class="alert-link">tutorial</a>.
 </div>
 {% endblock %}

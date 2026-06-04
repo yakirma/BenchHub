@@ -1,105 +1,91 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>API Reference</h1>
-<p class="lead">Programmatically interact with Bench-Hub.</p>
+<h1>API &amp; client reference</h1>
+<p class="lead">The <code>benchhub-client</code> Python surface and the underlying HTTP
+    endpoints.</p>
 <hr>
 
-<div class="row mt-4">
-    <div class="col-md-12">
-        <div class="alert alert-warning">
-            <i class="bi bi-exclamation-triangle me-2"></i> <strong>Note:</strong> This API is currently experimental
-            and subject to change.
-        </div>
+<h3>Authentication</h3>
+<p>Programmatic calls authenticate with a Bearer token from
+    <a href="/settings/api_tokens"><code>/settings/api_tokens</code></a>
+    (regenerate or revoke there). Send it as
+    <code>Authorization: Bearer &lt;token&gt;</code>, or let the client read
+    <code>$BENCHHUB_API_TOKEN</code>. Verify a token with
+    <code>GET /api/whoami</code>.</p>
 
-        <h3 id="projects">Projects</h3>
+<h2 class="mt-4">Python client</h2>
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client(token="bh_xxx", base_url="https://runbenchhub.com")
+#                  ^ or $BENCHHUB_API_TOKEN          ^ or $BENCHHUB_BASE_URL (default)</code></pre>
 
-        <div class="card mb-4">
-            <div class="card-header font-monospace">
-                <span class="badge bg-success me-2">GET</span> /projects
-            </div>
-            <div class="card-body">
-                <p>List all available projects.</p>
-                <h6>Response</h6>
-                <pre><code class="language-json">{
-    "projects": [
-        {"id": 1, "name": "dTOF", "description": "Depth sensing benchmark"},
-        {"id": 2, "name": "Lidar", "description": "..."}
-    ]
-}</code></pre>
-            </div>
-        </div>
+<h4 class="mt-3"><code>Client</code></h4>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>iter_samples(lb_id, *, force_download=False)</code></td><td>Yield <code>(sample_name, inputs)</code>; inputs are decoded <code>bh.&lt;Kind&gt;</code> instances. File-backed inputs are bulk-downloaded once and cached.</td></tr>
+        <tr><td><code>leaderboard_contract(lb_id)</code></td><td>The prediction contract: a list of <code>{name, kind, params, role}</code>.</td></tr>
+        <tr><td><code>submission(lb_id, name=None, *, description=None, link=None)</code></td><td>Open a <code>SubmissionBuilder</code>.</td></tr>
+        <tr><td><code>submission_exists(lb_id, name)</code></td><td>Whether a submission of that name already exists.</td></tr>
+        <tr><td><code>create_dataset(name, *, visibility="public")</code></td><td>Open a <code>BHDatasetCreator</code>.</td></tr>
+    </tbody>
+</table>
 
-        <h3 id="automation">Automation</h3>
+<h4 class="mt-3"><code>SubmissionBuilder</code></h4>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>predict(sample_name, **fields)</code></td><td>Stage typed predictions for a sample; each value is a <code>bh.&lt;Kind&gt;</code> (validated immediately).</td></tr>
+        <tr><td><code>submit(name=None, *, description=None, link=None)</code></td><td>Pack + upload; returns the server response.</td></tr>
+        <tr><td><code>build_zip()</code></td><td>The submission ZIP bytes (for inspection / manual upload).</td></tr>
+        <tr><td><code>fetch_contract()</code> / <code>set_contract(c)</code></td><td>Load the LB contract for local shape checks.</td></tr>
+        <tr><td><code>set_input_shape(sample, **fld=(H,W))</code></td><td>Feed input shapes so <code>shape_match</code> preds are checked before upload.</td></tr>
+    </tbody>
+</table>
 
-        <div class="card mb-4">
-            <div class="card-header font-monospace">
-                <span class="badge bg-warning text-dark me-2">POST</span>
-                /&lt;project_name&gt;/leaderboard/&lt;id&gt;/upload_submission
-            </div>
-            <div class="card-body">
-                <p>Upload a new submission ZIP file to a specific leaderboard.</p>
+<h4 class="mt-3"><code>BHDatasetCreator</code></h4>
+<p>Build a dataset programmatically and upload it in one call:</p>
+<pre><code class="language-python">ds = client.create_dataset("my-bench", visibility="private")
+ds.add_field("image", kind="image", role="input")
+ds.add_field("label", kind="label", role="gt",
+             params={"names": ["cat", "dog"]})
+for name, img, y in my_samples:
+    ds.add_sample(name, image=bh.Image(img), label=bh.Label(y))
+ds.create()</code></pre>
+<p><code>add_field(name, kind, role, params=...)</code> declares the schema (optional &mdash;
+    it can be inferred from the first <code>add_sample</code>); <code>add_sample(name,
+    **typed_values)</code> stages one sample; <code>create()</code> uploads the package.</p>
 
-                <h6>Parameters (Multipart/Form-Data)</h6>
-                <table class="table table-sm table-bordered">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Description</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><code>submission_zip</code></td>
-                            <td>File</td>
-                            <td>The ZIP file containing your results.</td>
-                        </tr>
-                        <tr>
-                            <td><code>submission_name</code></td>
-                            <td>String</td>
-                            <td>(Optional) Display name for the submission. Defaults to filename.</td>
-                        </tr>
-                    </tbody>
-                </table>
+<h2 class="mt-4">HTTP endpoints</h2>
+<p>The client wraps these; use them directly if you're not on Python.</p>
 
-                <h6>Example (Python)</h6>
-                <pre><code class="language-python">import requests
+<h5 class="mt-3">Leaderboard data</h5>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>GET /api/leaderboard/&lt;id&gt;/info</code></td><td>Metadata. Also <code>/api/leaderboard/by_name/&lt;name&gt;/info</code>.</td></tr>
+        <tr><td><code>GET /api/leaderboard/&lt;id&gt;/contract</code></td><td>The prediction contract.</td></tr>
+        <tr><td><code>GET /api/leaderboard/&lt;id&gt;/samples</code></td><td>Per-sample inputs (inline values + URLs for file-backed fields) + a cache token.</td></tr>
+        <tr><td><code>GET /api/leaderboard/&lt;id&gt;/inputs.zip</code></td><td>One ZIP of all file-backed inputs, <code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code>.</td></tr>
+        <tr><td><code>GET /api/leaderboard/&lt;id&gt;/submissions</code></td><td>The scored submissions.</td></tr>
+    </tbody>
+</table>
 
-url = "http://localhost:6060/dTOF/leaderboard/1/upload_submission"
-files = {'submission_zip': open('results.zip', 'rb')}
-data = {'submission_name': 'My Algorithm v1.0'}
+<h5 class="mt-3">Submitting &amp; datasets</h5>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>POST /api/submit/&lt;lb_id&gt;</code></td><td>Multipart submission ZIP (<code>manifest.json</code> + <code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code>). Validated against the contract, then scored async.</td></tr>
+        <tr><td><code>POST /api/datasets</code></td><td>Multipart typed-dataset ZIP (the <code>BHDatasetCreator</code> target).</td></tr>
+        <tr><td><code>POST /api/leaderboard/&lt;id&gt;/recalculate_async</code></td><td>Re-score submissions (e.g. after a metric change).</td></tr>
+    </tbody>
+</table>
 
-r = requests.post(url, files=files, data=data)
-print(r.status_code)</code></pre>
-            </div>
-        </div>
+<h5 class="mt-3">Rendering</h5>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>GET /api/viz/&lt;cf_id&gt;</code></td><td>Render any typed field's value (image PNG, depth colormap, mask palette, an mp4 for a <code>sequence</code>, &hellip;).</td></tr>
+        <tr><td><code>GET /api/gt_viz/&lt;lb&gt;/&lt;col&gt;/&lt;sample&gt;?cmap=</code></td><td>Recolor a depth field with a chosen colormap.</td></tr>
+    </tbody>
+</table>
 
-        <div class="card mb-4">
-            <div class="card-header font-monospace">
-                <span class="badge bg-success me-2">GET</span> /&lt;project_name&gt;/leaderboard_metrics_status
-            </div>
-            <div class="card-body">
-                <p>Poll for the status of metric calculations.</p>
-                <h6>Parameters (Query Param)</h6>
-                <ul>
-                    <li><code>leaderboard_id</code> (required): ID of the leaderboard.</li>
-                </ul>
-
-                <h6>Response</h6>
-                <pre><code class="language-json">{
-    "123": {  // Submission ID
-        "id": 123,
-        "name": "My Algorithm",
-        "metrics": {
-            "L1_Error": 0.45,
-            "Accuracy": "Calculating..." 
-        }
-    }
-}</code></pre>
-            </div>
-        </div>
-
-    </div>
-</div>
+<p class="mt-4">For the end-to-end submission flow see
+    <a href="{{ url_for('docs', page='submitting') }}">Submit Predictions</a>; for typed
+    constructors see <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.</p>
 {% endblock %}

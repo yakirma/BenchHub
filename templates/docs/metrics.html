@@ -1,88 +1,107 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>Writing Custom Metrics</h1>
-<p class="lead">Define how your submissions are evaluated using Python code.</p>
+<h1>Writing metrics</h1>
+<p class="lead">A metric is a small Python function that scores a prediction against ground
+    truth. Author it once, reuse it across leaderboards.</p>
 <hr>
 
-<div class="row mt-4">
-    <div class="col-md-12">
-        <h3>Overview</h3>
-        <p>Bench-Hub allows you to define metrics using Python. These snippets are executed safely to compute scores for
-            your data.</p>
-
-        <h4>Available Libraries</h4>
-        <p>The environment comes pre-loaded with standard scientific libraries:</p>
-        <ul>
-            <li><code>numpy</code> (as <code>np</code>)</li>
-            <li><code>math</code></li>
-            <li><code>json</code></li>
-        </ul>
-
-        <h3 class="mt-5">Metric Types</h3>
-
-        <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
-                <h5 class="mb-0">1. Per-Sample Metrics</h5>
-            </div>
-            <div class="card-body">
-                <p>These metrics calculate a score for <strong>each individual sample</strong> (e.g., L1 error for a
-                    single image).</p>
-                <h6>Signature</h6>
-                <pre>def metric_name(arg1, arg2, ...):
-    # Process inputs
-    return float_value</pre>
-
-                <h6>Example: L1 Error</h6>
-                <pre><code class="language-python">def L1(pred, gt):
+<h3>The shape of a metric</h3>
+<p>A metric is plain Python source stored in the metric library. It receives one argument
+    per mapped field and returns a number. <code>numpy</code> (as <code>np</code>) and
+    <code>benchhub</code> (as <code>bh</code>, also <code>benchhub</code>) are pre-injected
+    &mdash; usable without an <code>import</code>. Anything else from the standard library
+    (<code>math</code>, <code>json</code>, &hellip;) you <code>import</code> inside the
+    function body.</p>
+<pre><code class="language-python">def rmse_depth(gt, pred):
     import numpy as np
-    # Bench-Hub passes inputs as parsed values if possible, 
-    # but robust code handles lists/arrays just in case.
-    if isinstance(pred, (float, int)):
-        pred = np.array([pred])
-    if isinstance(gt, (float, int)):
-        gt = np.array([gt])
-        
-    return np.linalg.norm(pred - gt, ord=1)</code></pre>
-            </div>
-        </div>
+    return float(np.sqrt(np.mean((np.asarray(gt) - np.asarray(pred)) ** 2)))</code></pre>
 
-        <div class="card mb-4">
-            <div class="card-header bg-success text-white">
-                <h5 class="mb-0">2. Aggregated Metrics</h5>
-            </div>
-            <div class="card-body">
-                <p>These metrics calculate a single score for the <strong>entire dataset</strong> (e.g., F1 Score, Total
-                    Accuracy). They receive lists of values.</p>
-                <h6>Signature</h6>
-                <pre>def metric_name(arg1_list, arg2_list, ...):
-    # Inputs are lists of all samples
-    return float_value</pre>
-
-                <h6>Example: Precision</h6>
-                <pre><code class="language-python">def precision(tp_list, fp_list):
-    # Filter out None values (failed samples)
-    tps = [x for x in tp_list if x is not None]
-    fps = [x for x in fp_list if x is not None]
-    
-    total_tp = sum(tps)
-    total_fp = sum(fps)
-    
-    if total_tp + total_fp == 0:
-        return 0.0
-    return total_tp / (total_tp + total_fp)</code></pre>
-            </div>
-        </div>
-
-        <h3 class="mt-5">Best Practices</h3>
-        <ul>
-            <li><strong>Handle Nones:</strong> Inputs might be <code>None</code> if a sample failed to load or a
-                dependency is missing. Always check for validity.</li>
-            <li><strong>Return simple types:</strong> Return python <code>float</code> or <code>int</code>. Numpy
-                scalars should be cast (<code>float(val)</code>).</li>
-            <li><strong>Dependencies:</strong> You can input the result of <em>other</em> metrics! Just map the argument
-                to "Per-Sample Metric" in the leaderboard settings.</li>
-        </ul>
+<h3 class="mt-4">Per-sample vs aggregated</h3>
+<div class="row g-3">
+    <div class="col-md-6">
+        <div class="card h-100"><div class="card-body">
+            <h6 class="fw-bold">Per-sample (the common case)</h6>
+            <p class="small mb-0">Returns one number for one sample. BenchHub runs it on
+                every sample and <strong>pools</strong> the results into the leaderboard
+                score (mean / median / percentile / min / max &mdash; chosen on the
+                binding). Each per-sample value is also stored, so re-pooling is instant.</p>
+        </div></div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100"><div class="card-body">
+            <h6 class="fw-bold">Aggregated</h6>
+            <p class="small mb-0">Receives the <em>lists</em> of values across all samples
+                (e.g. all GT labels + all predicted labels) and returns one number for the
+                whole submission &mdash; for metrics like AUROC or a corpus-level BLEU that
+                can't be averaged per sample.</p>
+        </div></div>
     </div>
 </div>
+
+<h3 class="mt-4">Typed inputs (recommended)</h3>
+<p>Annotate the arguments with the kind you expect, and BenchHub hands you decoded
+    <code>bh.&lt;Kind&gt;</code> instances instead of raw primitives. The annotations are
+    parsed at save time into the metric's accepted kinds, and the argument <em>names</em>
+    map to roles by convention (<code>gt</code>, <code>pred</code>, <code>input</code>).</p>
+<pre><code class="language-python">import benchhub as bh
+
+def accuracy(gt: bh.Label, pred: bh.Label | bh.LabelList):
+    # gt.value is the true class index; pred.value (or pred.values[0]) the prediction
+    p = pred.value if isinstance(pred, bh.Label) else pred.values[0]
+    return 1.0 if p == gt.value else 0.0</code></pre>
+<p>Use <code>|</code> unions to accept multiple kinds. Put an <code>isinstance</code> check
+    in the body if you branch on type. Metrics with no annotations keep receiving the raw
+    primitive value (back-compat).</p>
+
+<h3 class="mt-4">Built-in reference metrics</h3>
+<p>Five typed metrics ship ready to bind:</p>
+<ul>
+    <li><code>accuracy</code> &mdash; classification (<code>bh.Label</code> /
+        <code>bh.LabelList</code>);</li>
+    <li><code>rmse_depth</code>, <code>mae_depth</code> &mdash; depth error
+        (<code>bh.Depth</code>);</li>
+    <li><code>iou_mask</code> &mdash; segmentation IoU (<code>bh.Mask</code>);</li>
+    <li><code>exact_match_text</code> &mdash; string equality (<code>bh.Text</code>).</li>
+</ul>
+
+<h3 class="mt-4">Binding a metric to a leaderboard</h3>
+<p>Authoring a metric just adds it to the library; it scores nothing until you
+    <strong>bind</strong> it to a leaderboard (on the leaderboard's Edit page). The binding
+    sets:</p>
+<ul>
+    <li><strong>argument mappings</strong> &mdash; each function arg &rarr; a dataset or
+        prediction field (e.g. <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>);</li>
+    <li><strong>display name</strong> &mdash; the column header (and the handle other
+        metrics chain on);</li>
+    <li><strong>pooling</strong>, <strong>sort direction</strong>, and an optional
+        <strong>tag filter</strong>.</li>
+</ul>
+
+<h3 class="mt-4">Chaining metrics</h3>
+<p>A metric can consume <em>another</em> metric's per-sample output by mapping an argument
+    to that metric's display name. BenchHub topologically sorts the bound metrics so
+    dependencies run first, then feeds the upstream values in. This lets you build, say, a
+    normalized score on top of a raw error without recomputing the error.</p>
+
+<h3 class="mt-4">Authoring &amp; managing</h3>
+<ul>
+    <li>Write and edit metrics on the <a href="/metrics"><strong>Metrics</strong></a> page.
+        Each metric is Python source you can overwrite in place &mdash; no migration.</li>
+    <li><strong>Visibility:</strong> your metrics default to <code>private</code>;
+        publish to <code>public</code> to let others bind them. Names are unique per owner,
+        and globally unique only among public metrics (so two people can each have a
+        private <code>my_iou</code>).</li>
+    <li><strong>Sandboxing:</strong> metric code is executed server-side. Deployments can
+        set <code>BENCHHUB_SANDBOX_METRICS=1</code> to run it in an isolated sandbox.</li>
+</ul>
+
+<div class="alert alert-info mt-4">
+    A metric is just code &mdash; spot-check anything non-trivial (rank-based, span-overlap,
+    BLEU-family) on a couple of samples in the comparison view before trusting the column.
+</div>
+
+<p class="mt-4">Next: <a href="{{ url_for('docs', page='visualizations') }}">visualizations
+    &rarr;</a></p>
 {% endblock %}

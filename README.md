@@ -9,23 +9,39 @@ generalized into a public, multi-tenant web app.
 
 ## Features
 
-- **OAuth sign-in (GitHub)** — no passwords; one-click account creation.
-- **Datasets and leaderboards** are global — no project namespace.
-- **Per-row visibility** (`public` / `unlisted` / `private`) on datasets,
-  leaderboards, and metric/visualization library entries.
-- **HuggingFace import**: pull a structured HF dataset repo as a one-click
-  alternative to a ZIP upload (see `scripts/seed_nyu_v2_curated.py` for
-  an example workflow).
-- **User-defined metrics in Python** — bring your own scoring code; the
-  metric engine resolves dependencies and runs them per-sample or
-  aggregated. Sandbox-isolated when `BENCHHUB_SANDBOX_METRICS=1`.
+- **Passwordless sign-in** — GitHub, Google, or a one-time email code.
+- **Strict typed contract** — every field has a *kind* (image, mask, depth,
+  audio, label, bboxes, scalar, json, **sequence/video**, …) shared by the
+  dataset, the `benchhub-client`, and the metric engine (`benchhub/types.py`).
+- **Self-service HuggingFace import** — one button: the **tabular** importer
+  (Croissant/parquet, inferred + editable) falls back to a **file-tree
+  mapper** for repos of paired files / packed archives / video clips. The
+  mapper has a "describe the structure" role wizard, loaders for
+  file/npz/json/csv/parquet/hdf5/zip/tar/gz/token/sequence, a decode preview,
+  variant fan-out, and draft autosave.
+- **Two-tier storage** — datasets cache as a cheap preview tier; each
+  leaderboard materializes a chosen sample subset at full resolution.
+- **Datasets and leaderboards are global**; per-row visibility
+  (`public` / `unlisted` / `private`) on datasets, leaderboards, and
+  metric/visualization library entries.
+- **User-defined metrics & visualizations in Python** — typed signatures,
+  per-sample + aggregated, pooling, dependency chaining; sandbox-isolated
+  when `BENCHHUB_SANDBOX_METRICS=1`.
+- **`benchhub-client`** — `iter_samples` (decoded typed inputs incl. iterable
+  video clips) → predict → submit; programmatic dataset creation.
 - **Asynchronous processing** with Celery (Redis broker).
-- **Per-user quotas**: 50 MB storage, 5 datasets, 50 submissions / 24h
-  by default. Free-tier safe to expose to the open internet.
-- **API tokens** for programmatic uploads (`/settings/api_tokens`).
-- **Account deletion** (GDPR right-to-be-forgotten) with cascading cleanup.
-- **Public landing page** at `/`, `/leaderboards` for browsing the catalog,
-  `/u/<id>` for public profile pages.
+- **Split-bucket quotas** — 100 GB public + 10 GB private per user by default.
+- **API tokens** (`/settings/api_tokens`), account deletion with cascading
+  cleanup, public landing (`/`), catalog (`/leaderboards`, `/datasets`),
+  profiles (`/u/<id>`).
+
+## Documentation
+
+Full user docs live in-app at **[`/docs`](https://runbenchhub.com/docs)**
+(templates under `templates/docs/`): overview, core concepts, importing data,
+data types, leaderboards, writing metrics & visualizations, submitting
+predictions, the API/client reference, and step-by-step tutorials.
+Architecture/dev notes are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Prerequisites
 
@@ -64,24 +80,21 @@ Override with `BENCHHUB_DATA_DIR=/some/path`.
 ## Tests
 
 ```bash
-pytest
+pytest tests/
 ```
 
-429 tests, ~3-4 seconds. Coverage gate is configured in `pytest.ini`.
+~1000+ tests. (Run `pytest tests/`, not bare `pytest`, so it skips the
+ad-hoc root-level `test_chain*.py` experiments.)
 
-## Dataset / submission ZIP convention
+## Datasets & the typed contract
 
-Folders are auto-detected by prefix:
-
-| Prefix          | Type      | Files                                  |
-| --------------- | --------- | -------------------------------------- |
-| `metric_`       | metric    | `<sample>.txt` containing a float      |
-| `hist_` / `raw_histogram` / `hist` | histogram | `<sample>.npz` (`bins`, `counts`) |
-| `raw_`          | depth/map | `<sample>_<W>x<H>.npz`                 |
-| (anything else) | image / scalar / json / text | by file extension          |
-
-`git_info.json` (or `git.info`) at the ZIP root attaches commit metadata
-to the resulting dataset/submission row.
+Datasets are typed: a directory with a `manifest.json` declaring
+`fields[]` (`{name, kind, role, params}`) plus one folder per field holding
+`<sample>.<ext>`. You rarely build this by hand — the **HuggingFace
+importers** and the client's **`BHDatasetCreator`** produce it for you. The
+kinds and the import flows are documented in-app at
+[`/docs`](https://runbenchhub.com/docs) (Data Types, Importing Data). The
+legacy folder-name-prefix ZIP path has been removed.
 
 ## DLP-safe code uploads
 

@@ -1,0 +1,144 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Core concepts</h1>
+<p class="lead">The handful of objects everything else is built from.</p>
+<hr>
+
+<div class="alert alert-light border">
+    <strong>The one big idea: a typed contract.</strong> Every piece of data &mdash; a
+    dataset column, a leaderboard input, a prediction &mdash; has a declared
+    <em>kind</em> (<code>image</code>, <code>depth</code>, <code>mask</code>,
+    <code>label</code>, <code>sequence</code>, &hellip;). Because both the dataset and
+    the submitter agree on kinds, the platform can decode, render, and score data without
+    guessing. The kinds are documented in
+    <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.
+</div>
+
+<h3 class="mt-4">Dataset</h3>
+<p>A <strong>dataset</strong> is a global collection of samples (it is not scoped to any
+    project or user namespace &mdash; any leaderboard can bind any dataset). Each dataset
+    has a set of <strong>fields</strong>, and each <strong>sample</strong> holds one value
+    per field.</p>
+<p>Datasets are stored in a <strong>two-tier</strong> way:</p>
+<ul>
+    <li><strong>Preview tier</strong> (always present): a small, downscaled rendering of
+        every sample &mdash; JPG/PNG thumbnails for images/masks/depth, a waveform for
+        audio, the inline value for text/labels/scalars. This is what you see when you
+        browse a dataset. It is tiny (tens of KB per sample), so an imported dataset
+        barely uses storage.</li>
+    <li><strong>Materialized tier</strong> (per leaderboard, on demand): the full-resolution
+        bytes for the subset of samples a leaderboard actually uses. See
+        <em>Materialization</em> below.</li>
+</ul>
+
+<h3 class="mt-4">Fields &amp; roles</h3>
+<p>A field has a <strong>name</strong>, a <strong>kind</strong>, and a <strong>role</strong>.
+    The role says how the field participates in a benchmark:</p>
+<table class="table table-sm">
+    <thead><tr><th>Role</th><th>Meaning</th></tr></thead>
+    <tbody>
+        <tr><td><code>input</code></td><td>Given to the submitter at inference time (e.g. the RGB image). <em>Not</em> predicted.</td></tr>
+        <tr><td><code>gt</code></td><td>Ground truth, held server-side &mdash; the target a prediction is scored against.</td></tr>
+        <tr><td><code>pred</code></td><td>A field the submitter produces. Declared on the leaderboard's prediction contract.</td></tr>
+    </tbody>
+</table>
+<p>Roles are decided per leaderboard, so the same dataset can be used different ways. A
+    handy default: <strong>if a dataset has an image field and nothing else is marked
+    input, the image is treated as the input</strong> and the rest become ground truth.</p>
+
+<h3 class="mt-4">Leaderboard</h3>
+<p>A <strong>leaderboard</strong> binds one (or more) datasets and defines a benchmark:</p>
+<ul>
+    <li><strong>Which fields are inputs vs ground truth</strong> (the field roles above).</li>
+    <li><strong>A prediction contract</strong> &mdash; the list of fields a submitter must
+        produce, each with a name (<code>&lt;x&gt;_pred</code>) and a kind. The contract
+        is frozen once verified submissions exist, so existing predictions are never
+        re-interpreted through a different decoder.</li>
+    <li><strong>Metrics and visualizations</strong> bound to it (see below).</li>
+    <li><strong>A materialized sample subset</strong> (see below).</li>
+</ul>
+<p>The leaderboard page shows a ranked table of submissions; the
+    <strong>comparison view</strong> opens any subset of them side-by-side, per sample.</p>
+
+<h3 class="mt-4">Materialization</h3>
+<p>Browsing only needs the cheap preview tier, but <em>scoring</em> needs the real bytes.
+    So when you create a leaderboard you choose a <strong>sample subset</strong> to
+    materialize at full resolution:</p>
+<ul>
+    <li><strong>Sample cap</strong> &mdash; how many samples (or all of them).</li>
+    <li><strong>Sampling</strong> &mdash; <code>head</code> (first N), <code>random</code>,
+        or <code>stratified</code> (balanced across a label field). Random is the default;
+        stratified is auto-suggested when the dataset has a label field.</li>
+    <li><strong>Seed</strong> &mdash; makes random/stratified picks reproducible.</li>
+</ul>
+<p>Materialization runs in the background; the leaderboard page shows its status
+    (<code>pending</code> &rarr; <code>running</code> &rarr; <code>ready</code>, or
+    <code>failed</code> with a retry). The materialized bytes count against the
+    leaderboard owner's storage quota. <strong>Re-materializing is blocked once the
+    leaderboard has submissions</strong> &mdash; changing the sample set would invalidate
+    the inputs those submissions were scored against.</p>
+
+<h3 class="mt-4">Submission</h3>
+<p>A <strong>submission</strong> is one model's set of predictions for a leaderboard's
+    samples. Submissions are <em>verified</em> (uploaded through the real predict + eval
+    pipeline) &mdash; the only kind you create. Each carries a processing status
+    (<code>Pending</code> &rarr; <code>Processing</code> &rarr; <code>Processed</code>, or
+    <code>Error</code>) and, once scored, a row of metric results. You submit with the
+    <a href="{{ url_for('docs', page='submitting') }}"><code>benchhub-client</code></a>.</p>
+
+<h3 class="mt-4">Metric</h3>
+<p>A <strong>metric</strong> is a Python function that compares a prediction to ground
+    truth and returns a number. Metrics live in a reusable library (a
+    <em>global metric</em>) and are <strong>bound</strong> to a leaderboard with:</p>
+<ul>
+    <li><strong>argument mappings</strong> &mdash; which dataset/prediction field feeds
+        each function argument;</li>
+    <li><strong>pooling</strong> &mdash; how per-sample scores aggregate into the
+        leaderboard number (<code>mean</code>, <code>median</code>,
+        <code>percentile</code>, <code>min</code>, <code>max</code>);</li>
+    <li><strong>sort direction</strong> &mdash; higher- or lower-is-better;</li>
+    <li>an optional <strong>tag filter</strong> to score only a slice of samples.</li>
+</ul>
+<p>A metric's signature can request <strong>typed</strong> inputs
+    (<code>def accuracy(gt: bh.Label, pred: bh.Label)</code>) and metric outputs can
+    <strong>chain</strong> &mdash; one metric can consume another's per-sample output.
+    See <a href="{{ url_for('docs', page='metrics') }}">Writing Metrics</a>.</p>
+
+<h3 class="mt-4">Visualization</h3>
+<p>A <strong>visualization</strong> is a Python function that renders an image for a
+    sample (per-sample) or for a whole submission (aggregated, e.g. a confusion matrix).
+    Like metrics, they live in a library and bind to a leaderboard. See
+    <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a>.</p>
+
+<h3 class="mt-4">Visibility</h3>
+<p>Datasets, leaderboards, metrics, and visualizations each have a visibility:</p>
+<ul>
+    <li><strong>public</strong> &mdash; appears in the catalog, visible to everyone;</li>
+    <li><strong>unlisted</strong> &mdash; reachable by link, hidden from catalogs;</li>
+    <li><strong>private</strong> &mdash; only you (and admins) can see it.</li>
+</ul>
+<p>Your own imports and submissions default to <strong>private</strong>; you publish when
+    ready. Publishing pre-checks your public storage budget.</p>
+
+<h3 class="mt-4">Quotas</h3>
+<p>Storage is split into two budgets so working space and shared content don't compete:</p>
+<ul>
+    <li><strong>Public</strong> &mdash; <strong>100&nbsp;GB</strong> by default, charged for
+        anything whose visibility is public.</li>
+    <li><strong>Private</strong> &mdash; <strong>10&nbsp;GB</strong> by default, for
+        private/unlisted working content.</li>
+</ul>
+<p>Because datasets are cached as the small preview tier, imports are cheap; the real cost
+    is per-leaderboard materialization. Submission ZIPs aren't charged to you &mdash; the
+    leaderboard owner already paid for the inputs you respond to.</p>
+
+<div class="alert alert-secondary mt-4">
+    <strong>A note on &ldquo;projects.&rdquo;</strong> Older URLs are prefixed with a
+    project name, but datasets and leaderboards are global today &mdash; you can ignore the
+    project concept.
+</div>
+
+<p class="mt-4">Next: <a href="{{ url_for('docs', page='importing') }}">import a dataset
+    &rarr;</a></p>
+{% endblock %}

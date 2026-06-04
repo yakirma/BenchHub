@@ -1,0 +1,191 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Tutorials</h1>
+<p class="lead">End-to-end walkthroughs. Each one goes from nothing to a scored submission;
+    pick the shape that matches your data.</p>
+<hr>
+
+<div class="p-3 bg-body-tertiary rounded-3 mb-4">
+    <strong>Scenarios</strong>
+    <ol class="mb-0 mt-2">
+        <li><a href="#t1">Tabular dataset &rarr; leaderboard &rarr; first submission</a></li>
+        <li><a href="#t2">File-tree: paired RGB + depth</a></li>
+        <li><a href="#t3">Folder-as-label image classification</a></li>
+        <li><a href="#t4">A video / clip (sequence) benchmark</a></li>
+        <li><a href="#t5">Write a metric + a confusion-matrix visualization</a></li>
+        <li><a href="#t6">Submit from a script or Colab (reusable loop)</a></li>
+        <li><a href="#t7">Build a dataset in Python (no HuggingFace)</a></li>
+        <li><a href="#t8">Variants &amp; splits</a></li>
+    </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="t1" class="mt-5">1 &middot; Tabular dataset &rarr; leaderboard &rarr; first submission</h2>
+<p>The fastest path: a HuggingFace dataset with columns (image + label), scored by accuracy.</p>
+<ol>
+    <li><strong>Import.</strong> Datasets &rarr; <em>Add a dataset</em>, paste e.g.
+        <code>uoft-cs/cifar10</code>, click <strong>Fetch &amp; preview</strong>. Confirm
+        the inferred kinds (an <code>image</code> column and a <code>label</code> column),
+        pick the <code>test</code> split, leave <em>max samples</em> at your taste, and
+        commit. The dataset caches as a preview.</li>
+    <li><strong>Create a leaderboard.</strong> Open the dataset &rarr; <strong>Create
+        leaderboard</strong>. Roles: <code>image = input</code>,
+        <code>label = gt</code>. Prediction field: <code>label_pred</code>
+        (kind <code>label</code>). Sample selection: 1,000 samples, stratified by
+        <code>label</code>. Metric: <strong>accuracy</strong>, mapped
+        <code>gt&rarr;label</code>, <code>pred&rarr;label_pred</code>. Create &mdash;
+        materialization runs in the background.</li>
+    <li><strong>Submit.</strong> Grab a token from
+        <a href="/settings/api_tokens">API tokens</a>, then:
+        <pre><code class="language-python">import benchhub as bh
+client = bh.Client(token="bh_xxx")
+LB = 7   # your leaderboard id (in the URL)
+
+sub = client.submission(LB, name="my-classifier")
+for name, inputs in client.iter_samples(LB):
+    x = inputs["image"].array        # (32,32,3) uint8
+    sub.predict(name, label_pred=bh.Label(int(my_model(x))))
+sub.submit(description="baseline CNN")</code></pre></li>
+    <li><strong>Compare.</strong> Your submission appears on the leaderboard with its
+        accuracy + rank. Open the comparison view to see per-sample predictions vs GT.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="t2" class="mt-5">2 &middot; File-tree: paired RGB + depth</h2>
+<p>A repo laid out as <code>train/&lt;seq&gt;/&lt;frame&gt;.png</code> for RGB plus one
+    packed <code>depth.npz</code> per sequence. Not tabular &mdash; use the file-tree
+    mapper.</p>
+<ol>
+    <li><strong>Inspect.</strong> Fetch &amp; preview hands off to the file-tree mapper
+        automatically (no schema). It lists the tree and the path levels.</li>
+    <li><strong>Map fields.</strong>
+        <pre><code class="language-text">image : loader=file  pattern=train/{seq}/normal/{id}.png   role=input  kind=image
+depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes  axis=0
+        role=gt  kind=depth</code></pre>
+        The shared <code>depth.npz</code> holds all frames stacked along axis 0; BenchHub
+        splits it and aligns frame N to the Nth image (sorted filename order).</li>
+    <li><strong>Decode preview.</strong> Click it &mdash; confirm the depth frame lines up
+        with image 0 before committing.</li>
+    <li><strong>Leaderboard + metric.</strong> Create an LB with <code>image=input</code>,
+        <code>depth=gt</code>, pred field <code>depth_pred</code> (kind depth), and bind
+        <strong>rmse_depth</strong> (<code>gt&rarr;depth</code>,
+        <code>pred&rarr;depth_pred</code>).</li>
+    <li><strong>Submit.</strong>
+        <pre><code class="language-python">for name, inputs in client.iter_samples(LB):
+    rgb = inputs["image"].array
+    sub.predict(name, depth_pred=bh.Depth(my_depth_model(rgb), unit="meters"))
+sub.submit()</code></pre></li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="t3" class="mt-5">3 &middot; Folder-as-label image classification</h2>
+<p>A repo where the <em>folder name is the class</em>:
+    <code>Alex_Brush/000.png</code>, <code>Cookie/001.png</code>, &hellip;</p>
+<ol>
+    <li><strong>Describe the structure.</strong> In the mapper, the &ldquo;describe the
+        structure&rdquo; panel shows two levels: the class folder (default role
+        <code>property</code>) and the filename (<code>id</code>). Click
+        <strong>Generate fields from structure</strong>.</li>
+    <li>It produces two rows automatically:
+        <pre><code class="language-text">image : loader=file   pattern={label}/{id}.png   kind=image  role=input
+label : loader=token  token=label                kind=label  role=gt</code></pre>
+        The <code>token</code> loader turns each folder name into a label, building the
+        class vocabulary across the dataset (so the UI shows <code>Cookie</code>, not an
+        index).</li>
+    <li><strong>Leaderboard.</strong> pred field <code>label_pred</code> (kind label);
+        bind <strong>accuracy</strong>. Submit as in tutorial&nbsp;1.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="t4" class="mt-5">4 &middot; A video / clip (sequence) benchmark</h2>
+<p>Each sample is a clip of frames &mdash; e.g. <code>clips/&lt;id&gt;/&lt;frame&gt;.png</code>.</p>
+<ol>
+    <li><strong>Map a sequence field.</strong>
+        <pre><code class="language-text">clip : loader=sequence  pattern=clips/{id}/{frame}.png   kind=sequence  role=input</code></pre>
+        The <code>{frame}</code> token marks the per-frame part; each <code>{id}</code>
+        becomes one sample whose frames are gathered into a clip. In the dataset and
+        comparison views the clip renders as an <strong>mp4</strong>.</li>
+    <li><strong>Predicting a sequence.</strong> A <code>sequence</code> can also be a
+        prediction kind. Read the clip and submit one back:
+        <pre><code class="language-python">for name, clip in ((n, i["clip"]) for n, i in client.iter_samples(LB)):
+    out = [bh.Image(my_frame_model(f.array)) for f in clip]   # clip is iterable
+    sub.predict(name, clip_pred=bh.Sequence(out, item_kind="image", fps=10))
+sub.submit()</code></pre></li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="t5" class="mt-5">5 &middot; Write a metric + a confusion-matrix visualization</h2>
+<ol>
+    <li><strong>Metric.</strong> On the <a href="/metrics">Metrics</a> page, add:
+        <pre><code class="language-python">import benchhub as bh
+
+def top1(gt: bh.Label, pred: bh.LabelList):
+    return 1.0 if pred.values[0] == gt.value else 0.0</code></pre>
+        Bind it to your leaderboard with <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>, pooling = mean, higher-is-better.</li>
+    <li><strong>Visualization.</strong> A <code>confusion_matrix</code> aggregated viz ships
+        ready to bind &mdash; map <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>; its axes show class names automatically. Or
+        write your own (see <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a>).</li>
+    <li><strong>Re-score.</strong> Existing submissions don't need re-uploading &mdash; hit
+        the recompute (&#8635;) button on the leaderboard to apply the new metric.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="t6" class="mt-5">6 &middot; Submit from a script or Colab (reusable loop)</h2>
+<p>The submission loop is the same everywhere &mdash; iterate, run your model, predict,
+    submit:</p>
+<pre><code class="language-python">import os, benchhub as bh
+
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
+LB = 42
+
+# Inspect what the leaderboard expects:
+print(client.leaderboard_contract(LB))     # [{name, kind, params, role}, ...]
+
+sub = client.submission(LB, name="run-2026-06", link="https://github.com/me/model")
+for name, inputs in client.iter_samples(LB):
+    pred = my_model(inputs)                 # use inputs["&lt;field&gt;"]
+    sub.predict(name, label_pred=bh.Label(int(pred)))
+print(sub.submit())</code></pre>
+<p>Inputs are downloaded once and cached on disk
+    (<code>~/.cache/benchhub/</code>, or <code>$BENCHHUB_CACHE_DIR</code>), so re-runs are
+    offline. Pass <code>force_download=True</code> to <code>iter_samples</code> to
+    re-fetch.</p>
+
+<!-- ============================================================ -->
+<h2 id="t7" class="mt-5">7 &middot; Build a dataset in Python (no HuggingFace)</h2>
+<p>Have data already in memory or on disk? Skip the importer and push a typed dataset
+    directly:</p>
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client(token="bh_xxx")
+
+ds = client.create_dataset("my-eval", visibility="private")
+ds.add_field("image", kind="image", role="input")
+ds.add_field("answer", kind="text",  role="gt")
+for name, img, ans in load_my_data():
+    ds.add_sample(name, image=bh.Image(img), answer=bh.Text(ans))
+print(ds.create())</code></pre>
+<p>Then create a leaderboard on it exactly like an imported dataset.</p>
+
+<!-- ============================================================ -->
+<h2 id="t8" class="mt-5">8 &middot; Variants &amp; splits</h2>
+<p>When a file-tree repo encodes a quality or split in the path, e.g.
+    <code>train/&lt;seq&gt;/{quality}/&lt;id&gt;.png</code>:</p>
+<ul>
+    <li><strong>Import just one split/subset</strong> &mdash; set the mapper's
+        &ldquo;import only where token = value&rdquo; to e.g. <code>quality = normal</code>.
+        One dataset, only those samples.</li>
+    <li><strong>Fan out into separate datasets</strong> &mdash; set the variant token to
+        <code>quality</code>. BenchHub creates one dataset per value
+        (<code>&lt;name&gt;_low</code>, <code>&lt;name&gt;_normal</code>), each importing
+        only its slice.</li>
+</ul>
+
+<div class="alert alert-secondary mt-5">
+    Stuck on a specific repo's layout? File a
+    <a href="/feature_requests" class="alert-link">feature request</a> with the repo id and
+    structure.
+</div>
+{% endblock %}

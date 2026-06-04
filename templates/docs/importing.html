@@ -1,0 +1,143 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Importing datasets</h1>
+<p class="lead">Cache any HuggingFace dataset into BenchHub &mdash; tabular or file-tree
+    &mdash; from one button.</p>
+<hr>
+
+<h3>One button, two paths</h3>
+<p>From <a href="/datasets"><strong>Datasets</strong></a> &rarr; <em>Add a dataset</em>,
+    paste an HF repo id and click <strong>Fetch &amp; preview</strong>. BenchHub tries the
+    <strong>tabular</strong> importer first (Croissant / parquet schema). If the repo
+    isn't tabular &mdash; paired files, packed archives, video clips &mdash; it hands off
+    <strong>automatically</strong> to the file-tree mapper. You can also switch to the
+    mapper yourself from the preview (&ldquo;file-tree importer&rdquo; link) if the
+    inferred mapping looks wrong.</p>
+<p>Either way, the dataset is cached as the lightweight <strong>preview tier</strong> and
+    defaults to <strong>private</strong> &mdash; publish it when you're ready.</p>
+
+<div class="alert alert-light border">
+    <strong>Limits &amp; safety.</strong> An import caches the full split (no row cap) but
+    is bounded by your storage quota; non-admins run <strong>one import at a time</strong>;
+    dataset loading scripts are never executed (parquet/files only); gated or private HF
+    repos require a HuggingFace access token on your account &mdash; most benchmark
+    datasets are public and import directly.
+</div>
+
+<hr class="my-4">
+<h2>Tabular import</h2>
+<p>For datasets HuggingFace exposes as columns (Croissant or the datasets-server
+    <code>/info</code> schema). The preview shows an editable table &mdash; one row per
+    column:</p>
+<ul>
+    <li><strong>Field name</strong> and <strong>kind</strong> (pre-inferred; override e.g.
+        an image column that's really a <code>mask</code>);</li>
+    <li><strong>params</strong> (e.g. a label vocabulary, depth unit);</li>
+    <li><strong>source column</strong> (the HF column it reads from);</li>
+    <li>a <strong>split</strong> dropdown (with row counts), a <strong>max samples</strong>
+        box (<code>-1</code> = the whole split), <strong>sampling</strong>
+        (head / uniform / stratified) + <strong>seed</strong>, and an optional
+        &ldquo;use as sample name&rdquo; column.</li>
+</ul>
+<p>Before committing, BenchHub <strong>screens</strong> the repo: gated/private without a
+    token is blocked; non-parquet or JSON-fallback columns get a warning so you know they
+    won't render or score as a typed kind. Your edits <strong>autosave as a draft</strong>
+    &mdash; navigate away and a banner offers to restore them.</p>
+
+<hr class="my-4">
+<h2>File-tree import</h2>
+<p>For repos that are a tree of files. Open it via <code>/import_from_files</code> (or the
+    automatic hand-off). BenchHub lists the file tree and you describe how files become
+    samples and fields.</p>
+
+<h3 class="mt-3">Token patterns</h3>
+<p>You point each field at its files with a <strong>pattern</strong> containing
+    <code>{tokens}</code>. A token matches exactly <strong>one path segment</strong> (it
+    never spans <code>/</code>) and captures its value:</p>
+<pre><code class="language-text">train/{seq}/normal/{id}.png
+  matches  train/i_0/normal/1689562370.png   ->  seq=i_0, id=1689562370</code></pre>
+<p>The <strong>index modality</strong> &mdash; the first <code>file</code> field &mdash;
+    enumerates your samples; every other field reuses the <em>same</em> token names to find
+    its file for each sample. Special tokens:</p>
+<ul>
+    <li><code>{id}</code> &mdash; the per-sample varying part (usually the filename). Also
+        the default match key for csv/parquet and lets a zip/tar act as the index.</li>
+    <li><code>{ordinal}</code> &mdash; a built-in: the sample's position within its group,
+        in sorted order. Used by shared sources (json pointers, archive members).</li>
+    <li><code>{frame}</code> &mdash; marks the per-frame token of a <code>sequence</code>
+        field (samples are the groups; frames are gathered into a clip).</li>
+</ul>
+
+<h3 class="mt-3">Describe the structure (the fast way)</h3>
+<p>The mapper analyzes the directory skeleton and shows one row per path level with example
+    values and a <strong>role</strong> dropdown. Set what each level means and click
+    <strong>Generate fields from structure</strong> to auto-build the field rows:</p>
+<table class="table table-sm">
+    <thead><tr><th>Level role</th><th>Generates</th></tr></thead>
+    <tbody>
+        <tr><td><code>id</code></td><td>The per-sample part &rarr; <code>{id}</code>.</td></tr>
+        <tr><td><code>modality</code></td><td>Each value is a separate field (<code>image/</code>, <code>depth/</code>, &hellip;).</td></tr>
+        <tr><td><code>property</code></td><td>A class folder &rarr; an image field + a <code>token</code> label field.</td></tr>
+        <tr><td><code>split</code></td><td>A train/test partition &rarr; a <code>{split}</code> token wired to the subset filter.</td></tr>
+        <tr><td><code>group</code></td><td>A sequence/scene grouping &rarr; a <code>{seq}</code> token.</td></tr>
+        <tr><td><code>fixed</code></td><td>A constant segment, kept literal.</td></tr>
+    </tbody>
+</table>
+<p>Smart defaults pre-select the roles (the filename is <code>id</code>, modality-named
+    folders are <code>modality</code>, arbitrary folders are <code>property</code>, &hellip;)
+    &mdash; you just confirm or correct. You can always hand-edit the generated rows.</p>
+
+<h3 class="mt-3">Loaders</h3>
+<p>Each field has a <strong>loader</strong> that says where its value lives:</p>
+<table class="table table-sm">
+    <thead><tr><th>Loader</th><th>Use it for</th></tr></thead>
+    <tbody>
+        <tr><td><code>file</code></td><td>One file per sample (<code>{id}.png</code>). The first file field is the index.</td></tr>
+        <tr><td><code>token</code></td><td>The value <em>is</em> a captured token &mdash; e.g. a class folder becomes a <code>label</code> (with a vocabulary built automatically).</td></tr>
+        <tr><td><code>npz</code></td><td>A NumPy archive: a per-sample key, or one shared stacked array split along an axis.</td></tr>
+        <tr><td><code>json</code></td><td>A JSON file + a dotted <strong>pointer</strong> (<code>frames.{id}.pose</code>, <code>list.{ordinal}.q</code>).</td></tr>
+        <tr><td><code>csv</code> / <code>parquet</code></td><td>A table: pick a <strong>column</strong>, matched by an id column or by row order.</td></tr>
+        <tr><td><code>hdf5</code></td><td>An <code>.h5</code> dataset key; per-sample or a shared stacked array + axis.</td></tr>
+        <tr><td><code>zip</code> / <code>tar</code></td><td>A container: point at a <strong>member</strong> inside (<code>images/{id}.png</code>). A zip/tar whose member uses <code>{id}</code> can be the index.</td></tr>
+        <tr><td><code>gz</code></td><td>A single gzip-compressed file (e.g. <code>{id}.json.gz</code>), decompressed whole into the field value &mdash; no member pointer.</td></tr>
+        <tr><td><code>sequence</code></td><td>Group frames into a clip (video): pattern uses <code>{frame}</code>; samples are the groups. See <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.</td></tr>
+    </tbody>
+</table>
+
+<h3 class="mt-3">Examples</h3>
+<pre><code class="language-text"># Paired RGB + depth, depth packed as one stacked array per sequence
+image : loader=file  pattern=train/{seq}/normal/{id}.png
+depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes  axis=0
+
+# Folder = class label (image classification)
+image : loader=file   pattern={label}/{id}.png
+label : loader=token  token=label                       (kind=label)
+
+# A video clip per sequence
+clip  : loader=sequence  pattern=clips/{id}/{frame}.png  (item_kind=image)</code></pre>
+
+<h3 class="mt-3">Confirm before you commit</h3>
+<ul>
+    <li><strong>Decode preview</strong> &mdash; runs your mapping on the first sample and
+        shows the decoded thumbnail/value per field, so you catch a wrong kind (the classic
+        &ldquo;that <code>.npz</code> is events, not depth&rdquo; trap) before importing.</li>
+    <li><strong>Field validation</strong> &mdash; missing required inputs are highlighted
+        in red with a summary.</li>
+    <li><strong>Draft</strong> &mdash; the whole mapping autosaves; leaving warns you, and
+        returning offers to restore it.</li>
+</ul>
+
+<h3 class="mt-3">Splitting &amp; variants</h3>
+<ul>
+    <li><strong>Import only one split/subset</strong> &mdash; set
+        &ldquo;import only where token = value&rdquo; (e.g. <code>split = test</code>).</li>
+    <li><strong>Variant fan-out</strong> &mdash; set a token to split into
+        <em>separate datasets</em>, one per value (e.g. a <code>{quality}</code> token with
+        <code>low</code>/<code>normal</code> &rarr; <code>&lt;name&gt;_low</code>,
+        <code>&lt;name&gt;_normal</code>).</li>
+</ul>
+
+<p class="mt-4">See the <a href="{{ url_for('docs', page='tutorials') }}">tutorials</a> for
+    complete, repo-specific walkthroughs.</p>
+{% endblock %}

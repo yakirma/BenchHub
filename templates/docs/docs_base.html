@@ -9,6 +9,9 @@
         <div class="position-sticky" style="top: 2rem;">
             <h5 class="mt-2 mb-3">Documentation</h5>
             <ul class="nav flex-column">
+                <li class="nav-item mt-1">
+                    <h6 class="text-muted text-uppercase small ps-3 mb-1">Getting started</h6>
+                </li>
                 <li class="nav-item">
                     <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'index' }}"
                         href="{{ url_for('docs', page='index') }}">
@@ -16,9 +19,25 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'concepts' }}"
+                        href="{{ url_for('docs', page='concepts') }}">
+                        <i class="bi bi-diagram-3 me-2"></i> Core Concepts
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'user_guide' }}"
                         href="{{ url_for('docs', page='user_guide') }}">
                         <i class="bi bi-rocket-takeoff me-2"></i> User Guide
+                    </a>
+                </li>
+
+                <li class="nav-item mt-3">
+                    <h6 class="text-muted text-uppercase small ps-3 mb-1">Datasets</h6>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'importing' }}"
+                        href="{{ url_for('docs', page='importing') }}">
+                        <i class="bi bi-cloud-arrow-down me-2"></i> Importing Data
                     </a>
                 </li>
                 <li class="nav-item">
@@ -29,7 +48,13 @@
                 </li>
 
                 <li class="nav-item mt-3">
-                    <h6 class="text-muted text-uppercase small ps-3">Developer Guide</h6>
+                    <h6 class="text-muted text-uppercase small ps-3 mb-1">Leaderboards &amp; scoring</h6>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'leaderboards' }}"
+                        href="{{ url_for('docs', page='leaderboards') }}">
+                        <i class="bi bi-trophy me-2"></i> Leaderboards
+                    </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'metrics' }}"
@@ -43,10 +68,30 @@
                         <i class="bi bi-image me-2"></i> Visualizations
                     </a>
                 </li>
+
+                <li class="nav-item mt-3">
+                    <h6 class="text-muted text-uppercase small ps-3 mb-1">Submitting</h6>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'submitting' }}"
+                        href="{{ url_for('docs', page='submitting') }}">
+                        <i class="bi bi-upload me-2"></i> Submit Predictions
+                    </a>
+                </li>
                 <li class="nav-item">
                     <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'api_reference' }}"
                         href="{{ url_for('docs', page='api_reference') }}">
-                        <i class="bi bi-code-slash me-2"></i> API Reference
+                        <i class="bi bi-code-slash me-2"></i> API &amp; Client Reference
+                    </a>
+                </li>
+
+                <li class="nav-item mt-3">
+                    <h6 class="text-muted text-uppercase small ps-3 mb-1">Learn by doing</h6>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'tutorials' }}"
+                        href="{{ url_for('docs', page='tutorials') }}">
+                        <i class="bi bi-mortarboard me-2"></i> Tutorials
                     </a>
                 </li>
             </ul>

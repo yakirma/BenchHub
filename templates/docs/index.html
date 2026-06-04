@@ -2,146 +2,133 @@
 
 {% block docs_content %}
 <div class="mb-4">
-    <h1 class="display-4 fw-bold">Bench-Hub</h1>
-    <p class="lead text-muted">A flexible, self-hosted platform for benchmarking system performance.</p>
+    <h1 class="display-5 fw-bold">BenchHub documentation</h1>
+    <p class="lead text-muted">
+        Cache a dataset, declare what a prediction looks like, submit your model's
+        outputs, and see how it ranks &mdash; with a sample-by-sample comparison.
+    </p>
 </div>
 
 <hr class="my-4">
 
 <div class="row g-4">
-    <div class="col-md-6">
-        <h3>What is Bench-Hub?</h3>
-        <p>Bench-Hub is a tool designed to help researchers and engineers compare different algorithms or systems
-            (Submissions) against a Ground Truth (Dataset). It provides:</p>
-        <ul>
-            <li><strong>Leaderboards:</strong> Rank submissions based on custom metrics.</li>
-            <li><strong>Deep Comparison:</strong> Side-by-side view of results at the sample level.</li>
-            <li><strong>Customizability:</strong> Write your own metrics and visualizations in Python.</li>
-        </ul>
+    <div class="col-md-7">
+        <h3>What is BenchHub?</h3>
+        <p>
+            BenchHub is an open benchmarking platform. You bring a <strong>dataset</strong>
+            (often pulled straight from HuggingFace), turn it into a
+            <strong>leaderboard</strong> with a clear prediction contract, and let anyone
+            submit their model's predictions to be scored by metrics you choose. Every
+            submission is ranked on the leaderboard and can be opened in a deep
+            <strong>comparison view</strong> that lines up ground truth and predictions
+            for each sample.
+        </p>
+        <p>What makes it work end to end is a <strong>strict typed contract</strong>: every
+            field of data has a <em>kind</em> (image, depth, mask, label, a video
+            sequence, &hellip;) that both sides agree on, so the dataset, the
+            <code>benchhub-client</code>, and the metric engine all speak the same
+            language.</p>
     </div>
-    <div class="col-md-6">
-        <div class="p-4 bg-body-tertiary rounded-3 doc-highlight">
-            <h5><i class="bi bi-rocket-takeoff me-2"></i>Quick Links</h5>
-            <ul class="list-unstyled mt-3">
-                <li class="mb-2"><a href="{{ url_for('docs', page='user_guide') }}"
-                        class="text-decoration-none fw-bold">User Guide →</a></li>
-                <li class="mb-2"><a href="{{ url_for('docs', page='metrics') }}" class="text-decoration-none">Writing
-                        Metrics →</a></li>
-                <li class="mb-2"><a href="{{ url_for('docs', page='visualizations') }}"
-                        class="text-decoration-none">Creating Visualizations →</a></li>
+    <div class="col-md-5">
+        <div class="p-4 bg-body-tertiary rounded-3">
+            <h5 class="mb-3"><i class="bi bi-rocket-takeoff me-2"></i>Start here</h5>
+            <ul class="list-unstyled mb-0">
+                <li class="mb-2"><a href="{{ url_for('docs', page='concepts') }}" class="text-decoration-none fw-semibold">Core concepts &rarr;</a><br><span class="small text-muted">datasets, fields &amp; roles, leaderboards, materialization, submissions</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='importing') }}" class="text-decoration-none fw-semibold">Import a dataset &rarr;</a><br><span class="small text-muted">from any HuggingFace repo</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='submitting') }}" class="text-decoration-none fw-semibold">Submit predictions &rarr;</a><br><span class="small text-muted">with the Python client</span></li>
+                <li><a href="{{ url_for('docs', page='tutorials') }}" class="text-decoration-none fw-semibold">Tutorials &rarr;</a><br><span class="small text-muted">full worked examples</span></li>
             </ul>
         </div>
     </div>
 </div>
 
-<div class="mt-5">
-    <h3>Core Architecture</h3>
-    <div class="d-flex justify-content-center" style="margin: 4rem 0;">
-        <!-- Simple mermaid diagram for concepts -->
-        <div class="mermaid" style="transform: scale(1.5); transform-origin: center;">
-            graph LR
-            P[Project] --> L[Leaderboard]
-            L --> M[Metrics]
-            L --> V[Visualizations]
-            L --> D[Dataset]
-            L --> S1[Submission 1]
-            L --> S2[Submission 2]
-            S1 --> Comparison
-            S2 --> Comparison
+<h3 class="mt-5">The end-to-end flow</h3>
+<p>A typical lifecycle on BenchHub has four stages:</p>
+<div class="row g-3 my-2">
+    <div class="col-md-3">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="badge text-bg-primary mb-2">1</div>
+                <h6 class="fw-bold"><i class="bi bi-cloud-arrow-down me-1"></i>Import a dataset</h6>
+                <p class="small mb-0">Pull a HuggingFace repo. Tabular datasets are inferred
+                    automatically; file-tree repos (paired files, packed archives, video
+                    clips) are mapped field by field. Stored as a lightweight preview.</p>
+            </div>
         </div>
     </div>
-    <p>
-        Everything in Bench-Hub starts with a <strong>Project</strong>. Within a project, you create
-        <strong>Leaderboards</strong>.
-        Each leaderboard is tied to specific <strong>Metrics</strong> and <strong>Visualizations</strong> that define
-        how success is measured.
-    </p>
-</div>
-
-</div>
-
-<div class="mt-5">
-    <h3>Application Workflows</h3>
-    <p>The following diagram illustrates the different data flows within Bench-Hub, from uploading data to generating
-        leaderboards.</p>
-    <style>
-        /* Force larger fonts in Mermaid diagram to match theme variable */
-        .mermaid .nodeLabel,
-        .mermaid .edgeLabel,
-        .mermaid .label,
-        .mermaid span,
-        .mermaid div {
-            font-size: 50px !important;
-            font-weight: 500 !important;
-            line-height: 1.2 !important;
-        }
-    </style>
-    <div class="d-flex justify-content-center" style="margin: 4rem 0 300rem 0; overflow: visible;">
-        <div class="mermaid" style="transform: scale(3.0); transform-origin: top center;">
-            graph TD
-            subgraph Setup
-            D["Dataset Info"] -->|Upload ZIP| UP_D["<b>Data Uploading</b><br />(Images, Scalars, Histograms)"]
-            UP_D -->|"Stored in"| DB_D[("Global Datasets")]
-            end
-
-            subgraph Configuration
-            P[Project] -->|Create| LB["<b>LB Generation</b><br />Leaderboard"]
-
-            M_CODE[Python Code] -->|Define| M["<b>Metric Gen</b><br />Global Metric"]
-            V_CODE[Python Code] -->|Define| V["<b>Vis Gen</b><br />Global Visualization"]
-
-            M -->|"Add & Map Args"| LB
-            V -->|"Add & Map Args"| LB
-            DB_D -->|"Select Ground Truth"| LB
-            end
-
-            subgraph Execution
-            RES[Results ZIP] -->|Upload| SUBM["<b>Submitting Results</b><br />Submission"]
-            LB -->|"Defines Context"| SUBM
-
-            SUBM -->|Trigger| CALC["<b>Metric Calc</b><br />Per-Sample Execution"]
-            DB_D -->|"Provide GT Inputs"| CALC
-
-            CALC -->|Results| SCORES["Sample Scores"]
-            SCORES -->|Summarize| AGG["<b>Metric Agg</b><br />Mean, Median, p95"]
-            end
-
-            AGG -->|"Rank/Sort"| VIEW["Leaderboard Table"]
-            CALC -->|View| COMP["Comparison View"]
-
-            classDef default fill:#f9f9f9,stroke:#333,stroke-width:2px;
-            classDef storage fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-            classDef process fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-
-            class DB_D storage;
-            class UP_D,LB,M,V,SUBM,CALC,AGG process;
-
-            style Setup fill:transparent,stroke:none
-            style Configuration fill:transparent,stroke:none
-            style Execution fill:transparent,stroke:none
+    <div class="col-md-3">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="badge text-bg-primary mb-2">2</div>
+                <h6 class="fw-bold"><i class="bi bi-trophy me-1"></i>Create a leaderboard</h6>
+                <p class="small mb-0">Bind the dataset, choose which fields are
+                    <em>inputs</em> vs <em>ground truth</em>, pick a sample subset to
+                    materialize at full resolution, and declare the prediction contract.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="badge text-bg-primary mb-2">3</div>
+                <h6 class="fw-bold"><i class="bi bi-calculator me-1"></i>Add metrics</h6>
+                <p class="small mb-0">Attach scoring functions (Python) and visualizations.
+                    Metrics run per-sample and pool into the leaderboard score; outputs can
+                    chain into one another.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="badge text-bg-primary mb-2">4</div>
+                <h6 class="fw-bold"><i class="bi bi-upload me-1"></i>Submit &amp; compare</h6>
+                <p class="small mb-0">Use <code>benchhub-client</code> to pull inputs, run
+                    your model, and submit typed predictions. The leaderboard ranks them and
+                    the comparison view shows every sample side by side.</p>
+            </div>
         </div>
     </div>
 </div>
 
-<script type="module">
-    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+<h3 class="mt-5">Signing in</h3>
+<p>BenchHub never stores passwords. You can sign in three ways &mdash; all create your
+    account on first use:</p>
+<ul>
+    <li><strong>GitHub</strong> or <strong>Google</strong> (OAuth, one click);</li>
+    <li><strong>Email</strong> &mdash; enter your address and we mail you a 6-digit code to
+        verify it (no password).</li>
+</ul>
+<p class="small text-muted">All three land you on your <a href="/home">home dashboard</a>.
+    See the <a href="{{ url_for('docs', page='user_guide') }}">User Guide</a> for
+    accounts, quotas, and visibility.</p>
 
-    // Function to get current theme
-    function getMermaidTheme() {
-        return document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'default';
-    }
+<h3 class="mt-5">What you can do</h3>
+<div class="row g-3">
+    <div class="col-md-6">
+        <ul class="mb-0">
+            <li><strong>Browse</strong> the public catalog of leaderboards and datasets,
+                with per-card stats (datasets, contributors, submissions).</li>
+            <li><strong>Import</strong> datasets from HuggingFace &mdash; tabular or
+                file-tree, with a draft you never lose.</li>
+            <li><strong>Materialize</strong> a chosen sample subset at full resolution per
+                leaderboard, on your storage quota.</li>
+        </ul>
+    </div>
+    <div class="col-md-6">
+        <ul class="mb-0">
+            <li><strong>Author metrics &amp; visualizations</strong> in Python, kept in a
+                reusable library with public/private visibility.</li>
+            <li><strong>Submit</strong> predictions programmatically and re-score on demand.</li>
+            <li><strong>Compare</strong> submissions sample-by-sample, including video
+                sequences, depth colormaps, and confusion matrices.</li>
+        </ul>
+    </div>
+</div>
 
-    // Initialize with current theme and enlarged fonts
-    mermaid.initialize({
-        startOnLoad: true,
-        theme: getMermaidTheme(),
-        themeVariables: {
-            fontSize: '50px',
-        }
-    });
-
-    // Optional: Listen for theme changes (if dynamic toggling is implemented without reload)
-    // For now, reload is required or we handle it if there's a specific event.
-    // Assuming simple initialization is enough for page load.
-</script>
+<div class="alert alert-info mt-5">
+    <i class="bi bi-info-circle me-2"></i>
+    New here? Read <a href="{{ url_for('docs', page='concepts') }}" class="alert-link">Core
+    Concepts</a> next, then jump into a <a href="{{ url_for('docs', page='tutorials') }}" class="alert-link">tutorial</a>.
+</div>
 {% endblock %}

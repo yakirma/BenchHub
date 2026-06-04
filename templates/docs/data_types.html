@@ -1,186 +1,147 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>Supported data types</h1>
-<p class="lead">How BenchHub recognizes, stores, and serves the fields in your datasets and submissions.</p>
+<h1>Data types (kinds)</h1>
+<p class="lead">Every field of data has a <em>kind</em>. The kind decides how a value is
+    stored, decoded, scored, and rendered.</p>
 <hr>
 
-<div class="alert alert-info small">
-    <i class="bi bi-arrow-up-right-square me-1"></i>
-    This reference now lives on its own top-level page —
-    <a href="{{ url_for('supported_types') }}"><strong>Supported types</strong></a>
-    (in the main nav). Keeping it here for backwards compatibility;
-    the canonical version is the standalone page.
+<p>BenchHub's typed contract is defined once in code (<code>benchhub/types.py</code>) and
+    used everywhere &mdash; the dataset, the <code>benchhub-client</code>, and the metric
+    engine. The canonical, always-current list lives at
+    <a href="/supported_types"><code>/supported_types</code></a> (rendered straight from
+    the code); this page explains each kind with examples.</p>
+
+<div class="alert alert-light border">
+    On the Python side each kind is a class in the <code>benchhub</code> package
+    (<code>import benchhub as bh</code>). You build a value with the constructor
+    (e.g. <code>bh.Image(array)</code>) and the client encodes it for you. When you
+    <em>read</em> inputs back via <code>iter_samples</code>, you get these same instances.
 </div>
 
-<p>
-    BenchHub auto-detects the type of each field from a combination of
-    <strong>folder prefix</strong> and <strong>file extension</strong>. The
-    same rules apply whether the field lives on the ground-truth side (a
-    Dataset uploaded as a ZIP or a HuggingFace dataset attachment) or on
-    the prediction side (a Submission uploaded via the API). Every per-LB
-    "Submission contract" you see on a leaderboard page is just a filtered
-    view of these rules.
-</p>
+<h3 class="mt-4">Visual kinds</h3>
 
-<div class="alert alert-info small">
-    <i class="bi bi-info-circle me-2"></i>
-    Folder names that don't start with a reserved prefix
-    (<code>metric_</code>, <code>raw_</code>, <code>hist_</code>,
-    <code>raw_histogram</code>) are still indexed — their type is
-    decided by the file extension alone. The reserved prefixes carry
-    extra semantics (see below).
+<div class="card mb-3">
+    <div class="card-header"><code>image</code> &mdash; RGB(A) or grayscale photo</div>
+    <div class="card-body">
+        <p>A <code>uint8</code> array, shape <code>(H,W)</code>, <code>(H,W,3)</code>, or
+            <code>(H,W,4)</code>. Stored as PNG. Rendered as the image.</p>
+        <pre><code class="language-python">bh.Image(np.zeros((256, 256, 3), dtype=np.uint8))</code></pre>
+    </div>
 </div>
 
-<h3 class="mt-4">Reference table</h3>
-<div class="table-responsive">
-    <table class="table table-bordered align-middle mb-0">
-        <thead class="table-light">
-            <tr>
-                <th style="width: 11%;">Type</th>
-                <th style="width: 12%;">File ext.</th>
-                <th style="width: 28%;">Per-sample naming</th>
-                <th>How it's stored / read</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">scalar</span></td>
-                <td class="font-monospace">.txt</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.txt' }}</td>
-                <td>
-                    UTF-8 text containing a single number. Most often a
-                    float (<code>0.873</code>) or an integer class index.
-                    Parsed to <code>float</code> when handed to metric code.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">text</span></td>
-                <td class="font-monospace">.txt</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.txt' }}</td>
-                <td>
-                    UTF-8 string. Free-form — generated captions, sentiment
-                    labels (<code>pos</code>/<code>neg</code>), short
-                    classifier outputs. Passed to metric code as a Python
-                    <code>str</code>.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">image</span></td>
-                <td class="font-monospace">.png / .jpg / .jpeg / .bmp / .tiff</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.<ext>' }}</td>
-                <td>
-                    RGB or grayscale raster. Read as a <code>PIL.Image</code>
-                    when a metric / visualization asks for it. The submit
-                    scaffold auto-converts numpy arrays / PIL Images to PNG
-                    HxWx3 uint8.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">mask</span></td>
-                <td class="font-monospace">.png</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.png' }}</td>
-                <td>
-                    Segmentation mask — either single-channel HxW
-                    (uint8/16 class IDs) or three-channel HxWx3 RGB-encoded
-                    classes. The engine inspects the shape and picks the
-                    right decode path.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">depth</span></td>
-                <td class="font-monospace">.npz</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>_<W>x<H>.npz' }}</td>
-                <td>
-                    numpy <code>.npz</code> archive with one array under
-                    key <code>depth</code> (HxW float). The
-                    <code>&lt;W&gt;x&lt;H&gt;</code> in the filename lets the
-                    engine validate shape without loading. Folder names
-                    typically start with <code>raw_</code>.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">histogram</span></td>
-                <td class="font-monospace">.npz</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.npz' }}</td>
-                <td>
-                    numpy <code>.npz</code> archive with two arrays:
-                    <code>bins</code> + <code>counts</code>. Detected when
-                    the folder starts with <code>hist_</code> or is named
-                    exactly <code>raw_histogram</code>. Surfaces in the
-                    Comparison view as an inline chart.
-                </td>
-            </tr>
-            <tr>
-                <td><span class="badge text-bg-secondary-subtle text-secondary border">json</span></td>
-                <td class="font-monospace">.json</td>
-                <td class="font-monospace text-body-secondary">{{ '<sample>.json' }}</td>
-                <td>
-                    Arbitrary structured data, parsed to a Python
-                    <code>dict</code>. Useful for per-sample config or
-                    complex predicted objects (bboxes etc.).
-                </td>
-            </tr>
-        </tbody>
-    </table>
+<div class="card mb-3">
+    <div class="card-header"><code>mask</code> &mdash; integer label map</div>
+    <div class="card-body">
+        <p>An integer array <code>(H,W)</code> of class IDs. Stored as a single-channel PNG
+            (8- or 16-bit). Rendered with a deterministic color palette. Params:
+            <code>num_classes</code>, <code>ignore_index</code> (default 255).</p>
+        <pre><code class="language-python">bh.Mask(seg, num_classes=21, ignore_index=255)</code></pre>
+    </div>
 </div>
 
-<h3 class="mt-5">Reserved folder prefixes</h3>
-<p>
-    BenchHub recognizes three folder prefixes that carry semantics beyond
-    the file extension:
-</p>
-<dl class="row small">
-    <dt class="col-sm-3"><code>metric_</code></dt>
-    <dd class="col-sm-9">
-        Each <code>&lt;sample&gt;.txt</code> in the folder holds a
-        <strong>precomputed metric value</strong> (one float per sample) —
-        not a raw prediction. BenchHub reads the values directly and skips
-        re-running the metric. Use this when you already evaluated locally
-        and just want to ship the scores.
-        <span class="text-body-secondary">Never use <code>metric_</code> for
-        raw model outputs — pair the metric with a bare-name prediction
-        folder instead.</span>
-    </dd>
+<div class="card mb-3">
+    <div class="card-header"><code>depth</code> &mdash; per-pixel depth map</div>
+    <div class="card-body">
+        <p>A float array <code>(H,W)</code>. Stored as NPZ. Rendered with a colormap
+            (turbo by default); the comparison view lets you switch colormaps
+            (<code>turbo</code>, <code>viridis</code>, <code>magma</code>,
+            <code>jet</code>, <code>gray</code>, <code>normal</code>&hellip;) live. Param:
+            <code>unit</code> (default <code>"meters"</code>).</p>
+        <pre><code class="language-python">bh.Depth(depth_array, unit="meters")</code></pre>
+    </div>
+</div>
 
-    <dt class="col-sm-3"><code>raw_</code></dt>
-    <dd class="col-sm-9">
-        Marks the folder as carrying dense raw arrays — most commonly
-        depth maps (<code>raw_depth_map</code>) and free-form numpy
-        payloads. The <code>&lt;W&gt;x&lt;H&gt;</code> suffix on each
-        filename gives the engine the spatial shape up front.
-    </dd>
+<div class="card mb-3">
+    <div class="card-header"><code>sequence</code> &mdash; a clip of frames (video)</div>
+    <div class="card-body">
+        <p>An ordered list of homogeneous frames (all <code>image</code>, or all
+            <code>depth</code>/<code>mask</code>) treated as <strong>one sample</strong>.
+            Stored as a ZIP of the per-frame encodings; rendered as an
+            <strong>mp4 video</strong> in the dataset and comparison columns. Params:
+            <code>item_kind</code> (the frame kind) and <code>fps</code>. The value is
+            iterable &mdash; <code>for frame in clip: frame.array</code>.</p>
+        <pre><code class="language-python">frames = [bh.Image(f) for f in my_clip]   # list of (H,W,3) uint8
+bh.Sequence(frames, item_kind="image", fps=10)</code></pre>
+    </div>
+</div>
 
-    <dt class="col-sm-3"><code>hist_</code></dt>
-    <dd class="col-sm-9">
-        Marks the folder as histogram data — each <code>.npz</code> carries
-        <code>bins</code> + <code>counts</code> arrays. Folder name suffix
-        is the histogram variant (e.g. <code>hist_pred</code>,
-        <code>hist_smooth</code>); the comparison view surfaces each
-        variant as a separate chart.
-    </dd>
-</dl>
+<div class="card mb-3">
+    <div class="card-header"><code>bboxes</code> &mdash; bounding boxes &middot; <code>coco_detections</code> &mdash; COCO-style detections</div>
+    <div class="card-body">
+        <p>Object boxes (with an optional <code>format</code> such as <code>xyxy</code>).
+            <code>bboxes</code> renders as an SVG overlay; <code>coco_detections</code>
+            carries COCO-shaped detection records for overlay visualizations.</p>
+    </div>
+</div>
 
-<h3 class="mt-5">Using data in metrics</h3>
-<p>
-    Detected fields become arguments you map onto a metric function in the
-    Leaderboard Settings. The dispatch table:
-</p>
-<ul>
-    <li><strong>scalar / text</strong> → Python <code>float</code> /
-        <code>str</code> passed by value.</li>
-    <li><strong>image / mask</strong> → file path; load with
-        <code>PIL.Image.open(path)</code>.</li>
-    <li><strong>depth</strong> → file path; load with
-        <code>np.load(path)['depth']</code>.</li>
-    <li><strong>histogram</strong> → pre-loaded <code>dict</code> with
-        <code>'bins'</code> + <code>'counts'</code> arrays.</li>
-    <li><strong>json</strong> → pre-loaded Python <code>dict</code>.</li>
-</ul>
+<div class="card mb-3">
+    <div class="card-header"><code>audio</code> &mdash; waveform</div>
+    <div class="card-body">
+        <p>A samples array plus a <code>sample_rate</code>. Stored as WAV; the preview is a
+            waveform PNG.</p>
+        <pre><code class="language-python">bh.Audio(samples, sample_rate=16000)</code></pre>
+    </div>
+</div>
 
-<p class="small text-body-secondary mt-4 mb-0">
-    The per-LB "Submission contract" widget on every leaderboard page lists
-    exactly which folders <em>that</em> LB requires — same rules, scoped
-    to the metrics + visualizations on that LB.
-</p>
+<h3 class="mt-4">Label kinds</h3>
+
+<div class="card mb-3">
+    <div class="card-header"><code>label</code> &mdash; one class</div>
+    <div class="card-body">
+        <p>A single class, stored inline. The value is an <code>int</code> index (or a
+            string); an optional <code>names</code> vocabulary maps the index to a
+            human-readable class name, so the UI shows <code>cat</code> rather than
+            <code>3</code>. Used as the target for classification metrics.</p>
+        <pre><code class="language-python">bh.Label(3, names=["dog", "cat", "bird", "fox"])   # -> "fox"</code></pre>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header"><code>label_list</code> &mdash; ranked top-K</div>
+    <div class="card-body">
+        <p>An ordered list of class predictions (most-confident first), for Top-K /
+            Hits@N / MRR metrics. Requires <code>k</code>; optional <code>names</code>
+            vocabulary like <code>label</code>.</p>
+        <pre><code class="language-python">bh.LabelList([2, 0, 5], k=5, names=class_names)</code></pre>
+    </div>
+</div>
+
+<h3 class="mt-4">Inline value kinds</h3>
+
+<div class="card mb-3">
+    <div class="card-header"><code>scalar</code> &middot; <code>text</code> &middot; <code>json</code></div>
+    <div class="card-body">
+        <ul class="mb-2">
+            <li><code>scalar</code> &mdash; a single float, stored inline. Good for
+                precomputed scores or numeric attributes.</li>
+            <li><code>text</code> &mdash; free-form string (captions, answers).</li>
+            <li><code>json</code> &mdash; the escape hatch for structured data that doesn't
+                fit another kind (nested dicts/lists, custom records).</li>
+        </ul>
+        <pre><code class="language-python">bh.Scalar(0.92)
+bh.Text("a small brown dog")
+bh.Json({"answer": "Paris", "spans": [[3, 8]]})</code></pre>
+    </div>
+</div>
+
+<h3 class="mt-4">How kinds are stored on disk</h3>
+<p>A typed dataset is a directory with a <code>manifest.json</code> plus one folder per
+    field holding <code>&lt;sample&gt;.&lt;ext&gt;</code> for every sample. File-backed
+    kinds (image/mask/depth/audio/sequence, and also text/json) live as files;
+    only the truly inline kinds (scalar/label/label_list) ride in the
+    manifest/database. (Text and JSON are additionally mirrored into the database for
+    quick rendering, but on disk they're <code>.txt</code>/<code>.json</code> files.)
+    You rarely build
+    this by hand &mdash; the importers and the
+    <a href="{{ url_for('docs', page='api_reference') }}"><code>BHDatasetCreator</code></a>
+    produce it for you.</p>
+
+<div class="alert alert-info mt-4">
+    Picking the wrong kind is the most common import mistake (e.g. a packed
+    <code>.npz</code> isn't always depth). The
+    <a href="{{ url_for('docs', page='importing') }}">file-tree importer</a> has a
+    <strong>decode preview</strong> so you can confirm a field decodes correctly before
+    committing.
+</div>
 {% endblock %}

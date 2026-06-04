@@ -1,0 +1,121 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Submitting predictions</h1>
+<p class="lead">Pull a leaderboard's inputs, run your model, and submit typed predictions
+    with the <code>benchhub-client</code> Python package.</p>
+<hr>
+
+<h3>1. Install &amp; authenticate</h3>
+<pre><code class="language-bash">pip install benchhub-client</code></pre>
+<p>Grab an API token from <a href="/settings/api_tokens"><code>Settings &rarr; API
+    tokens</code></a>. Pass it to the client, or set <code>BENCHHUB_API_TOKEN</code> in
+    your environment (the base URL defaults to <code>https://runbenchhub.com</code> and
+    can be overridden with <code>BENCHHUB_BASE_URL</code>).</p>
+<pre><code class="language-python">import benchhub as bh
+
+client = bh.Client(token="bh_xxx")        # or rely on $BENCHHUB_API_TOKEN</code></pre>
+
+<h3 class="mt-4">2. The submission loop</h3>
+<p>The whole flow is: iterate the leaderboard's samples, run your model on each one's
+    inputs, stage a typed prediction, then submit.</p>
+<pre><code class="language-python">import benchhub as bh
+import numpy as np
+
+LB_ID = 42
+client = bh.Client(token="bh_xxx")
+sub = client.submission(LB_ID, name="my-model-v1")
+
+for sample_name, inputs in client.iter_samples(LB_ID):
+    image = inputs["image"].array          # a decoded bh.Image -> (H,W,3) uint8
+    pred = my_model(image)                 # your code; returns a class index, say
+    sub.predict(sample_name, label_pred=bh.Label(int(pred)))
+
+result = sub.submit(description="ResNet-50, 50 epochs",
+                    link="https://github.com/me/my-model")
+print(result)                             # -> {'submission_id': ..., ...}</code></pre>
+
+<h3 class="mt-4">3. Reading inputs &mdash; <code>iter_samples</code></h3>
+<p><code>client.iter_samples(leaderboard_id)</code> yields
+    <code>(sample_name, inputs)</code> for every sample in the leaderboard's materialized
+    subset. <code>inputs</code> is a dict keyed by input-field name; each value is an
+    <strong>already-decoded</strong> typed instance:</p>
+<ul>
+    <li><code>image</code>/<code>mask</code>/<code>depth</code> &rarr;
+        <code>bh.Image</code>/<code>bh.Mask</code>/<code>bh.Depth</code> (use
+        <code>.array</code>);</li>
+    <li><code>audio</code> &rarr; <code>bh.Audio</code>;</li>
+    <li><code>sequence</code> &rarr; <code>bh.Sequence</code>, an <strong>iterable
+        clip</strong> &mdash; <code>for frame in inputs["clip"]: frame.array</code>;</li>
+    <li>inline kinds (<code>scalar</code>/<code>label</code>/<code>text</code>/
+        <code>json</code>/<code>label_list</code>) &rarr; the raw decoded value.</li>
+</ul>
+<p>File-backed inputs are downloaded <strong>once</strong> as a single bulk archive and
+    cached on disk (under <code>~/.cache/benchhub/</code>, override with
+    <code>$BENCHHUB_CACHE_DIR</code>), so a re-run reads from disk with no network. Pass
+    <code>force_download=True</code> to re-fetch.</p>
+
+<h3 class="mt-4">4. Staging predictions &mdash; <code>predict()</code></h3>
+<p><code>sub.predict(sample_name, field=value, ...)</code> stages one or more typed
+    predictions for a sample. Each value must be a <code>bh.&lt;Kind&gt;</code> instance
+    matching the leaderboard's contract; the client validates it immediately.</p>
+<pre><code class="language-python"># classification
+sub.predict(name, label_pred=bh.Label(3))
+
+# dense prediction (depth / segmentation)
+sub.predict(name, depth_pred=bh.Depth(pred_depth))
+sub.predict(name, mask_pred=bh.Mask(pred_seg, num_classes=21))
+
+# a predicted video clip (sequence)
+frames = [bh.Image(f) for f in rendered_frames]
+sub.predict(name, clip_pred=bh.Sequence(frames, item_kind="image", fps=10))</code></pre>
+
+<h3 class="mt-4">5. Matching the contract</h3>
+<p>To see exactly what a leaderboard expects, fetch its contract:</p>
+<pre><code class="language-python">contract = client.leaderboard_contract(LB_ID)
+# -> [{"name": "label_pred", "kind": "label", "params": {...}, "role": "pred"}, ...]</code></pre>
+<p>Every <code>pred</code> field in the contract must be produced for every sample. For
+    spatial predictions some leaderboards require the prediction's shape to match an input
+    field's shape (<code>params.shape_match</code>) or a fixed shape
+    (<code>params.shape</code>); the client can enforce this locally before upload if you
+    call <code>sub.set_contract(contract)</code> and feed input shapes via
+    <code>sub.set_input_shape(...)</code> &mdash; otherwise the server checks at eval time.</p>
+
+<h3 class="mt-4">6. Submitting</h3>
+<p><code>sub.submit(name=None, description=None, link=None)</code> packs the staged
+    predictions into a ZIP matching the on-disk layout
+    (<code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code> + a <code>manifest.json</code>),
+    POSTs it to <code>/api/submit/&lt;lb_id&gt;</code>, and the server validates it against
+    the contract and enqueues scoring. The leaderboard updates as metrics finish
+    (status <code>Pending &rarr; Processing &rarr; Processed</code>).</p>
+<ul>
+    <li><strong>description</strong> &mdash; a blurb shown in the submission table.</li>
+    <li><strong>link</strong> &mdash; an http(s) URL the submission name hyperlinks to
+        (repo, model card).</li>
+</ul>
+
+<h3 class="mt-4">7. After submitting</h3>
+<ul>
+    <li>Your submission appears on the leaderboard table with its primary-metric score and
+        rank.</li>
+    <li>Open the <strong>comparison view</strong> to inspect predictions vs ground truth
+        sample-by-sample (images, depth colormaps, masks, video clips, per-sample metric
+        values).</li>
+    <li>The submission's owner (or an admin) can <strong>re-score</strong> it with the
+        recompute (&#8635;) button &mdash; e.g. after a metric is added or changed &mdash;
+        without re-uploading.</li>
+</ul>
+
+<div class="alert alert-info mt-4">
+    <i class="bi bi-info-circle me-2"></i>
+    Prefer raw HTTP? POST a multipart ZIP (the same
+    <code>manifest.json</code> + <code>&lt;field&gt;/&lt;sample&gt;.&lt;ext&gt;</code>
+    layout) to <code>/api/submit/&lt;lb_id&gt;</code> with an
+    <code>Authorization: Bearer &lt;token&gt;</code> header. See the
+    <a href="{{ url_for('docs', page='api_reference') }}" class="alert-link">API
+    reference</a>.
+</div>
+
+<p class="mt-4">Walk through a complete example in the
+    <a href="{{ url_for('docs', page='tutorials') }}">tutorials</a>.</p>
+{% endblock %}

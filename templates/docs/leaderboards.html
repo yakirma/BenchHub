@@ -1,0 +1,107 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<h1>Leaderboards</h1>
+<p class="lead">Turn a dataset into a benchmark: pick a sample subset, declare the
+    prediction contract, and bind the metrics that rank submissions.</p>
+<hr>
+
+<h3>Creating a leaderboard</h3>
+<p>Open a dataset and click <strong>Create leaderboard</strong> (the dataset page,
+    <code>/dataset/&lt;id&gt;</code>). That opens the creation page
+    (<code>/dataset/&lt;id&gt;/create_lb</code>) which walks you through, in one form:</p>
+<ol>
+    <li><strong>Name &amp; task template.</strong> Optionally pick a task chip (e.g.
+        classification, depth) to pre-fill sensible metrics and a prediction schema.</li>
+    <li><strong>Field roles.</strong> Mark each dataset field as <code>input</code> (given
+        to submitters) or <code>gt</code> (the target). An image field defaults to the
+        input when nothing else is marked.</li>
+    <li><strong>Prediction fields.</strong> The contract submitters must produce &mdash;
+        each a name (<code>&lt;x&gt;_pred</code>) and a kind.</li>
+    <li><strong>Sample selection.</strong> Which samples to materialize (below).</li>
+    <li><strong>Metrics.</strong> Pick metrics and map each metric argument to a field.</li>
+</ol>
+<p>To bind <em>several</em> datasets to one leaderboard, use the chooser
+    (<code>/create_lb</code>) and tick the datasets. Submitting the form
+    (<code>POST /create_leaderboard</code>) creates the leaderboard and kicks off
+    materialization.</p>
+
+<h3 class="mt-4">Sample selection &amp; materialization</h3>
+<p>Datasets are stored as a cheap preview tier; a leaderboard <strong>materializes</strong>
+    the full-resolution bytes for just the samples it scores against. You choose:</p>
+<table class="table table-sm">
+    <thead><tr><th>Option</th><th>Meaning</th></tr></thead>
+    <tbody>
+        <tr><td>Sample cap</td><td>How many samples (or all of them).</td></tr>
+        <tr><td>Sampling</td><td><code>head</code> (first N) &middot; <code>random</code> (default) &middot; <code>stratified</code> (balanced across a label field).</td></tr>
+        <tr><td>Stratify field</td><td>The label field to balance on (when stratified).</td></tr>
+        <tr><td>Seed</td><td>Makes random/stratified reproducible.</td></tr>
+    </tbody>
+</table>
+<p>Materialization runs in the background. The leaderboard page shows a status panel:</p>
+<ul>
+    <li><span class="badge text-bg-warning">pending / running</span> &mdash; fetching the
+        full-resolution bytes;</li>
+    <li><span class="badge text-bg-success">ready</span> &mdash; with a summary of the
+        sampling method used (e.g. &ldquo;1,000 samples, stratified by <code>label</code>,
+        seed 42&rdquo;);</li>
+    <li><span class="badge text-bg-danger">failed</span> &mdash; with the error and a
+        <strong>Retry</strong> button.</li>
+</ul>
+<p>The materialized bytes count against the leaderboard owner's storage quota. You can
+    <strong>Edit</strong> the materialization params (re-pick the subset) &mdash; but only
+    until the leaderboard has submissions.</p>
+
+<div class="alert alert-warning">
+    <i class="bi bi-lock-fill me-2"></i>
+    <strong>Re-materialization is blocked once a leaderboard has submissions.</strong>
+    Re-picking the sample set would silently change the inputs existing submissions were
+    scored against. The panel shows &ldquo;Locked &mdash; has submissions&rdquo;; delete
+    the submissions to unlock.
+</div>
+
+<h3 class="mt-4">The prediction contract</h3>
+<p>Each leaderboard declares exactly what a submission must contain. Edit it on the
+    leaderboard's <strong>Edit</strong> page
+    (<code>/leaderboard/&lt;id&gt;/edit</code> &rarr; Prediction&nbsp;fields tab): one row
+    per field with a <strong>name</strong>, a <strong>kind</strong> (any
+    <a href="{{ url_for('docs', page='data_types') }}">data type</a> &mdash; image, mask,
+    depth, label, scalar, json, <code>sequence</code>, &hellip;), and a description.</p>
+<p>The contract is <strong>frozen once verified submissions exist</strong> &mdash;
+    changing a kind afterwards would re-interpret existing predictions through the wrong
+    decoder. Delete those submissions to unlock it. Submitters can read the live contract
+    with <code>client.leaderboard_contract(lb_id)</code>.</p>
+
+<h3 class="mt-4">Binding metrics</h3>
+<p>A metric from the library is bound to a leaderboard with:</p>
+<ul>
+    <li><strong>argument mappings</strong> &mdash; which field feeds each function argument
+        (e.g. <code>gt &rarr; label</code>, <code>pred &rarr; label_pred</code>);</li>
+    <li><strong>display name</strong> (the column header, also the name other metrics
+        chain on);</li>
+    <li><strong>pooling</strong> &mdash; <code>mean</code> / <code>median</code> /
+        <code>percentile</code> / <code>min</code> / <code>max</code> across samples;</li>
+    <li><strong>sort direction</strong> &mdash; higher- or lower-is-better;</li>
+    <li><strong>tag filter</strong> &mdash; restrict scoring to a tagged slice of samples.</li>
+</ul>
+<p>The first bound metric is the <strong>primary</strong> metric &mdash; it drives the
+    default ranking and the score shown on cards. See
+    <a href="{{ url_for('docs', page='metrics') }}">Writing Metrics</a> for authoring and
+    chaining.</p>
+
+<h3 class="mt-4">The leaderboard page</h3>
+<p>The leaderboard page (<code>/leaderboard/&lt;id&gt;</code>) shows the ranked submission
+    table &mdash; one column per bound metric, color-graded, sortable. Per submission you
+    can:</p>
+<ul>
+    <li><strong>Recompute</strong> (&#8635;) &mdash; re-run scoring without re-uploading
+        (e.g. after adding a metric);</li>
+    <li><strong>Compare</strong> &mdash; open the
+        <a href="{{ url_for('docs', page='submitting') }}#compare">comparison view</a> for
+        a sample-by-sample look;</li>
+    <li><strong>Explore samples</strong> &mdash; browse the materialized inputs/GT.</li>
+</ul>
+
+<p class="mt-4">Next: <a href="{{ url_for('docs', page='metrics') }}">write a metric &rarr;</a>
+    or follow a <a href="{{ url_for('docs', page='tutorials') }}">tutorial</a>.</p>
+{% endblock %}

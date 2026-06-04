@@ -1,85 +1,87 @@
 {% extends "docs/docs_base.html" %}
 
 {% block docs_content %}
-<h1>Creating Visualizations</h1>
-<p class="lead">Generate custom plots and images to visualize performance.</p>
+<h1>Visualizations</h1>
+<p class="lead">Render an image to <em>see</em> a result &mdash; per sample, or summarized
+    across a whole submission.</p>
 <hr>
 
-<div class="row mt-4">
-    <div class="col-md-12">
-        <h3>Overview</h3>
-        <p>Visualizations are Python functions that return a <strong>PIL Image</strong>. These images are displayed in
-            the Comparison View UI.</p>
+<p>Like metrics, visualizations are Python functions stored in a reusable library and
+    bound to a leaderboard with argument mappings. A visualization must return a
+    <strong><code>PIL.Image</code></strong> (Pillow). To use matplotlib, render the figure
+    to a PNG buffer and return <code>Image.open(buf)</code> (and <code>plt.close(fig)</code>).
+    BenchHub caches the result and serves it into the dataset/comparison views.</p>
 
-        <h4>Available Libraries</h4>
-        <ul>
-            <li><code>PIL</code> (Pillow) - <code>Image</code>, <code>ImageDraw</code></li>
-            <li><code>matplotlib.pyplot</code> (as <code>plt</code>)</li>
-            <li><code>numpy</code> (as <code>np</code>)</li>
-            <li><code>io</code> - <code>BytesIO</code></li>
-        </ul>
-
-        <h3 class="mt-5">Examples</h3>
-
-        <div class="card mb-4">
-            <div class="card-header bg-secondary text-white">
-                <h5 class="mb-0">Drawing with PIL</h5>
-            </div>
-            <div class="card-body">
-                <p>Fast and simple drawing (rectangles, text, etc.).</p>
-                <pre><code class="language-python">def draw_box(value):
-    from PIL import Image, ImageDraw
-    
-    # Create a new image
-    img = Image.new('RGB', (100, 50), color='white')
-    d = ImageDraw.Draw(img)
-    
-    # Draw text
-    d.text((10, 10), f"Val: {value}", fill='black')
-    
-    return img</code></pre>
-            </div>
-        </div>
-
-        <div class="card mb-4">
-            <div class="card-header bg-info text-white">
-                <h5 class="mb-0">Plotting with Matplotlib</h5>
-            </div>
-            <div class="card-body">
-                <p>Powerful plotting for graphs, histograms, etc. Note the boilerplate to convert the plot to a PIL
-                    Image.</p>
-                <pre><code class="language-python">def plot_histogram(values):
+<h3 class="mt-4">Per-sample visualizations</h3>
+<p>Run on a single sample &mdash; e.g. overlay predicted boxes on the input image, or
+    diff a predicted depth map against ground truth. The function receives the mapped
+    fields for that sample and returns the rendered image.</p>
+<pre><code class="language-python">def error_heatmap(gt, pred):
+    import io, numpy as np, matplotlib.pyplot as plt
     from PIL import Image
-    import matplotlib.pyplot as plt
-    from io import BytesIO
-    
-    # Create figure
-    fig, ax = plt.subplots(figsize=(4, 3))
-    ax.hist(values, bins=20)
-    ax.set_title("Distribution")
-    
-    # Save to buffer
-    buf = BytesIO()
-    fig.savefig(buf, format='png', bbox_inches='tight')
-    buf.seek(0)
-    plt.close(fig) # IMPORTANT: Close the figure to free memory
-    
-    # Convert to PIL
-    img = Image.open(buf).convert("RGB")
-    return img</code></pre>
-            </div>
-        </div>
+    err = np.abs(np.asarray(gt) - np.asarray(pred))
+    fig, ax = plt.subplots()
+    ax.imshow(err, cmap="magma"); ax.axis("off")
+    buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig); buf.seek(0)
+    return Image.open(buf)          # a visualization returns a PIL Image</code></pre>
 
-        <h3 class="mt-5">Aggregated Visualizations</h3>
-        <p>Just like metrics, visualizations can be <strong>Aggregated</strong>. This is perfect for creating:
-        <ul>
-            <li>Overall Error Distribution Histograms</li>
-            <li>Precision-Recall Curves</li>
-            <li>Scatter Plots (e.g., Error vs. Distance)</li>
-        </ul>
-        <p>Simply mark the visualization as "Aggregated" when creating it in the Global Library, and your function will
-            receive lists of values instead of single items.</p>
+<h3 class="mt-4">Aggregated visualizations</h3>
+<p>Run once per submission over <em>all</em> samples &mdash; e.g. a confusion matrix or a
+    scatter of predicted vs true. The function receives the lists of values across samples.
+    Aggregated visualizations get their own column and can be opened
+    <strong>side-by-side</strong> across submissions in the comparison view.</p>
+<pre><code class="language-python">def confusion_matrix(gt, pred, gt_names=None, pred_names=None):
+    import io, json, numpy as np, matplotlib.pyplot as plt
+    from PIL import Image
+    # gt/pred are the per-sample label values across all samples; they may
+    # arrive JSON-encoded ("3") or as top-K lists — normalize to an int.
+    def idx(v):
+        if isinstance(v, str): v = json.loads(v)
+        return int(v[0] if isinstance(v, (list, tuple)) else v)
+    g = [idx(x) for x in gt]; p = [idx(x) for x in pred]
+    n = max(g + p) + 1
+    m = np.zeros((n, n), dtype=int)
+    for a, b in zip(g, p):
+        m[a, b] += 1
+    fig, ax = plt.subplots()
+    ax.imshow(m)
+    labels = gt_names or [str(i) for i in range(n)]
+    ax.set_xticks(range(n)); ax.set_yticks(range(n))
+    ax.set_xticklabels([f"{nm} ({i})" for i, nm in enumerate(labels)], rotation=90)
+    ax.set_yticklabels([f"{nm} ({i})" for i, nm in enumerate(labels)])
+    ax.set_xlabel("predicted"); ax.set_ylabel("ground truth")
+    buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig); buf.seek(0)
+    return Image.open(buf)</code></pre>
 
-    </div>
+<div class="alert alert-light border">
+    <strong>Class names for free.</strong> When a mapped argument is a label field,
+    BenchHub also injects a matching <code>&lt;arg&gt;_names</code> argument holding that
+    field's class-name vocabulary &mdash; so a confusion matrix can label its axes with
+    real class names (<code>cat (3)</code>) instead of bare indices. A ready-made
+    <code>confusion_matrix</code> visualization ships in the library.
 </div>
+
+<h3 class="mt-4">Depth colormaps</h3>
+<p>Depth fields are stored once and recolored at view time. The comparison and dataset
+    views expose a colormap selector on each depth column &mdash; <code>turbo</code>,
+    <code>viridis</code>, <code>magma</code>, <code>inferno</code>, <code>plasma</code>,
+    <code>jet</code>, <code>gray</code>, and a Sobel-based surface-<code>normal</code> view
+    &mdash; served from <code>/api/gt_viz/&lt;lb&gt;/&lt;col&gt;/&lt;sample&gt;?cmap=</code>.
+    You don't author this; it's built in for the <code>depth</code> kind.</p>
+
+<h3 class="mt-4">Authoring &amp; binding</h3>
+<ul>
+    <li>Write and edit on the
+        <a href="/visualizations"><strong>Visualizations</strong></a> page (Python source,
+        same DLP-safe upload + public/private visibility + per-owner name rules as
+        metrics).</li>
+    <li>Bind to a leaderboard on its Edit page, mapping each argument to a field. The
+        rendered image is cached; aggregated ones precompute when a submission is
+        processed.</li>
+</ul>
+
+<p class="mt-4">Next: <a href="{{ url_for('docs', page='submitting') }}">submit predictions
+    &rarr;</a></p>
 {% endblock %}
