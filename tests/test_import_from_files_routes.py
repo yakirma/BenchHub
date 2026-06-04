@@ -232,3 +232,31 @@ def test_commit_zip_member_parsed(user_client, monkeypatch):
     assert r.status_code == 302
     assert enq['spec'][1]['loader'] == 'zip'
     assert enq['spec'][1]['member'] == 'pics/{id}.png'
+
+
+def test_from_roles_generates_spec(user_client, monkeypatch):
+    """The 'describe the structure' endpoint turns level roles into a
+    field-row spec (modality fan-out + a label token field)."""
+    client, _ = user_client
+    files = [f'image/{i}.png' for i in range(2)] + \
+            [f'depth/{i}.npz' for i in range(2)]
+    _stub_hfapi(monkeypatch, files)
+    r = client.post('/import_from_files/from_roles',
+                    json={'repo_id': 'a/b', 'roles': ['modality', 'id']})
+    assert r.status_code == 200
+    spec = r.get_json()['spec']
+    by = {f['name']: f for f in spec}
+    assert set(by) == {'image', 'depth'}
+    assert by['image']['pattern'] == 'image/{id}.png'
+    assert by['depth']['loader'] == 'npz'
+
+
+def test_inspect_renders_structure_panel(user_client, monkeypatch):
+    client, _ = user_client
+    files = [f'{c}/{i}.png' for c in ('Alex_Brush', 'Cookie') for i in range(2)]
+    _stub_hfapi(monkeypatch, files)
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    body = client.post('/import_from_files/inspect', data={'repo_id': 'a/b'}).data.decode()
+    assert 'Describe the structure' in body
+    assert 'level-role' in body
+    assert 'Generate fields from structure' in body

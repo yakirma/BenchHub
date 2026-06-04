@@ -462,3 +462,61 @@ def test_inspect_mixed_modalities_different_exts():
     assert "{label}/{id}.png" not in pats and "{label}/{id}.npz" not in pats
     assert "image/{id}.png" in pats
     assert "depth/{id}.npz" in pats
+
+
+# --- Phase: path-level role analysis → auto-generated spec ---
+
+from benchhub.file_tree_import import analyze_levels, generate_spec_from_roles
+
+
+def test_analyze_levels_benjy_class_folders():
+    files = [f"{c}/{i:03d}.png" for c in ("Alex_Brush", "Cookie", "Lobster")
+             for i in range(3)]
+    info = analyze_levels(files)
+    assert info["depth"] == 2
+    assert info["levels"][0]["default_role"] == "property"   # arbitrary folder names
+    assert info["levels"][1]["default_role"] == "id"
+    assert info["levels"][1]["exts"] == {"png": 9}
+
+
+def test_analyze_levels_modality_folders():
+    files = [f"image/{i}.png" for i in range(3)] + [f"depth/{i}.npz" for i in range(3)]
+    info = analyze_levels(files)
+    assert info["levels"][0]["default_role"] == "modality"
+
+
+def test_generate_spec_property_folder_to_image_plus_label():
+    files = [f"{c}/{i:03d}.png" for c in ("Alex_Brush", "Cookie") for i in range(2)]
+    spec = generate_spec_from_roles(files, ["property", "id"])
+    by = {f["name"]: f for f in spec}
+    assert by["image"]["loader"] == "file"
+    assert by["image"]["pattern"] == "{label}/{id}.png"
+    assert by["label"]["loader"] == "token" and by["label"]["kind"] == "label"
+    assert by["label"]["token"] == "label"
+
+
+def test_generate_spec_modality_fans_out_fields():
+    files = [f"image/{i}.png" for i in range(2)] + [f"depth/{i}.npz" for i in range(2)]
+    spec = generate_spec_from_roles(files, ["modality", "id"])
+    by = {f["name"]: f for f in spec}
+    assert set(by) == {"image", "depth"}
+    assert by["image"]["pattern"] == "image/{id}.png" and by["image"]["kind"] == "image"
+    assert by["depth"]["pattern"] == "depth/{id}.npz"
+    assert by["depth"]["loader"] == "npz"
+
+
+def test_generate_spec_fixed_group_split_tokens():
+    files = [f"train/i_{s}/{q}/{i:03d}.png"
+             for s in range(2) for q in ("normal", "low") for i in range(2)]
+    spec = generate_spec_from_roles(files, ["fixed", "group", "split", "id"])
+    # one image field; train literal, i_* → {seq}, quality → {split}
+    img = [f for f in spec if f["kind"] == "image"][0]
+    assert img["pattern"] == "train/{seq}/{split}/{id}.png"
+
+
+def test_generate_spec_file_level_multi_ext_fans_out():
+    files = [f"{i}.png" for i in range(2)] + [f"{i}.npz" for i in range(2)]
+    spec = generate_spec_from_roles(files, ["id"])
+    kinds = {f["name"]: f for f in spec}
+    assert kinds["image"]["pattern"] == "{id}.png"
+    assert kinds["depth"]["pattern"] == "{id}.npz"

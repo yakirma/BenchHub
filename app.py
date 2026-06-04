@@ -7298,16 +7298,38 @@ def import_from_files_inspect():
         flash(f"Couldn't list files for {repo_id!r}: {e}", "danger")
         return redirect(url_for('import_from_files'))
 
-    from benchhub.file_tree_import import inspect_repo
+    from benchhub.file_tree_import import inspect_repo, analyze_levels
     from benchhub.types import DTYPES
     info = inspect_repo(files)
+    structure = analyze_levels(files)
     # A capped slice of the raw tree for the browser (76k files is a lot).
     return render_template(
         'import_from_files_map.html',
-        repo_id=repo_id, info=info,
+        repo_id=repo_id, info=info, structure=structure,
         file_sample=files[:400], total_files=len(files),
         all_kinds=sorted(DTYPES), all_roles=['input', 'gt', 'skip'],
+        level_roles=['id', 'modality', 'property', 'split', 'group', 'fixed'],
     )
+
+
+@app.route('/import_from_files/from_roles', methods=['POST'])
+@login_required
+def import_from_files_from_roles():
+    """Generate the field-row spec from a per-level role assignment
+    (the 'describe the structure' step)."""
+    data = request.json or {}
+    repo_id = (data.get('repo_id') or '').strip()
+    roles = data.get('roles') or []
+    if not repo_id:
+        return jsonify({'error': 'repo_id required'}), 400
+    try:
+        from huggingface_hub import HfApi
+        from benchhub.file_tree_import import generate_spec_from_roles
+        token = getattr(g.current_user, 'hf_token', None) or None
+        files = HfApi().list_repo_files(repo_id, repo_type='dataset', token=token)
+        return jsonify({'spec': generate_spec_from_roles(files, roles)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/import_from_files/decode_preview', methods=['POST'])

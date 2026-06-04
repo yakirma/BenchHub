@@ -53,6 +53,39 @@
                     </div>
                 </div>
 
+                {% if structure and structure.levels %}
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3">
+                        <h2 class="h6 fw-semibold mb-1">Describe the structure</h2>
+                        <p class="small text-body-secondary mb-2">
+                            Set what each path level means, then generate the field rows
+                            (you can still edit them after). Depth {{ structure.depth }},
+                            {{ '{:,}'.format(structure.file_count) }} files.
+                        </p>
+                        {% for lv in structure.levels %}
+                        <div class="d-flex align-items-center gap-2 mb-1">
+                            <span class="badge text-bg-light border" style="min-width:2.6rem;">
+                                L{{ lv.index }}{% if lv.is_file %}·file{% endif %}</span>
+                            <select class="form-select form-select-sm level-role"
+                                    data-index="{{ lv.index }}" style="width:auto;">
+                                {% for r in level_roles %}
+                                <option value="{{ r }}" {{ 'selected' if r == lv.default_role }}>{{ r }}</option>
+                                {% endfor %}
+                            </select>
+                            <span class="small text-body-secondary font-monospace text-truncate" style="max-width: 340px;">
+                                {{ lv.examples | join(', ') }}{% if lv.distinct_count > lv.examples|length %} … ({{ '{:,}'.format(lv.distinct_count) }}){% endif %}
+                                {% if lv.exts %} · {{ lv.exts.keys() | join('/') }}{% endif %}
+                            </span>
+                        </div>
+                        {% endfor %}
+                        <button type="button" class="btn btn-sm btn-primary mt-1" id="gen-fields-btn">
+                            <i class="bi bi-magic me-1"></i>Generate fields from structure
+                        </button>
+                        <span id="gen-fields-msg" class="small ms-2"></span>
+                    </div>
+                </div>
+                {% endif %}
+
                 <div id="field-rows"></div>
                 <button type="button" class="btn btn-sm btn-outline-primary mb-3" id="add-field">
                     <i class="bi bi-plus-lg me-1"></i>Add modality
@@ -321,6 +354,47 @@
         });
         return spec;
     }
+
+    // --- Generate field rows from the path-level roles. ---
+    function setRow(row, e) {
+        const set = (sel, v) => { const el = row.querySelector(sel); if (el != null && v != null) el.value = v; };
+        set('[name=field_name]', e.name);
+        set('[name=field_kind]', e.kind);
+        set('[name=field_role]', e.role);
+        const loaderSel = row.querySelector('[name=field_loader]');
+        loaderSel.value = e.loader || 'file';
+        loaderSel.dispatchEvent(new Event('change'));  // toggle loader cols + pattern
+        set('[name=field_pattern]', e.pattern || '');
+        ['key', 'pointer', 'column', 'id_column', 'member', 'token', 'axis'].forEach(k => {
+            if (e[k] != null) set('[name=field_' + k + ']', e[k]);
+        });
+        if (e.shared) {
+            const cb = row.querySelector('.row-shared-cb');
+            if (cb) { cb.checked = true; row.querySelector('.row-shared-val').value = '1'; }
+        }
+    }
+
+    const genBtn = document.getElementById('gen-fields-btn');
+    if (genBtn) genBtn.addEventListener('click', async () => {
+        const msg = document.getElementById('gen-fields-msg');
+        const roles = [...document.querySelectorAll('.level-role')]
+            .sort((a, b) => (+a.dataset.index) - (+b.dataset.index)).map(s => s.value);
+        msg.textContent = 'Generating…';
+        try {
+            const resp = await fetch('{{ url_for("import_from_files_from_roles") }}', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({repo_id: '{{ repo_id }}', roles})
+            });
+            const data = await resp.json();
+            if (data.error) { msg.innerHTML = '<span class="text-danger">' + data.error + '</span>'; return; }
+            rows.innerHTML = '';
+            data.spec.forEach(e => { addRow(); setRow(rows.lastElementChild, e); });
+            const hasSplit = [...document.querySelectorAll('.level-role')].some(s => s.value === 'split');
+            if (hasSplit) { const ft = document.querySelector('[name=filter_token]'); if (ft && !ft.value) ft.value = 'split'; }
+            msg.innerHTML = '<span class="text-success">' + data.spec.length +
+                ' field(s) generated — review below, then Decode preview.</span>';
+        } catch (e) { msg.innerHTML = '<span class="text-danger">' + e + '</span>'; }
+    });
 
     // --- Client-side validation: highlight missing required fields. ---
     const errBox = document.getElementById('map-form-errors');

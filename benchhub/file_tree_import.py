@@ -181,6 +181,189 @@ def inspect_repo(files):
     }
 
 
+# --- Path-level role analysis: the user labels each directory level, and
+#     we generate the field rows from that (modality/property/split/group/
+#     id/fixed) instead of guessing from folder names. ---
+
+_META_EXTS = {'md', 'gitattributes', 'gitignore', 'json5'}
+_SPLIT_WORDS = {'train', 'test', 'val', 'valid', 'validation', 'dev',
+                'eval', 'trainval', 'training', 'testing'}
+_MASK_NAME_WORDS = {'mask', 'masks', 'seg', 'segmentation', 'semantic',
+                    'instance', 'instances', 'label_map', 'labelmap',
+                    'annotation', 'annotations'}
+_EXT_KIND_LOADER = {
+    'png': ('image', 'file'), 'jpg': ('image', 'file'), 'jpeg': ('image', 'file'),
+    'bmp': ('image', 'file'), 'tif': ('image', 'file'), 'tiff': ('image', 'file'),
+    'webp': ('image', 'file'), 'gif': ('image', 'file'),
+    'wav': ('audio', 'file'), 'mp3': ('audio', 'file'), 'flac': ('audio', 'file'),
+    'txt': ('text', 'file'), 'json': ('json', 'file'),
+    'npz': ('depth', 'npz'), 'npy': ('depth', 'file'),
+}
+
+
+def _kind_loader_for_ext(ext, name=None):
+    kind, loader = _EXT_KIND_LOADER.get((ext or '').lower(), ('json', 'file'))
+    if kind == 'image' and name and str(name).lower() in _MASK_NAME_WORDS:
+        kind = 'mask'
+    return kind, loader
+
+
+def _data_files(files):
+    """Files that look like sample data (drop dotfiles + repo meta)."""
+    out = []
+    for f in files:
+        base = f.rsplit('/', 1)[-1]
+        if base.startswith('.') or '.' not in base:
+            continue
+        if base.rsplit('.', 1)[-1].lower() in _META_EXTS:
+            continue
+        out.append(f)
+    return out
+
+
+def _dominant_depth_files(files):
+    data = _data_files(files)
+    if not data:
+        return [], 0
+    depth_counts = Counter(f.count('/') + 1 for f in data)
+    depth = depth_counts.most_common(1)[0][0]
+    return [f for f in data if f.count('/') + 1 == depth], depth
+
+
+def _default_level_role(is_file, distinct, exts):
+    if is_file:
+        return 'id'
+    n = len(distinct)
+    if n == 1:
+        return 'fixed'
+    low = [d.lower() for d in distinct]
+    if all(d in _SPLIT_WORDS for d in low):
+        return 'split'
+    if sum(1 for d in low if d in _MODALITY_WORDS) / n >= 0.5:
+        return 'modality'
+    if all(any(c.isdigit() for c in d) for d in distinct):
+        return 'group'
+    return 'property'
+
+
+def analyze_levels(files):
+    """Describe the repo's directory skeleton at the dominant depth: one
+    entry per path level with example values, distinct count, file-level
+    extensions, and a smart default role. Drives the 'describe the
+    structure' UI."""
+    sel, depth = _dominant_depth_files(files)
+    levels = []
+    for i in range(depth):
+        is_file = (i == depth - 1)
+        if is_file:
+            exts = Counter(f.rsplit('.', 1)[-1].lower() for f in sel)
+            distinct = sorted({f.split('/')[i].rsplit('.', 1)[0] for f in sel})
+        else:
+            exts = None
+            distinct = sorted({f.split('/')[i] for f in sel})
+        levels.append({
+            'index': i, 'is_file': is_file,
+            'distinct_count': len(distinct),
+            'examples': distinct[:6],
+            'exts': dict(exts.most_common()) if exts else None,
+            'default_role': _default_level_role(is_file, distinct, exts),
+        })
+    return {'levels': levels, 'depth': depth, 'file_count': len(sel)}
+
+
+def _spec_field(name, kind, loader, pattern):
+    name = re.sub(r'[^A-Za-z0-9_]', '_', str(name)).strip('_') or 'field'
+    f = {'name': name, 'kind': kind,
+         'role': 'input' if kind == 'image' else 'gt',
+         'loader': loader, 'pattern': pattern}
+    if loader == 'npz':
+        f.update({'key': None, 'shared': False, 'axis': 0})
+    return f
+
+
+def generate_spec_from_roles(files, roles):
+    """Turn a per-level role assignment into the field-row spec. `roles`
+    is a list indexed by path level (id / modality / property / split /
+    group / fixed). A `modality` level fans out one field per value; a
+    file level with several extensions fans out one field per ext; each
+    `property` level adds a `token` label field; split/group become tokens
+    in the patterns."""
+    sel, depth = _dominant_depth_files(files)
+    if not depth:
+        return []
+    roles = list(roles) + ['id' if i == depth - 1 else 'fixed'
+                           for i in range(len(roles), depth)]
+
+    # Decide what each non-file level contributes to a pattern.
+    counts = defaultdict(int)
+    level_tok = {}        # i -> ('literal', v) | ('token', name) | ('modality',) | ('id',)
+    prop_tokens = []      # [(i, token_name)] → token label fields
+    for i in range(depth):
+        r = (roles[i] or '').lower()
+        if i == depth - 1:
+            level_tok[i] = ('id',)
+            continue
+        if r == 'modality':
+            level_tok[i] = ('modality',)
+        elif r == 'split':
+            level_tok[i] = ('token', 'split')
+        elif r == 'group':
+            counts['seq'] += 1
+            level_tok[i] = ('token', 'seq' if counts['seq'] == 1 else f"seq{counts['seq']}")
+        elif r == 'property':
+            counts['label'] += 1
+            nm = 'label' if counts['label'] == 1 else f"label{counts['label']}"
+            level_tok[i] = ('token', nm)
+            prop_tokens.append((i, nm))
+        elif r == 'fixed':
+            vals = sorted({f.split('/')[i] for f in sel})
+            if len(vals) == 1:
+                level_tok[i] = ('literal', vals[0])
+            else:
+                counts['x'] += 1
+                level_tok[i] = ('token', f"x{counts['x']}")
+        else:  # 'id' on a non-file level
+            level_tok[i] = ('token', 'id')
+
+    def build_pattern(mod_value, ext):
+        segs = []
+        for i in range(depth):
+            tok = level_tok[i]
+            if i == depth - 1:
+                segs.append('{id}.' + ext)
+            elif tok[0] == 'modality':
+                segs.append(mod_value)
+            elif tok[0] == 'literal':
+                segs.append(tok[1])
+            else:  # token
+                segs.append('{%s}' % tok[1])
+        return '/'.join(segs)
+
+    spec = []
+    mod_levels = [i for i in range(depth) if level_tok[i][0] == 'modality']
+    if mod_levels:
+        ml = mod_levels[0]
+        for V in sorted({f.split('/')[ml] for f in sel}):
+            sub = [f for f in sel if f.split('/')[ml] == V]
+            ext = Counter(f.rsplit('.', 1)[-1].lower() for f in sub).most_common(1)[0][0]
+            kind, loader = _kind_loader_for_ext(ext, name=V)
+            spec.append(_spec_field(V, kind, loader, build_pattern(V, ext)))
+    else:
+        by_ext = defaultdict(list)
+        for f in sel:
+            by_ext[f.rsplit('.', 1)[-1].lower()].append(f)
+        multi = len(by_ext) > 1
+        for ext, fs in sorted(by_ext.items(), key=lambda kv: -len(kv[1])):
+            kind, loader = _kind_loader_for_ext(ext)
+            name = ('image' if (kind == 'image' and not multi) else kind)
+            spec.append(_spec_field(name, kind, loader, build_pattern(None, ext)))
+
+    for _i, nm in prop_tokens:
+        spec.append({'name': nm, 'kind': 'label', 'role': 'gt',
+                     'loader': 'token', 'token': nm})
+    return spec
+
+
 def _generalise_dir(d):
     """Turn a concrete directory like `train/i_0/normal` into a tokenised
     `train/{dir1}/normal` by tokenising segments that look like an id
