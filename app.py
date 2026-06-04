@@ -2903,6 +2903,40 @@ def account_settings():
     return render_template('account_settings.html')
 
 
+@app.route('/settings/hf_token', methods=['GET', 'POST'])
+@login_required
+def hf_token_settings():
+    """Per-user HuggingFace access token — required to import gated or
+    private HF datasets (CT-RATE etc.). Stored on the secret-bearing
+    `User.hf_token` column; shown masked. POST saves or clears it."""
+    if request.method == 'POST':
+        if (request.form.get('action') or 'save') == 'clear':
+            g.current_user.hf_token = None
+            db.session.commit()
+            flash("HuggingFace token removed.", "success")
+            return redirect(url_for('hf_token_settings'))
+        tok = (request.form.get('hf_token') or '').strip()
+        if not tok:
+            flash("Paste a token, or use Remove to clear it.", "warning")
+            return redirect(url_for('hf_token_settings'))
+        if not tok.startswith('hf_'):
+            flash("That doesn't look like a HuggingFace access token (they "
+                  "start with 'hf_'). Saved anyway — re-check it if gated "
+                  "imports fail.", "warning")
+        g.current_user.hf_token = tok
+        db.session.commit()
+        flash("HuggingFace token saved. You can now import gated/private "
+              "datasets you've been granted access to.", "success")
+        return redirect(url_for('hf_token_settings'))
+
+    tok = getattr(g.current_user, 'hf_token', None)
+    masked = None
+    if tok:
+        masked = (tok[:6] + '…' + tok[-4:]) if len(tok) > 12 else 'hf_…'
+    return render_template('settings_hf_token.html',
+                           has_token=bool(tok), masked_token=masked)
+
+
 @app.route('/settings/account/delete', methods=['POST'])
 @login_required
 def account_delete():
@@ -7064,9 +7098,10 @@ def _screen_hf_import(repo_id, schema, *, has_token):
     card = fetch_dataset_card(repo_id) or {}
     if (card.get('gated') or card.get('private')) and not has_token:
         blocks.append(
-            "This dataset is gated or private on HuggingFace. Save your "
-            "HF access token on the Settings page, then retry — the "
-            "importer can't read it without one."
+            "This dataset is gated or private on HuggingFace. Request access "
+            "on its dataset page, then add your token under Settings → "
+            "HuggingFace token and retry — the importer can't read it "
+            "without one."
         )
 
     # datasets-server /info only indexes auto-converted (parquet)
@@ -7509,8 +7544,9 @@ def import_from_files_inspect():
         from benchhub.hf_search import fetch_dataset_card
         card = fetch_dataset_card(repo_id) or {}
         if card.get('gated') or card.get('private'):
-            flash("This dataset is gated or private — save your HF token on "
-                  "the Settings page first.", "danger")
+            flash("This dataset is gated or private. Request access on its "
+                  "HuggingFace page, then add your token under Settings → "
+                  "HuggingFace token, and retry.", "danger")
             return redirect(url_for('import_from_files'))
     token = getattr(g.current_user, 'hf_token', None) or None
     used_storage = _hf_repo_used_storage(repo_id, token=token)

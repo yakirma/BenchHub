@@ -39,6 +39,8 @@
                 it hands off to the file-tree mapper automatically — and you can
                 switch to it from the preview at any time.
             </div>
+            {# Shown when a gated dataset is selected (populated by JS). #}
+            <div id="gated-notice" class="mt-3 d-none"></div>
         </div>
     </form>
 
@@ -61,10 +63,12 @@
     </div>
 
     <p class="text-body-secondary small mt-4 mb-0">
-        Datasets without a Croissant export (gated, private, or
-        non-conformant) can't go through this path. Use the
-        server-side typed-manifest importer
-        (<code>scripts/import_typed_dataset.py</code>) for those.
+        <i class="bi bi-lock-fill text-warning me-1"></i><strong>Gated</strong> /
+        private datasets are importable too &mdash; request access on the dataset's
+        HuggingFace page, then add your
+        <a href="{{ url_for('hf_token_settings') }}">HuggingFace token</a>.
+        Datasets with no parquet/Croissant schema fall through to the
+        file-tree mapper automatically.
     </p>
 </div>
 {% endblock %}
@@ -75,7 +79,10 @@
     const repoInput = document.getElementById('repo-id');
     const suggList = document.getElementById('repo-suggestions');
     const trendingGrid = document.getElementById('trending-grid');
+    const gatedNotice = document.getElementById('gated-notice');
     if (!repoInput || !suggList || !trendingGrid) return;
+
+    const HF_TOKEN_URL = '{{ url_for("hf_token_settings") }}';
 
     // ---- Helpers --------------------------------------------------
     const fmtCount = (n) => {
@@ -89,10 +96,34 @@
         {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
     ));
 
-    function pickRepo(id) {
+    // A clear "Gated" pill for any listed dataset that needs HF authorization.
+    const gatedBadge = (gated) => gated
+        ? ' <span class="badge text-bg-warning" title="Gated — needs HuggingFace authorization">'
+          + '<i class="bi bi-lock-fill"></i> Gated</span>'
+        : '';
+
+    // Forward the authorization requirement when a gated dataset is chosen.
+    function showGatedNotice(id, gated) {
+        if (!gatedNotice) return;
+        if (!gated) { gatedNotice.classList.add('d-none'); gatedNotice.innerHTML = ''; return; }
+        gatedNotice.innerHTML =
+            '<div class="alert alert-warning d-flex gap-2 py-2 small mb-0">'
+            + '<i class="bi bi-lock-fill flex-shrink-0"></i><div>'
+            + '<strong>' + escapeHtml(id) + '</strong> is a <strong>gated</strong> '
+            + 'dataset. To import it you must:<ol class="mb-0 mt-1">'
+            + '<li><a href="https://huggingface.co/datasets/' + encodeURIComponent(id)
+            + '" target="_blank" rel="noopener">Request access on HuggingFace</a> '
+            + 'and wait to be approved.</li>'
+            + '<li>Add your <a href="' + HF_TOKEN_URL + '">HuggingFace access token</a> '
+            + 'in settings.</li></ol></div></div>';
+        gatedNotice.classList.remove('d-none');
+    }
+
+    function pickRepo(id, gated) {
         repoInput.value = id;
         suggList.classList.add('d-none');
         suggList.innerHTML = '';
+        showGatedNotice(id, gated);
         repoInput.focus();
     }
 
@@ -125,15 +156,15 @@
                 suggList.innerHTML = items.map(it => `
                     <li class="list-group-item list-group-item-action"
                         style="cursor:pointer;"
-                        data-repo-id="${escapeHtml(it.id)}">
+                        data-repo-id="${escapeHtml(it.id)}"
+                        data-gated="${it.gated ? '1' : ''}">
                         <div class="d-flex justify-content-between align-items-baseline">
                             <span class="font-monospace small fw-semibold">
-                                ${escapeHtml(it.id)}
+                                ${escapeHtml(it.id)}${gatedBadge(it.gated)}
                             </span>
                             <span class="small text-body-secondary">
                                 ↓ ${fmtCount(it.downloads)}
                                 · ♥ ${fmtCount(it.likes)}
-                                ${it.gated ? '· <span class="text-warning-emphasis">gated</span>' : ''}
                             </span>
                         </div>
                         ${it.description
@@ -150,7 +181,7 @@
 
     suggList.addEventListener('click', (e) => {
         const li = e.target.closest('li[data-repo-id]');
-        if (li) pickRepo(li.getAttribute('data-repo-id'));
+        if (li) pickRepo(li.getAttribute('data-repo-id'), !!li.getAttribute('data-gated'));
     });
     // Click outside the dropdown closes it.
     document.addEventListener('click', (e) => {
@@ -175,9 +206,10 @@
                 ? items.map(it => `
                     <li class="list-group-item list-group-item-action px-2 py-2"
                         style="cursor:pointer;"
-                        data-repo-id="${escapeHtml(it.id)}">
+                        data-repo-id="${escapeHtml(it.id)}"
+                        data-gated="${it.gated ? '1' : ''}">
                         <div class="d-flex justify-content-between align-items-baseline">
-                            <span class="font-monospace small">${escapeHtml(it.id)}</span>
+                            <span class="font-monospace small">${escapeHtml(it.id)}${gatedBadge(it.gated)}</span>
                             <span class="small text-body-secondary">↓ ${fmtCount(it.downloads)}</span>
                         </div>
                     </li>`).join('')
@@ -196,7 +228,7 @@
 
     trendingGrid.addEventListener('click', (e) => {
         const li = e.target.closest('li[data-repo-id]');
-        if (li) pickRepo(li.getAttribute('data-repo-id'));
+        if (li) pickRepo(li.getAttribute('data-repo-id'), !!li.getAttribute('data-gated'));
     });
 
     (async () => {

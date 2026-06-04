@@ -57,6 +57,12 @@
                         <i class="bi bi-key me-2"></i>API tokens
                     </a>
                 </li>
+                <li class="mb-2">
+                    <a href="{{ url_for('hf_token_settings') }}" class="text-decoration-none">
+                        <i class="bi bi-lock me-2"></i>HuggingFace token
+                        <span class="text-body-secondary small">— for gated/private imports</span>
+                    </a>
+                </li>
                 <li>
                     <a href="{{ url_for('user_profile', user_id=current_user.id) }}" class="text-decoration-none">
                         <i class="bi bi-person me-2"></i>Public profile
