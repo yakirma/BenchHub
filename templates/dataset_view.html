@@ -1147,7 +1147,7 @@
                     </div>
                     {% elif col_key in custom_fields_map[sample.id] %}
                     {% set field_data = custom_fields_map[sample.id][col_key] %}
-                    {% if field_data.type in ['image', 'depth', 'mask', 'audio'] %}
+                    {% if field_data.type in (image_render_kinds | default(['image', 'depth', 'mask', 'audio'])) %}
                     {% set _ds_src = url_for('serve_custom_field_image', field_id=field_data.field_id) %}
                     {% set _ds_initial_src = (_ds_src + '?cmap=turbo') if field_data.type == 'depth' else _ds_src %}
                     <div class="text-center depth-cell" style="position: relative; display: inline-block;">

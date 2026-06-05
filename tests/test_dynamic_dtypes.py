@@ -5,9 +5,12 @@ from pathlib import Path
 
 import pytest
 
+import os
+
 import benchhub as bh
-from app import (DataTypeDef, Dataset, DatasetField, Leaderboard, User, db,
-                 generate_api_token)
+import app as _app
+from app import (CustomField, DataTypeDef, Dataset, DatasetField, Leaderboard,
+                 Sample, User, db, generate_api_token)
 from metric_engine import _jsonify_kwarg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'runner'))
@@ -115,3 +118,29 @@ def test_dtype_delete_allowed_when_only_private_lb(client, db_session):
         s['user_id'] = a.id
     client.post(f'/datatypes/{dt.id}/delete')
     assert db.session.get(DataTypeDef, dt.id) is None              # deleted
+
+
+# --- end-to-end: render route ---------------------------------------------
+
+def test_serve_custom_field_image_renders_registered_dtype(client, db_session,
+                                                           tmp_path, monkeypatch):
+    """A registered-kind CustomField is served as an image (rendered via the
+    sandboxed visualize; falls back to an error-image PNG if the sandbox
+    can't run here) — proving the dispatch branch, not a 400."""
+    monkeypatch.setitem(_app.app.config, 'UPLOAD_FOLDER', str(tmp_path))
+    db.session.add(DataTypeDef(
+        name='volume', visibility='public', file_ext='.bin',
+        visualize_code=("def visualize(blob, params):\n"
+                        "    from PIL import Image\n"
+                        "    return Image.new('RGB', (4, 4))\n")))
+    ds = Dataset(name='vd', visibility='public'); db.session.add(ds); db.session.flush()
+    s = Sample(dataset_id=ds.id, name='s0'); db.session.add(s); db.session.flush()
+    rel = f'datasets/{ds.id}/volume/s0.bin'
+    full = os.path.join(str(tmp_path), rel)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, 'wb') as fh:
+        fh.write(b'rawbytes')
+    cf = CustomField(sample_id=s.id, name='volume', data_type='volume', value_text=rel)
+    db.session.add(cf); db.session.commit()
+    r = client.get(f'/custom_field_image/{cf.id}')
+    assert r.status_code == 200 and r.mimetype == 'image/png'

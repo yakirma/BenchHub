@@ -6471,6 +6471,64 @@ def _datatype_used_by_public_lb(dt):
     return False
 
 
+def _all_kind_names():
+    """Built-in DTYPES kinds + registered DataTypeDef kinds visible to the
+    caller (public + their own). Used to populate the importer's kind
+    dropdowns so a registered kind is selectable."""
+    from benchhub.types import DTYPES
+    names = set(DTYPES)
+    try:
+        q = DataTypeDef.query
+        if getattr(g, 'current_user', None) is not None:
+            q = q.filter(or_(DataTypeDef.visibility == 'public',
+                             DataTypeDef.owner_user_id == g.current_user.id))
+        else:
+            q = q.filter(DataTypeDef.visibility == 'public')
+        names.update(d.name for d in q.all())
+    except Exception:
+        pass
+    return sorted(names)
+
+
+def _serve_registered_dtype_image(cf, dt):
+    """Render a registered-dtype CustomField's stored bytes via its
+    sandboxed `visualize(blob, params)`, disk-cached by (field, mtime,
+    code). Returns a Flask response (PNG, or a small error image)."""
+    import hashlib
+    import io as _io
+    if not dt.visualize_code:
+        return create_error_image(f'{dt.name}: no visualize()')
+    rel = cf.value_text
+    if not rel:
+        abort(404)
+    path = os.path.join(app.config['UPLOAD_FOLDER'], rel)
+    if not os.path.exists(path):
+        return "Not found", 404
+    code_hash = hashlib.md5((dt.visualize_code or '').encode()).hexdigest()[:12]
+    try:
+        mtime = int(os.path.getmtime(path))
+    except OSError:
+        mtime = 0
+    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f'dtype_{cf.id}_{mtime}_{code_hash}.png')
+    if os.path.exists(cache_path):
+        return send_file(cache_path, mimetype='image/png')
+    with open(path, 'rb') as fh:
+        blob = fh.read()
+    params = cf.get_params() if hasattr(cf, 'get_params') else {}
+    from metric_engine import visualize_dtype_in_sandbox
+    png, err = visualize_dtype_in_sandbox(dt.visualize_code, blob, params or {})
+    if err or not png:
+        return create_error_image((err or 'render failed')[:50])
+    try:
+        with open(cache_path, 'wb') as fh:
+            fh.write(png)
+    except OSError:
+        pass
+    return send_file(_io.BytesIO(png), mimetype='image/png')
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/visibility', methods=['POST'])
 @login_required
 @owner_required(Leaderboard, 'leaderboard_id')
@@ -7598,7 +7656,7 @@ def admin_import_from_hf_preview():
         card=card_summary(repo_id),
         schema=schema,
         split_counts=split_counts,
-        all_kinds=sorted(DTYPES),
+        all_kinds=_all_kind_names(),
         # Each HF column carries actual data — the role choices here
         # are only "where does the data live in the BH contract":
         # `input` (given to submitters), `gt` (held server-side as
@@ -8005,7 +8063,7 @@ def import_from_files_inspect():
         repo_id=repo_id, info=info, structure=structure, prefix=prefix,
         file_sample=files[:400], total_files=len(files), truncated=truncated,
         warnings=warnings, card=card,
-        all_kinds=sorted(DTYPES), all_roles=['input', 'gt', 'skip'],
+        all_kinds=_all_kind_names(), all_roles=['input', 'gt', 'skip'],
         level_roles=['id', 'modality', 'property', 'split', 'group', 'fixed'],
     )
 
@@ -15279,9 +15337,18 @@ def dataset_view(dataset_id):
         c.strip() for raw in _known_cats_raw for c in raw.split(',') if c.strip()
     })
 
+    # Registered kinds with a sandboxed visualize() render as images too
+    # (served by serve_custom_field_image's registered-dtype branch).
+    _registered_render_kinds = [
+        d.name for d in
+        DataTypeDef.query.filter(DataTypeDef.visualize_code.isnot(None)).all()
+    ]
+    image_render_kinds = ['image', 'depth', 'mask', 'audio'] + _registered_render_kinds
+
     return render_template('dataset_view.html',
                            known_categories=known_categories,
                            dataset=dataset,
+                           image_render_kinds=image_render_kinds,
                            paginated_samples=paginated_samples, 
                            samples_data_for_charts=samples_data_for_charts, 
                            dataset_display_options=sorted_display_options, 
@@ -15874,6 +15941,11 @@ def serve_custom_field_image(field_id):
         return serve_depth_image(custom_field.value_text)
 
     if custom_field.data_type not in ('image', 'mask', 'audio'):
+        # Registered (user-defined) kind → render via its sandboxed
+        # visualize(blob, params); built-in non-visual kinds 400 as before.
+        reg = DataTypeDef.query.filter_by(name=custom_field.data_type).first()
+        if reg is not None:
+            return _serve_registered_dtype_image(custom_field, reg)
         return "Not an image/mask/depth/audio field", 400
 
     # value_text contains the relative path from uploads folder
