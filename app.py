@@ -806,6 +806,11 @@ class DataTypeDef(db.Model):
                          default='image/png', server_default='image/png')
     # def visualize(blob, params) -> PIL.Image  (run only in the sandbox)
     visualize_code = db.Column(db.Text, nullable=True)
+    # Optional `def decode(blob, params) -> object` — the deserialize side
+    # of the contract. When set, a metric consuming this kind receives the
+    # decoded object instead of the raw stored bytes (run only in the
+    # sandbox alongside the metric). NULL ⇒ metrics get the bytes verbatim.
+    decode_code = db.Column(db.Text, nullable=True)
     owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'),
                               nullable=True, index=True)
     visibility = db.Column(db.String(20), nullable=False,
@@ -6007,7 +6012,8 @@ def api_create_visualization():
     return _api_create_library_asset('visualization')
 
 
-def _register_datatype(*, name, file_ext, viz_mime, visualize_code, description):
+def _register_datatype(*, name, file_ext, viz_mime, visualize_code, description,
+                       decode_code=None):
     """Validate + create a DataTypeDef owned by the current user. Returns
     `(dt, None)` on success or `(None, error_message)`. Shared by the API
     and the web form."""
@@ -6029,6 +6035,7 @@ def _register_datatype(*, name, file_ext, viz_mime, visualize_code, description)
         file_ext=file_ext,
         viz_mime=(viz_mime or 'image/png').strip() or 'image/png',
         visualize_code=((visualize_code or '').strip() or None),
+        decode_code=((decode_code or '').strip() or None),
         owner_user_id=g.current_user.id,
         visibility='public' if is_admin(g.current_user) else 'private',
     )
@@ -6045,15 +6052,18 @@ def _register_datatype(*, name, file_ext, viz_mime, visualize_code, description)
 @require_api_token
 def api_create_datatype():
     """Register a new data type (kind). JSON: {name, file_ext?, viz_mime?,
-    visualize_code?, description?}. `name` joins the global kind namespace
-    (lowercase, unique, not a built-in). `visualize_code` is
-    `def visualize(blob, params) -> PIL.Image` and runs only in the
-    sandbox. Returns {id, name, file_ext, visibility}."""
+    visualize_code?, decode_code?, description?}. `name` joins the global
+    kind namespace (lowercase, unique, not a built-in). `visualize_code` is
+    `def visualize(blob, params) -> PIL.Image`; optional `decode_code` is
+    `def decode(blob, params) -> object` (metrics on this kind then receive
+    the decoded object instead of raw bytes). Both run only in the sandbox.
+    Returns {id, name, file_ext, visibility}."""
     data = request.get_json(silent=True) or {}
     dt, err = _register_datatype(
         name=data.get('name'), file_ext=data.get('file_ext'),
         viz_mime=data.get('viz_mime'),
         visualize_code=data.get('visualize_code') or data.get('visualize'),
+        decode_code=data.get('decode_code') or data.get('decode'),
         description=data.get('description'))
     if err:
         status = 409 if ('already exists' in err or 'built-in' in err) else 400
@@ -6077,6 +6087,7 @@ def create_datatype_web():
         name=request.form.get('name'), file_ext=request.form.get('file_ext'),
         viz_mime=request.form.get('viz_mime'),
         visualize_code=request.form.get('visualize_code'),
+        decode_code=request.form.get('decode_code'),
         description=request.form.get('description'))
     if err:
         flash(err, 'danger')
@@ -6528,6 +6539,34 @@ def _all_kind_names():
     except Exception:
         pass
     return sorted(names)
+
+
+def _registered_extra_kinds(owner_user_id=None):
+    """`{kind_name: file_ext}` for registered DataTypeDef kinds visible to
+    the importer. Passed as `extra_kinds` to `import_typed_dataset` so a
+    dataset can carry a user-registered kind (stored bytes-verbatim) that
+    the standalone benchhub package has no DataType class for. A blank /
+    NULL file_ext means inline (stored as text).
+
+    `owner_user_id` scopes 'own private kinds' explicitly — pass it from a
+    Celery task where there's no request `g.current_user`. When omitted it
+    falls back to the request user."""
+    out = {}
+    try:
+        if owner_user_id is None:
+            cu = getattr(g, 'current_user', None)
+            owner_user_id = cu.id if cu is not None else None
+        q = DataTypeDef.query
+        if owner_user_id is not None:
+            q = q.filter(or_(DataTypeDef.visibility == 'public',
+                             DataTypeDef.owner_user_id == owner_user_id))
+        else:
+            q = q.filter(DataTypeDef.visibility == 'public')
+        for d in q.all():
+            out[d.name] = d.file_ext or None
+    except Exception:
+        pass
+    return out
 
 
 def _serve_registered_dtype_image(cf, dt):
@@ -8359,6 +8398,7 @@ def _ingest_typed_dataset_zip(upload, *, owner_user, visibility):
                 upload_folder=app.config['UPLOAD_FOLDER'],
                 owner_user_id=owner_user.id,
                 visibility=visibility,
+                extra_kinds=_registered_extra_kinds(owner_user.id),
             )
             db.session.commit()
         except FileNotFoundError as e:
@@ -8465,6 +8505,7 @@ def admin_import_typed_dataset():
             DatasetField=DatasetField,
             upload_folder=app.config['UPLOAD_FOLDER'],
             owner_user_id=g.current_user.id,
+            extra_kinds=_registered_extra_kinds(g.current_user.id),
         )
         db.session.commit()
     except FileNotFoundError as e:
@@ -18818,6 +18859,10 @@ def check_and_migrate_db():
                     # carry GT values streamed from HF at eval time so the
                     # comparison view doesn't re-stream on every page load.
                     ("custom_field",         "leaderboard_id",                 "INTEGER"),
+                    # User-registered data types: an optional sandboxed
+                    # decode(blob, params) hook. When present, metrics on
+                    # this kind receive the decoded object; absent ⇒ raw bytes.
+                    ("data_type_def",        "decode_code",                    "TEXT DEFAULT NULL"),
                 ]
                 for tbl, col, coldef in _ownership_migrations:
                     cursor.execute(f"PRAGMA table_info({tbl})")

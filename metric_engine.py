@@ -22,6 +22,86 @@ except ImportError:  # pragma: no cover — dependency-pin guarantees it's there
 from benchhub.types import DTYPES, DataType
 
 
+class RegisteredBlob:
+    """Carrier for a user-registered kind's stored bytes inside a metric
+    context. Built-in kinds wrap as `bh.*` instances (see `_typed_for_cf`);
+    a registered kind has no DataType class in this package, so we carry its
+    raw bytes + the kind's optional sandboxed `decode(blob, params)` source.
+
+    The two eval backends resolve it differently:
+      * Sandbox  — `_jsonify_kwarg` emits `{"__dtype__", "decode", "params",
+        "b64"}`; the harness runs `decode` *inside the metric's own
+        container* (no extra spawn) or hands over raw bytes when there's no
+        decode hook.
+      * In-process — `_resolve_registered_blob` runs `decode` locally (the
+        non-sandbox path already exec()s untrusted metric code in-process).
+    """
+    __slots__ = ('kind', 'blob', 'params', 'decode_code')
+
+    def __init__(self, kind, blob, params=None, decode_code=None):
+        self.kind = kind
+        self.blob = bytes(blob or b'')
+        self.params = params or {}
+        self.decode_code = decode_code or None
+
+
+def _registered_blob_for_cf(cf, upload_folder):
+    """Build a `RegisteredBlob` for a CustomField whose `data_type` is a
+    server-registered kind (not in the built-in DTYPES). Reads the stored
+    bytes (file-backed → from disk; inline → value_text) and attaches the
+    kind's `decode_code`. Returns None when the kind isn't registered or the
+    bytes can't be read — caller then just skips the field (same as today)."""
+    try:
+        from app import DataTypeDef  # lazy: keeps this module DB-decoupled
+    except Exception:
+        return None
+    try:
+        dt = DataTypeDef.query.filter_by(name=cf.data_type).first()
+    except Exception:
+        return None
+    if dt is None:
+        return None
+    params = cf.get_params() if hasattr(cf, 'get_params') else {}
+    if dt.file_ext:
+        rel = cf.value_text or ''
+        if not rel:
+            return None
+        path = os.path.join(upload_folder, rel)
+        try:
+            with open(path, 'rb') as fh:
+                blob = fh.read()
+        except OSError:
+            return None
+    else:
+        blob = (cf.value_text or '').encode('utf-8')
+    return RegisteredBlob(cf.data_type, blob, params, dt.decode_code)
+
+
+def _resolve_registered_blob(rb):
+    """In-process decode for a `RegisteredBlob`. Runs the kind's
+    `decode(blob, params)` locally and returns its result; falls back to the
+    raw bytes when there's no decode hook or it errors. Only used on the
+    non-sandbox path (which already exec()s metric code in-process)."""
+    if not isinstance(rb, RegisteredBlob):
+        return rb
+    if not rb.decode_code:
+        return rb.blob
+    ns = {'np': np, 'numpy': np}
+    try:
+        from PIL import Image as _Image
+        ns['Image'] = _Image
+    except ImportError:
+        pass
+    try:
+        exec(rb.decode_code, ns)
+        fn = ns.get('decode')
+        if callable(fn):
+            return fn(rb.blob, rb.params)
+    except Exception as e:
+        print(f"DEBUG: in-process decode for {rb.kind!r} failed: {e}")
+    return rb.blob
+
+
 def _typed_for_cf(cf, value):
     """Wrap a CustomField's primitive value in its DataType class.
 
@@ -184,6 +264,13 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
         if not func:
             return None, "No callable function found in code."
 
+        # Registered-kind args arrive as RegisteredBlob carriers; run their
+        # decode() hook in-process (this path already exec()s metric code
+        # locally) so the metric sees the decoded object, not the bytes.
+        for _k, _v in list(call_kwargs.items()):
+            if isinstance(_v, RegisteredBlob):
+                call_kwargs[_k] = _resolve_registered_blob(_v)
+
         # Call it
         result = func(**call_kwargs)
         
@@ -258,6 +345,12 @@ def _jsonify_kwarg(v):
     if isinstance(v, DataType):
         return {'__bh__': v.kind, 'params': v.params or {},
                 'b64': base64.b64encode(v.encode()).decode('ascii')}
+    if isinstance(v, RegisteredBlob):
+        # Registered kind: ship the raw bytes + the optional decode source.
+        # The harness runs decode() in-container (or hands over the bytes).
+        return {'__dtype__': v.kind, 'decode': v.decode_code,
+                'params': v.params or {},
+                'b64': base64.b64encode(v.blob).decode('ascii')}
     if isinstance(v, (bytes, bytearray)):
         return {'__bytes__': base64.b64encode(bytes(v)).decode('ascii')}
     if isinstance(v, dict):
@@ -702,6 +795,12 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                     arr = None
             _stash_typed(context, f"gt_{cf.name}", cf, arr)
             _stash_typed(context, cf.name, cf, arr)
+        elif cf.data_type not in DTYPES:
+            # User-registered kind: carry the raw bytes + decode hook.
+            rb = _registered_blob_for_cf(cf, upload_folder)
+            if rb is not None:
+                context[f"gt_{cf.name}"] = rb
+                context[cf.name] = rb
 
     # Paired-dataset GT: fold in CustomFields from any 'gt_source'
     # datasets attached to the LB whose sample name matches.

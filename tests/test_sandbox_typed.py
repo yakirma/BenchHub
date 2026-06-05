@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 import benchhub as bh
-from metric_engine import _jsonify_kwarg, evaluate_viz_in_sandbox
+from metric_engine import _jsonify_kwarg, evaluate_viz_in_sandbox, RegisteredBlob
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'runner'))
 import harness  # noqa: E402
@@ -70,6 +70,51 @@ def test_visualization_non_image_return_is_error():
     r = out['results'][0]
     assert r['png_b64'] is None
     assert 'PIL.Image' in r['error']
+
+
+def test_registered_blob_jsonify_emits_dtype_form():
+    rb = RegisteredBlob('volume', b'RAWBYTES', {'spacing': 2},
+                        decode_code='def decode(blob, params):\n    return blob\n')
+    enc = _jsonify_kwarg(rb)
+    assert enc['__dtype__'] == 'volume'
+    assert enc['params'] == {'spacing': 2}
+    assert 'decode' in enc and enc['decode']
+    json.dumps(enc)  # must survive JSON
+    assert base64.b64decode(enc['b64']) == b'RAWBYTES'
+
+
+def test_registered_kind_decode_hook_runs_in_harness():
+    # decode() turns the stored bytes into a Python object the metric reads.
+    rb = RegisteredBlob(
+        'counter', b'\x01\x02\x03\x04',
+        decode_code="def decode(blob, params):\n    return len(blob)\n")
+    dec = harness._decode_arg(_jsonify_kwarg(rb))
+    assert dec == 4
+
+
+def test_registered_kind_without_decode_yields_raw_bytes():
+    rb = RegisteredBlob('blobby', b'\x00\xffhi', decode_code=None)
+    dec = harness._decode_arg(_jsonify_kwarg(rb))
+    assert dec == b'\x00\xffhi'
+
+
+def test_registered_kind_metric_round_trips_through_harness():
+    # A metric consuming a registered GT kind whose decode() yields a numpy
+    # array; the metric returns its mean.
+    rb = RegisteredBlob(
+        'vec', b'1,2,3,4',
+        decode_code=("def decode(blob, params):\n"
+                     "    import numpy as np\n"
+                     "    return np.array([float(x) for x in blob.decode().split(',')])\n"))
+    code = ("def mean_metric(gt):\n"
+            "    import numpy as np\n"
+            "    return float(np.mean(gt))\n")
+    out = harness.run_job({
+        'kind': 'metric', 'code': code, 'include_benchhub': True,
+        'kwargs_list': [{'gt': _jsonify_kwarg(rb)}],
+    })
+    assert out['fatal'] is None
+    assert out['results'][0] == {'value': 2.5, 'error': None}
 
 
 def test_primitive_metric_unaffected():

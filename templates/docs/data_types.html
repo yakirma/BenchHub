@@ -164,9 +164,16 @@ bh.Json({"answer": "Paris", "spans": [[3, 8]]})</code></pre>
         <code>blob</code> with whatever library fits and return a <code>PIL.Image</code>.
         It runs <strong>only in the sandbox</strong> (network-isolated, read-only), so
         importing heavy libs is fine.</li>
+    <li><strong>decode(blob, params)</strong> &mdash; <em>optional</em>, the deserialize
+        side of the contract. When you provide it, a <strong>metric</strong> that consumes
+        this kind receives whatever <code>decode</code> returns instead of the raw
+        <code>blob</code> &mdash; the mirror of how a built-in kind hands a metric a
+        <code>bh.Depth</code> with <code>.array</code>. Leave it off and metrics get the
+        raw bytes to parse themselves. Also sandboxed (it runs inside the metric's own
+        container).</li>
 </ul>
-<pre><code class="language-python"># registered kind "volume", stored as .nii.gz — render the middle axial slice
-def visualize(blob, params):
+<pre><code class="language-python"># registered kind "volume", stored as .nii.gz
+def visualize(blob, params):                            # render the middle axial slice
     import io, gzip, numpy as np, nibabel as nib
     from PIL import Image
     # blob = the raw bytes of one sample's .nii.gz file
@@ -175,12 +182,18 @@ def visualize(blob, params):
     mid = vol[:, :, vol.shape[2] // 2]                 # a representative slice
     mid = (255 * (mid - mid.min()) / (np.ptp(mid) or 1)).astype("uint8")
     return Image.fromarray(mid)
+
+def decode(blob, params):                               # what your metrics receive
+    import gzip, numpy as np, nibabel as nib
+    img = nib.Nifti1Image.from_bytes(gzip.decompress(blob))
+    return np.asarray(img.dataobj)                      # e.g. a metric gets the volume
 </code></pre>
-<p class="small text-body-secondary">Because storage is just bytes, there's no separate
-    serialize/deserialize step to write &mdash; the &ldquo;encode/decode&rdquo; that the
-    built-in kinds (<code>Depth</code>, <code>Mask</code>, &hellip;) implement is, for a
-    registered kind, the identity: your file goes in, the same bytes come back to
-    <code>visualize</code> (and to any metric you bind on the kind, which receives the raw
-    bytes to parse the same way). A registered kind used by a public leaderboard can't be
-    deleted or made private.</p>
+<p class="small text-body-secondary">Storage is just bytes &mdash; what goes in comes back
+    out unchanged &mdash; so the &ldquo;encode&rdquo; the built-in kinds (<code>Depth</code>,
+    <code>Mask</code>, &hellip;) implement is, for a registered kind, the identity.
+    <strong>decode</strong> is the matching deserialize hook: define it to give metrics a
+    ready Python object; omit it and they get the raw bytes. Today this applies to
+    <strong>ground-truth and input</strong> fields (a metric reading a registered-kind GT);
+    registered-kind <em>predictions</em> are a follow-up. A registered kind used by a public
+    leaderboard can't be deleted or made private.</p>
 {% endblock %}

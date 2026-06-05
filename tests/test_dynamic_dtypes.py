@@ -60,12 +60,16 @@ def test_create_datatype(client, api_user):
     def visualize(blob, params):
         from PIL import Image
         return Image.new('RGB', (8, 8))
+    def decode(blob, params):
+        return blob.decode()
     res = c.create_datatype('volume', file_ext='.nii.gz', visualize_code=visualize,
-                            description='3D medical volume')
+                            decode_code=decode, description='3D medical volume')
     assert res['name'] == 'volume' and res['file_ext'] == '.nii.gz'
     assert res['visibility'] == 'private'
     dt = DataTypeDef.query.filter_by(name='volume').first()
     assert dt.owner_user_id == api_user.id and 'def visualize' in dt.visualize_code
+    # The optional decode() hook round-trips through the client + API.
+    assert 'def decode' in (dt.decode_code or '')
 
 
 def test_create_datatype_rejects_builtin_and_dupes(client, api_user):

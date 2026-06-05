@@ -19,6 +19,11 @@ server encodes each as {"__bh__": "<kind>", "params": {...}, "b64": "<base64
 of instance.encode()>"} and we rebuild it here via benchhub.DTYPES. Lists
 and dicts are walked recursively (label_list, aggregated-viz value lists).
 
+User-registered kinds (no DataType class) arrive as {"__dtype__": "<name>",
+"decode": "<source or null>", "params": {...}, "b64": "<base64 bytes>"}. We
+hand the metric the raw bytes, unless a decode(blob, params) hook was
+declared — then we run it here (in this same container) and pass its result.
+
 Result schema (stdout, single line of JSON):
     metric        → {"results": [{"value": <float|null>, "error": <str|null>}, ...]}
     visualization → {"results": [{"png_b64": <str|null>, "error": <str|null>}, ...]}
@@ -46,6 +51,32 @@ def _decode_arg(v):
             cls = _bh.DTYPES[v['__bh__']]
             return cls.decode(base64.b64decode(v.get('b64') or b''),
                               v.get('params') or {})
+        if '__dtype__' in v:
+            # User-registered kind. Raw bytes by default; if the kind
+            # shipped a decode(blob, params) hook, run it here (inside the
+            # metric's own container) and hand the metric the decoded object.
+            raw = base64.b64decode(v.get('b64') or b'')
+            code = v.get('decode')
+            if not code:
+                return raw
+            ns = {}
+            try:
+                import numpy as _np
+                ns['np'] = _np
+                ns['numpy'] = _np
+            except ImportError:
+                pass
+            try:
+                from PIL import Image as _Image
+                ns['Image'] = _Image
+            except ImportError:
+                pass
+            exec(code, ns)
+            fn = ns.get('decode')
+            if not callable(fn):
+                raise ValueError(
+                    f"registered kind {v['__dtype__']!r} has no decode() callable")
+            return fn(raw, v.get('params') or {})
         return {k: _decode_arg(x) for k, x in v.items()}
     if isinstance(v, list):
         return [_decode_arg(x) for x in v]

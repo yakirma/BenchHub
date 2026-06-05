@@ -48,8 +48,17 @@ def test_validate_rejects_missing_top_level_key(missing):
 def test_validate_rejects_unknown_kind():
     m = _ok_manifest()
     m["fields"][0]["kind"] = "not-a-real-kind"
-    with pytest.raises(ValueError, match="not in DTYPES"):
+    with pytest.raises(ValueError, match="not an accepted kind"):
         validate_manifest(m)
+
+
+def test_validate_accepts_registered_extra_kind():
+    m = _ok_manifest()
+    m["fields"][0]["kind"] = "volume"
+    # Rejected without extra_kinds, accepted when declared.
+    with pytest.raises(ValueError, match="not an accepted kind"):
+        validate_manifest(m)
+    validate_manifest(m, extra_kinds={"volume": ".nii.gz"})
 
 
 def test_validate_rejects_bad_role():

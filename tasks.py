@@ -37,6 +37,7 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
     """
     from benchhub.manifest import import_typed_dataset
     from benchhub.hf_materialize import materialize_hf_to_typed_dir
+    from app import _registered_extra_kinds
 
     with app.app_context():
         def _persist_progress(state):
@@ -105,6 +106,8 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                     upload_folder=app.config['UPLOAD_FOLDER'],
                     existing_dataset=existing,
                     preview_only=True,
+                    extra_kinds=_registered_extra_kinds(
+                        getattr(existing, 'owner_user_id', None)),
                 )
                 existing.preview_only = True
                 existing.source_kind = 'hf'
@@ -188,6 +191,7 @@ def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
     from huggingface_hub import HfApi, hf_hub_download
     from benchhub.file_tree_import import materialize_file_tree
     from benchhub.manifest import import_typed_dataset
+    from app import _registered_extra_kinds
 
     with app.app_context():
         def _persist(state):
@@ -257,6 +261,8 @@ def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
                     DatasetField=DatasetField,
                     upload_folder=app.config['UPLOAD_FOLDER'],
                     existing_dataset=existing, preview_only=True,
+                    extra_kinds=_registered_extra_kinds(
+                        getattr(existing, 'owner_user_id', None)),
                 )
                 existing.preview_only = True
                 existing.source_kind = 'hf'

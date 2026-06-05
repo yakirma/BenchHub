@@ -529,25 +529,32 @@ class Client:
         *,
         file_ext: str | None = None,
         visualize_code=None,
+        decode_code=None,
         viz_mime: str = "image/png",
         description: str | None = None,
     ) -> dict:
         """Register a new data type (kind). `visualize_code` is source or a
         ``def visualize(blob, params) -> PIL.Image`` function — it runs only
-        in the sandbox. `file_ext` is the on-disk extension (e.g.
-        ``'.nii.gz'``); None means inline. The kind name joins the global
-        namespace (lowercase, unique). Returns
-        ``{id, name, file_ext, visibility}``."""
+        in the sandbox. Optional `decode_code` is source or a
+        ``def decode(blob, params) -> object`` function; when given, metrics
+        on this kind receive the decoded object instead of the raw stored
+        bytes (the deserialize side of the contract, also sandboxed).
+        `file_ext` is the on-disk extension (e.g. ``'.nii.gz'``); None means
+        inline. The kind name joins the global namespace (lowercase, unique).
+        Returns ``{id, name, file_ext, visibility}``."""
         if not self.token:
             raise ValueError(
                 "BenchHub Client has no API token — pass `token=...` or "
                 "set BENCHHUB_API_TOKEN.")
+        import inspect
+        import textwrap
         if callable(visualize_code):
-            import inspect
-            import textwrap
             visualize_code = textwrap.dedent(inspect.getsource(visualize_code))
+        if callable(decode_code):
+            decode_code = textwrap.dedent(inspect.getsource(decode_code))
         payload = {"name": name, "viz_mime": viz_mime}
         for k, v in {"file_ext": file_ext, "visualize_code": visualize_code,
+                     "decode_code": decode_code,
                      "description": description}.items():
             if v is not None:
                 payload[k] = v

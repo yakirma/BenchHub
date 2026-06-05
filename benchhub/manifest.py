@@ -105,18 +105,24 @@ _VALID_ROLES = {"input", "gt", "pred"}
 _DATA_BEARING_ROLES = {"input", "gt"}
 
 
-def _field_ext(kind: str) -> str:
-    """File extension a field of this kind writes on disk."""
+def _field_ext(kind: str, extra_kinds: dict | None = None) -> str:
+    """File extension a field of this kind writes on disk. `extra_kinds`
+    maps a server-registered kind name → its on-disk extension (or None /
+    '' for inline), letting datasets carry user-registered kinds the
+    standalone package has no DataType class for."""
     cls = DTYPES.get(kind)
-    if cls is None:
-        raise ValueError(f"unknown kind {kind!r}")
-    return cls.file_ext or _INLINE_EXT
+    if cls is not None:
+        return cls.file_ext or _INLINE_EXT
+    if extra_kinds is not None and kind in extra_kinds:
+        return extra_kinds[kind] or _INLINE_EXT
+    raise ValueError(f"unknown kind {kind!r}")
 
 
-def validate_manifest(manifest: dict) -> None:
+def validate_manifest(manifest: dict, extra_kinds: dict | None = None) -> None:
     """Raise ValueError on a malformed manifest. Checks types + roles +
     field-name uniqueness; does NOT verify that the files exist on
-    disk — that's the importer's job."""
+    disk — that's the importer's job. `extra_kinds` (name → on-disk ext)
+    widens the accepted-kind set with server-registered kinds."""
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be a JSON object")
     for required in ("name", "fields", "samples"):
@@ -138,10 +144,12 @@ def validate_manifest(manifest: dict) -> None:
         if f["name"] in seen:
             raise ValueError(f"duplicate field name {f['name']!r}")
         seen.add(f["name"])
-        if f["kind"] not in DTYPES:
+        if f["kind"] not in DTYPES and not (
+                extra_kinds is not None and f["kind"] in extra_kinds):
+            allowed = sorted(set(DTYPES) | set(extra_kinds or {}))
             raise ValueError(
-                f"fields[{i}].kind={f['kind']!r} not in DTYPES "
-                f"{sorted(DTYPES)}"
+                f"fields[{i}].kind={f['kind']!r} not an accepted kind "
+                f"{allowed}"
             )
         if f["role"] not in _VALID_ROLES:
             raise ValueError(
@@ -163,12 +171,13 @@ def validate_manifest(manifest: dict) -> None:
                 )
 
 
-def load_manifest(manifest_path: str | os.PathLike) -> dict:
+def load_manifest(manifest_path: str | os.PathLike,
+                  extra_kinds: dict | None = None) -> dict:
     """Read + validate a manifest from disk. Returns the parsed dict."""
     path = Path(manifest_path)
     with open(path) as f:
         data = json.load(f)
-    validate_manifest(data)
+    validate_manifest(data, extra_kinds)
     return data
 
 
@@ -176,10 +185,11 @@ def load_manifest(manifest_path: str | os.PathLike) -> dict:
 # Importer — wired up via app.py to materialise Dataset / Sample / CustomField rows.
 # ---------------------------------------------------------------------------
 
-def expected_file_path(source_root: str | os.PathLike, field: dict, sample_name: str) -> Path:
+def expected_file_path(source_root: str | os.PathLike, field: dict, sample_name: str,
+                       extra_kinds: dict | None = None) -> Path:
     """Where the on-disk file for this (field, sample) is expected.
     Caller checks existence + reads."""
-    ext = _field_ext(field["kind"])
+    ext = _field_ext(field["kind"], extra_kinds)
     return Path(source_root) / field["name"] / f"{sample_name}{ext}"
 
 
@@ -197,6 +207,7 @@ def import_typed_dataset(
     existing_dataset=None,
     tolerate_incomplete: bool = False,
     preview_only: bool = False,
+    extra_kinds: dict | None = None,
 ) -> tuple[int, dict]:
     """Materialise a typed dataset into the DB + uploads volume.
 
@@ -217,7 +228,8 @@ def import_typed_dataset(
     The caller is responsible for db_session.commit().
     """
     source_root = Path(source_root)
-    manifest = load_manifest(source_root / "manifest.json")
+    extra_kinds = extra_kinds or {}
+    manifest = load_manifest(source_root / "manifest.json", extra_kinds)
 
     # Pre-flight: every data-bearing (field, sample) file must exist.
     # `role='pred'` is schema-only — no per-sample files expected.
@@ -231,7 +243,7 @@ def import_typed_dataset(
         dropped: list[str] = []
         for s in manifest["samples"]:
             sample_missing = [f["name"] for f in data_fields
-                              if not expected_file_path(source_root, f, s).exists()]
+                              if not expected_file_path(source_root, f, s, extra_kinds).exists()]
             if sample_missing:
                 dropped.append(f"{s}({','.join(sample_missing)})")
             else:
@@ -248,7 +260,7 @@ def import_typed_dataset(
         missing: list[str] = []
         for f in data_fields:
             for s in manifest["samples"]:
-                p = expected_file_path(source_root, f, s)
+                p = expected_file_path(source_root, f, s, extra_kinds)
                 if not p.exists():
                     missing.append(str(p.relative_to(source_root)))
         if missing:
@@ -298,9 +310,15 @@ def import_typed_dataset(
     n_files_copied = 0
     for f in manifest["fields"]:
         kind = f["kind"]
-        cls = DTYPES[kind]
+        # Registered (server-side) kinds have no DataType class in this
+        # standalone package — store their bytes verbatim, keyed off the
+        # extension the caller passed in extra_kinds.
+        cls = DTYPES.get(kind)
         params = f.get("params") or {}
-        is_inline = cls.file_ext is None
+        if cls is not None:
+            is_inline = cls.file_ext is None
+        else:
+            is_inline = not (extra_kinds.get(kind))
         # Pred fields are declared but carry no data at the dataset
         # level — skip the per-sample CustomField writes for them.
         # The DatasetField row above is still created so the LB can
@@ -313,7 +331,7 @@ def import_typed_dataset(
             field_dir.mkdir(parents=True, exist_ok=True)
 
         for s_name in manifest["samples"]:
-            src = expected_file_path(source_root, f, s_name)
+            src = expected_file_path(source_root, f, s_name, extra_kinds)
             cf = CustomField(
                 sample_id=samples_by_name[s_name].id,
                 name=f["name"],
@@ -326,11 +344,17 @@ def import_typed_dataset(
                 # Inline kinds: decode the file bytes back into the
                 # primitive value and stash in value_float / value_text.
                 blob = src.read_bytes()
-                inst = cls.decode(blob, params)
-                if kind == "scalar":
-                    cf.value_float = float(inst.value)
+                if cls is None:
+                    # Registered inline kind — store the content verbatim
+                    # as text; the kind's own decode() (server-side) turns
+                    # it back into an object for metrics.
+                    cf.value_text = blob.decode("utf-8", "replace").rstrip("\n")
                 else:
-                    cf.value_text = blob.decode("utf-8").rstrip("\n")
+                    inst = cls.decode(blob, params)
+                    if kind == "scalar":
+                        cf.value_float = float(inst.value)
+                    else:
+                        cf.value_text = blob.decode("utf-8").rstrip("\n")
             else:
                 # File-backed kinds: copy under uploads/, store
                 # relative-to-uploads path in value_text.

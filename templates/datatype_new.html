@@ -65,6 +65,26 @@
     mid = (255 * (mid - mid.min()) / (np.ptp(mid) or 1)).astype('uint8')
     return Image.fromarray(mid)"></textarea>
 
+            <label class="form-label fw-semibold mb-1 mt-3" for="dt-decode">
+                <code>decode(blob, params)</code> &rarr; object
+                <span class="text-body-secondary fw-normal">(optional)</span>
+            </label>
+            <div class="form-text small mb-1">
+                The deserialize side of the contract. When provided, a
+                <strong>metric</strong> that consumes this kind receives the
+                value this returns instead of the raw <code>blob</code> — the
+                mirror of how built-in kinds hand a metric a <code>bh.Depth</code>
+                with <code>.array</code>. Leave blank to have metrics get the raw
+                bytes. Runs in the sandbox alongside the metric.
+            </div>
+            <textarea id="dt-decode" name="decode_code" rows="8"
+                      class="form-control font-monospace" style="font-size: 0.82rem;"
+                      placeholder="def decode(blob, params):
+    import gzip, numpy as np, nibabel as nib
+    # blob = one sample's raw .nii.gz bytes; return whatever your metric wants
+    img = nib.Nifti1Image.from_bytes(gzip.decompress(blob))
+    return np.asarray(img.dataobj)                  # metric receives the volume"></textarea>
+
             <div class="d-flex align-items-center gap-3 mt-3">
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-plus-lg me-1"></i>Register data type</button>
