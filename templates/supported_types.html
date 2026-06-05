@@ -4,7 +4,14 @@
 
 {% block content %}
 <div class="container py-4" style="max-width: 1100px;">
-    <h1 class="fw-bold mb-1">Data types</h1>
+    <div class="d-flex align-items-center flex-wrap gap-2 mb-1">
+        <h1 class="fw-bold mb-0">Data types</h1>
+        {% if current_user %}
+        <a href="#register-dtype" class="btn btn-primary btn-sm ms-auto">
+            <i class="bi bi-plus-lg me-1"></i>Add a data type
+        </a>
+        {% endif %}
+    </div>
     <p class="lead text-body-secondary mb-4">
         The kinds BenchHub understands — built-in plus any you register —
         used for inputs, ground-truth values, and predictions.
@@ -42,7 +49,8 @@
     </div>
 
     {# ---- Register your own data type ---- #}
-    <h2 class="h4 fw-semibold mt-5 mb-2">Register your own kind</h2>
+    <h2 id="register-dtype" class="h4 fw-semibold mt-5 mb-2" style="scroll-margin-top: 5rem;">
+        Register your own kind</h2>
     <p class="small text-body-secondary">
         Need a modality BenchHub doesn't ship (NIfTI volumes, point clouds,
         EEG, …)? Register a kind: declare how it's stored + a
@@ -51,7 +59,7 @@
         the client: <code>client.create_datatype(...)</code>.
     </p>
     {% if current_user %}
-    <details class="card border-0 shadow-sm mb-3">
+    <details class="card border-0 shadow-sm mb-3" open>
         <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
             <i class="bi bi-plus-circle text-primary"></i>
             <span class="fw-semibold">Register a data type</span>
