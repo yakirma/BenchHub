@@ -50,10 +50,11 @@ def _decode_arg(v):
     return v
 
 
-def _exec_namespace(include_numpy=True, include_benchhub=False):
+def _exec_namespace(include_numpy=True, include_benchhub=False,
+                    include_matplotlib=False):
     """Fresh exec scope with the same injections as the in-process paths:
-    `np` for metrics/viz, `bh`/`benchhub` for typed code, `Image`/`PIL` for
-    visualizations. Returns (namespace, injected_names)."""
+    `np` for metrics/viz, `bh`/`benchhub` for typed code, `Image`/`PIL` +
+    `plt` for visualizations. Returns (namespace, injected_names)."""
     ns = {}
     if include_numpy:
         try:
@@ -76,14 +77,39 @@ def _exec_namespace(include_numpy=True, include_benchhub=False):
         ns['PIL'] = _PIL
     except ImportError:
         pass
+    if include_matplotlib:
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as _plt
+            ns['plt'] = _plt
+        except ImportError:
+            pass
     return ns, set(ns) | {'__builtins__'}
 
 
+def _filter_kwargs_for(func, kwargs):
+    """Drop kwargs the function doesn't declare (e.g. the `<arg>_names`
+    vocab injected for aggregated viz) — unless it takes **kwargs. Mirrors
+    the in-process viz path's signature filtering."""
+    import inspect
+    try:
+        sig = inspect.signature(func)
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD
+               for p in sig.parameters.values()):
+            return kwargs
+        allowed = set(sig.parameters)
+        return {k: v for k, v in kwargs.items() if k in allowed}
+    except (TypeError, ValueError):
+        return kwargs
+
+
 def _load_callable(code, function_name=None, *, include_numpy=True,
-                   include_benchhub=False):
+                   include_benchhub=False, include_matplotlib=False):
     """exec the user code in a fresh namespace and return
     (callable, namespace, fatal_error)."""
-    namespace, injected = _exec_namespace(include_numpy, include_benchhub)
+    namespace, injected = _exec_namespace(
+        include_numpy, include_benchhub, include_matplotlib)
 
     try:
         compile(code, '<user_code>', 'exec')
@@ -147,9 +173,11 @@ def run_job(job):
     if not isinstance(kwargs_list, list):
         return {"results": [], "fatal": "kwargs_list must be a list"}
 
+    is_viz = (kind == 'visualization')
     func, namespace, fatal = _load_callable(
         code, function_name=function_name,
-        include_numpy=include_numpy, include_benchhub=include_benchhub)
+        include_numpy=include_numpy, include_benchhub=include_benchhub,
+        include_matplotlib=is_viz)
     if fatal is not None:
         return {"results": [], "fatal": fatal}
 
@@ -160,6 +188,8 @@ def run_job(job):
             continue
         try:
             decoded = {k: _decode_arg(v) for k, v in kwargs.items()}
+            if is_viz:
+                decoded = _filter_kwargs_for(func, decoded)
             value = func(**decoded)
         except Exception:
             err = traceback.format_exc()

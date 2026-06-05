@@ -4450,6 +4450,24 @@ def extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)
             
     return value
 
+
+def _render_viz_in_sandbox(code, kwargs, cache_path, *, function_name=None):
+    """Render a visualization through the hardened sandbox (the harness
+    'visualization' job) and write the PNG to `cache_path`. Returns
+    `(png_bytes, error)`. Used by every viz route when
+    BENCHHUB_SANDBOX_METRICS is on, so untrusted viz code never `exec()`s
+    in-process."""
+    from metric_engine import evaluate_viz_in_sandbox
+    png, err = evaluate_viz_in_sandbox(code, kwargs, function_name=function_name)
+    if png and not err:
+        try:
+            with open(cache_path, 'wb') as fh:
+                fh.write(png)
+        except OSError:
+            pass
+    return png, err
+
+
 @app.route('/api/dataset_viz/<int:dv_id>/<int:sample_id>')
 def execute_dataset_visualization(dv_id, sample_id):
     """Render a DatasetVisualization for one sample. Same exec model
@@ -4478,13 +4496,20 @@ def execute_dataset_visualization(dv_id, sample_id):
         arg_mappings = json.loads(dv.arg_mappings) if dv.arg_mappings else {}
         kwargs = {a: extract_viz_arg_value(sample, None, k)
                   for a, k in arg_mappings.items()}
+        m = _re.search(r'def\s+(\w+)\s*\(', gv.python_code)
+        func_name = m.group(1) if m else None
+        from metric_engine import _sandbox_enabled
+        if _sandbox_enabled():
+            png, err = _render_viz_in_sandbox(
+                gv.python_code, kwargs, cache_path, function_name=func_name)
+            if png and not err:
+                return send_file(_io.BytesIO(png), mimetype='image/png')
+            return create_error_image((err or 'No result')[:60])
         exec_globals = {
             'Image': _PIL, 'PIL': __import__('PIL'),
             'numpy': __import__('numpy'), 'np': __import__('numpy'),
         }
         exec(gv.python_code, exec_globals)
-        m = _re.search(r'def\s+(\w+)\s*\(', gv.python_code)
-        func_name = m.group(1) if m else None
         if func_name and func_name in exec_globals:
             result = exec_globals[func_name](**kwargs)
             if isinstance(result, _PIL.Image):
@@ -4536,8 +4561,22 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
                 sample, submission, field_key,
                 leaderboard_id=lv.leaderboard_id,
             )
-        
-        # Execute visualization code
+
+        # Find the function
+        import re
+        match = re.search(r'def\s+(\w+)\s*\(', gv.python_code)
+        func_name = match.group(1) if match else None
+
+        # Sandboxed path: render the viz in the hardened container.
+        from metric_engine import _sandbox_enabled
+        if _sandbox_enabled():
+            png, err = _render_viz_in_sandbox(
+                gv.python_code, kwargs, cache_path, function_name=func_name)
+            if png and not err:
+                return send_file(io.BytesIO(png), mimetype='image/png')
+            return create_error_image((err or 'No result')[:50])
+
+        # Execute visualization code (in-process fallback)
         exec_globals = {
             'Image': Image,
             'PIL': __import__('PIL'),
@@ -4545,14 +4584,7 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
             'np': __import__('numpy'),
         }
         exec(gv.python_code, exec_globals)
-        
-        # Find the function
-        func_name = None
-        import re
-        match = re.search(r'def\s+(\w+)\s*\(', gv.python_code)
-        if match:
-            func_name = match.group(1)
-            
+
         if func_name and func_name in exec_globals:
             viz_func = exec_globals[func_name]
             result_image = viz_func(**kwargs)
@@ -4655,17 +4687,24 @@ def generate_and_cache_agg_viz(lv, submission=None):
         # Execute Code
         # We need the same execution logic as non-aggregated
         code = lv.global_visualization.python_code
+
+        import re
+        match = re.search(r'def\s+(\w+)\s*\(', code)
+        func_name = match.group(1) if match else None
+
+        # Sandboxed path: render in the container (the harness filters the
+        # `<arg>_names` kwargs by the function's signature, same as below).
+        from metric_engine import _sandbox_enabled
+        if _sandbox_enabled():
+            png, err = _render_viz_in_sandbox(
+                code, kwargs, cache_path, function_name=func_name)
+            return cache_path if (png and not err) else None
+
         exec_globals = globals().copy()
         exec_globals.update({'np': np, 'plt': plt, 'Image': Image}) # Add convenience imports
 
         # We need to find the function, same as execute_visualization
         exec(code, exec_globals)
-
-        func_name = None
-        import re
-        match = re.search(r'def\s+(\w+)\s*\(', code)
-        if match:
-            func_name = match.group(1)
 
         if func_name and func_name in exec_globals:
             viz_func = exec_globals[func_name]
