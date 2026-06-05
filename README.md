@@ -114,11 +114,11 @@ celery -A app.celery worker --loglevel=info    # 2. worker
 python app.py                                  # 3. web app  -> http://localhost:6060
 ```
 
-Data lives outside the repo at `~/.dtofbenchmarking/` (database + uploads);
-override with `BENCHHUB_DATA_DIR=/some/path`. To run user code in the
-container sandbox locally, install Docker, `docker build -t benchhub-runner
-runner/` (built from the repo root: `docker build -f runner/Dockerfile -t
-benchhub-runner .`), and set `BENCHHUB_SANDBOX_METRICS=1`.
+The database + uploads live outside the repo in a data directory — set its
+location with `BENCHHUB_DATA_DIR=/some/path`. To run user code in the
+container sandbox locally, install Docker, build the runner image
+(`docker build -f runner/Dockerfile -t benchhub-runner .`), and set
+`BENCHHUB_SANDBOX_METRICS=1`.
 
 ## Tests
 
@@ -131,8 +131,7 @@ pytest tests/         # ~1080 tests; use tests/ (not bare pytest)
 Self-hosted on an Ubuntu box at `runbenchhub.com` (gunicorn + celery + redis
 under systemd, nginx + certbot, Cloudflare DNS-only). The operational
 runbook — push flow, `.env` keys, logs, rollback — is
-[`docs/SELFHOST_RUNBOOK.md`](docs/SELFHOST_RUNBOOK.md). (Fly.io is retired;
-its artifacts are archived under [`archive/fly/`](archive/fly/).)
+[`docs/SELFHOST_RUNBOOK.md`](docs/SELFHOST_RUNBOOK.md).
 
 ## License
 

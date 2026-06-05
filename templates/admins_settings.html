@@ -111,7 +111,7 @@
                 {% endfor %}
             </ul>
             {% else %}
-            <p class="text-body-secondary mb-0">No admins yet — set <code>BENCHHUB_ADMIN_EMAILS</code> via Fly secret to bootstrap one.</p>
+            <p class="text-body-secondary mb-0">No admins yet — set <code>BENCHHUB_ADMIN_EMAILS</code> in the environment to bootstrap one.</p>
             {% endif %}
         </div>
     </div>
@@ -152,8 +152,8 @@
             </ul>
             <p class="small text-body-secondary mb-0">
                 These emails get the admin bit auto-set on next login. To remove
-                an env-listed admin permanently, edit the Fly secret too:
-                <code>flyctl secrets set BENCHHUB_ADMIN_EMAILS=...</code>
+                an env-listed admin permanently, edit the env var too:
+                <code>BENCHHUB_ADMIN_EMAILS=...</code> in <code>.env</code>, then restart.
             </p>
         </div>
     </div>
