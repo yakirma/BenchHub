@@ -144,4 +144,43 @@ bh.Json({"answer": "Paris", "spans": [[3, 8]]})</code></pre>
     <strong>decode preview</strong> so you can confirm a field decodes correctly before
     committing.
 </div>
+
+<h3 class="mt-5">Registering your own kind</h3>
+<p>Need a modality BenchHub doesn't ship &mdash; NIfTI volumes, point clouds, EEG,
+    DICOM? Register a new <em>kind</em> from
+    <a href="/supported_types">Data types</a> (the <strong>Add a data type</strong>
+    button) or the client (<code>client.create_datatype(...)</code>). A registered kind
+    is intentionally simpler than the built-in classes: instead of a Python
+    <code>encode</code>/<code>decode</code> pair, <strong>the file you import is stored
+    verbatim</strong> and handed to your code as raw bytes. You declare:</p>
+<ul>
+    <li><strong>name</strong> &mdash; the kind string (lowercase, globally unique, joins
+        the same namespace as the built-ins);</li>
+    <li><strong>storage</strong> &mdash; a file extension (<code>.nii.gz</code>) for
+        file-backed bytes, or blank for inline text;</li>
+    <li><strong>visualize(blob, params)</strong> &mdash; renders one sample.
+        <code>blob</code> is the <strong>exact stored bytes</strong> of that sample's file
+        (what you imported); <code>params</code> is the field's params dict. Parse
+        <code>blob</code> with whatever library fits and return a <code>PIL.Image</code>.
+        It runs <strong>only in the sandbox</strong> (network-isolated, read-only), so
+        importing heavy libs is fine.</li>
+</ul>
+<pre><code class="language-python"># registered kind "volume", stored as .nii.gz — render the middle axial slice
+def visualize(blob, params):
+    import io, gzip, numpy as np, nibabel as nib
+    from PIL import Image
+    # blob = the raw bytes of one sample's .nii.gz file
+    img = nib.Nifti1Image.from_bytes(gzip.decompress(blob))
+    vol = np.asarray(img.dataobj)
+    mid = vol[:, :, vol.shape[2] // 2]                 # a representative slice
+    mid = (255 * (mid - mid.min()) / (np.ptp(mid) or 1)).astype("uint8")
+    return Image.fromarray(mid)
+</code></pre>
+<p class="small text-body-secondary">Because storage is just bytes, there's no separate
+    serialize/deserialize step to write &mdash; the &ldquo;encode/decode&rdquo; that the
+    built-in kinds (<code>Depth</code>, <code>Mask</code>, &hellip;) implement is, for a
+    registered kind, the identity: your file goes in, the same bytes come back to
+    <code>visualize</code> (and to any metric you bind on the kind, which receives the raw
+    bytes to parse the same way). A registered kind used by a public leaderboard can't be
+    deleted or made private.</p>
 {% endblock %}

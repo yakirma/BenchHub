@@ -87,13 +87,22 @@
                 <label class="form-label small fw-semibold mb-1 mt-2">
                     <code>visualize(blob, params)</code> &rarr; PIL.Image
                     <span class="text-body-secondary">(runs in the sandbox)</span></label>
-                <textarea name="visualize_code" rows="6"
+                <div class="form-text small mb-1">
+                    <code>blob</code> = the <strong>raw bytes of the stored file</strong> for one
+                    sample (exactly what was imported — e.g. a <code>.nii.gz</code>);
+                    <code>params</code> = that field's params dict. Parse it with whatever
+                    library fits the format and return a <code>PIL.Image</code>.
+                </div>
+                <textarea name="visualize_code" rows="7"
                           class="form-control form-control-sm font-monospace" style="font-size:.78rem;"
                           placeholder="def visualize(blob, params):
+    import io, numpy as np
     from PIL import Image
-    # blob = the stored file's bytes; params = the field's params
-    ...
-    return Image.fromarray(arr)"></textarea>
+    # blob is bytes; parse however your format needs:
+    arr = np.load(io.BytesIO(blob))          # e.g. a .npy/.npz volume
+    mid = arr[arr.shape[0] // 2]             # a representative slice
+    mid = (255 * (mid - mid.min()) / (mid.ptp() or 1)).astype('uint8')
+    return Image.fromarray(mid)"></textarea>
                 <button type="submit" class="btn btn-sm btn-primary mt-2">
                     <i class="bi bi-plus-lg me-1"></i>Register</button>
             </form>
