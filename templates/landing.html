@@ -434,7 +434,8 @@
         <div class="card-body p-5 text-center">
             <h3 class="fw-bold mb-2">Ready to benchmark?</h3>
             <p class="text-body-secondary mb-4">
-                One click sign-in with GitHub or Google. We only see your name, email, and avatar.
+                One-click sign-in with GitHub or Google, or a passwordless email
+                code. We only see your name, email, and avatar.
             </p>
             <div class="d-flex flex-wrap justify-content-center gap-2">
                 <a href="{{ url_for('login_github') }}" class="btn btn-dark btn-lg px-4">
@@ -449,6 +450,9 @@
                       <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.96l3.01 2.32C4.68 5.16 6.66 3.58 9 3.58z"/>
                     </svg>
                     Continue with Google
+                </a>
+                <a href="{{ url_for('login') }}#email-login" class="btn btn-outline-secondary btn-lg px-4">
+                    <i class="bi bi-envelope me-2"></i>Continue with email
                 </a>
             </div>
         </div>
