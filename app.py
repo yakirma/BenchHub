@@ -6206,6 +6206,30 @@ def edit_lb_pred_fields(leaderboard_id):
     return redirect(url_for('edit_leaderboard', leaderboard_id=lb.id))
 
 
+# --- Cross-user dependency guards ---------------------------------------
+# Once someone ELSE relies on your object, you can't pull it out from under
+# them: a dataset bound to another user's leaderboard, or a leaderboard
+# another user has submitted to, is frozen against private-downgrade + delete
+# (admins bypass — they can clean up).
+
+def _dataset_foreign_leaderboards(ds):
+    """Leaderboards bound to `ds` owned by a DIFFERENT user."""
+    return [lb for lb in (ds.leaderboards or [])
+            if lb.owner_user_id and lb.owner_user_id != ds.owner_user_id]
+
+
+def _leaderboard_foreign_submissions(lb):
+    """Count of real (non-mirrored) submissions to `lb` from users other
+    than the LB owner."""
+    q = (Submission.query
+         .filter(Submission.leaderboard_id == lb.id)
+         .filter(Submission.owner_user_id.isnot(None))
+         .filter(or_(Submission.kind.is_(None), Submission.kind != 'mirrored')))
+    if lb.owner_user_id:
+        q = q.filter(Submission.owner_user_id != lb.owner_user_id)
+    return q.count()
+
+
 @app.route('/leaderboard/<int:leaderboard_id>/visibility', methods=['POST'])
 @login_required
 @owner_required(Leaderboard, 'leaderboard_id')
@@ -6241,6 +6265,16 @@ def set_leaderboard_visibility(leaderboard_id):
                 f"{_format_bytes(cap_pub)} cap.",
                 "warning",
             )
+            return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
+    # Downgrade guard: other users have submitted → it must stay public so
+    # their submissions remain reachable. Admins bypass.
+    if (target != 'public' and lb.visibility == 'public'
+            and not is_admin(g.current_user)):
+        n = _leaderboard_foreign_submissions(lb)
+        if n:
+            flash(
+                f"Can't make this leaderboard {target} — {n} submission(s) from "
+                f"other users depend on it staying public.", "warning")
             return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
     lb.visibility = target
     db.session.commit()
@@ -6279,6 +6313,16 @@ def set_dataset_visibility(dataset_id):
                 f"{_format_bytes(cap_pub)} cap.",
                 "warning",
             )
+            return redirect(url_for('dataset_settings', dataset_id=ds.id))
+    # Downgrade guard: another user's leaderboard binds this dataset → it
+    # must stay public so their LB keeps working. Admins bypass.
+    if (target != 'public' and ds.visibility == 'public'
+            and not is_admin(g.current_user)):
+        foreign = _dataset_foreign_leaderboards(ds)
+        if foreign:
+            flash(
+                f"Can't make this dataset {target} — {len(foreign)} leaderboard(s) "
+                f"from other users depend on it staying public.", "warning")
             return redirect(url_for('dataset_settings', dataset_id=ds.id))
     ds.visibility = target
     db.session.commit()
@@ -15291,6 +15335,17 @@ def download_submissions_bulk(leaderboard_id):
 @owner_required(Dataset, 'dataset_id')
 def delete_dataset(dataset_id):
     dataset = Dataset.query.get_or_404(dataset_id)
+    # Dependency guard: deleting a dataset cascade-deletes its attached
+    # leaderboards — so if another user's LB binds it, deletion would nuke
+    # their work. Block unless admin.
+    if not is_admin(g.current_user):
+        foreign = _dataset_foreign_leaderboards(dataset)
+        if foreign:
+            flash(
+                f"Can't delete {dataset.name!r} — {len(foreign)} leaderboard(s) "
+                f"from other users depend on it. Ask an admin if it must go.",
+                "danger")
+            return redirect(url_for('dataset_settings', dataset_id=dataset.id))
     # Cascade-delete attached leaderboards (and their submissions).
     # The same dataset can back many LBs now; dropping the dataset
     # without dropping the LBs would leave them with a broken
@@ -15317,6 +15372,16 @@ def delete_dataset(dataset_id):
 @owner_required(Leaderboard, 'leaderboard_id')
 def delete_leaderboard(leaderboard_id):
     leaderboard = Leaderboard.query.get_or_404(leaderboard_id)
+    # Dependency guard: other users have submitted → deleting would throw
+    # away their submissions. Block unless admin.
+    if not is_admin(g.current_user):
+        n = _leaderboard_foreign_submissions(leaderboard)
+        if n:
+            flash(
+                f"Can't delete {leaderboard.name!r} — {n} submission(s) from "
+                f"other users depend on it. Ask an admin if it must go.",
+                "danger")
+            return redirect(url_for('leaderboard_view', leaderboard_id=leaderboard.id))
     db.session.delete(leaderboard)
     db.session.commit()
     return redirect(url_for('datasets_list'))
