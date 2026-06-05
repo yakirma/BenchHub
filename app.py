@@ -17774,10 +17774,10 @@ def check_and_migrate_db():
 
                 # --- Phase 13 split-quota backfill ---
                 # ALTER ADD COLUMN above already gives every user the new
-                # 100 GB / 10 GB defaults; this block only fires if an
+                # 50 GB / 10 GB defaults; this block only fires if an
                 # earlier partial migration left someone at 0.
                 try:
-                    PUB = 100 * 1024 ** 3
+                    PUB = 50 * 1024 ** 3
                     PRIV = 10 * 1024 ** 3
                     cursor.execute(
                         'UPDATE user SET quota_public_max_bytes = ? '
@@ -17785,7 +17785,7 @@ def check_and_migrate_db():
                         (PUB,),
                     )
                     if cursor.rowcount:
-                        print(f"Backfilled {cursor.rowcount} user(s) with 100 GB public quota")
+                        print(f"Backfilled {cursor.rowcount} user(s) with 50 GB public quota")
                     cursor.execute(
                         'UPDATE user SET quota_private_max_bytes = ? '
                         'WHERE quota_private_max_bytes IS NULL OR quota_private_max_bytes <= 0',

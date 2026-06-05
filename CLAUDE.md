@@ -44,7 +44,7 @@ The catalog now defaults to a lightweight preview tier; full-resolution bytes on
 
 **Quotas (split-bucket, Phase 13):**
 - Every user has two byte caps on `User`:
-  - `quota_public_max_bytes` — **100 GB** default. Charged whenever a row whose own `visibility == 'public'` is created or grown. Covers public Datasets + LB materialisations owned by the user.
+  - `quota_public_max_bytes` — **50 GB** default (dropped from 100 GB at public launch; `check_and_migrate_db` backfills old-default rows). Charged whenever a row whose own `visibility == 'public'` is created or grown. Covers public Datasets + LB materialisations owned by the user.
   - `quota_private_max_bytes` — **10 GB** default. Charged for `visibility in {'private', 'unlisted', NULL}`. Working space for unpublished content.
 - `check_quota(user, *, kind='dataset_create', incoming_bytes, visibility=...)` reads the bucket implied by the row being written; the visibility kwarg is **required** for new code (default `'private'` fails safe on the smaller bucket).
 - `storage_used_bytes(user, *, visibility=...)` partitions per bucket; pass `None` for the legacy total.
