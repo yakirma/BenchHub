@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
-{% block title %}Supported types — BenchHub{% endblock %}
+{% block title %}Data types — BenchHub{% endblock %}
 
 {% block content %}
 <div class="container py-4" style="max-width: 1100px;">
-    <h1 class="fw-bold mb-1">Supported types</h1>
+    <h1 class="fw-bold mb-1">Data types</h1>
     <p class="lead text-body-secondary mb-4">
-        The data types BenchHub understands — inputs, ground-truth
-        values, and predictions.
+        The kinds BenchHub understands — built-in plus any you register —
+        used for inputs, ground-truth values, and predictions.
     </p>
 
     <p>
@@ -40,6 +40,97 @@
             </tbody>
         </table>
     </div>
+
+    {# ---- Register your own data type ---- #}
+    <h2 class="h4 fw-semibold mt-5 mb-2">Register your own kind</h2>
+    <p class="small text-body-secondary">
+        Need a modality BenchHub doesn't ship (NIfTI volumes, point clouds,
+        EEG, …)? Register a kind: declare how it's stored + a
+        <code>visualize(blob, params)</code> that runs in the sandbox to
+        render it. Metrics on it receive the raw bytes. Also available from
+        the client: <code>client.create_datatype(...)</code>.
+    </p>
+    {% if current_user %}
+    <details class="card border-0 shadow-sm mb-3">
+        <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
+            <i class="bi bi-plus-circle text-primary"></i>
+            <span class="fw-semibold">Register a data type</span>
+        </summary>
+        <div class="card-body pt-0">
+            <form method="post" action="{{ url_for('create_datatype_web') }}">
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Kind name</label>
+                        <input type="text" name="name" required pattern="[a-z][a-z0-9_]{1,39}"
+                               class="form-control form-control-sm font-monospace" placeholder="volume">
+                        <div class="form-text small">lowercase; joins the global kind namespace</div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Storage extension</label>
+                        <input type="text" name="file_ext" class="form-control form-control-sm font-monospace"
+                               placeholder=".nii.gz (blank = inline)">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Description</label>
+                        <input type="text" name="description" maxlength="200"
+                               class="form-control form-control-sm" placeholder="3D CT volume">
+                    </div>
+                </div>
+                <label class="form-label small fw-semibold mb-1 mt-2">
+                    <code>visualize(blob, params)</code> &rarr; PIL.Image
+                    <span class="text-body-secondary">(runs in the sandbox)</span></label>
+                <textarea name="visualize_code" rows="6"
+                          class="form-control form-control-sm font-monospace" style="font-size:.78rem;"
+                          placeholder="def visualize(blob, params):
+    from PIL import Image
+    # blob = the stored file's bytes; params = the field's params
+    ...
+    return Image.fromarray(arr)"></textarea>
+                <button type="submit" class="btn btn-sm btn-primary mt-2">
+                    <i class="bi bi-plus-lg me-1"></i>Register</button>
+            </form>
+        </div>
+    </details>
+
+    {% if my_datatypes %}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-0">
+            <table class="table table-sm mb-0 align-middle">
+                <thead class="table-light"><tr>
+                    <th class="ps-3">Your kinds</th><th>Storage</th><th>Visualize</th>
+                    <th>Visibility</th><th></th>
+                </tr></thead>
+                <tbody>
+                {% for dt in my_datatypes %}
+                <tr>
+                    <td class="ps-3"><code>{{ dt.name }}</code></td>
+                    <td class="small">{{ dt.file_ext or 'inline' }}</td>
+                    <td class="small">{{ 'sandboxed' if dt.visualize_code else '—' }}</td>
+                    <td>
+                        <form method="post" action="{{ url_for('set_datatype_visibility', dt_id=dt.id) }}" class="d-inline">
+                            <select name="visibility" class="form-select form-select-sm d-inline w-auto"
+                                    onchange="this.form.submit()">
+                                <option value="private" {{ 'selected' if dt.visibility != 'public' }}>private</option>
+                                <option value="public" {{ 'selected' if dt.visibility == 'public' }}>public</option>
+                            </select>
+                        </form>
+                    </td>
+                    <td class="text-end pe-3">
+                        <form method="post" action="{{ url_for('delete_datatype', dt_id=dt.id) }}" class="d-inline"
+                              onsubmit="return confirm('Delete data type {{ dt.name }}?');">
+                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="small"><a href="{{ url_for('login') }}">Log in</a> to register a data type.</p>
+    {% endif %}
 
     <h2 class="h4 fw-semibold mt-5 mb-3">Constructors</h2>
     <p class="small text-body-secondary">
@@ -98,11 +189,11 @@ submission = lb.finish_submission(name="my-resnet50-v1")
 print(submission.metrics)                  # {"rmse": 0.412, ...}</code></pre>
 
     <p class="small text-body-secondary mb-0">
-        The <code>benchhub-client</code> package is in development; this
-        page documents the type system it will use. Once it ships,
-        <code>pip install benchhub-client</code> gives you the classes
-        above plus the <code>Client</code> / <code>Leaderboard</code>
-        wrappers.
+        <code>pip install -U benchhub-client</code> gives you the classes
+        above plus <code>Client</code> (<code>iter_samples</code> /
+        <code>predict</code> / <code>submit</code>) and the authoring helpers
+        (<code>create_metric</code> / <code>create_visualization</code> /
+        <code>create_datatype</code>, <code>benchhub.author.*</code>).
     </p>
 </div>
 {% endblock %}

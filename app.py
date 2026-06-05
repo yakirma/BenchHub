@@ -4895,7 +4895,14 @@ def supported_types():
     except Exception:
         pass
 
-    return render_template('supported_types.html', types_info=types_info)
+    # The caller's own registered types, for the manage/register panel.
+    my_datatypes = []
+    if getattr(g, 'current_user', None) is not None:
+        my_datatypes = (DataTypeDef.query
+                        .filter_by(owner_user_id=g.current_user.id)
+                        .order_by(DataTypeDef.name).all())
+    return render_template('supported_types.html', types_info=types_info,
+                           my_datatypes=my_datatypes)
 
 
 # Heuristic-only metric → domain bucket. Inspect the lowercased
@@ -6069,18 +6076,15 @@ def create_datatype_web():
     else:
         flash(f"Registered data type {dt.name!r} ({dt.visibility}). Flip it "
               f"public to let others use it.", 'success')
-    return redirect(url_for('datatypes_view'))
+    return redirect(url_for('supported_types'))
 
 
 @app.route('/datatypes')
 @login_required
 def datatypes_view():
-    """List the user's + public registered data types."""
-    rows = (DataTypeDef.query
-            .filter(or_(DataTypeDef.owner_user_id == g.current_user.id,
-                        DataTypeDef.visibility == 'public'))
-            .order_by(DataTypeDef.name).all())
-    return render_template('datatypes.html', datatypes=rows)
+    """Back-compat: data types (built-in + registered, with the register
+    form + management) now live on /supported_types."""
+    return redirect(url_for('supported_types'))
 
 
 @app.route('/datatypes/<int:dt_id>/delete', methods=['POST'])
@@ -6091,11 +6095,11 @@ def delete_datatype(dt_id):
     if not is_admin(g.current_user) and _datatype_used_by_public_lb(dt):
         flash(f"Can't delete data type {dt.name!r} — a public leaderboard "
               f"depends on it.", "danger")
-        return redirect(url_for('datatypes_view'))
+        return redirect(url_for('supported_types'))
     db.session.delete(dt)
     db.session.commit()
     flash(f"Deleted data type {dt.name!r}.", "success")
-    return redirect(url_for('datatypes_view'))
+    return redirect(url_for('supported_types'))
 
 
 @app.route('/datatypes/<int:dt_id>/visibility', methods=['POST'])
@@ -6106,17 +6110,17 @@ def set_datatype_visibility(dt_id):
     target = (request.form.get('visibility') or '').strip()
     if target not in ('public', 'private'):
         flash("Invalid visibility.", "warning")
-        return redirect(url_for('datatypes_view'))
+        return redirect(url_for('supported_types'))
     if (target != 'public' and dt.visibility == 'public'
             and not is_admin(g.current_user)
             and _datatype_used_by_public_lb(dt)):
         flash(f"Can't make {dt.name!r} private — a public leaderboard "
               f"depends on it staying available.", "warning")
-        return redirect(url_for('datatypes_view'))
+        return redirect(url_for('supported_types'))
     dt.visibility = target
     db.session.commit()
     flash(f"{dt.name!r} is now {target}.", "success")
-    return redirect(url_for('datatypes_view'))
+    return redirect(url_for('supported_types'))
 
 @app.route('/metrics/<int:metric_id>/edit', methods=['POST'])
 @login_required
