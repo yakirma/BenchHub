@@ -29,8 +29,10 @@ from benchhub.client import (
     FlaskTestClientTransport,
     SubmissionBuilder,
 )
+from benchhub import author
 
 __all__ = [
+    "author",
     "DataType",
     "DTYPES",
     "Image",

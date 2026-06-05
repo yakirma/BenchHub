@@ -5860,8 +5860,91 @@ def create_global_metric():
     except Exception as e:
         db.session.rollback()
         flash(f'Error creating metric: {e}', 'danger')
-    
+
     return redirect(url_for('metrics_view'))
+
+
+# --- Programmatic authoring API (bh-client dev kit) ----------------------
+
+def _api_create_library_asset(kind):
+    """Shared body for POST /api/metrics + /api/visualizations. Creates a
+    GlobalMetric / GlobalVisualization from a JSON payload, reusing the
+    same signature-derivation + visibility/ownership + name-uniqueness as
+    the web forms. Returns (response, status)."""
+    Model = GlobalMetric if kind == 'metric' else GlobalVisualization
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    code = (data.get('python_code') or data.get('code') or '').strip()
+    if not name or not code:
+        return jsonify({'error': 'name and python_code are required'}), 400
+
+    # Per-owner name uniqueness (the DB has a composite unique index too;
+    # check up front for a clean 409 instead of an opaque IntegrityError).
+    if Model.query.filter_by(owner_user_id=g.current_user.id, name=name).first():
+        return jsonify({'error': f"you already have a {kind} named {name!r}"}), 409
+    default_vis = 'public' if is_admin(g.current_user) else 'private'
+    if default_vis == 'public' and _public_name_in_use(Model, name):
+        return jsonify({'error': f"a public {kind} named {name!r} already exists "
+                                 f"— choose another name"}), 409
+
+    obj = Model(
+        name=name,
+        description=(data.get('description') or None),
+        python_code=code,
+        is_aggregated=bool(data.get('is_aggregated', False)),
+        accepts_aggregated_inputs=bool(data.get('accepts_aggregated_inputs', False)),
+        owner_user_id=g.current_user.id,
+        visibility=default_vis,
+    )
+
+    def _norm(v):
+        return ','.join(v) if isinstance(v, list) else (v or '')
+
+    try:
+        if kind == 'metric':
+            _apply_metric_typed_contract(
+                obj,
+                kinds_raw=_norm(data.get('input_kinds')).strip(),
+                roles_raw=_norm(data.get('input_roles')).strip(),
+                python_code=code,
+            )
+        else:
+            ik = [k.strip() for k in _norm(data.get('input_kinds')).split(',') if k.strip()]
+            obj.input_kinds = json.dumps(ik) if ik else None
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    try:
+        db.session.add(obj)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'create failed: {e}'}), 400
+
+    return jsonify({
+        'id': obj.id, 'name': obj.name, 'kind': kind,
+        'visibility': obj.visibility,
+        'input_kinds': json.loads(obj.input_kinds) if obj.input_kinds else None,
+    }), 201
+
+
+@app.route('/api/metrics', methods=['POST'])
+@require_api_token
+def api_create_metric():
+    """Create a metric from the client. JSON: {name, python_code,
+    description?, is_aggregated?, accepts_aggregated_inputs?, input_kinds?,
+    input_roles?}. input_kinds/roles auto-derive from the function
+    signature when omitted (same as the web form)."""
+    return _api_create_library_asset('metric')
+
+
+@app.route('/api/visualizations', methods=['POST'])
+@require_api_token
+def api_create_visualization():
+    """Create a visualization from the client. JSON: {name, python_code,
+    description?, is_aggregated?, input_kinds?}. The function must return a
+    PIL.Image."""
+    return _api_create_library_asset('visualization')
 
 @app.route('/metrics/<int:metric_id>/edit', methods=['POST'])
 @login_required

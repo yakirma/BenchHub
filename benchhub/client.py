@@ -117,6 +117,24 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, payload)
         return resp.json()
 
+    def post_json(self, path: str, payload: dict, token: str) -> dict:
+        """POST a JSON body to `path` with bearer auth; return the JSON
+        response. Used by the metric/visualization authoring helpers."""
+        import requests
+        resp = requests.post(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, body)
+        return resp.json()
+
     def get_leaderboard_contract(self, leaderboard_id: int,
                                  token: str | None = None) -> list[dict]:
         """Fetch the LB's pred wire-contract. Token optional — the
@@ -463,6 +481,62 @@ class Client:
         the first `.add_sample()` call), then stage typed values per
         sample, then `.create()` to send the whole package up."""
         return BHDatasetCreator(self, name, visibility=visibility)
+
+    def create_metric(
+        self,
+        name: str,
+        code,
+        *,
+        description: str | None = None,
+        is_aggregated: bool = False,
+        accepts_aggregated_inputs: bool = False,
+        input_kinds=None,
+        input_roles=None,
+    ) -> dict:
+        """Upload a metric to your library. `code` is either Python source
+        (a string) or a function object (its source is read via
+        `inspect.getsource`). `input_kinds` / `input_roles` auto-derive from
+        the function's type annotations + arg names when omitted. Returns
+        `{id, name, kind, visibility, input_kinds}`.
+
+        Iterate locally first with `benchhub.author.test_metric(fn, ...)`."""
+        return self._post_library_asset(
+            "/api/metrics", name, code,
+            description=description, is_aggregated=is_aggregated,
+            accepts_aggregated_inputs=accepts_aggregated_inputs,
+            input_kinds=input_kinds, input_roles=input_roles)
+
+    def create_visualization(
+        self,
+        name: str,
+        code,
+        *,
+        description: str | None = None,
+        is_aggregated: bool = False,
+        input_kinds=None,
+    ) -> dict:
+        """Upload a visualization to your library. `code` is source or a
+        function returning a `PIL.Image`. Preview locally first with
+        `benchhub.author.test_visualization(fn, ...)`."""
+        return self._post_library_asset(
+            "/api/visualizations", name, code,
+            description=description, is_aggregated=is_aggregated,
+            input_kinds=input_kinds)
+
+    def _post_library_asset(self, path, name, code, **fields) -> dict:
+        if not self.token:
+            raise ValueError(
+                "BenchHub Client has no API token — pass `token=...` or "
+                "set BENCHHUB_API_TOKEN.")
+        if callable(code):
+            import inspect
+            import textwrap
+            code = textwrap.dedent(inspect.getsource(code))
+        payload = {"name": name, "python_code": code}
+        for k, v in fields.items():
+            if v is not None:
+                payload[k] = v
+        return self.transport.post_json(path, payload, self.token)
 
     def submit_directory(
         self,
@@ -1057,6 +1131,19 @@ class FlaskTestClientTransport:
         if resp.status_code >= 400:
             raise BenchHubAPIError(resp.status_code, payload)
         return payload
+
+    def post_json(self, path: str, payload: dict, token: str) -> dict:
+        resp = self.test_client.post(
+            path, json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            body = resp.get_json() or {}
+        except Exception:
+            body = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, body)
+        return body
 
     def post_dataset_zip(self, zip_bytes: bytes, token: str,
                          *, visibility: str = "public") -> dict:
