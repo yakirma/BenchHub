@@ -1,0 +1,55 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram name="BenchHub pipeline" id="benchhub-pipeline">
+    <mxGraphModel dx="1000" dy="560" grid="1" gridSize="10" guides="1" tooltips="1"
+                  connect="1" arrows="1" fold="1" page="1" pageWidth="1000" pageHeight="540"
+                  math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="BenchHub — the typed-contract pipeline" style="text;html=1;fontSize=20;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="28" y="16" width="600" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="hf" value="HuggingFace repo&#10;(tabular or file-tree)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="28" y="92" width="180" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="imp" value="Import&#10;tabular &#8594; file-tree mapper fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="262" y="92" width="190" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="ds" value="Dataset&#10;preview tier (cheap) · typed fields" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="506" y="92" width="190" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="lb" value="Leaderboard&#10;pred contract + materialized full-res subset" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#efe6fb;strokeColor=#7c3aed;" vertex="1" parent="1">
+          <mxGeometry x="750" y="92" width="222" height="78" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="client" value="benchhub-client&#10;iter_samples &#8594; predict &#8594; submit (typed, validated vs contract)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="750" y="250" width="222" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="srv" value="Server&#10;validate manifest vs contract · enqueue Celery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="506" y="250" width="190" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="eng" value="Metric engine&#10;typed context · topo-sort + pool · cache viz" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5efe2;strokeColor=#e8dfc8;" vertex="1" parent="1">
+          <mxGeometry x="262" y="250" width="190" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="rank" value="Ranking + compare&#10;MetricResult · leaderboard table · sample-by-sample" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#efe6fb;strokeColor=#7c3aed;" vertex="1" parent="1">
+          <mxGeometry x="28" y="250" width="190" height="92" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sand" value="&#128274; Sandbox container (per job): --network=none, --read-only, mem/cpu capped.&#10;ALL user code runs here: metric() · visualization() · a registered dtype's visualize(blob, params)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdeede;strokeColor=#d97706;fontColor=#7a3d06;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="262" y="392" width="430" height="86" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="hf" target="imp"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="imp" target="ds"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="ds" target="lb"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" value="pull inputs / submit" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;startArrow=block;" edge="1" parent="1" source="lb" target="client"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="client" target="srv"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="srv" target="eng"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" value="untrusted code" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;startArrow=block;" edge="1" parent="1" source="eng" target="sand"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#7c3aed;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="eng" target="rank"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

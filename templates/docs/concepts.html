@@ -15,6 +15,16 @@
     <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.
 </div>
 
+<figure class="my-4 text-center">
+    <img src="{{ url_for('docs_diagram', name='architecture.svg') }}"
+         alt="BenchHub pipeline: import to dataset to leaderboard to client submit to sandboxed scoring to ranking"
+         class="img-fluid border rounded" style="background:#fcf9f4; max-width:100%;">
+    <figcaption class="small text-body-secondary mt-2">
+        The end-to-end pipeline. All user code (metrics, visualizations,
+        registered-type rendering) runs in a hardened sandbox container.
+    </figcaption>
+</figure>
+
 <h3 class="mt-4">Dataset</h3>
 <p>A <strong>dataset</strong> is a global collection of samples (it is not scoped to any
     project or user namespace &mdash; any leaderboard can bind any dataset). Each dataset

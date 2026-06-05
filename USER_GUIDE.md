@@ -30,8 +30,19 @@ live at [`/supported_types`](https://runbenchhub.com/supported_types).
    materialize at full resolution (head / random / stratified). → docs:
    *Leaderboards*.
 3. **Add metrics & visualizations** — Python functions with typed
-   signatures, pooled into the leaderboard score; outputs can chain. → docs:
-   *Writing metrics*, *Visualizations*.
+   signatures, pooled into the leaderboard score; outputs can chain. Author
+   + test them locally with the dev kit, then upload:
+
+   ```python
+   def my_iou(gt: bh.Mask, pred: bh.Mask): ...
+   bh.author.test_metric(my_iou, gt=gt_mask, pred=pred_mask)   # iterate locally
+   client.create_metric("my_iou", my_iou)                      # then ship
+   ```
+
+   All metric/viz code runs in a **hardened sandbox** (network-isolated,
+   read-only), never in-process. You can even register a brand-new data
+   `kind` with `client.create_datatype(...)` (its `visualize()` runs in the
+   same sandbox). → docs: *Writing metrics*, *Visualizations*, *Data types*.
 4. **Submit & compare** — with `benchhub-client`:
 
    ```python
@@ -49,11 +60,19 @@ live at [`/supported_types`](https://runbenchhub.com/supported_types).
 ## Accounts, visibility, quotas
 
 - **Sign in** with GitHub, Google, or a one-time email code — no passwords.
+  (The public beta caps total accounts; admins and existing users are
+  unaffected.)
 - **Visibility** per object: `public` / `unlisted` / `private` (yours
-  default to private; publish when ready).
-- **Storage quotas**: 100 GB public + 10 GB private per user by default.
+  default to private; publish when ready). Once another user depends on
+  something of yours — their leaderboard binds your dataset, or someone
+  submits to your leaderboard — it can no longer be made private or deleted.
+- **Storage quotas**: 50 GB public + 10 GB private per user by default,
+  shown with live usage on [`/settings/account`](https://runbenchhub.com/settings/account).
   Imports are cheap (preview tier); the real cost is per-leaderboard
   materialization.
 
-See `/docs` for the full guide and worked tutorials. Operational/deployment
-notes for self-hosting are in [`docs/SELFHOST_RUNBOOK.md`](docs/SELFHOST_RUNBOOK.md).
+A high-level diagram of the whole pipeline is in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See `/docs` for the full
+guide and worked tutorials; self-hosting/ops notes are in
+[`docs/SELFHOST_RUNBOOK.md`](docs/SELFHOST_RUNBOOK.md). Feature requests +
+bugs → [GitHub issues](https://github.com/yakirma/BenchHub/issues).

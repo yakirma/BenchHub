@@ -25,12 +25,19 @@ generalized into a public, multi-tenant web app.
   (`public` / `unlisted` / `private`) on datasets, leaderboards, and
   metric/visualization library entries.
 - **User-defined metrics & visualizations in Python** — typed signatures,
-  per-sample + aggregated, pooling, dependency chaining; sandbox-isolated
-  when `BENCHHUB_SANDBOX_METRICS=1`.
-- **`benchhub-client`** — `iter_samples` (decoded typed inputs incl. iterable
-  video clips) → predict → submit; programmatic dataset creation.
+  per-sample + aggregated, pooling, dependency chaining. All user code runs
+  in a **hardened, network-isolated, read-only sandbox container** (one
+  short-lived sandbox per job) — never in-process on the server.
+- **User-registered data types** — declare a new `kind` (its storage + a
+  `visualize(blob, params)` that runs in the sandbox) via
+  `client.create_datatype(...)`; it joins the global kind namespace.
+- **`benchhub-client` + dev kit** — `iter_samples` (decoded typed inputs
+  incl. iterable video clips) → predict → submit; programmatic dataset
+  creation; `client.create_metric` / `create_visualization` /
+  `create_datatype`; and `benchhub.author.test_metric` / `test_visualization`
+  to iterate locally before uploading.
 - **Asynchronous processing** with Celery (Redis broker).
-- **Split-bucket quotas** — 100 GB public + 10 GB private per user by default.
+- **Split-bucket quotas** — 50 GB public + 10 GB private per user by default.
 - **API tokens** (`/settings/api_tokens`), account deletion with cascading
   cleanup, public landing (`/`), catalog (`/leaderboards`, `/datasets`),
   profiles (`/u/<id>`).
@@ -40,8 +47,14 @@ generalized into a public, multi-tenant web app.
 Full user docs live in-app at **[`/docs`](https://runbenchhub.com/docs)**
 (templates under `templates/docs/`): overview, core concepts, importing data,
 data types, leaderboards, writing metrics & visualizations, submitting
-predictions, the API/client reference, and step-by-step tutorials.
-Architecture/dev notes are in [`CLAUDE.md`](CLAUDE.md).
+predictions, the API/client reference, and step-by-step tutorials. A
+high-level pipeline diagram is in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (editable drawio source under
+[`docs/diagrams/`](docs/diagrams/)). Architecture/dev notes are in
+[`CLAUDE.md`](CLAUDE.md); the session-by-session dev history is under
+[`docs/`](docs/) (e.g. `SESSION_NOTES_2026-05.md`).
+
+Feature requests + bug reports → **[GitHub issues](https://github.com/yakirma/BenchHub/issues)**.
 
 ## Prerequisites
 

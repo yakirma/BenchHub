@@ -13520,6 +13520,22 @@ def docs(page='index'):
         return render_template('docs/index.html', page='index')
 
 
+@app.route('/docs/diagram/<path:name>')
+def docs_diagram(name):
+    """Serve a committed docs diagram (the single source under
+    docs/diagrams/) so the in-app docs and the GitHub markdown share one
+    file. SVG/PNG only, no path traversal."""
+    safe = os.path.basename(name)
+    if not safe.endswith(('.svg', '.png')):
+        abort(404)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'docs', 'diagrams', safe)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype='image/svg+xml' if safe.endswith('.svg')
+                     else 'image/png')
+
+
 @app.route('/api/depth_image/<path:filepath>')
 def serve_depth_image(filepath):
     """Serve a depth-map .npz as a pure colormapped PNG — no
