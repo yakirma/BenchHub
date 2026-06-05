@@ -151,10 +151,12 @@ def test_register_datatype_via_web_form(client, db_session):
     db.session.add(u); db.session.commit()
     with client.session_transaction() as s:
         s['user_id'] = u.id
-    # the register form lives on the unified /supported_types page
-    # (/datatypes now redirects there).
+    # the register form lives on its own /datatypes/new page; /supported_types
+    # links to it and /datatypes redirects to /supported_types.
     assert client.get('/datatypes').status_code == 302
-    body = client.get('/supported_types').data.decode()
+    listing = client.get('/supported_types').data.decode()
+    assert '/datatypes/new' in listing
+    body = client.get('/datatypes/new').data.decode()
     assert 'Register a data type' in body and 'visualize_code' in body
     # submit the form
     client.post('/datatypes/create', data={

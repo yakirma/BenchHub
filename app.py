@@ -6062,10 +6062,17 @@ def api_create_datatype():
                     'visibility': dt.visibility}), 201
 
 
+@app.route('/datatypes/new')
+@login_required
+def datatype_new():
+    """Dedicated 'register a data type' page."""
+    return render_template('datatype_new.html')
+
+
 @app.route('/datatypes/create', methods=['POST'])
 @login_required
 def create_datatype_web():
-    """Register a data type from the web form on /datatypes."""
+    """Register a data type from the dedicated /datatypes/new page."""
     dt, err = _register_datatype(
         name=request.form.get('name'), file_ext=request.form.get('file_ext'),
         viz_mime=request.form.get('viz_mime'),
@@ -6073,16 +6080,16 @@ def create_datatype_web():
         description=request.form.get('description'))
     if err:
         flash(err, 'danger')
-    else:
-        flash(f"Registered data type {dt.name!r} ({dt.visibility}). Flip it "
-              f"public to let others use it.", 'success')
+        return redirect(url_for('datatype_new'))
+    flash(f"Registered data type {dt.name!r} ({dt.visibility}). Flip it "
+          f"public to let others use it.", 'success')
     return redirect(url_for('supported_types'))
 
 
 @app.route('/datatypes')
 def datatypes_view():
     """Back-compat: data types (built-in + registered, with the register
-    form + management) now live on /supported_types."""
+    page link + management) now live on /supported_types."""
     return redirect(url_for('supported_types'))
 
 

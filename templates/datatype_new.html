@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Register a data type — BenchHub{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 820px;">
+    <div class="d-flex align-items-baseline gap-3 mb-1">
+        <h1 class="h3 fw-bold mb-0">Register a data type</h1>
+        <a href="{{ url_for('supported_types') }}" class="small ms-auto">&larr; back to Data types</a>
+    </div>
+    <p class="text-body-secondary mb-4">
+        Add a new <em>kind</em> BenchHub doesn't ship (NIfTI volumes, point
+        clouds, EEG, …). The file you import is stored verbatim; you provide a
+        <code>visualize(blob, params)</code> that renders one sample — it runs
+        only in the hardened sandbox. Same thing from the client:
+        <code>client.create_datatype(...)</code>.
+    </p>
+
+    <form method="post" action="{{ url_for('create_datatype_web') }}"
+          class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <div class="row g-3">
+                <div class="col-md-5">
+                    <label class="form-label fw-semibold mb-1" for="dt-name">Kind name</label>
+                    <input type="text" id="dt-name" name="name" required
+                           pattern="[a-z][a-z0-9_]{1,39}"
+                           class="form-control font-monospace" placeholder="volume" autofocus>
+                    <div class="form-text small">lowercase, 2–40 chars; joins the global kind namespace</div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-semibold mb-1" for="dt-ext">Storage extension</label>
+                    <input type="text" id="dt-ext" name="file_ext"
+                           class="form-control font-monospace" placeholder=".nii.gz">
+                    <div class="form-text small">file-backed bytes; blank = inline text</div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold mb-1" for="dt-mime">Viz MIME</label>
+                    <input type="text" id="dt-mime" name="viz_mime"
+                           class="form-control font-monospace" value="image/png">
+                </div>
+                <div class="col-12">
+                    <label class="form-label fw-semibold mb-1" for="dt-desc">Description</label>
+                    <input type="text" id="dt-desc" name="description" maxlength="200"
+                           class="form-control" placeholder="3D CT volume (NIfTI)">
+                </div>
+            </div>
+
+            <label class="form-label fw-semibold mb-1 mt-3" for="dt-viz">
+                <code>visualize(blob, params)</code> &rarr; PIL.Image
+            </label>
+            <div class="form-text small mb-1">
+                <code>blob</code> = the <strong>raw bytes of the stored file</strong> for one
+                sample (exactly what was imported — e.g. a <code>.nii.gz</code>);
+                <code>params</code> = that field's params dict. Parse <code>blob</code>
+                with whatever library fits and return a <code>PIL.Image</code>. Runs in the
+                sandbox (network-isolated, read-only), so heavy imports are fine.
+            </div>
+            <textarea id="dt-viz" name="visualize_code" rows="12"
+                      class="form-control font-monospace" style="font-size: 0.82rem;"
+                      placeholder="def visualize(blob, params):
+    import io, gzip, numpy as np, nibabel as nib
+    from PIL import Image
+    # blob = one sample's raw .nii.gz bytes
+    img = nib.Nifti1Image.from_bytes(gzip.decompress(blob))
+    vol = np.asarray(img.dataobj)
+    mid = vol[:, :, vol.shape[2] // 2]              # a representative slice
+    mid = (255 * (mid - mid.min()) / (np.ptp(mid) or 1)).astype('uint8')
+    return Image.fromarray(mid)"></textarea>
+
+            <div class="d-flex align-items-center gap-3 mt-3">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-plus-lg me-1"></i>Register data type</button>
+                <span class="small text-body-secondary">
+                    Registers as <strong>private</strong> — flip it public on the
+                    <a href="{{ url_for('supported_types') }}">Data types</a> page to let others use it.
+                </span>
+            </div>
+        </div>
+    </form>
+
+    <p class="small text-body-secondary mt-3">
+        See <a href="{{ url_for('docs', page='data_types') }}">Data Types &rarr; Registering
+        your own kind</a> for a full walkthrough.
+    </p>
+</div>
+{% endblock %}

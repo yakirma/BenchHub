@@ -7,7 +7,7 @@
     <div class="d-flex align-items-center flex-wrap gap-2 mb-1">
         <h1 class="fw-bold mb-0">Data types</h1>
         {% if current_user %}
-        <a href="#register-dtype" class="btn btn-primary btn-sm ms-auto">
+        <a href="{{ url_for('datatype_new') }}" class="btn btn-primary btn-sm ms-auto">
             <i class="bi bi-plus-lg me-1"></i>Add a data type
         </a>
         {% endif %}
@@ -49,8 +49,7 @@
     </div>
 
     {# ---- Register your own data type ---- #}
-    <h2 id="register-dtype" class="h4 fw-semibold mt-5 mb-2" style="scroll-margin-top: 5rem;">
-        Register your own kind</h2>
+    <h2 class="h4 fw-semibold mt-5 mb-2">Register your own kind</h2>
     <p class="small text-body-secondary">
         Need a modality BenchHub doesn't ship (NIfTI volumes, point clouds,
         EEG, …)? Register a kind: declare how it's stored + a
@@ -59,55 +58,9 @@
         the client: <code>client.create_datatype(...)</code>.
     </p>
     {% if current_user %}
-    <details class="card border-0 shadow-sm mb-3" open>
-        <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
-            <i class="bi bi-plus-circle text-primary"></i>
-            <span class="fw-semibold">Register a data type</span>
-        </summary>
-        <div class="card-body pt-0">
-            <form method="post" action="{{ url_for('create_datatype_web') }}">
-                <div class="row g-2">
-                    <div class="col-md-4">
-                        <label class="form-label small fw-semibold mb-1">Kind name</label>
-                        <input type="text" name="name" required pattern="[a-z][a-z0-9_]{1,39}"
-                               class="form-control form-control-sm font-monospace" placeholder="volume">
-                        <div class="form-text small">lowercase; joins the global kind namespace</div>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small fw-semibold mb-1">Storage extension</label>
-                        <input type="text" name="file_ext" class="form-control form-control-sm font-monospace"
-                               placeholder=".nii.gz (blank = inline)">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label small fw-semibold mb-1">Description</label>
-                        <input type="text" name="description" maxlength="200"
-                               class="form-control form-control-sm" placeholder="3D CT volume">
-                    </div>
-                </div>
-                <label class="form-label small fw-semibold mb-1 mt-2">
-                    <code>visualize(blob, params)</code> &rarr; PIL.Image
-                    <span class="text-body-secondary">(runs in the sandbox)</span></label>
-                <div class="form-text small mb-1">
-                    <code>blob</code> = the <strong>raw bytes of the stored file</strong> for one
-                    sample (exactly what was imported — e.g. a <code>.nii.gz</code>);
-                    <code>params</code> = that field's params dict. Parse it with whatever
-                    library fits the format and return a <code>PIL.Image</code>.
-                </div>
-                <textarea name="visualize_code" rows="7"
-                          class="form-control form-control-sm font-monospace" style="font-size:.78rem;"
-                          placeholder="def visualize(blob, params):
-    import io, numpy as np
-    from PIL import Image
-    # blob is bytes; parse however your format needs:
-    arr = np.load(io.BytesIO(blob))          # e.g. a .npy/.npz volume
-    mid = arr[arr.shape[0] // 2]             # a representative slice
-    mid = (255 * (mid - mid.min()) / (mid.ptp() or 1)).astype('uint8')
-    return Image.fromarray(mid)"></textarea>
-                <button type="submit" class="btn btn-sm btn-primary mt-2">
-                    <i class="bi bi-plus-lg me-1"></i>Register</button>
-            </form>
-        </div>
-    </details>
+    <a href="{{ url_for('datatype_new') }}" class="btn btn-primary btn-sm mb-3">
+        <i class="bi bi-plus-lg me-1"></i>Add a data type
+    </a>
 
     {% if my_datatypes %}
     <div class="card border-0 shadow-sm mb-4">
