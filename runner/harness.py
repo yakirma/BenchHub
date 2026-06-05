@@ -39,6 +39,8 @@ def _decode_arg(v):
     lists/dicts so nested typed values (label_list, aggregated lists) are
     reconstructed too. Everything else passes through unchanged."""
     if isinstance(v, dict):
+        if '__bytes__' in v:
+            return base64.b64decode(v['__bytes__'] or b'')
         if '__bh__' in v:
             import benchhub as _bh
             cls = _bh.DTYPES[v['__bh__']]

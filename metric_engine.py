@@ -258,6 +258,8 @@ def _jsonify_kwarg(v):
     if isinstance(v, DataType):
         return {'__bh__': v.kind, 'params': v.params or {},
                 'b64': base64.b64encode(v.encode()).decode('ascii')}
+    if isinstance(v, (bytes, bytearray)):
+        return {'__bytes__': base64.b64encode(bytes(v)).decode('ascii')}
     if isinstance(v, dict):
         return {k: _jsonify_kwarg(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
@@ -485,6 +487,15 @@ def evaluate_viz_in_sandbox(code, kwargs, *, function_name=None, **opts):
         return base64.b64decode(b64), None
     except Exception as e:
         return None, f"sandbox returned bad base64: {e}"
+
+
+def visualize_dtype_in_sandbox(visualize_code, blob, params=None, **opts):
+    """Render a user-registered data type's stored bytes via its sandboxed
+    `visualize(blob, params) -> PIL.Image`. Returns `(png_bytes, error)`.
+    Reuses the visualization job path (blob crosses JSON as base64)."""
+    return evaluate_viz_in_sandbox(
+        visualize_code, {'blob': blob, 'params': params or {}},
+        function_name='visualize', **opts)
 
 
 def sandbox_evaluate_one(global_metric, context, arg_mappings_json, **kwargs):

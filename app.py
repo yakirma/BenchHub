@@ -785,6 +785,35 @@ class GlobalVisualization(db.Model):
     visibility = db.Column(db.String(20), nullable=False, default='public', server_default='public')
     owner = db.relationship('User', foreign_keys=[owner_user_id])
 
+
+class DataTypeDef(db.Model):
+    """A user-registered data type (a new `kind`). Storage is generic —
+    a file extension (`.nii.gz`) or inline text — so the server reads/writes
+    bytes without running user code. The ONLY user code is `visualize()`,
+    which runs strictly inside the sandbox (returns a PIL.Image). Metrics on
+    this kind receive the raw stored bytes (also sandboxed). Kind names share
+    one global namespace with the built-in `benchhub.types.DTYPES`, so `name`
+    is globally unique. Brand-new table → created by db.create_all() at boot.
+    """
+    __tablename__ = 'data_type_def'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(40), nullable=False, unique=True, index=True)
+    description = db.Column(db.Text, nullable=True)
+    # NULL file_ext ⇒ inline (stored as text, like scalar/label); else the
+    # canonical on-disk extension for this kind's bytes.
+    file_ext = db.Column(db.String(20), nullable=True)
+    viz_mime = db.Column(db.String(60), nullable=False,
+                         default='image/png', server_default='image/png')
+    # def visualize(blob, params) -> PIL.Image  (run only in the sandbox)
+    visualize_code = db.Column(db.Text, nullable=True)
+    owner_user_id = db.Column(db.Integer, db.ForeignKey('user.id'),
+                              nullable=True, index=True)
+    visibility = db.Column(db.String(20), nullable=False,
+                           default='private', server_default='private')
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    owner = db.relationship('User', foreign_keys=[owner_user_id])
+
+
 class LeaderboardMaterialization(db.Model):
     """Frozen full-resolution snapshot taken when an LB is created
     from a preview-only Dataset.
@@ -4842,6 +4871,30 @@ def supported_types():
             'example': examples.get(kind, ''),
         })
 
+    # Registered (user-added) data types — public ones + the caller's own —
+    # rendered in the same table so they're discoverable.
+    try:
+        q = DataTypeDef.query
+        if getattr(g, 'current_user', None) is not None:
+            q = q.filter(or_(DataTypeDef.visibility == 'public',
+                             DataTypeDef.owner_user_id == g.current_user.id))
+        else:
+            q = q.filter(DataTypeDef.visibility == 'public')
+        for dt in q.order_by(DataTypeDef.name).all():
+            types_info.append({
+                'kind': dt.name,
+                'name': dt.name,
+                'file_ext': dt.file_ext,
+                'storage': dt.file_ext if dt.file_ext else 'inline',
+                'signature': '',
+                'description': (dt.description or '')
+                               + (' — registered'
+                                  + (', sandboxed visualize' if dt.visualize_code else '')),
+                'example': '',
+            })
+    except Exception:
+        pass
+
     return render_template('supported_types.html', types_info=types_info)
 
 
@@ -5946,6 +5999,95 @@ def api_create_visualization():
     PIL.Image."""
     return _api_create_library_asset('visualization')
 
+
+@app.route('/api/datatypes', methods=['POST'])
+@require_api_token
+def api_create_datatype():
+    """Register a new data type (kind). JSON: {name, file_ext?, viz_mime?,
+    visualize_code?, description?}. `name` joins the global kind namespace
+    (lowercase, unique, not a built-in). `visualize_code` is
+    `def visualize(blob, params) -> PIL.Image` and runs only in the
+    sandbox. Returns {id, name, file_ext, visibility}."""
+    import re as _re
+    from benchhub.types import DTYPES as _builtin
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip().lower()
+    if not _re.fullmatch(r'[a-z][a-z0-9_]{1,39}', name):
+        return jsonify({'error': "name must be lowercase, [a-z][a-z0-9_], "
+                                 "2-40 chars"}), 400
+    if name in _builtin:
+        return jsonify({'error': f"{name!r} is a built-in kind"}), 409
+    if DataTypeDef.query.filter_by(name=name).first():
+        return jsonify({'error': f"a data type named {name!r} already exists"}), 409
+    file_ext = (data.get('file_ext') or '').strip() or None
+    if file_ext and not file_ext.startswith('.'):
+        file_ext = '.' + file_ext
+    viz_code = (data.get('visualize_code') or data.get('visualize') or '').strip() or None
+    dt = DataTypeDef(
+        name=name,
+        description=(data.get('description') or None),
+        file_ext=file_ext,
+        viz_mime=(data.get('viz_mime') or 'image/png').strip(),
+        visualize_code=viz_code,
+        owner_user_id=g.current_user.id,
+        visibility='public' if is_admin(g.current_user) else 'private',
+    )
+    try:
+        db.session.add(dt)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'create failed: {e}'}), 400
+    return jsonify({'id': dt.id, 'name': dt.name, 'file_ext': dt.file_ext,
+                    'visibility': dt.visibility}), 201
+
+
+@app.route('/datatypes')
+@login_required
+def datatypes_view():
+    """List the user's + public registered data types."""
+    rows = (DataTypeDef.query
+            .filter(or_(DataTypeDef.owner_user_id == g.current_user.id,
+                        DataTypeDef.visibility == 'public'))
+            .order_by(DataTypeDef.name).all())
+    return render_template('datatypes.html', datatypes=rows)
+
+
+@app.route('/datatypes/<int:dt_id>/delete', methods=['POST'])
+@login_required
+@owner_required(DataTypeDef, 'dt_id')
+def delete_datatype(dt_id):
+    dt = DataTypeDef.query.get_or_404(dt_id)
+    if not is_admin(g.current_user) and _datatype_used_by_public_lb(dt):
+        flash(f"Can't delete data type {dt.name!r} — a public leaderboard "
+              f"depends on it.", "danger")
+        return redirect(url_for('datatypes_view'))
+    db.session.delete(dt)
+    db.session.commit()
+    flash(f"Deleted data type {dt.name!r}.", "success")
+    return redirect(url_for('datatypes_view'))
+
+
+@app.route('/datatypes/<int:dt_id>/visibility', methods=['POST'])
+@login_required
+@owner_required(DataTypeDef, 'dt_id')
+def set_datatype_visibility(dt_id):
+    dt = DataTypeDef.query.get_or_404(dt_id)
+    target = (request.form.get('visibility') or '').strip()
+    if target not in ('public', 'private'):
+        flash("Invalid visibility.", "warning")
+        return redirect(url_for('datatypes_view'))
+    if (target != 'public' and dt.visibility == 'public'
+            and not is_admin(g.current_user)
+            and _datatype_used_by_public_lb(dt)):
+        flash(f"Can't make {dt.name!r} private — a public leaderboard "
+              f"depends on it staying available.", "warning")
+        return redirect(url_for('datatypes_view'))
+    dt.visibility = target
+    db.session.commit()
+    flash(f"{dt.name!r} is now {target}.", "success")
+    return redirect(url_for('datatypes_view'))
+
 @app.route('/metrics/<int:metric_id>/edit', methods=['POST'])
 @login_required
 @owner_required(GlobalMetric, 'metric_id')
@@ -6311,6 +6453,22 @@ def _leaderboard_foreign_submissions(lb):
     if lb.owner_user_id:
         q = q.filter(Submission.owner_user_id != lb.owner_user_id)
     return q.count()
+
+
+def _datatype_used_by_public_lb(dt):
+    """True if a PUBLIC leaderboard's bound dataset has a field of this
+    registered kind — the dtype is load-bearing for a public board, so its
+    owner can't delete it or make it private."""
+    seen = set()
+    for f in DatasetField.query.filter_by(kind=dt.name).all():
+        if f.dataset_id in seen:
+            continue
+        seen.add(f.dataset_id)
+        ds = db.session.get(Dataset, f.dataset_id)
+        if ds and any(lb.visibility == 'public'
+                      for lb in (ds.leaderboards or [])):
+            return True
+    return False
 
 
 @app.route('/leaderboard/<int:leaderboard_id>/visibility', methods=['POST'])

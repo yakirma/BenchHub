@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Data types — BenchHub{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 920px;">
+    <h1 class="h3 fw-bold mb-1">Data types</h1>
+    <p class="text-body-secondary mb-4">
+        Built-in kinds plus <strong>registered</strong> ones. A registered
+        kind declares how it's stored (a file extension or inline) and a
+        <code>visualize(blob, params)</code> that runs in the sandbox to
+        render it. Register via the client:
+        <code>client.create_datatype(...)</code> — see the
+        <a href="{{ url_for('docs', page='data_types') }}">docs</a>.
+    </p>
+
+    {% if datatypes %}
+    <div class="card border-0 shadow-sm">
+        <div class="table-responsive">
+            <table class="table mb-0 align-middle">
+                <thead><tr>
+                    <th>Kind</th><th>Storage</th><th>Visualize</th>
+                    <th>Visibility</th><th></th>
+                </tr></thead>
+                <tbody>
+                {% for dt in datatypes %}
+                <tr>
+                    <td><code>{{ dt.name }}</code>
+                        {% if dt.description %}<div class="small text-body-secondary">{{ dt.description }}</div>{% endif %}
+                    </td>
+                    <td class="small">{{ dt.file_ext or 'inline' }}</td>
+                    <td class="small">{{ 'sandboxed' if dt.visualize_code else '—' }}</td>
+                    <td>
+                        {% if dt.owner_user_id == current_user.id or current_user_is_admin %}
+                        <form method="post" action="{{ url_for('set_datatype_visibility', dt_id=dt.id) }}" class="d-inline">
+                            <select name="visibility" class="form-select form-select-sm d-inline w-auto"
+                                    onchange="this.form.submit()">
+                                <option value="private" {{ 'selected' if dt.visibility != 'public' }}>private</option>
+                                <option value="public" {{ 'selected' if dt.visibility == 'public' }}>public</option>
+                            </select>
+                        </form>
+                        {% else %}<span class="badge text-bg-light border">{{ dt.visibility }}</span>{% endif %}
+                    </td>
+                    <td class="text-end">
+                        {% if dt.owner_user_id == current_user.id or current_user_is_admin %}
+                        <form method="post" action="{{ url_for('delete_datatype', dt_id=dt.id) }}" class="d-inline"
+                              onsubmit="return confirm('Delete data type {{ dt.name }}?');">
+                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="alert alert-light border">No registered data types yet.</div>
+    {% endif %}
+</div>
+{% endblock %}
