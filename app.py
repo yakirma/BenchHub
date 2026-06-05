@@ -2935,7 +2935,21 @@ def admins_revoke(user_id):
 @app.route('/settings/account', methods=['GET'])
 @login_required
 def account_settings():
-    return render_template('account_settings.html')
+    u = g.current_user
+
+    def _bucket(vis):
+        used = storage_used_bytes(u, visibility=vis)
+        cap = quota_cap_for(u, vis)
+        remaining = max(0, cap - used)
+        pct = int(min(100, used * 100 // cap)) if cap else 0
+        return {
+            'used': used, 'cap': cap, 'remaining': remaining, 'pct': pct,
+            'used_h': _format_bytes(used), 'cap_h': _format_bytes(cap),
+            'remaining_h': _format_bytes(remaining),
+        }
+
+    quota = {'public': _bucket('public'), 'private': _bucket('private')}
+    return render_template('account_settings.html', quota=quota)
 
 
 @app.route('/settings/hf_token', methods=['GET', 'POST'])
