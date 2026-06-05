@@ -1,0 +1,10 @@
+# The only docker build is the sandbox runner (runner/Dockerfile), built
+# from the repo root so it can vendor the benchhub package. Whitelist just
+# what that build needs — everything else (uploads/, .git/, database.db,
+# tests/, archive/, the venv) stays out of the build context.
+*
+!benchhub/
+!runner/
+# Keep cruft out even from the whitelisted dirs.
+**/__pycache__/
+**/*.pyc

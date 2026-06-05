@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import shlex
@@ -18,7 +19,7 @@ except ImportError:  # pragma: no cover — dependency-pin guarantees it's there
 # have declared `GlobalMetric.input_kinds` receive these typed instances;
 # legacy metrics (input_kinds NULL/empty) keep getting the raw primitive
 # at the bare key, so nothing pre-Phase-A breaks.
-from benchhub.types import DTYPES
+from benchhub.types import DTYPES, DataType
 
 
 def _typed_for_cf(cf, value):
@@ -246,6 +247,28 @@ def _build_kwargs(arg_mappings, context, *, typed=False):
     return call_kwargs
 
 
+def _jsonify_kwarg(v):
+    """Make a metric/viz kwarg JSON-serialisable for the sandbox job.
+
+    Typed `bh.*` instances can't cross JSON, so encode each to the portable
+    form the harness rebuilds: `{"__bh__": kind, "params": ..., "b64": ...}`.
+    Lists/dicts are walked (label_list, aggregated-viz value lists); numpy
+    scalars/arrays degrade to python; everything else passes through (and
+    json.dumps will surface anything still unserialisable as a fatal)."""
+    if isinstance(v, DataType):
+        return {'__bh__': v.kind, 'params': v.params or {},
+                'b64': base64.b64encode(v.encode()).decode('ascii')}
+    if isinstance(v, dict):
+        return {k: _jsonify_kwarg(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonify_kwarg(x) for x in v]
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    return v
+
+
 def _build_job(global_metric, contexts, arg_mappings_json):
     """Shared by both backends: turn (metric, contexts, mapping_json) into
     the JSON job dict that runner/harness.run_job consumes."""
@@ -255,11 +278,19 @@ def _build_job(global_metric, contexts, arg_mappings_json):
         arg_mappings = {}
 
     typed = _metric_wants_typed(global_metric)
-    kwargs_list = [_build_kwargs(arg_mappings, ctx or {}, typed=typed) for ctx in contexts]
+    kwargs_list = [
+        {k: _jsonify_kwarg(v)
+         for k, v in _build_kwargs(arg_mappings, ctx or {}, typed=typed).items()}
+        for ctx in contexts
+    ]
     return {
+        'kind': 'metric',
         'code': global_metric.python_code,
         'kwargs_list': kwargs_list,
         'include_numpy': True,
+        # Typed metrics need `bh` in the container + their args decoded;
+        # harmless for primitive metrics (just an extra import).
+        'include_benchhub': True,
     }
 
 
@@ -400,24 +431,60 @@ def evaluate_in_sandbox(
     sample, not silently drop them.
     """
     job = _build_job(global_metric, contexts, arg_mappings_json)
-    url = url or os.environ.get('BENCHHUB_SANDBOX_URL')
-
-    if url:
-        payload_or_fatal = _run_via_http(
-            job, url=url, timeout_seconds=timeout_seconds,
-        )
-    else:
-        image = image or os.environ.get('BENCHHUB_SANDBOX_IMAGE') or _DEFAULT_SANDBOX_IMAGE
-        payload_or_fatal = _run_via_docker(
-            job,
-            image=image,
-            timeout_seconds=timeout_seconds,
-            memory=memory,
-            cpus=cpus,
-            docker_path=docker_path,
-        )
-
+    payload_or_fatal = _dispatch(
+        job, url=url, image=image, timeout_seconds=timeout_seconds,
+        memory=memory, cpus=cpus, docker_path=docker_path)
     return _shape_results(payload_or_fatal, len(contexts))
+
+
+def _dispatch(job, *, url=None, image=None, timeout_seconds=60,
+              memory='512m', cpus='1', docker_path='docker'):
+    """Send a harness job to whichever backend is configured (HTTP runner
+    service if a URL is set, else a one-shot docker container) and return
+    the raw payload dict or a fatal-error string. Shared by the metric and
+    visualization entrypoints."""
+    url = url or os.environ.get('BENCHHUB_SANDBOX_URL')
+    if url:
+        return _run_via_http(job, url=url, timeout_seconds=timeout_seconds)
+    image = image or os.environ.get('BENCHHUB_SANDBOX_IMAGE') or _DEFAULT_SANDBOX_IMAGE
+    return _run_via_docker(
+        job, image=image, timeout_seconds=timeout_seconds,
+        memory=memory, cpus=cpus, docker_path=docker_path)
+
+
+def evaluate_viz_in_sandbox(code, kwargs, *, function_name=None, **opts):
+    """Render a visualization inside the sandbox. `code` is the viz source
+    (a function returning a PIL.Image); `kwargs` are its decoded arguments.
+    Returns `(png_bytes, error)` — `png_bytes` is None on any failure.
+
+    `opts` forwards backend knobs (url / image / timeout_seconds / memory /
+    cpus / docker_path) to `_dispatch`."""
+    job = {
+        'kind': 'visualization',
+        'code': code,
+        'kwargs_list': [{k: _jsonify_kwarg(v) for k, v in (kwargs or {}).items()}],
+        'function_name': function_name,
+        'include_numpy': True,
+        'include_benchhub': True,
+    }
+    payload = _dispatch(job, **opts)
+    if isinstance(payload, str):
+        return None, payload
+    if payload.get('fatal'):
+        return None, payload['fatal']
+    results = payload.get('results') or []
+    if not results:
+        return None, "sandbox returned no result"
+    r = results[0]
+    if r.get('error'):
+        return None, r['error']
+    b64 = r.get('png_b64')
+    if not b64:
+        return None, "sandbox returned no image"
+    try:
+        return base64.b64decode(b64), None
+    except Exception as e:
+        return None, f"sandbox returned bad base64: {e}"
 
 
 def sandbox_evaluate_one(global_metric, context, arg_mappings_json, **kwargs):

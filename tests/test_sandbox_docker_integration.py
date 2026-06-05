@@ -24,7 +24,8 @@ from metric_engine import evaluate_in_sandbox
 pytestmark = pytest.mark.docker
 
 
-_RUNNER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'runner')
+_REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
+_DOCKERFILE = os.path.join(_REPO_ROOT, 'runner', 'Dockerfile')
 _IMAGE_TAG = 'benchhub-runner:integ-test'
 
 
@@ -56,8 +57,11 @@ def runner_image():
     """Build the sandbox image once per pytest session. Re-runs are cheap
     because Docker's layer cache short-circuits when nothing has changed
     in runner/."""
+    # Build from the repo root (context) with the runner Dockerfile so the
+    # vendored benchhub package is in scope; a repo-root .dockerignore keeps
+    # the context tiny.
     proc = subprocess.run(
-        ['docker', 'build', '-t', _IMAGE_TAG, _RUNNER_DIR],
+        ['docker', 'build', '-f', _DOCKERFILE, '-t', _IMAGE_TAG, _REPO_ROOT],
         capture_output=True, text=True, timeout=600,
     )
     if proc.returncode != 0:

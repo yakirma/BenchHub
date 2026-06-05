@@ -42,9 +42,18 @@ RUN pip install \
         'Flask>=3,<4' \
         'gunicorn>=22'
 
+# NOTE: build context is the REPO ROOT (so we can vendor the benchhub
+# package), not runner/ — build with `docker build -f runner/Dockerfile .`.
+# A repo-root .dockerignore whitelists only benchhub/ + runner/ so the
+# context stays tiny.
 WORKDIR /app
-COPY harness.py /app/harness.py
-COPY server.py /app/server.py
+COPY runner/harness.py /app/harness.py
+COPY runner/server.py /app/server.py
+# Vendor the benchhub package so user metric/viz code can `import benchhub
+# as bh` and typed args (bh.Image / bh.Depth / …) decode inside the
+# container. client.py is stdlib-only at import time, so the package needs
+# nothing beyond the numpy/Pillow already installed above.
+COPY benchhub /app/benchhub
 
 # matplotlib's font cache wants a writable home; --read-only at runtime
 # blocks /home/runner, so point HOME at /tmp (which we'll mount tmpfs).
