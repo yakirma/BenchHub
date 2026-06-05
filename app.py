@@ -1161,9 +1161,9 @@ class User(db.Model):
         server_default=str(10 * 1024 ** 3),
     )  # 10 GB — legacy total; superseded by the two split caps below
     quota_public_max_bytes = db.Column(
-        db.BigInteger, nullable=False, default=100 * 1024 ** 3,
-        server_default=str(100 * 1024 ** 3),
-    )  # 100 GB default for everything visibility='public'
+        db.BigInteger, nullable=False, default=50 * 1024 ** 3,
+        server_default=str(50 * 1024 ** 3),
+    )  # 50 GB default for everything visibility='public'
     quota_private_max_bytes = db.Column(
         db.BigInteger, nullable=False, default=10 * 1024 ** 3,
         server_default=str(10 * 1024 ** 3),
@@ -2061,6 +2061,32 @@ def _admin_emails():
     return {e.strip().lower() for e in raw.split(',') if e.strip()}
 
 
+# Registration cap for the public launch — new sign-ups are refused once
+# this many accounts exist (existing users keep logging in; admins always
+# get in). Override with $BENCHHUB_MAX_USERS.
+def _max_total_users():
+    try:
+        return int(os.environ.get('BENCHHUB_MAX_USERS', '200'))
+    except (TypeError, ValueError):
+        return 200
+
+
+def _signup_blocked(email):
+    """True when a NEW account should be refused: the user cap is reached
+    and this isn't an admin email. Existing-user logins never hit this
+    (it's only consulted on the create-new-user branch)."""
+    try:
+        if (email or '').strip().lower() in _admin_emails():
+            return False
+        return User.query.count() >= _max_total_users()
+    except Exception:
+        return False
+
+
+_SIGNUP_CLOSED_MSG = ("Sign-ups are currently closed — the beta is at "
+                      "capacity. Please check back soon.")
+
+
 def is_admin(user):
     """A user is admin if EITHER their email is on the env-var allow-list
     OR their User.is_admin DB flag is set. Env-var users get the flag
@@ -2167,6 +2193,9 @@ def oauth_callback_github():
             existing.avatar_url = profile.get('avatar_url') or existing.avatar_url
             user = existing
         else:
+            if _signup_blocked(email):
+                flash(_SIGNUP_CLOSED_MSG, "warning")
+                return redirect(url_for('login'))
             user = User(
                 email=email,
                 display_name=profile.get('name') or profile.get('login') or email.split('@')[0],
@@ -2242,6 +2271,9 @@ def oauth_callback_google():
             existing.avatar_url = profile.get('picture') or existing.avatar_url
             user = existing
         else:
+            if _signup_blocked(email):
+                flash(_SIGNUP_CLOSED_MSG, "warning")
+                return redirect(url_for('login'))
             user = User(
                 email=email,
                 display_name=profile.get('name') or email.split('@')[0],
@@ -2496,6 +2528,9 @@ def login_email_verify_post():
     row.consumed = True
     user = User.query.filter(func.lower(User.email) == email).first()
     if user is None:
+        if _signup_blocked(email):
+            flash(_SIGNUP_CLOSED_MSG, "warning")
+            return redirect(url_for('login'))
         user = User(
             email=email,
             display_name=email.split('@')[0],
@@ -6322,38 +6357,22 @@ def set_global_visualization_visibility_confirm(viz_id):
 
 # ===================== FeatureRequest routes =====================
 
+# Feature requests now live on GitHub issues (the in-app form is retired).
+GITHUB_ISSUES_URL = 'https://github.com/yakirma/BenchHub/issues'
+
+
 @app.route('/feature_requests', methods=['GET'])
-@login_required
 def feature_requests_list():
-    """User-facing list of feature requests. Each user sees their own +
-    everyone's public ones. Admins see them all via /admin/feature_requests."""
-    mine = (
-        FeatureRequest.query
-        .filter_by(user_id=g.current_user.id)
-        .order_by(FeatureRequest.created_at.desc())
-        .all()
-    )
-    return render_template('feature_requests.html', mine=mine)
+    """Feature requests are tracked on GitHub issues now — redirect there.
+    Open (no login) so the nav link works for anyone."""
+    return redirect(GITHUB_ISSUES_URL)
 
 
 @app.route('/feature_requests/new', methods=['POST'])
 @login_required
 def feature_request_new():
-    title = (request.form.get('title') or '').strip()
-    kind = (request.form.get('kind') or 'feature').strip()
-    desc = (request.form.get('description') or '').strip()
-    if not title:
-        flash("Title is required.", "warning")
-        return redirect(url_for('feature_requests_list'))
-    if kind not in ('feature', 'data_type', 'metric', 'visualization', 'other'):
-        kind = 'other'
-    fr = FeatureRequest(
-        user_id=g.current_user.id, kind=kind,
-        title=title[:200], description=desc or None,
-    )
-    db.session.add(fr); db.session.commit()
-    flash("Request submitted — admins will see it.", "success")
-    return redirect(url_for('feature_requests_list'))
+    """Retired — the in-app form is gone; bounce to GitHub issues."""
+    return redirect(GITHUB_ISSUES_URL)
 
 
 def _resolve_lb_input_samples(lb):
@@ -18224,12 +18243,13 @@ def check_and_migrate_db():
                     ("user",                 "quota_max_storage_bytes",        f"BIGINT NOT NULL DEFAULT {200 * 1024 * 1024}"),
                     ("user",                 "quota_max_datasets",             "INTEGER NOT NULL DEFAULT 5"),
                     ("user",                 "quota_max_submissions_per_day",  "INTEGER NOT NULL DEFAULT 50"),
-                    # Phase 13: split storage budget. 100 GB for content the
+                    # Phase 13: split storage budget. 50 GB for content the
                     # user has chosen to publish, 10 GB for private/unlisted
                     # working space. Existing rows pick up these defaults via
                     # the ALTER ADD COLUMN; the legacy single-bucket cap above
                     # is retained for back-compat but no longer enforced.
-                    ("user",                 "quota_public_max_bytes",         f"BIGINT NOT NULL DEFAULT {100 * 1024 ** 3}"),
+                    # (Launch: dropped 100→50 GB — see the backfill after the loop.)
+                    ("user",                 "quota_public_max_bytes",         f"BIGINT NOT NULL DEFAULT {50 * 1024 ** 3}"),
                     ("user",                 "quota_private_max_bytes",        f"BIGINT NOT NULL DEFAULT {10 * 1024 ** 3}"),
                     # Phase 8: programmatic-access token. Nullable; users
                     # opt-in by clicking "Generate" in /settings/api_tokens.
@@ -18329,6 +18349,25 @@ def check_and_migrate_db():
                         print(f"Added {tbl}.{col}.")
                     except Exception as e:
                         print(f"Failed to add {tbl}.{col}: {e}")
+
+                # Launch backfill: drop the public quota from the old 100 GB
+                # default to 50 GB. Idempotent — only touches rows still at
+                # exactly the old default, so any manually-raised quota is
+                # left alone.
+                try:
+                    cursor.execute("PRAGMA table_info(user)")
+                    if 'quota_public_max_bytes' in {r[1] for r in cursor.fetchall()}:
+                        cursor.execute(
+                            "UPDATE user SET quota_public_max_bytes = ? "
+                            "WHERE quota_public_max_bytes = ?",
+                            (50 * 1024 ** 3, 100 * 1024 ** 3),
+                        )
+                        if cursor.rowcount:
+                            print(f"Backfilled public quota 100→50 GB on "
+                                  f"{cursor.rowcount} user(s).")
+                        conn.commit()
+                except Exception as e:
+                    print(f"Quota backfill skipped: {e}")
 
                 # Stage 2 — projects + curated removal teardown.
                 # ALTER TABLE DROP COLUMN with a foreign-key column trips

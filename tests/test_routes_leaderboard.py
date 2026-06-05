@@ -107,6 +107,25 @@ def test_create_leaderboard_attaches_dataset(auth_client, project, dataset, logg
     assert lb.owner_user_id == logged_in_user.id
 
 
+def test_create_leaderboard_for_local_dataset_does_not_materialize(
+    auth_client, project, dataset
+):
+    """A locally-uploaded dataset is full-resolution (preview_only=False),
+    so binding it to a new leaderboard must NOT enqueue per-LB
+    materialisation — that path is HF-preview-only."""
+    from app import LeaderboardMaterialization
+    assert not dataset.preview_only               # local-upload default (full-res)
+    resp = auth_client.post(
+        "/create_leaderboard",
+        data={"leaderboard_name": "local_only_lb", "dataset_ids": [str(dataset.id)]},
+    )
+    assert resp.status_code == 302
+    lb = Leaderboard.query.filter_by(name="local_only_lb").first()
+    assert lb is not None
+    assert (LeaderboardMaterialization.query
+            .filter_by(leaderboard_id=lb.id).count() == 0)
+
+
 def test_create_leaderboard_supports_multiple_datasets(auth_client, project, dataset):
     ds2 = Dataset(name="lb_ds_2")
     db.session.add(ds2)

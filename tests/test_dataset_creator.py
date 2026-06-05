@@ -216,6 +216,17 @@ def test_end_to_end_create_dataset_happy_path(client, admin_user):
     assert n_cf == 3 * 2  # samples × fields
 
 
+def test_uploaded_dataset_is_full_res_not_preview(client, admin_user):
+    """A Python-uploaded dataset is stored full-resolution, NOT as the
+    HF preview tier — so it never enters the cache/materialise route."""
+    bh_client = _client_with_transport(client, admin_user)
+    creator = bh_client.create_dataset("fullres-upload")
+    creator.add_field("x", bh.Scalar)
+    creator.add_sample("s0", x=bh.Scalar(1.0))
+    ds = Dataset.query.get(creator.create()["dataset_id"])
+    assert ds.preview_only is False
+
+
 def test_end_to_end_non_admin_token_accepted_within_quota(client, non_admin_user):
     """Dataset upload is open to any authenticated user — the per-user
     storage quota is the only gate. A tiny upload from a non-admin

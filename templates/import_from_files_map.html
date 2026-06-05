@@ -29,7 +29,8 @@
     <div class="alert {{ 'alert-warning' if loop.first and truncated else 'alert-info' }} d-flex gap-2 py-2 small">
         <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
         <div>{{ w }}{% if 'data-type request' in w %}
-            <a href="{{ url_for('feature_requests_list') }}" class="alert-link">File one →</a>{% endif %}</div>
+            <a href="https://github.com/yakirma/BenchHub/issues" target="_blank"
+               rel="noopener" class="alert-link">File one →</a>{% endif %}</div>
     </div>
     {% endfor %}
 
