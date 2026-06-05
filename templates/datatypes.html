@@ -12,6 +12,56 @@
         <a href="{{ url_for('docs', page='data_types') }}">docs</a>.
     </p>
 
+    {# ---- Register a new data type ---- #}
+    <details class="card border-0 shadow-sm mb-4">
+        <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
+            <i class="bi bi-plus-circle text-primary"></i>
+            <span class="fw-semibold">Register a data type</span>
+            <span class="ms-auto small text-body-secondary">name + storage + a sandboxed visualize()</span>
+        </summary>
+        <div class="card-body pt-0">
+            <form method="post" action="{{ url_for('create_datatype_web') }}">
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Kind name</label>
+                        <input type="text" name="name" required pattern="[a-z][a-z0-9_]{1,39}"
+                               class="form-control form-control-sm font-monospace"
+                               placeholder="volume">
+                        <div class="form-text small">lowercase, joins the global kind namespace</div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Storage extension</label>
+                        <input type="text" name="file_ext"
+                               class="form-control form-control-sm font-monospace"
+                               placeholder=".nii.gz (blank = inline text)">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold mb-1">Description</label>
+                        <input type="text" name="description" maxlength="200"
+                               class="form-control form-control-sm" placeholder="3D CT volume">
+                    </div>
+                </div>
+                <label class="form-label small fw-semibold mb-1 mt-2">
+                    <code>visualize(blob, params)</code> &rarr; PIL.Image
+                    <span class="text-body-secondary">(runs in the sandbox)</span>
+                </label>
+                <textarea name="visualize_code" rows="7"
+                          class="form-control form-control-sm font-monospace" style="font-size:.78rem;"
+                          placeholder="def visualize(blob, params):
+    import io, numpy as np, nibabel as nib
+    from PIL import Image
+    # blob = the stored file's bytes; params = the field's params dict
+    ...
+    return Image.fromarray(arr)  # a PIL.Image"></textarea>
+                <button type="submit" class="btn btn-sm btn-primary mt-2">
+                    <i class="bi bi-plus-lg me-1"></i>Register</button>
+                <span class="small text-body-secondary ms-2">
+                    Or from the client: <code>client.create_datatype(...)</code>.
+                </span>
+            </form>
+        </div>
+    </details>
+
     {% if datatypes %}
     <div class="card border-0 shadow-sm">
         <div class="table-responsive">

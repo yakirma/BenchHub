@@ -6000,35 +6000,28 @@ def api_create_visualization():
     return _api_create_library_asset('visualization')
 
 
-@app.route('/api/datatypes', methods=['POST'])
-@require_api_token
-def api_create_datatype():
-    """Register a new data type (kind). JSON: {name, file_ext?, viz_mime?,
-    visualize_code?, description?}. `name` joins the global kind namespace
-    (lowercase, unique, not a built-in). `visualize_code` is
-    `def visualize(blob, params) -> PIL.Image` and runs only in the
-    sandbox. Returns {id, name, file_ext, visibility}."""
+def _register_datatype(*, name, file_ext, viz_mime, visualize_code, description):
+    """Validate + create a DataTypeDef owned by the current user. Returns
+    `(dt, None)` on success or `(None, error_message)`. Shared by the API
+    and the web form."""
     import re as _re
     from benchhub.types import DTYPES as _builtin
-    data = request.get_json(silent=True) or {}
-    name = (data.get('name') or '').strip().lower()
+    name = (name or '').strip().lower()
     if not _re.fullmatch(r'[a-z][a-z0-9_]{1,39}', name):
-        return jsonify({'error': "name must be lowercase, [a-z][a-z0-9_], "
-                                 "2-40 chars"}), 400
+        return None, "Name must be lowercase, [a-z][a-z0-9_], 2-40 chars."
     if name in _builtin:
-        return jsonify({'error': f"{name!r} is a built-in kind"}), 409
+        return None, f"{name!r} is a built-in kind."
     if DataTypeDef.query.filter_by(name=name).first():
-        return jsonify({'error': f"a data type named {name!r} already exists"}), 409
-    file_ext = (data.get('file_ext') or '').strip() or None
+        return None, f"A data type named {name!r} already exists."
+    file_ext = (file_ext or '').strip() or None
     if file_ext and not file_ext.startswith('.'):
         file_ext = '.' + file_ext
-    viz_code = (data.get('visualize_code') or data.get('visualize') or '').strip() or None
     dt = DataTypeDef(
         name=name,
-        description=(data.get('description') or None),
+        description=(description or None),
         file_ext=file_ext,
-        viz_mime=(data.get('viz_mime') or 'image/png').strip(),
-        visualize_code=viz_code,
+        viz_mime=(viz_mime or 'image/png').strip() or 'image/png',
+        visualize_code=((visualize_code or '').strip() or None),
         owner_user_id=g.current_user.id,
         visibility='public' if is_admin(g.current_user) else 'private',
     )
@@ -6037,9 +6030,46 @@ def api_create_datatype():
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': f'create failed: {e}'}), 400
+        return None, f'create failed: {e}'
+    return dt, None
+
+
+@app.route('/api/datatypes', methods=['POST'])
+@require_api_token
+def api_create_datatype():
+    """Register a new data type (kind). JSON: {name, file_ext?, viz_mime?,
+    visualize_code?, description?}. `name` joins the global kind namespace
+    (lowercase, unique, not a built-in). `visualize_code` is
+    `def visualize(blob, params) -> PIL.Image` and runs only in the
+    sandbox. Returns {id, name, file_ext, visibility}."""
+    data = request.get_json(silent=True) or {}
+    dt, err = _register_datatype(
+        name=data.get('name'), file_ext=data.get('file_ext'),
+        viz_mime=data.get('viz_mime'),
+        visualize_code=data.get('visualize_code') or data.get('visualize'),
+        description=data.get('description'))
+    if err:
+        status = 409 if ('already exists' in err or 'built-in' in err) else 400
+        return jsonify({'error': err}), status
     return jsonify({'id': dt.id, 'name': dt.name, 'file_ext': dt.file_ext,
                     'visibility': dt.visibility}), 201
+
+
+@app.route('/datatypes/create', methods=['POST'])
+@login_required
+def create_datatype_web():
+    """Register a data type from the web form on /datatypes."""
+    dt, err = _register_datatype(
+        name=request.form.get('name'), file_ext=request.form.get('file_ext'),
+        viz_mime=request.form.get('viz_mime'),
+        visualize_code=request.form.get('visualize_code'),
+        description=request.form.get('description'))
+    if err:
+        flash(err, 'danger')
+    else:
+        flash(f"Registered data type {dt.name!r} ({dt.visibility}). Flip it "
+              f"public to let others use it.", 'success')
+    return redirect(url_for('datatypes_view'))
 
 
 @app.route('/datatypes')

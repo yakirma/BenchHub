@@ -144,3 +144,24 @@ def test_serve_custom_field_image_renders_registered_dtype(client, db_session,
     db.session.add(cf); db.session.commit()
     r = client.get(f'/custom_field_image/{cf.id}')
     assert r.status_code == 200 and r.mimetype == 'image/png'
+
+
+def test_register_datatype_via_web_form(client, db_session):
+    u = User(email='w@x.io', display_name='w', oauth_provider='github', oauth_sub='w1')
+    db.session.add(u); db.session.commit()
+    with client.session_transaction() as s:
+        s['user_id'] = u.id
+    # the /datatypes page exposes the register form
+    body = client.get('/datatypes').data.decode()
+    assert 'Register a data type' in body and 'visualize_code' in body
+    # submit the form
+    client.post('/datatypes/create', data={
+        'name': 'pointcloud', 'file_ext': '.ply', 'description': 'xyz',
+        'visualize_code': ("def visualize(blob, params):\n"
+                            "    from PIL import Image\n"
+                            "    return Image.new('RGB', (4, 4))\n")})
+    dt = DataTypeDef.query.filter_by(name='pointcloud').first()
+    assert dt is not None and dt.owner_user_id == u.id and dt.file_ext == '.ply'
+    # bad name is rejected (no row), with a flash
+    client.post('/datatypes/create', data={'name': 'Bad Name!'})
+    assert DataTypeDef.query.filter_by(name='Bad Name!').first() is None
