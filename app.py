@@ -6080,7 +6080,6 @@ def create_datatype_web():
 
 
 @app.route('/datatypes')
-@login_required
 def datatypes_view():
     """Back-compat: data types (built-in + registered, with the register
     form + management) now live on /supported_types."""

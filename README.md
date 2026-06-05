@@ -99,7 +99,8 @@ same way.
 - **Architecture:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (editable
   drawio source under [`docs/diagrams/`](docs/diagrams/)).
 - **Dev notes / history:** [`CLAUDE.md`](CLAUDE.md) (durable architecture +
-  gotchas) and the dated notes under [`docs/`](docs/).
+  gotchas), the granular subsystem notes under [`skills/`](skills/), and the
+  dated notes under [`docs/`](docs/).
 - **Feature requests + bugs:** [GitHub issues](https://github.com/yakirma/BenchHub/issues).
 
 ## Run it locally
