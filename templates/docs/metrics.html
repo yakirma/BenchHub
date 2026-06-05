@@ -93,8 +93,9 @@ def accuracy(gt: bh.Label, pred: bh.Label | bh.LabelList):
         publish to <code>public</code> to let others bind them. Names are unique per owner,
         and globally unique only among public metrics (so two people can each have a
         private <code>my_iou</code>).</li>
-    <li><strong>Sandboxing:</strong> metric code is executed server-side. Deployments can
-        set <code>BENCHHUB_SANDBOX_METRICS=1</code> to run it in an isolated sandbox.</li>
+    <li><strong>Sandboxing:</strong> metric <em>and</em> visualization code runs inside a
+        hardened, network-isolated, read-only container (one short-lived sandbox per job)
+        &mdash; never in-process on the server.</li>
 </ul>
 
 <div class="alert alert-info mt-4">
