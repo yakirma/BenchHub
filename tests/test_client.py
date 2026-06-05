@@ -94,7 +94,7 @@ def test_builder_manifest_rejects_mixed_kinds_per_field():
     sub = bh.Client(token="t", base_url="http://x").submission(leaderboard_id=1)
     sub.predict("s0", out=bh.Scalar(1.0))
     sub.predict("s1", out=bh.Label("cat"))
-    with pytest.raises(ValueError, match="mixed types"):
+    with pytest.raises(ValueError, match="mixed kinds"):
         sub.build_manifest()
 
 

@@ -461,8 +461,10 @@ def import_typed_dataset(
 # place of `fields[]`. Each entry's role is implicit (`pred`).
 # ---------------------------------------------------------------------------
 
-def validate_submission_manifest(manifest: dict) -> None:
-    """Raise ValueError on a malformed submission manifest."""
+def validate_submission_manifest(manifest: dict, extra_kinds: dict | None = None) -> None:
+    """Raise ValueError on a malformed submission manifest. `extra_kinds`
+    (name → on-disk ext) widens the accepted-kind set with server-registered
+    kinds, mirroring the dataset-side validator."""
     if not isinstance(manifest, dict):
         raise ValueError("submission manifest must be a JSON object")
     for required in ("name", "predictions", "samples"):
@@ -484,10 +486,12 @@ def validate_submission_manifest(manifest: dict) -> None:
         if p["name"] in seen:
             raise ValueError(f"duplicate prediction name {p['name']!r}")
         seen.add(p["name"])
-        if p["kind"] not in DTYPES:
+        if p["kind"] not in DTYPES and not (
+                extra_kinds is not None and p["kind"] in extra_kinds):
+            allowed = sorted(set(DTYPES) | set(extra_kinds or {}))
             raise ValueError(
-                f"predictions[{i}].kind={p['kind']!r} not in DTYPES "
-                f"{sorted(DTYPES)}"
+                f"predictions[{i}].kind={p['kind']!r} not an accepted kind "
+                f"{allowed}"
             )
         params = p.get("params", {})
         if not isinstance(params, dict):
@@ -659,21 +663,27 @@ def import_typed_submission(
     owner_user_id: int | None = None,
     contract: list[dict] | None = None,
     get_input_shape=None,
+    extra_kinds: dict | None = None,
 ) -> tuple[int, dict]:
     """Materialise a typed submission: validate against the LB's
     contract, create a Submission row + per-prediction CustomField
     rows, copy file-backed kinds into uploads/submissions/<id>/.
 
+    `extra_kinds` (name → on-disk ext) admits server-registered pred
+    kinds, stored bytes-verbatim (no DTYPES class), mirroring the
+    dataset importer.
+
     Returns (submission_id, summary_dict). The caller commits.
     """
     source_root = Path(source_root)
+    extra_kinds = extra_kinds or {}
     manifest_path = source_root / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError("submission manifest.json missing at archive root")
 
     with open(manifest_path) as f:
         manifest = json.load(f)
-    validate_submission_manifest(manifest)
+    validate_submission_manifest(manifest, extra_kinds)
 
     # Caller-supplied contract wins. Falls back to the LB's legacy
     # `required_pred_fields_json` column for back-compat with older
@@ -705,7 +715,7 @@ def import_typed_submission(
     missing: list[str] = []
     for p in manifest["predictions"]:
         for s in manifest["samples"]:
-            path = expected_file_path(source_root, p, s)
+            path = expected_file_path(source_root, p, s, extra_kinds)
             if not path.exists():
                 missing.append(str(path.relative_to(source_root)))
     if missing:
@@ -729,16 +739,21 @@ def import_typed_submission(
     n_files_copied = 0
     for p in manifest["predictions"]:
         kind = p["kind"]
-        cls = DTYPES[kind]
+        # Registered (server-side) pred kinds have no DataType class here —
+        # store their bytes verbatim, keyed off the extension in extra_kinds.
+        cls = DTYPES.get(kind)
         params = p.get("params") or {}
-        is_inline = cls.file_ext is None
+        if cls is not None:
+            is_inline = cls.file_ext is None
+        else:
+            is_inline = not (extra_kinds.get(kind))
 
         field_dir = sub_dir / p["name"]
         if not is_inline:
             field_dir.mkdir(parents=True, exist_ok=True)
 
         for s_name in manifest["samples"]:
-            src = expected_file_path(source_root, p, s_name)
+            src = expected_file_path(source_root, p, s_name, extra_kinds)
             cf = CustomField(
                 submission_id=submission.id,
                 sample_name=s_name,
@@ -750,11 +765,15 @@ def import_typed_submission(
 
             if is_inline:
                 blob = src.read_bytes()
-                inst = cls.decode(blob, params)
-                if kind == "scalar":
-                    cf.value_float = float(inst.value)
+                if cls is None:
+                    # Registered inline kind — store content verbatim as text.
+                    cf.value_text = blob.decode("utf-8", "replace").rstrip("\n")
                 else:
-                    cf.value_text = blob.decode("utf-8").rstrip("\n")
+                    inst = cls.decode(blob, params)
+                    if kind == "scalar":
+                        cf.value_float = float(inst.value)
+                    else:
+                        cf.value_text = blob.decode("utf-8").rstrip("\n")
             else:
                 dst = field_dir / src.name
                 shutil.copy2(src, dst)

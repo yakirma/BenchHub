@@ -892,7 +892,14 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                         parsed = cf.value_text
                     _stash_typed(context, f"sub_{cf.name}", cf, parsed)
                     _stash_typed(context, cf.name, cf, parsed)
-        
+                elif cf.data_type not in DTYPES and cf.data_type != 'metric':
+                    # Registered-kind prediction: carry raw bytes + decode hook
+                    # (same RegisteredBlob the GT side emits).
+                    rb = _registered_blob_for_cf(cf, upload_folder)
+                    if rb is not None:
+                        context[f"sub_{cf.name}"] = rb
+                        context[cf.name] = rb
+
         # Add 'sub_peak' convenience if it exists
         # 'detect_custom_fields' creates CustomFields so it should be in there.
         

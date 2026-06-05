@@ -190,10 +190,29 @@ def decode(blob, params):                               # what your metrics rece
 </code></pre>
 <p class="small text-body-secondary">Storage is just bytes &mdash; what goes in comes back
     out unchanged &mdash; so the &ldquo;encode&rdquo; the built-in kinds (<code>Depth</code>,
-    <code>Mask</code>, &hellip;) implement is, for a registered kind, the identity.
-    <strong>decode</strong> is the matching deserialize hook: define it to give metrics a
-    ready Python object; omit it and they get the raw bytes. Today this applies to
-    <strong>ground-truth and input</strong> fields (a metric reading a registered-kind GT);
-    registered-kind <em>predictions</em> are a follow-up. A registered kind used by a public
-    leaderboard can't be deleted or made private.</p>
+    <code>Mask</code>, &hellip;) implement is, for a registered kind, the identity. There's
+    deliberately <strong>no <code>encode</code> hook</strong>: whoever produces the data (a
+    dataset author, or a submitter) writes the bytes themselves, in whatever tool fits.
+    <strong>decode</strong> is the matching deserialize hook, and the only one needed,
+    because only the <em>server</em> has to turn those bytes back into an object to run a
+    metric. This applies to <strong>ground-truth, input, and prediction</strong> fields
+    alike. A registered kind used by a public leaderboard can't be deleted or made
+    private.</p>
+
+<h4 class="mt-4">Predicting a registered kind</h4>
+<p>Your model produces the bytes; the client packs them verbatim under the kind's
+    extension. Fetch the leaderboard contract first so the client knows that extension:</p>
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client()                       # reads BENCHHUB_API_TOKEN
+sub = client.submission(LB_ID, name="my-model")
+sub.fetch_contract()                        # learns vec_pred -> ".nii.gz", etc.
+
+for sample_name, inputs in client.iter_samples(LB_ID):
+    out_bytes = my_model(inputs)            # YOU serialize to the kind's format
+    sub.predict(sample_name, volume_pred=bh.RawPrediction("volume", out_bytes))
+    # or from a file you already wrote:
+    # sub.predict(sample_name, volume_pred=bh.RawPrediction.from_file("volume", "/tmp/out.nii.gz"))
+
+print(sub.submit())
+</code></pre>
 {% endblock %}

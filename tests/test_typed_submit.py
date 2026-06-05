@@ -55,8 +55,16 @@ def test_validate_sub_manifest_rejects_missing_top_level(missing):
 def test_validate_sub_manifest_rejects_unknown_kind():
     m = _ok_sub_manifest()
     m["predictions"][0]["kind"] = "not-a-kind"
-    with pytest.raises(ValueError, match="not in DTYPES"):
+    with pytest.raises(ValueError, match="not an accepted kind"):
         validate_submission_manifest(m)
+
+
+def test_validate_sub_manifest_accepts_registered_extra_kind():
+    m = _ok_sub_manifest()
+    m["predictions"][0]["kind"] = "volume"
+    with pytest.raises(ValueError, match="not an accepted kind"):
+        validate_submission_manifest(m)
+    validate_submission_manifest(m, extra_kinds={"volume": ".nii.gz"})
 
 
 def test_validate_sub_manifest_rejects_duplicate_pred_names():

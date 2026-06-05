@@ -616,6 +616,50 @@ class Client:
         )
 
 
+class RawPrediction:
+    """A prediction for a server-**registered** kind the standalone client
+    has no `DataType` class for. You serialize your model output to bytes
+    yourself (the producer owns serialization — exactly as a dataset author
+    produces the GT file); the client packs those bytes **verbatim** under
+    the kind's on-disk extension, and the server stores them as-is. A metric
+    consuming the kind gets them back through the kind's `decode(blob,
+    params)` hook (or raw, if none).
+
+    `data` is bytes (or a file-like with `.read()`); use `from_file(...)` for
+    a path. `file_ext` is the on-disk extension (e.g. ``'.nii.gz'``); when
+    omitted the builder fills it from the LB contract entry for the field, so
+    it matches what the server looks for.
+    """
+
+    def __init__(self, kind: str, data, *, file_ext: str | None = None,
+                 params: dict | None = None):
+        if hasattr(data, "read"):
+            data = data.read()
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError(
+                "RawPrediction data must be bytes (or a file-like / use "
+                f"RawPrediction.from_file); got {type(data).__name__}")
+        self.kind = str(kind)
+        self.data = bytes(data)
+        self.file_ext = file_ext
+        self.params = params or {}
+
+    @classmethod
+    def from_file(cls, kind: str, path, *, file_ext: str | None = None,
+                  params: dict | None = None) -> "RawPrediction":
+        import os as _os
+        with open(path, "rb") as fh:
+            blob = fh.read()
+        # Default the extension to the source file's own (e.g. .nii.gz → use
+        # the full multi-suffix when present).
+        if file_ext is None:
+            name = _os.path.basename(str(path))
+            dot = name.find(".")
+            if dot > 0:
+                file_ext = name[dot:]
+        return cls(kind, blob, file_ext=file_ext, params=params)
+
+
 class SubmissionBuilder:
     """Staging area for a typed submission.
 
@@ -643,17 +687,24 @@ class SubmissionBuilder:
         # sample_name -> input_field_name -> (H, W)
         self._input_shapes: dict[str, dict[str, tuple[int, int]]] = {}
 
-    def predict(self, sample_name: str, **typed_predictions: DataType) -> None:
-        """Stage one or more typed prediction values for a sample."""
+    def predict(self, sample_name: str, **typed_predictions) -> None:
+        """Stage one or more prediction values for a sample.
+
+        Each value is either a `benchhub.DataType` (built-in kind, serialized
+        via its `.encode()`) or a `benchhub.RawPrediction` (a registered kind
+        whose bytes you serialized yourself, packed verbatim)."""
         if not typed_predictions:
             raise ValueError("predict() needs at least one field=instance kwarg")
         for field_name, inst in typed_predictions.items():
-            if not isinstance(inst, DataType):
+            if isinstance(inst, DataType):
+                inst.validate()
+            elif isinstance(inst, RawPrediction):
+                pass  # opaque bytes; the server validates against the contract
+            else:
                 raise TypeError(
-                    f"prediction {field_name!r} must be a benchhub.DataType "
-                    f"instance; got {type(inst).__name__}"
+                    f"prediction {field_name!r} must be a benchhub.DataType or "
+                    f"benchhub.RawPrediction; got {type(inst).__name__}"
                 )
-            inst.validate()
         bucket = self._preds.setdefault(sample_name, {})
         bucket.update(typed_predictions)
 
@@ -714,25 +765,25 @@ class SubmissionBuilder:
         # supply every field (server enforces this by treating missing
         # files as missing-prediction errors).
         all_fields = self.fields
-        type_by_field: dict[str, type[DataType]] = {}
+        kind_by_field: dict[str, str] = {}
         params_by_field: dict[str, dict] = {}
         for sample_preds in self._preds.values():
             for field_name, inst in sample_preds.items():
-                cls = type(inst)
-                if field_name in type_by_field and type_by_field[field_name] is not cls:
+                # Both DataType subclasses and RawPrediction expose `.kind`.
+                kind = inst.kind
+                if field_name in kind_by_field and kind_by_field[field_name] != kind:
                     raise ValueError(
-                        f"prediction {field_name!r} has mixed types across "
-                        f"samples: {type_by_field[field_name].__name__} vs "
-                        f"{cls.__name__}"
+                        f"prediction {field_name!r} has mixed kinds across "
+                        f"samples: {kind_by_field[field_name]} vs {kind}"
                     )
-                type_by_field[field_name] = cls
-                # First-seen params wins — DataType params are LB-level
-                # in spirit, so they should be identical across samples.
+                kind_by_field[field_name] = kind
+                # First-seen params wins — kind params are LB-level in
+                # spirit, so they should be identical across samples.
                 params_by_field.setdefault(field_name, inst.params)
         predictions = [
             {
                 "name": field_name,
-                "kind": type_by_field[field_name].kind,
+                "kind": kind_by_field[field_name],
                 "params": params_by_field[field_name],
             }
             for field_name in all_fields
@@ -823,12 +874,35 @@ class SubmissionBuilder:
         """Produce the submission ZIP bytes the server consumes."""
         manifest = self.build_manifest()
         self._validate_shape_constraint(manifest)
+        # Contract carries file_ext per pred field — authoritative for
+        # registered kinds (the server looks for that exact extension).
+        contract_ext = {}
+        if self._contract:
+            contract_ext = {c["name"]: c.get("file_ext")
+                            for c in self._contract if isinstance(c, dict)}
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest))
             for p in manifest["predictions"]:
-                cls = DTYPES[p["kind"]]
-                ext = cls.file_ext or ".txt"
+                cls = DTYPES.get(p["kind"])
+                rep = next(
+                    (self._preds[s].get(p["name"]) for s in manifest["samples"]
+                     if self._preds[s].get(p["name"]) is not None), None)
+                if cls is not None:
+                    ext = cls.file_ext or ".txt"
+                else:
+                    # Registered kind: prefer the contract's ext, then a
+                    # RawPrediction-supplied one. Without either we can't be
+                    # sure the server will find the file.
+                    ext = (contract_ext.get(p["name"])
+                           or (rep.file_ext if isinstance(rep, RawPrediction) else None))
+                    if not ext:
+                        raise ValueError(
+                            f"prediction {p['name']!r} is a registered kind "
+                            f"{p['kind']!r} with no file extension — call "
+                            f"fetch_contract()/set_contract(...) or pass "
+                            f"RawPrediction(..., file_ext='.ext')."
+                        )
                 for sample_name in manifest["samples"]:
                     inst = self._preds[sample_name].get(p["name"])
                     if inst is None:
@@ -836,7 +910,9 @@ class SubmissionBuilder:
                             f"sample {sample_name!r} missing prediction "
                             f"for field {p['name']!r}"
                         )
-                    zf.writestr(f"{p['name']}/{sample_name}{ext}", inst.encode())
+                    payload = (inst.data if isinstance(inst, RawPrediction)
+                               else inst.encode())
+                    zf.writestr(f"{p['name']}/{sample_name}{ext}", payload)
         return buf.getvalue()
 
     def submit(self, name: str | None = None, *,

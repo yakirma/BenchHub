@@ -27,6 +27,7 @@ from benchhub.client import (
     BHDatasetCreator,
     Client,
     FlaskTestClientTransport,
+    RawPrediction,
     SubmissionBuilder,
 )
 from benchhub import author
@@ -50,6 +51,7 @@ __all__ = [
     "get_type",
     "Client",
     "SubmissionBuilder",
+    "RawPrediction",
     "BHDatasetCreator",
     "FlaskTestClientTransport",
     "BenchHubAPIError",

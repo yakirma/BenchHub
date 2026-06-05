@@ -6569,6 +6569,21 @@ def _registered_extra_kinds(owner_user_id=None):
     return out
 
 
+def _kind_file_ext(kind):
+    """On-disk extension for a kind — built-in (`DTYPES`) or registered
+    (`DataTypeDef`). None ⇒ inline (no file). Used to tell a client how to
+    name a registered-kind prediction file in its submission ZIP."""
+    from benchhub.types import DTYPES
+    cls = DTYPES.get(kind)
+    if cls is not None:
+        return cls.file_ext
+    try:
+        dt = DataTypeDef.query.filter_by(name=kind).first()
+        return dt.file_ext if dt else None
+    except Exception:
+        return None
+
+
 def _serve_registered_dtype_image(cf, dt):
     """Render a registered-dtype CustomField's stored bytes via its
     sandboxed `visualize(blob, params)`, disk-cached by (field, mtime,
@@ -7138,7 +7153,15 @@ def api_leaderboard_contract(leaderboard_id):
             user, _ = _resolve_api_token(bearer)
     if not _can_view_parent(user, lb):
         abort(404)
-    return jsonify(_lb_pred_contract_from_dataset_fields(lb))
+    contract = _lb_pred_contract_from_dataset_fields(lb)
+    # Enrich each entry with file_ext so a client packing a registered-kind
+    # prediction (no DataType class) knows the on-disk extension the server
+    # will look for. Built-in kinds carry it too (harmless; the client
+    # already knows them from DTYPES).
+    for e in contract:
+        if isinstance(e, dict) and 'file_ext' not in e:
+            e['file_ext'] = _kind_file_ext(e.get('kind'))
+    return jsonify(contract)
 
 
 @app.route('/api/leaderboard/<int:leaderboard_id>/submissions', methods=['GET'])
@@ -7292,6 +7315,9 @@ def api_submit_typed(leaderboard_id):
                 owner_user_id=g.current_user.id,
                 contract=contract,
                 get_input_shape=_get_input_shape,
+                # Admit registered pred kinds the LB owner could have put in
+                # the contract (public + the owner's own); stored verbatim.
+                extra_kinds=_registered_extra_kinds(lb.owner_user_id),
             )
             # Attach the submitter-supplied blurb + link (form fields,
             # alongside `name`). Set post-import so manifest.py stays
