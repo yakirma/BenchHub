@@ -434,25 +434,12 @@
         <div class="card-body p-5 text-center">
             <h3 class="fw-bold mb-2">Ready to benchmark?</h3>
             <p class="text-body-secondary mb-4">
-                One-click sign-in with GitHub or Google, or a passwordless email
-                code. We only see your name, email, and avatar.
+                Sign in with GitHub, Google, or a passwordless email code.
+                We only see your name, email, and avatar.
             </p>
             <div class="d-flex flex-wrap justify-content-center gap-2">
-                <a href="{{ url_for('login_github') }}" class="btn btn-dark btn-lg px-4">
-                    <i class="bi bi-github me-2"></i>Continue with GitHub
-                </a>
-                <a href="{{ url_for('login_google') }}" class="btn btn-lg px-4"
-                   style="background:#fff; color:#3c4043; border:1px solid #dadce0;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" class="me-2">
-                      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/>
-                      <path fill="#34A853" d="M9 18c2.43 0 4.47-.81 5.96-2.18l-2.92-2.26c-.81.54-1.85.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
-                      <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.04l3.01-2.32z"/>
-                      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.96l3.01 2.32C4.68 5.16 6.66 3.58 9 3.58z"/>
-                    </svg>
-                    Continue with Google
-                </a>
-                <a href="{{ url_for('login') }}#email-login" class="btn btn-outline-secondary btn-lg px-4">
-                    <i class="bi bi-envelope me-2"></i>Continue with email
+                <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg px-4">
+                    <i class="bi bi-box-arrow-in-right me-2"></i>Log in / Sign up
                 </a>
             </div>
         </div>
