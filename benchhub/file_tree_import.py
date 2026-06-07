@@ -130,13 +130,14 @@ def inspect_repo(files):
 
     # Label-folder shape: files like `<X>/<file>.<ext>` (one folder level)
     # with several sibling folders. Two readings:
-    #   - folders are MODALITIES (image/, depth/, mask/ …) → keep each
-    #     `folder/{id}.ext` suggestion; DON'T propose {label} ({label}
-    #     would wrongly treat each modality file as its own sample).
-    #   - folders are CLASS LABELS (Alex_Brush/, Cookie/ …) → propose
-    #     `{label}/{id}.ext` (pair with a `token` field) and suppress the
-    #     noisy per-class literals.
-    # We tell them apart by name: modality folders are semantic words.
+    #   - folders are MODALITIES (image/, depth/, mask/ …) → one field per
+    #     folder, each its own `folder/{id}.ext` pattern.
+    #   - folders are CLASS LABELS (Alex_Brush/, Cookie/ …) → ONE field
+    #     `{label}/{id}.ext` (pair with a `token` label field).
+    # The name heuristic (modality folders are semantic words) only picks
+    # the DEFAULT; both readings are always emitted, tagged with `group`
+    # ('label' | 'folder'), and the UI renders a toggle between them —
+    # `folder_toggle` below carries the preferred default.
     two_seg = defaultdict(set)
     two_seg_count = defaultdict(int)
     for f in files:
@@ -145,39 +146,57 @@ def inspect_repo(files):
             ext = parts[1].rsplit('.', 1)[-1].lower()
             two_seg[ext].add(parts[0])
             two_seg_count[ext] += 1
-    label_exts = set()
+    ambiguous_exts = {}     # ext -> True when the label reading is preferred
     for ext, folders in two_seg.items():
         if len(folders) < 2:
             continue
         modality_like = sum(1 for d in folders if d.lower() in _MODALITY_WORDS)
         # Mostly arbitrary names → class labels.
-        if modality_like / len(folders) < 0.5:
-            label_exts.add(ext)
-    for ext in sorted(label_exts, key=lambda e: -two_seg_count[e]):
+        ambiguous_exts[ext] = modality_like / len(folders) < 0.5
+    folder_toggle = None
+    if ambiguous_exts:
+        # Default reading follows the dominant (most files) ambiguous ext.
+        top = max(ambiguous_exts, key=lambda e: two_seg_count[e])
+        folder_toggle = 'label' if ambiguous_exts[top] else 'modality'
+
+    label_suggestions = []
+    for ext in sorted(ambiguous_exts, key=lambda e: -two_seg_count[e]):
         pat = '{label}/{id}.' + ext
         seen_patterns.add(pat)
-        suggestions.append({'pattern': pat, 'ext': ext,
-                            'count': two_seg_count[ext], 'label_folder': True})
+        label_suggestions.append({'pattern': pat, 'ext': ext,
+                                  'count': two_seg_count[ext],
+                                  'label_folder': True, 'group': 'label'})
+    if folder_toggle == 'label':
+        suggestions.extend(label_suggestions)
 
     for (d, ext), fs in sorted(by_dir_ext.items(), key=lambda kv: -len(kv[1])):
         if len(fs) < 2:
             continue
-        # Skip the per-class literal dirs already covered by a
-        # `{label}/{id}` suggestion (e.g. Alex_Brush/, Arizonia/ …).
-        # Modality folders (image/, depth/ …) are NOT in label_exts, so
-        # their individual suggestions are kept.
-        if '/' not in d and ext in label_exts:
-            continue
         # Generalise the directory's variable segments into tokens by
         # comparing two sibling paths — segments that differ become {seg}.
         pat = _generalise_dir(d) + '/{id}.' + ext
-        if pat not in seen_patterns:
-            seen_patterns.add(pat)
-            suggestions.append({'pattern': pat, 'ext': ext, 'count': len(fs)})
+        if pat in seen_patterns:
+            continue
+        seen_patterns.add(pat)
+        s = {'pattern': pat, 'ext': ext, 'count': len(fs)}
+        # A top-level folder participating in the label/modality ambiguity
+        # → tag it so the toggle can show one reading at a time.
+        if '/' not in d and ext in ambiguous_exts:
+            s['group'] = 'folder'
+        suggestions.append(s)
+
+    # The non-preferred {label} alternates ride at the end.
+    if folder_toggle == 'modality':
+        suggestions.extend(label_suggestions)
+
+    # Cap, but never drop a {label} alternate — the toggle needs it.
+    capped = suggestions[:20] + [s for s in suggestions[20:]
+                                 if s.get('group') == 'label']
     return {
         'file_count': sum(exts.values()),
         'ext_histogram': dict(exts.most_common()),
-        'suggested_patterns': suggestions[:20],
+        'suggested_patterns': capped,
+        'folder_toggle': folder_toggle,
     }
 
 

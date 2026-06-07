@@ -415,41 +415,67 @@ def test_gz_single_file_loader(tmp_path):
 
 def test_inspect_suggests_label_folder_pattern():
     """`<class>/<id>.png` with multiple class folders → a
-    {label}/{id}.png suggestion (folder = label), and no noisy per-class
-    literal suggestions."""
+    {label}/{id}.png suggestion (folder = label), preferred + first; the
+    per-class literals are still emitted but tagged group='folder' so the
+    UI's toggle hides them by default."""
     files = [f"{cls}/{i:03d}.png" for cls in ("Alex_Brush", "Cookie", "Lobster")
              for i in range(3)]
     info = inspect_repo(files)
     pats = [s["pattern"] for s in info["suggested_patterns"]]
     assert "{label}/{id}.png" in pats
+    assert info["folder_toggle"] == "label"
     # the label suggestion is flagged + comes first
     first = info["suggested_patterns"][0]
     assert first["pattern"] == "{label}/{id}.png" and first.get("label_folder")
-    # no literal per-class suggestions
-    assert not any(p.startswith("Alex_Brush/") for p in pats)
+    assert first["group"] == "label"
+    # per-class literals exist only as the toggled-off 'folder' reading
+    per_class = [s for s in info["suggested_patterns"]
+                 if s["pattern"].startswith("Alex_Brush/")]
+    assert per_class and all(s.get("group") == "folder" for s in per_class)
 
 
 def test_inspect_no_label_suggestion_for_single_folder():
     """A single folder of files (parent doesn't vary) → no {label}
-    suggestion, just the normal `<dir>/{id}` one."""
+    suggestion, no toggle, just the normal `<dir>/{id}` one."""
     files = [f"images/{i}.png" for i in range(4)]
     info = inspect_repo(files)
     pats = [s["pattern"] for s in info["suggested_patterns"]]
     assert "{label}/{id}.png" not in pats
     assert "images/{id}.png" in pats
+    assert info["folder_toggle"] is None
 
 
-def test_inspect_keeps_modality_folders_no_label():
-    """Sibling MODALITY folders (image/ + mask/, both png) must keep their
-    individual `folder/{id}` suggestions and NOT be collapsed to {label}
-    — they're separate fields, not class values."""
+def test_inspect_keeps_modality_folders_label_as_alternate():
+    """Sibling MODALITY folders (image/ + mask/, both png) keep their
+    individual `folder/{id}` suggestions as the preferred reading; the
+    {label}/{id} alternate is still offered (tagged group='label', after
+    them) so the toggle can flip a misclassified class-folder dataset."""
     files = [f"image/{i}.png" for i in range(4)] + \
             [f"mask/{i}.png" for i in range(4)]
     info = inspect_repo(files)
     pats = [s["pattern"] for s in info["suggested_patterns"]]
-    assert "{label}/{id}.png" not in pats          # not treated as labels
+    assert info["folder_toggle"] == "modality"
     assert "image/{id}.png" in pats                # both modality lines kept
     assert "mask/{id}.png" in pats
+    # the {label} reading is available but non-preferred (after the others)
+    assert "{label}/{id}.png" in pats
+    lab = next(s for s in info["suggested_patterns"]
+               if s["pattern"] == "{label}/{id}.png")
+    assert lab["group"] == "label"
+    assert pats.index("{label}/{id}.png") > pats.index("mask/{id}.png")
+
+
+def test_inspect_label_alternate_for_modality_looking_class_names():
+    """Class folders whose names collide with modality words (e.g. a
+    fonts dataset with a class literally called 'normal') used to lose the
+    {label} suggestion entirely when ≥50% looked modality-like. Now the
+    heuristic only picks the default; {label}/{id} is always offered."""
+    files = [f"{cls}/{i}.jpg" for cls in ("normal", "thermal")  # all modality words
+             for i in range(3)]
+    info = inspect_repo(files)
+    pats = [s["pattern"] for s in info["suggested_patterns"]]
+    assert info["folder_toggle"] == "modality"     # heuristic default
+    assert "{label}/{id}.jpg" in pats              # …but the toggle has both
 
 
 def test_inspect_mixed_modalities_different_exts():

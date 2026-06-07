@@ -47,11 +47,35 @@
                         {% endfor %}
                     </div>
                     <h2 class="h6 fw-semibold mt-3">Suggested patterns</h2>
+                    {% if info.folder_toggle %}
+                    {# The `<dir>/<file>.ext` shape reads two ways; let the
+                       user flip between them instead of trusting the name
+                       heuristic. Also syncs the structure wizard's folder
+                       level (property ⇄ modality) when depth is 2. #}
+                    <div class="btn-group btn-group-sm w-100 mb-2" role="group"
+                         id="folder-reading-toggle"
+                         data-sync-level="{{ 0 if structure and structure.depth == 2 else '' }}">
+                        <input type="radio" class="btn-check" name="folder-reading"
+                               id="folder-read-label" value="label" autocomplete="off"
+                               {{ 'checked' if info.folder_toggle == 'label' }}>
+                        <label class="btn btn-outline-primary" for="folder-read-label"
+                               title="One field; the folder name becomes a class label (cat/, dog/ …)">
+                            folders = labels</label>
+                        <input type="radio" class="btn-check" name="folder-reading"
+                               id="folder-read-modality" value="modality" autocomplete="off"
+                               {{ 'checked' if info.folder_toggle == 'modality' }}>
+                        <label class="btn btn-outline-primary" for="folder-read-modality"
+                               title="One field per folder (image/, depth/, mask/ …)">
+                            folders = modalities</label>
+                    </div>
+                    {% endif %}
                     <p class="small text-body-secondary mb-2">Click to copy into the focused pattern box.</p>
                     {% for s in info.suggested_patterns %}
                     <button type="button" class="btn btn-sm w-100 text-start mb-1 font-monospace suggest-pat
                             {{ 'btn-outline-primary' if s.label_folder else 'btn-outline-secondary' }}"
                             style="font-size: 0.72rem;" data-pattern="{{ s.pattern }}"
+                            {% if s.group %}data-group="{{ s.group }}"{% endif %}
+                            {% if s.group and ((s.group == 'label') != (info.folder_toggle == 'label')) %}hidden{% endif %}
                             title="{{ s.count }} files{% if s.label_folder %} — folder is the label: add a token field on {label}{% endif %}">{{ s.pattern }}{% if s.label_folder %} <span class="text-body-secondary">· folder→label</span>{% endif %}</button>
                     {% endfor %}
 
@@ -300,6 +324,26 @@
     }
     document.querySelectorAll('.suggest-pat').forEach(b =>
         b.addEventListener('click', () => fillPattern(b.dataset.pattern)));
+
+    // --- folders = labels ⇄ modalities toggle. Shows the active reading's
+    //     suggestions, and (depth-2 trees) keeps the structure wizard's
+    //     folder level in sync (property ⇄ modality) so "Generate fields"
+    //     matches what the user picked. ---
+    const readingToggle = document.getElementById('folder-reading-toggle');
+    if (readingToggle) {
+        readingToggle.querySelectorAll('input[name="folder-reading"]').forEach(r =>
+            r.addEventListener('change', () => {
+                const reading = r.value;   // 'label' | 'modality'
+                document.querySelectorAll('.suggest-pat[data-group]').forEach(b => {
+                    b.hidden = (b.dataset.group === 'label') !== (reading === 'label');
+                });
+                const lvl = readingToggle.dataset.syncLevel;
+                if (lvl !== '') {
+                    const sel = document.querySelector(`.level-role[data-index="${lvl}"]`);
+                    if (sel) sel.value = (reading === 'label') ? 'property' : 'modality';
+                }
+            }));
+    }
 
     // --- Visual file tree (collapsible). Clicking a file fills the
     //     pattern, generalising the leaf stem to {id}. ---

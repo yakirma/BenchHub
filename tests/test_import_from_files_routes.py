@@ -107,6 +107,41 @@ def test_inspect_renders_mapping_builder(user_client, monkeypatch):
     assert 'beforeunload' in body
 
 
+def test_inspect_renders_folder_reading_toggle(user_client, monkeypatch):
+    """A class-folder tree (`<label>/<id>.jpg`) renders the labels ⇄
+    modalities toggle, defaulting to the heuristic's reading, with both
+    suggestion groups in the DOM (non-preferred hidden)."""
+    client, _ = user_client
+    files = [f'{cls}/{i}.jpg' for cls in ('cat', 'dog', 'fox') for i in range(3)]
+    _stub_hfapi(monkeypatch, files)
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    r = client.post('/import_from_files/inspect', data={'repo_id': 'a/b'})
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert 'id="folder-reading-toggle"' in body
+    assert 'folders = labels' in body and 'folders = modalities' in body
+    # label reading preferred → the 'label' radio is the checked one
+    import re as _re
+    lab_radio = _re.search(r'id="folder-read-label"[^>]*', body).group(0)
+    mod_radio = _re.search(r'id="folder-read-modality"[^>]*', body).group(0)
+    assert 'checked' in lab_radio and 'checked' not in mod_radio
+    assert '{label}/{id}.jpg' in body            # label suggestion rendered
+    assert 'data-group="folder"' in body         # per-class alternates in DOM
+    # depth-2 tree → the toggle syncs the structure wizard's L0 role
+    assert 'data-sync-level="0"' in body
+
+
+def test_inspect_no_toggle_for_single_folder(user_client, monkeypatch):
+    """`images/<id>.png` (one folder) has no two-reading ambiguity → no
+    toggle rendered."""
+    client, _ = user_client
+    _stub_hfapi(monkeypatch, [f'images/{i}.png' for i in range(4)])
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_card', lambda r, **k: {})
+    r = client.post('/import_from_files/inspect', data={'repo_id': 'a/b'})
+    assert r.status_code == 200
+    assert 'id="folder-reading-toggle"' not in r.data.decode()
+
+
 def test_commit_enqueues_and_creates_dataset(user_client, monkeypatch):
     client, u = user_client
     files = [f'train/i_0/normal/{i}.png' for i in range(3)]
