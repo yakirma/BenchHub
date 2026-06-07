@@ -1353,6 +1353,19 @@ def inject_version():
     return dict(version=__version__, author_profiles_json=json.dumps(mapping))
 
 
+@app.context_processor
+def inject_analytics():
+    """GA4 measurement ID for the gtag.js snippet in base.html. Set
+    $GA_MEASUREMENT_ID (e.g. G-XXXXXXXXXX) in the prod .env to enable;
+    unset (dev / tests) ⇒ no analytics tag is emitted at all. Validated
+    against the GA id charset so it's safe to interpolate into the inline
+    <script>, and so a typo can't inject markup."""
+    gid = (os.environ.get('GA_MEASUREMENT_ID') or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9\-]{1,40}', gid):
+        gid = ''
+    return dict(ga_measurement_id=gid)
+
+
 def _gt_stats_custom_fields(sample):
     """Values for the comparison view's GT-stats panel: scalar + metric
     GT fields (value_float) plus label / label_list GT fields (decoded

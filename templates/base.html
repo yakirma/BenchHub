@@ -25,6 +25,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}BenchHub{% endblock %}</title>
 
+    {# Google Analytics 4 — only emitted when $GA_MEASUREMENT_ID is set (prod).
+       Dev/tests leave it unset, so no tag fires and no request hits Google.
+       Placed high in <head> per Google's guidance. #}
+    {% if ga_measurement_id %}
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', '{{ ga_measurement_id }}');
+    </script>
+    {% endif %}
+
     {# SEO / social-share meta. Public pages override `meta_title`,
        `meta_description`, optionally `meta_image` and `meta_url` to populate
        Open Graph + Twitter Card tags. Authenticated app pages can leave the
