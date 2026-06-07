@@ -4836,6 +4836,7 @@ def supported_types():
         'scalar': 'A single float.',
         'json':   "Arbitrary JSON-serialisable structure — escape hatch for shapes that don't fit a typed class yet.",
         'coco_detections': 'COCO-style detection annotations for one image: per-instance category_id, bbox (xywh), optional segmentation polygons, area, iscrowd.',
+        'sequence': 'An ordered clip of homogeneous frames (all image, or all depth/mask) treated as ONE sample. Stored as a ZIP of the per-frame encodings; rendered as an mp4 (animated-GIF fallback) in the dataset and comparison columns. Params: `item_kind` (the frame kind) and `fps`. The value is iterable: `for frame in clip: frame.array`.',
     }
     examples = {
         'image':  'bh.Image(arr)                                      # arr: (H,W,3) | (H,W,4) | (H,W) uint8',
@@ -4855,6 +4856,10 @@ def supported_types():
             '     "segmentation": [[x0, y0, x1, y1, ...]],      # zero or more polygons\n'
             '     "area": 1234.5, "iscrowd": 0},\n'
             '])',
+        'sequence':
+            'frames = [bh.Image(f) for f in clip]               # clip: list of (H,W,3) uint8\n'
+            'bh.Sequence(frames, item_kind="image", fps=10)     # one clip = one sample\n'
+            '# depth/mask clips too: bh.Sequence([bh.Depth(d) for d in clip], item_kind="depth")',
     }
 
     types_info = []
