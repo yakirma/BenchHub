@@ -21,7 +21,7 @@ import numpy as np
              soft_time_limit=1800, time_limit=2100)
 def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                   sampling_seed, dataset_name, fields, sample_name_from,
-                  hf_token, owner_user_id):
+                  hf_token, owner_user_id, config_name=None):
     """Background HF import. The Dataset row has already been created
     by the route with `import_status='importing'` so it appears on
     /datasets immediately; this task fills it in.
@@ -69,6 +69,7 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                     sampling=sampling,
                     seed=sampling_seed,
                     sample_name_from=sample_name_from,
+                    config_name=config_name,
                     progress_cb=_persist_progress,
                 )
                 # Post-materialize quota check against actual bytes.
@@ -114,6 +115,7 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                 existing.source_url = f'https://huggingface.co/datasets/{repo_id}'
                 existing.source_metadata = json.dumps({
                     'repo_id': repo_id,
+                    'config_name': config_name,
                     'split': mat_summary.get('split'),
                     'sample_cap': sample_cap,
                     'sampling': mat_summary.get('sampling'),

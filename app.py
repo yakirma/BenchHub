@@ -7478,6 +7478,7 @@ def admin_import_from_hf_commit():
             return redirect(url_for('admin_import_from_hf'))
     dataset_name = (request.form.get('dataset_name') or '').strip() or repo_id
     split = (request.form.get('split') or '').strip() or None
+    config_name = (request.form.get('config_name') or '').strip() or None
     # sample_cap = -1 (or 0) → no cap, import everything. Anything ≥1
     # caps to that count. Storage-quota pre-check below stops a too-big
     # unlimited import before any HF bytes are downloaded.
@@ -7614,6 +7615,7 @@ def admin_import_from_hf_commit():
         dataset_id=ds_row.id,
         repo_id=repo_id,
         split=split,
+        config_name=config_name,
         sample_cap=sample_cap,
         sampling=sampling,
         sampling_seed=sampling_seed,
@@ -7709,29 +7711,41 @@ def admin_import_from_hf_preview():
     from benchhub.hf_search import fetch_dataset_info
 
     repo_id = (request.form.get('repo_id') or '').strip()
+    config_name = (request.form.get('config_name') or '').strip() or None
     if not repo_id:
         flash("Enter an HF dataset repo ID first.", "warning")
         return redirect(url_for('admin_import_from_hf'))
 
-    # Try Croissant first (richer, when present); fall through to the
+    # Config discovery first: multi-config repos (OpenFake core/reddit)
+    # can't even be load_dataset()ed without a config name, so the form
+    # needs a picker and everything downstream needs the choice.
+    info = fetch_dataset_info(repo_id, config_name=config_name)
+    config_names = (info or {}).get('config_names') or []
+    selected_config = (info or {}).get('config_name')
+
+    # Schema source. An EXPLICIT config choice wins — its /info features
+    # are the schema (Croissant doesn't distinguish configs). Otherwise:
+    # Croissant first (richer, when present); fall through to the
     # datasets-server /info endpoint which has much broader coverage
     # (HF auto-generates Croissant only for YAML-conformant repos
     # with parquet bytes; /info indexes anything HF can stream).
     schema = None
     croissant_err = None
-    try:
-        doc = fetch_croissant(repo_id)
-        schema = parse_croissant(doc)
-    except (CroissantFetchError, ValueError) as e:
-        croissant_err = e
+    if config_name and info is not None:
+        schema = schema_from_hf_features(
+            info['features'], info.get('splits') or [], name=repo_id)
     if schema is None:
-        info = fetch_dataset_info(repo_id)
-        if info is not None:
-            schema = schema_from_hf_features(
-                info['features'],
-                info.get('splits') or [],
-                name=repo_id,
-            )
+        try:
+            doc = fetch_croissant(repo_id)
+            schema = parse_croissant(doc)
+        except (CroissantFetchError, ValueError) as e:
+            croissant_err = e
+    if schema is None and info is not None:
+        schema = schema_from_hf_features(
+            info['features'],
+            info.get('splits') or [],
+            name=repo_id,
+        )
     if schema is None:
         # Neither source had anything — surface the original Croissant
         # error since that's the primary path; the /info fallback's
@@ -7748,12 +7762,13 @@ def admin_import_from_hf_preview():
     # next to the max-samples input. Best-effort: an empty dict
     # degrades the UI cleanly to "no count available".
     from benchhub.hf_search import fetch_class_label_vocabs, fetch_split_row_counts
-    split_counts = fetch_split_row_counts(repo_id)
+    split_counts = fetch_split_row_counts(repo_id, config_name=selected_config)
     # Pull HF ClassLabel.names off the datasets-server /info endpoint
     # so the label-kind params textarea can pre-fill the vocab — the
     # materializer would lift it anyway at commit time, but showing
     # it on the preview makes the dataset self-explanatory.
-    class_label_vocabs = fetch_class_label_vocabs(repo_id)
+    class_label_vocabs = fetch_class_label_vocabs(repo_id,
+                                                  config_name=selected_config)
 
     # Classification datasets get stratified sampling by default —
     # `kind=label` is the Croissant parser's signal that this looks
@@ -7778,6 +7793,8 @@ def admin_import_from_hf_preview():
         repo_id=repo_id,
         card=card_summary(repo_id),
         schema=schema,
+        config_names=config_names,
+        selected_config=selected_config,
         split_counts=split_counts,
         all_kinds=_all_kind_names(),
         # Each HF column carries actual data — the role choices here
@@ -7834,7 +7851,23 @@ def admin_import_from_hf_decode_preview():
             ds_kwargs['token'] = token
         if split:
             ds_kwargs['split'] = split
-        ds = load_dataset(repo_id, **ds_kwargs)
+        config_name = (body.get('config_name') or '').strip() or None
+        if config_name:
+            ds_kwargs['name'] = config_name
+        try:
+            ds = load_dataset(repo_id, **ds_kwargs)
+        except ValueError as ce:
+            # Multi-config repo and no config chosen (stale form) →
+            # fall back to the first available config rather than 500.
+            if 'Config name is missing' not in str(ce):
+                raise
+            from datasets import get_dataset_config_names
+            cfgs = get_dataset_config_names(repo_id, token=token)
+            if not cfgs:
+                raise
+            config_name = cfgs[0]
+            ds_kwargs['name'] = config_name
+            ds = load_dataset(repo_id, **ds_kwargs)
         if hasattr(ds, 'keys') and not hasattr(ds, 'features'):
             # IterableDatasetDict (no split given) → first split.
             ds = ds[next(iter(ds.keys()))]
@@ -7894,7 +7927,7 @@ def admin_import_from_hf_decode_preview():
 
         # Best-effort split size so the UI can render "k of N".
         from benchhub.hf_search import fetch_split_row_counts
-        counts = fetch_split_row_counts(repo_id) or {}
+        counts = fetch_split_row_counts(repo_id, config_name=config_name) or {}
         total = counts.get(split) if split else (
             next(iter(counts.values()), None) if counts else None)
         return jsonify({'sample_name': f'row {sample_index}',

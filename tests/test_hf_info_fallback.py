@@ -224,3 +224,40 @@ def test_preview_redirects_when_both_sources_fail(admin_client, monkeypatch):
                           data={'repo_id': 'broken/repo'},
                           follow_redirects=False)
     assert r.status_code == 302
+
+
+def test_fetch_dataset_info_selects_named_config_and_lists_all(monkeypatch):
+    body = json.dumps({
+        "dataset_info": {
+            "core": {"features": {"image": {"_type": "Image"}},
+                     "splits": {"train": {}, "test": {}}},
+            "reddit": {"features": {"text": {"_type": "Value", "dtype": "string"}},
+                       "splits": {"train": {}}},
+        }
+    }).encode()
+    _patch_fetch(monkeypatch, body)
+    # Default: first config, but the full list is exposed.
+    info = hfs.fetch_dataset_info("x/openfake")
+    assert info["config_name"] == "core"
+    assert info["config_names"] == ["core", "reddit"]
+    assert set(info["features"]) == {"image"}
+    # Named config wins.
+    info = hfs.fetch_dataset_info("x/openfake", config_name="reddit")
+    assert info["config_name"] == "reddit"
+    assert set(info["features"]) == {"text"}
+    assert info["splits"] == ["train"]
+    # Unknown config falls back to the first rather than failing.
+    info = hfs.fetch_dataset_info("x/openfake", config_name="nope")
+    assert info["config_name"] == "core"
+
+
+def test_fetch_split_row_counts_filters_by_config(monkeypatch):
+    body = json.dumps({
+        "size": {"splits": [
+            {"config": "core", "split": "train", "num_rows": 100},
+            {"config": "reddit", "split": "train", "num_rows": 7},
+        ]}
+    }).encode()
+    _patch_fetch(monkeypatch, body)
+    assert hfs.fetch_split_row_counts("x/y")["train"] == 100          # legacy: first wins
+    assert hfs.fetch_split_row_counts("x/y", config_name="reddit") == {"train": 7}

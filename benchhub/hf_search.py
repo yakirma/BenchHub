@@ -135,7 +135,8 @@ _HF_DATASETS_SERVER = "https://datasets-server.huggingface.co/size"
 _HF_DATASETS_SERVER_INFO = "https://datasets-server.huggingface.co/info"
 
 
-def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, list[str]]:
+def fetch_class_label_vocabs(repo_id: str, *, config_name: str | None = None,
+                             timeout: int = 10) -> dict[str, list[str]]:
     """Per-column ClassLabel vocab for an HF dataset.
 
     Hits HF's `datasets-server` `/info` endpoint, walks each config's
@@ -143,8 +144,9 @@ def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, li
     feature whose `_type` is `ClassLabel` (which exposes the
     classification class names as a list).
 
-    First config wins on name collisions — the import flow only
-    materialises one config anyway. Returns `{}` on network failure,
+    Pass `config_name` to read only that config's features (multi-config
+    repos can have different vocabs per config); without it, first
+    config wins on name collisions. Returns `{}` on network failure,
     non-JSON, or any feature-walk surprise; the preview UI degrades
     cleanly to a blank textarea the admin can fill in by hand.
     """
@@ -169,6 +171,8 @@ def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, li
     configs = doc.get("dataset_info") or {}
     if not isinstance(configs, dict):
         return {}
+    if config_name and config_name in configs:
+        configs = {config_name: configs[config_name]}
     out: dict[str, list[str]] = {}
     for _cfg_name, cfg in configs.items():
         if not isinstance(cfg, dict):
@@ -187,18 +191,27 @@ def fetch_class_label_vocabs(repo_id: str, *, timeout: int = 10) -> dict[str, li
     return out
 
 
-def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
+def fetch_dataset_info(repo_id: str, *, config_name: str | None = None,
+                       timeout: int = 10) -> dict | None:
     """Fall-back schema source when Croissant isn't available.
 
     HF's `datasets-server /info` returns the same `features` dict
     HF's own viewer uses — broader coverage than Croissant (it
     indexes anything HF can stream, not just YAML-conformant
-    repos). Returns the first config's `{features, splits}`, or
-    None on any failure / shape surprise.
+    repos). Returns one config's `{features, splits}` — the named
+    `config_name` when given (falling back to the first config if
+    it's unknown), else the first config — or None on any failure /
+    shape surprise.
 
     Shape returned:
         {"features": {col: {"_type": "...", ...}},
-         "splits": ["train", "test", ...]}
+         "splits": ["train", "test", ...],
+         "config_name": "<selected config>",
+         "config_names": ["core", "reddit", ...]}
+
+    `config_names` lets the preview form render a config picker for
+    multi-config datasets (e.g. OpenFake's core/reddit) — without an
+    explicit config, `load_dataset` refuses such repos outright.
 
     Callers convert this to the same `CroissantSchema` the preview
     flow consumes — see benchhub.hf_croissant.schema_from_hf_features.
@@ -224,10 +237,12 @@ def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
     configs = doc.get("dataset_info") or {}
     if not isinstance(configs, dict) or not configs:
         return None
-    # First config wins. Multi-config datasets pick one config at
-    # materialize time anyway; the user can switch via the form's
-    # split dropdown if they need a different config.
-    _first_name, cfg = next(iter(configs.items()))
+    config_names = [n for n in configs.keys() if isinstance(n, str)]
+    if config_name and config_name in configs:
+        selected = config_name
+    else:
+        selected = next(iter(configs.keys()))
+    cfg = configs[selected]
     if not isinstance(cfg, dict):
         return None
     features = cfg.get("features")
@@ -243,7 +258,8 @@ def fetch_dataset_info(repo_id: str, *, timeout: int = 10) -> dict | None:
                 splits.append(s)
             elif isinstance(s, dict) and isinstance(s.get("name"), str):
                 splits.append(s["name"])
-    return {"features": features, "splits": splits}
+    return {"features": features, "splits": splits,
+            "config_name": selected, "config_names": config_names}
 
 
 def fetch_hf_card_description(repo_id: str, *, timeout: int = 10) -> str | None:
@@ -372,14 +388,15 @@ def _fetch_size_doc(repo_id: str, *, timeout: int) -> dict | None:
     return doc if isinstance(doc, dict) else None
 
 
-def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]:
+def fetch_split_row_counts(repo_id: str, *, config_name: str | None = None,
+                           timeout: int = 10) -> dict[str, int]:
     """Per-split row count for an HF dataset.
 
     Hits HF's `datasets-server` `/size` endpoint, which returns one
     entry per (config, split) with a `num_rows` field. We collapse
-    that to `{split_name: num_rows}` — for multi-config datasets the
-    first config's count wins, since the import flow downloads from
-    one config at a time anyway.
+    that to `{split_name: num_rows}`. Pass `config_name` to count one
+    specific config's splits; without it, the first config seen wins
+    on split-name collisions (legacy behavior).
 
     Returns `{}` on network failure / non-JSON / unknown shape so
     the preview UI degrades to "no count available" rather than 500.
@@ -391,6 +408,8 @@ def fetch_split_row_counts(repo_id: str, *, timeout: int = 10) -> dict[str, int]
     out: dict[str, int] = {}
     for s in splits:
         if not isinstance(s, dict):
+            continue
+        if config_name and s.get("config") not in (config_name, None):
             continue
         name = s.get("split")
         n = s.get("num_rows")

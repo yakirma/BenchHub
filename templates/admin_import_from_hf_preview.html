@@ -184,11 +184,26 @@
         </div>
 
             <div class="row g-3 mb-4">
-                <div class="col-md-6">
+                <div class="col-md-{{ 3 if config_names and config_names|length > 1 else 6 }}">
                     <label class="form-label fw-semibold mb-1" for="dataset-name">Dataset name in BH</label>
                     <input type="text" id="dataset-name" name="dataset_name"
                            class="form-control" value="{{ schema.name or repo_id }}" required>
                 </div>
+                {% if config_names and config_names|length > 1 %}
+                <div class="col-md-3">
+                    <label class="form-label fw-semibold mb-1" for="config-name">Config</label>
+                    {# Multi-config repo (e.g. core/reddit): load_dataset
+                       refuses these without a config. Switching re-POSTs the
+                       preview so the schema/splits reflect the chosen config;
+                       the select also rides the commit form so the import +
+                       decode preview use the same config. #}
+                    <select id="config-name" name="config_name" class="form-select">
+                        {% for c in config_names %}
+                        <option value="{{ c }}" {{ 'selected' if c == selected_config }}>{{ c }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
                 <div class="col-md-3">
                     <label class="form-label fw-semibold mb-1" for="split">Split</label>
                     <select id="split" name="split" class="form-select">
@@ -951,6 +966,7 @@
                 body: JSON.stringify({
                     repo_id: {{ repo_id | tojson }},
                     split: document.getElementById('split')?.value || '',
+                    config_name: document.getElementById('config-name')?.value || '',
                     sample_index: idx, fields,
                 })
             });
@@ -993,6 +1009,28 @@
         }
     }
     btn.addEventListener('click', () => runPreview(0));
+})();
+
+// ---- Config switcher (multi-config repos) --------------------------
+// Changing the config changes the schema/splits, so re-POST the preview
+// route to rebuild the whole form for the chosen config.
+(function () {
+    const sel = document.getElementById('config-name');
+    if (!sel) return;
+    sel.addEventListener('change', () => {
+        const f = document.createElement('form');
+        f.method = 'post';
+        f.action = '{{ url_for("admin_import_from_hf_preview") }}';
+        const add = (n, v) => {
+            const i = document.createElement('input');
+            i.type = 'hidden'; i.name = n; i.value = v;
+            f.appendChild(i);
+        };
+        add('repo_id', {{ repo_id | tojson }});
+        add('config_name', sel.value);
+        document.body.appendChild(f);
+        f.submit();
+    });
 })();
 </script>
 {% endblock %}

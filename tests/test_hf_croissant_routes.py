@@ -22,6 +22,17 @@ def _no_card_network(monkeypatch):
     monkeypatch.setattr('benchhub.hf_search.card_summary', lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_info_network(monkeypatch):
+    """The preview route now always probes /info for config discovery;
+    default it to None (no-config-info) so croissant-path tests stay off
+    the network. Multi-config tests override these."""
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_info',
+                        lambda *a, **k: None)
+    monkeypatch.setattr('benchhub.hf_search.fetch_class_label_vocabs',
+                        lambda *a, **k: {})
+
+
 @pytest.fixture
 def admin_user(db_session):
     u = User(
@@ -792,3 +803,124 @@ def test_decode_preview_requires_login(client, db_session):
     r = client.post('/admin/import_from_hf/decode_preview', json={
         'repo_id': 'x/y', 'fields': [{'name': 'a', 'kind': 'text'}]})
     assert r.status_code == 302
+
+
+# --- Multi-config datasets (e.g. OpenFake core/reddit) --------------------
+
+_MULTI_CFG_INFO = {
+    'core': {'features': {'image': {'_type': 'Image'},
+                          'label': {'_type': 'ClassLabel',
+                                    'names': ['real', 'fake']}},
+             'splits': ['train', 'test'],
+             'config_name': 'core',
+             'config_names': ['core', 'reddit']},
+    'reddit': {'features': {'text': {'_type': 'Value', 'dtype': 'string'}},
+               'splits': ['train'],
+               'config_name': 'reddit',
+               'config_names': ['core', 'reddit']},
+}
+
+
+def _stub_multi_config_info(monkeypatch):
+    def fake_info(repo_id, *, config_name=None, **kw):
+        return _MULTI_CFG_INFO.get(config_name or 'core')
+    monkeypatch.setattr('benchhub.hf_search.fetch_dataset_info', fake_info)
+    monkeypatch.setattr('benchhub.hf_search.fetch_split_row_counts',
+                        lambda repo_id, **kw: {})
+    # No Croissant for this repo → /info fallback drives the schema.
+    from benchhub import hf_croissant as hfc
+    monkeypatch.setattr(hfc, 'fetch_croissant',
+                        lambda repo_id, **kw: (_ for _ in ()).throw(
+                            hfc.CroissantFetchError('none')))
+
+
+def test_preview_renders_config_picker_for_multi_config(admin_client, monkeypatch):
+    _stub_multi_config_info(monkeypatch)
+    r = admin_client.post('/admin/import_from_hf/preview',
+                          data={'repo_id': 'x/openfake'})
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert 'id="config-name"' in body
+    assert '<option value="core" selected>' in body      # first = default
+    assert '<option value="reddit" >' in body or '<option value="reddit">' in body
+    assert 'image' in body                                # core's schema
+
+
+def test_preview_switches_schema_when_config_chosen(admin_client, monkeypatch):
+    _stub_multi_config_info(monkeypatch)
+    r = admin_client.post('/admin/import_from_hf/preview',
+                          data={'repo_id': 'x/openfake',
+                                'config_name': 'reddit'})
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert '<option value="reddit" selected>' in body
+    # reddit's schema (text column), not core's image column rows
+    assert 'data-field-name="text"' in body
+    assert 'data-field-name="image"' not in body
+
+
+def test_commit_threads_config_name_to_task(admin_client, monkeypatch):
+    import types as _types
+
+    import tasks as _tasks
+    calls = {}
+    monkeypatch.setattr(_tasks.run_hf_import, 'delay',
+                        lambda **kw: calls.update(kw) or _types.SimpleNamespace(id='t9'))
+    r = admin_client.post('/admin/import_from_hf/commit', data={
+        'repo_id': 'x/openfake', 'dataset_name': 'of',
+        'split': 'test', 'config_name': 'reddit',
+        'sample_cap': '5', 'sampling': 'head', 'sampling_seed': '42',
+        'field_name': ['text'], 'field_source_column': ['text'],
+        'field_kind': ['text'], 'field_params': [''],
+    }, follow_redirects=False)
+    assert r.status_code == 302, r.data
+    assert calls['config_name'] == 'reddit'
+
+
+def test_decode_preview_passes_config_to_load_dataset(admin_client, monkeypatch):
+    seen = {}
+
+    def _stub(monkeypatch_rows):
+        import sys
+        import types as _t
+
+        class _Stream:
+            features = {}
+            def __iter__(self): return iter(monkeypatch_rows)
+
+        mod = _t.ModuleType('datasets')
+
+        def load_dataset(repo_id, **kw):
+            seen.update(kw)
+            if not kw.get('name'):
+                raise ValueError(
+                    "Config name is missing. Please pick one among the "
+                    "available configs: ['core', 'reddit']")
+            return _Stream()
+
+        mod.load_dataset = load_dataset
+        mod.get_dataset_config_names = lambda repo_id, **kw: ['core', 'reddit']
+        monkeypatch.setitem(sys.modules, 'datasets', mod)
+
+    _stub([{'text': 'hello'}])
+    monkeypatch.setattr('benchhub.hf_search.fetch_split_row_counts',
+                        lambda repo_id, **kw: {})
+
+    # Explicit config from the form → passed straight through.
+    r = admin_client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/openfake', 'split': 'train', 'config_name': 'reddit',
+        'fields': [{'name': 'text', 'source_column': 'text',
+                    'kind': 'text', 'params': {}}]})
+    assert r.status_code == 200, r.data
+    assert seen.get('name') == 'reddit'
+    assert r.get_json()['fields'][0]['ok']
+
+    # No config (stale form) → auto-fallback to the first available one.
+    seen.clear()
+    r = admin_client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/openfake', 'split': 'train',
+        'fields': [{'name': 'text', 'source_column': 'text',
+                    'kind': 'text', 'params': {}}]})
+    assert r.status_code == 200, r.data
+    assert seen.get('name') == 'core'
+    assert r.get_json()['fields'][0]['ok']

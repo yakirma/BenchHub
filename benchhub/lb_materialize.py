@@ -277,6 +277,7 @@ def materialize_for_lb(
             dataset_name=dataset.name,
             fields=fields, hf_token=None,
             sampling='head', seed=42, sample_name_from=None,
+            config_name=meta.get('config_name') or None,
             progress_cb=_stage_progress,
             # IMPORTANT: do NOT pass preview_only=True here. Stage C
             # materialisations are full-resolution.
