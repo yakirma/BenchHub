@@ -602,7 +602,7 @@ def distinct_token_values(spec, files, token):
 
 
 def materialize_file_tree(spec, files, fetch, staging_dir, *,
-                          sample_cap=-1, dataset_name='dataset',
+                          sample_cap=-1, sample_offset=0, dataset_name='dataset',
                           token_filter=None, progress_cb=None):
     """Resolve + decode every field into a typed-manifest staging dir.
 
@@ -624,6 +624,10 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
         samples = [s for s in samples
                    if all(s['tokens'].get(k) == v for k, v in token_filter.items())]
     total_in_split = len(samples)
+    # `sample_offset` skips into the resolved list before the cap — the
+    # decode preview uses (offset=i, cap=1) to materialize the i-th sample.
+    if sample_offset:
+        samples = samples[sample_offset:]
     if sample_cap and sample_cap > 0:
         samples = samples[:sample_cap]
     n = len(samples)

@@ -7792,6 +7792,133 @@ def admin_import_from_hf_preview():
     )
 
 
+@app.route('/admin/import_from_hf/decode_preview', methods=['POST'])
+@login_required
+def admin_import_from_hf_decode_preview():
+    """Decode ONE row of the chosen split through the column→kind mapping
+    and return per-field previews (thumbnail or text) — the tabular twin
+    of `import_from_files_decode_preview`, so the user confirms the
+    interpretation (mask vs image, label vocab, …) before committing.
+
+    Uses `load_dataset(streaming=True)` so only the head of the split is
+    read; `sample_index` skips forward through the stream (capped — the
+    skip cost is linear), letting the UI's prev/next cycle samples. Each
+    value goes through `_row_value_to_typed`, the exact conversion the
+    real import uses, so what you see is what materializes."""
+    body = request.json or {}
+    repo_id = (body.get('repo_id') or '').strip()
+    split = (body.get('split') or '').strip() or None
+    fields = body.get('fields') or []
+    try:
+        sample_index = max(0, int(body.get('sample_index') or 0))
+    except (TypeError, ValueError):
+        sample_index = 0
+    MAX_PREVIEW_INDEX = 200   # streaming skip is linear; keep it snappy
+    sample_index = min(sample_index, MAX_PREVIEW_INDEX)
+    if not repo_id or not fields:
+        return jsonify({'error': 'repo_id and fields required'}), 400
+    try:
+        import base64
+        import itertools
+
+        import numpy as _np
+
+        from benchhub.hf_materialize import _row_value_to_typed
+        from benchhub.preview import audio_preview, render_preview
+
+        from datasets import load_dataset  # heavy; gate to call time
+
+        ds_kwargs = {'streaming': True, 'trust_remote_code': False}
+        token = getattr(g.current_user, 'hf_token', None) or None
+        if token:
+            ds_kwargs['token'] = token
+        if split:
+            ds_kwargs['split'] = split
+        ds = load_dataset(repo_id, **ds_kwargs)
+        if hasattr(ds, 'keys') and not hasattr(ds, 'features'):
+            # IterableDatasetDict (no split given) → first split.
+            ds = ds[next(iter(ds.keys()))]
+
+        # Lift ClassLabel vocabs into label-field params (mirrors the
+        # materializer) so the preview shows "3 (cat)", not just "3".
+        feats = getattr(ds, 'features', None) or {}
+        for f in fields:
+            if f.get('kind') != 'label':
+                continue
+            col = f.get('source_column') or f.get('name')
+            names = getattr(feats.get(col) if isinstance(feats, dict) else None,
+                            'names', None)
+            if names:
+                f.setdefault('params', {}).setdefault('names', list(names))
+
+        row = next(itertools.islice(iter(ds), sample_index, sample_index + 1),
+                   None)
+        if row is None:
+            return jsonify({'error': f'split has no row {sample_index}'}), 400
+
+        fields_out = []
+        for f in fields:
+            kind = (f.get('kind') or '').strip()
+            col = f.get('source_column') or f.get('name')
+            entry = {'name': f.get('name') or col, 'kind': kind, 'ok': False}
+            value = row.get(col) if isinstance(row, dict) else None
+            fparams = dict(f.get('params') or {})
+            inst = _row_value_to_typed(value, kind, fparams)
+            if inst is None:
+                entry['error'] = ('column value is empty' if value is None else
+                                  f"value doesn't decode as kind '{kind}'")
+                fields_out.append(entry); continue
+            try:
+                if kind in ('image', 'mask'):
+                    png, _ext = render_preview(kind, inst.encode())
+                elif kind == 'depth':
+                    png, _ext = render_preview('depth', inst.array)
+                elif kind == 'audio':
+                    png = audio_preview(_np.asarray(inst.waveform),
+                                        inst.sample_rate)
+                else:
+                    png = None
+                if png is not None:
+                    entry['image'] = ('data:image/jpeg;base64,'
+                                      + base64.b64encode(png).decode())
+                else:
+                    txt = json.dumps(_jsonable_preview_value(value, inst, fparams),
+                                     ensure_ascii=False, default=str)
+                    entry['text'] = txt[:500]
+                entry['ok'] = True
+            except Exception as de:
+                # The value coerced into an instance but won't encode /
+                # render — still a kind-vs-value mismatch to the user.
+                entry['error'] = f"value doesn't decode as kind '{kind}': {de}"
+            fields_out.append(entry)
+
+        # Best-effort split size so the UI can render "k of N".
+        from benchhub.hf_search import fetch_split_row_counts
+        counts = fetch_split_row_counts(repo_id) or {}
+        total = counts.get(split) if split else (
+            next(iter(counts.values()), None) if counts else None)
+        return jsonify({'sample_name': f'row {sample_index}',
+                        'sample_index': sample_index,
+                        'total_samples': total, 'fields': fields_out})
+    except Exception as e:
+        return jsonify({'error': f'preview failed: {e}'}), 500
+
+
+def _jsonable_preview_value(value, inst, params=None):
+    """Human-readable preview payload for an inline (non-visual) kind:
+    show the decoded interpretation where it adds meaning (label index →
+    class name from the field's params vocab), else the raw row value
+    coerced to JSON-safe form."""
+    import benchhub as bh
+    from benchhub.hf_materialize import _to_jsonable
+    if isinstance(inst, bh.Label):
+        names = (params or {}).get('names') or []
+        v = inst.value
+        if isinstance(v, int) and 0 <= v < len(names):
+            return {'value': v, 'name': names[v]}
+    return _to_jsonable(value)
+
+
 # ===================== File-tree HF importer (user-declared sources) =====
 
 def _parse_file_tree_spec(form):
@@ -8215,13 +8342,19 @@ def import_from_files_from_roles():
 @app.route('/import_from_files/decode_preview', methods=['POST'])
 @login_required
 def import_from_files_decode_preview():
-    """Decode the FIRST resolved sample through the declared spec and
-    return per-field previews so the user can confirm the interpretation
-    (e.g. that depth frame 0 lines up with image 0) before committing."""
+    """Decode ONE resolved sample (`sample_index`, default the first)
+    through the declared spec and return per-field previews so the user
+    can confirm the interpretation (e.g. that depth frame i lines up with
+    image i) before committing. The UI's prev/next controls re-call this
+    with a different index to cycle through samples."""
     import tempfile
     repo_id = (request.json or {}).get('repo_id', '').strip()
     prefix = ((request.json or {}).get('prefix') or '').strip().strip('/')
     spec = (request.json or {}).get('spec') or []
+    try:
+        sample_index = max(0, int((request.json or {}).get('sample_index') or 0))
+    except (TypeError, ValueError):
+        sample_index = 0
     if not repo_id or not spec:
         return jsonify({'error': 'repo_id and spec required'}), 400
     try:
@@ -8239,10 +8372,13 @@ def import_from_files_decode_preview():
         # (fetch lets a container-index list its members).
         samples, _ = resolve_samples(spec, files, fetch=_fetch)
         n_total = len(samples)
+        if n_total:
+            sample_index = min(sample_index, n_total - 1)
 
         with tempfile.TemporaryDirectory(prefix='bh_ftprev_') as staging:
             materialize_file_tree(spec, files, _fetch, staging,
-                                  sample_cap=1, dataset_name='preview')
+                                  sample_cap=1, sample_offset=sample_index,
+                                  dataset_name='preview')
             import json as _json
             manifest = _json.load(open(os.path.join(staging, 'manifest.json')))
             sname = manifest['samples'][0] if manifest['samples'] else None
@@ -8257,7 +8393,7 @@ def import_from_files_decode_preview():
                         if os.path.splitext(fn)[0] == sname:
                             hit = os.path.join(fdir, fn); break
                 if hit is None:
-                    entry['error'] = 'no file resolved for the first sample'
+                    entry['error'] = 'no file resolved for this sample'
                     fields_out.append(entry); continue
                 try:
                     if f['kind'] in ('image', 'mask', 'depth'):
@@ -8278,7 +8414,7 @@ def import_from_files_decode_preview():
                     entry['error'] = f'decode failed: {de}'
                 fields_out.append(entry)
         return jsonify({'sample_name': sname, 'total_samples': n_total,
-                        'fields': fields_out})
+                        'sample_index': sample_index, 'fields': fields_out})
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:

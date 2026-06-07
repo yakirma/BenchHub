@@ -142,6 +142,37 @@ def test_inspect_no_toggle_for_single_folder(user_client, monkeypatch):
     assert 'id="folder-reading-toggle"' not in r.data.decode()
 
 
+def test_decode_preview_cycles_samples_by_index(user_client, monkeypatch, tmp_path):
+    """`sample_index` previews the i-th resolved sample (prev/next UI);
+    the response echoes the index + total so the controls can clamp."""
+    client, _ = user_client
+    (tmp_path / 'txt').mkdir()
+    for i in range(3):
+        (tmp_path / 'txt' / f's{i}.txt').write_text(f'value-{i}')
+    files = [f'txt/s{i}.txt' for i in range(3)]
+    _stub_hfapi(monkeypatch, files)
+    sys.modules['huggingface_hub'].hf_hub_download = \
+        lambda repo, rel, **k: str(tmp_path / rel)
+
+    spec = [{'name': 'note', 'kind': 'text', 'role': 'gt',
+             'loader': 'file', 'pattern': 'txt/{id}.txt'}]
+    r = client.post('/import_from_files/decode_preview',
+                    json={'repo_id': 'a/b', 'spec': spec, 'sample_index': 1})
+    assert r.status_code == 200, r.data
+    data = r.get_json()
+    assert data['sample_index'] == 1
+    assert data['sample_name'] == 's1'
+    assert data['total_samples'] == 3
+    note = next(f for f in data['fields'] if f['name'] == 'note')
+    assert note['ok'] and note['text'] == 'value-1'
+
+    # Out-of-range index clamps to the last sample instead of erroring.
+    r = client.post('/import_from_files/decode_preview',
+                    json={'repo_id': 'a/b', 'spec': spec, 'sample_index': 99})
+    data = r.get_json()
+    assert data['sample_index'] == 2 and data['sample_name'] == 's2'
+
+
 def test_commit_enqueues_and_creates_dataset(user_client, monkeypatch):
     client, u = user_client
     files = [f'train/i_0/normal/{i}.png' for i in range(3)]

@@ -515,36 +515,57 @@
         }
     });
 
-    document.getElementById('decode-preview-btn').addEventListener('click', async () => {
+    // Decode preview with prev/next cycling: `runDecodePreview(i)`
+    // re-fetches sample i; the rendered header carries ‹ › controls.
+    async function runDecodePreview(idx) {
         const out = document.getElementById('preview-out');
         const v = validateRows();
         if (!v.ok) { showErrors(v); return; }
         clearErrors();
         const spec = collectSpec();
         if (!spec.length) { out.innerHTML = '<div class="alert alert-warning">Add a modality first.</div>'; return; }
-        out.innerHTML = '<div class="text-body-secondary small">Decoding first sample…</div>';
+        out.innerHTML = '<div class="text-body-secondary small">Decoding sample ' + (idx + 1) + '…</div>';
         try {
             const resp = await fetch('{{ url_for("import_from_files_decode_preview") }}', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({repo_id: '{{ repo_id }}', prefix: '{{ prefix }}', spec})
+                body: JSON.stringify({repo_id: '{{ repo_id }}', prefix: '{{ prefix }}',
+                                      sample_index: idx, spec})
             });
             const data = await resp.json();
             if (data.error) { out.innerHTML = '<div class="alert alert-danger">' + data.error + '</div>'; return; }
+            const cur = data.sample_index || 0, total = data.total_samples || 0;
             let html = '<div class="card border-0 shadow-sm"><div class="card-body p-3">';
-            html += '<div class="small text-body-secondary mb-2">Sample <code>' + (data.sample_name||'?') +
-                    '</code> · ' + data.total_samples.toLocaleString() + ' samples total</div><div class="row g-3">';
+            html += '<div class="d-flex align-items-center gap-2 small text-body-secondary mb-2">' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" id="prev-sample-btn"' +
+                    (cur <= 0 ? ' disabled' : '') + ' title="Previous sample">&lsaquo;</button>' +
+                    '<span>Sample <code>' + (data.sample_name||'?') + '</code> · ' + (cur + 1).toLocaleString() +
+                    ' of ' + total.toLocaleString() + '</span>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" id="next-sample-btn"' +
+                    (cur >= total - 1 ? ' disabled' : '') + ' title="Next sample">&rsaquo;</button>' +
+                    '</div><div class="row g-3">';
             data.fields.forEach(f => {
                 html += '<div class="col-md-4"><div class="fw-semibold small">' + f.name +
                         ' <span class="text-body-secondary">(' + f.kind + ')</span></div>';
                 if (f.ok && f.image) html += '<img src="' + f.image + '" class="img-fluid rounded border mt-1">';
-                else if (f.ok && f.text !== undefined) html += '<pre class="small border rounded p-2 mt-1 mb-0" style="max-height:160px;overflow:auto;">' + (f.text||'') + '</pre>';
+                else if (f.ok && f.text !== undefined) html += '<pre class="small border rounded p-2 mt-1 mb-0" style="max-height:160px;overflow:auto;"></pre>';
                 else html += '<div class="text-danger small mt-1">' + (f.error||'no preview') + '</div>';
                 html += '</div>';
             });
             html += '</div></div></div>';
             out.innerHTML = html;
+            // Remote file contents land via textContent, not innerHTML.
+            const pres = out.querySelectorAll('pre');
+            let pi = 0;
+            data.fields.forEach(f => {
+                if (f.ok && !f.image && f.text !== undefined) pres[pi++].textContent = f.text || '';
+            });
+            const prev = document.getElementById('prev-sample-btn');
+            const next = document.getElementById('next-sample-btn');
+            if (prev) prev.addEventListener('click', () => runDecodePreview(cur - 1));
+            if (next) next.addEventListener('click', () => runDecodePreview(cur + 1));
         } catch (e) { out.innerHTML = '<div class="alert alert-danger">' + e + '</div>'; }
-    });
+    }
+    document.getElementById('decode-preview-btn').addEventListener('click', () => runDecodePreview(0));
 
     // --- Draft autosave + leave warning + restore ----------------------
     // Mapping a file-tree dataset is a lot of typing; never silently lose

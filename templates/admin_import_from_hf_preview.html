@@ -336,6 +336,9 @@
             </p>
 
             <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-secondary" id="hf-decode-preview-btn">
+                    <i class="bi bi-eye me-1"></i>Decode preview (1 sample)
+                </button>
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-download me-1"></i>Download &amp; import
                 </button>
@@ -343,6 +346,7 @@
                     Cancel
                 </a>
             </div>
+            <div id="hf-preview-out" class="mt-3"></div>
             <p class="form-text small mt-2 mb-0">
                 The download runs in the background. You can leave this
                 page; the dataset row shows live progress.
@@ -907,6 +911,88 @@
             clear();
         }
     }
+})();
+
+// ---- Decode preview (1 sample) with prev/next cycling -------------
+// Streams ONE row of the chosen split through the current column→kind
+// mapping server-side (the same conversion the import uses) and shows
+// per-field thumbnails / values, so kind mistakes surface before the
+// download. ‹ › steps to other rows.
+(function () {
+    const btn = document.getElementById('hf-decode-preview-btn');
+    const out = document.getElementById('hf-preview-out');
+    if (!btn || !out) return;
+
+    function collectFields() {
+        return [...document.querySelectorAll('tr.field-row')].map((row) => {
+            let params = {};
+            const pj = row.querySelector('input.params-json');
+            if (pj && pj.value) { try { params = JSON.parse(pj.value); } catch (e) {} }
+            return {
+                name: row.querySelector('input[name=field_name]')?.value || '',
+                source_column: row.querySelector('input[name=field_source_column]')?.value || '',
+                kind: row.querySelector('select[name=field_kind]')?.value || '',
+                params,
+            };
+        }).filter((f) => f.name && f.kind);
+    }
+
+    async function runPreview(idx) {
+        const fields = collectFields();
+        if (!fields.length) {
+            out.innerHTML = '<div class="alert alert-warning">No fields to preview.</div>';
+            return;
+        }
+        out.innerHTML = '<div class="text-body-secondary small">Streaming row ' + (idx + 1) +
+                        ' — first preview can take a few seconds…</div>';
+        try {
+            const resp = await fetch('{{ url_for("admin_import_from_hf_decode_preview") }}', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    repo_id: {{ repo_id | tojson }},
+                    split: document.getElementById('split')?.value || '',
+                    sample_index: idx, fields,
+                })
+            });
+            const data = await resp.json();
+            if (data.error) { out.innerHTML = '<div class="alert alert-danger">' + data.error + '</div>'; return; }
+            const cur = data.sample_index || 0;
+            const total = data.total_samples;   // may be null (no count available)
+            let html = '<div class="card border-0 shadow-sm"><div class="card-body p-3">';
+            html += '<div class="d-flex align-items-center gap-2 small text-body-secondary mb-2">' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" id="hf-prev-sample"' +
+                    (cur <= 0 ? ' disabled' : '') + ' title="Previous row">&lsaquo;</button>' +
+                    '<span>Row ' + (cur + 1).toLocaleString() +
+                    (total ? ' of ' + total.toLocaleString() : '') + '</span>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" id="hf-next-sample"' +
+                    (total && cur >= total - 1 ? ' disabled' : '') + ' title="Next row">&rsaquo;</button>' +
+                    '</div><div class="row g-3">';
+            data.fields.forEach((f) => {
+                html += '<div class="col-md-4"><div class="fw-semibold small">' + f.name +
+                        ' <span class="text-body-secondary">(' + f.kind + ')</span></div>';
+                if (f.ok && f.image) html += '<img src="' + f.image + '" class="img-fluid rounded border mt-1">';
+                else if (f.ok && f.text !== undefined) html += '<pre class="small border rounded p-2 mt-1 mb-0" style="max-height:160px;overflow:auto;"></pre>';
+                else html += '<div class="text-danger small mt-1">' + (f.error || 'no preview') + '</div>';
+                html += '</div>';
+            });
+            html += '</div></div></div>';
+            out.innerHTML = html;
+            // Text payloads land via textContent — row values are
+            // user-controlled remote data; never inject them as HTML.
+            const pres = out.querySelectorAll('pre');
+            let pi = 0;
+            data.fields.forEach((f) => {
+                if (f.ok && !f.image && f.text !== undefined) pres[pi++].textContent = f.text || '';
+            });
+            const prev = document.getElementById('hf-prev-sample');
+            const next = document.getElementById('hf-next-sample');
+            if (prev) prev.addEventListener('click', () => runPreview(cur - 1));
+            if (next) next.addEventListener('click', () => runPreview(cur + 1));
+        } catch (e) {
+            out.innerHTML = '<div class="alert alert-danger">' + e + '</div>';
+        }
+    }
+    btn.addEventListener('click', () => runPreview(0));
 })();
 </script>
 {% endblock %}

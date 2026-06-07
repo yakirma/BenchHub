@@ -413,6 +413,24 @@ def test_gz_single_file_loader(tmp_path):
     assert json.loads((st / "meta" / f"{man['samples'][0]}.json").read_text()) == {"v": 0}
 
 
+def test_materialize_sample_offset_picks_nth_sample(tmp_path):
+    """(sample_offset=i, sample_cap=1) materializes exactly the i-th
+    resolved sample — the decode preview's prev/next cycling contract."""
+    root = tmp_path / "repo"
+    (root / "txt").mkdir(parents=True)
+    for i in range(3):
+        (root / "txt" / f"s{i}.txt").write_text(f"value-{i}")
+    files = [f"txt/s{i}.txt" for i in range(3)]
+    spec = [{"name": "note", "kind": "text", "role": "gt",
+             "loader": "file", "pattern": "txt/{id}.txt"}]
+    st = tmp_path / "staging"
+    materialize_file_tree(spec, files, _fetch(str(root)), str(st),
+                          sample_cap=1, sample_offset=1, dataset_name="o")
+    man = json.loads((st / "manifest.json").read_text())
+    assert man["samples"] == ["s1"]
+    assert (st / "note" / "s1.txt").read_text() == "value-1"
+
+
 def test_inspect_suggests_label_folder_pattern():
     """`<class>/<id>.png` with multiple class folders → a
     {label}/{id}.png suggestion (folder = label), preferred + first; the

@@ -688,3 +688,107 @@ def test_preview_warns_on_json_fallback_fields(admin_client, monkeypatch):
                              data={'repo_id': 'x/y'}).data.decode()
     assert 'Heads up before you import' in body
     assert 'raw JSON' in body
+
+
+# --- Decode preview (1 sample, streaming) --------------------------------
+
+def _stub_datasets_streaming(monkeypatch, rows, features=None):
+    """Stub the `datasets` module: load_dataset(streaming=True) yields
+    `rows` (list of dicts) with an optional `.features` map (ClassLabel
+    stand-ins carrying `.names`)."""
+    import sys
+    import types
+
+    class _Stream:
+        def __init__(self):
+            self.features = features or {}
+
+        def __iter__(self):
+            return iter(rows)
+
+    mod = types.ModuleType('datasets')
+    calls = {}
+
+    def load_dataset(repo_id, **kw):
+        calls.update(kw, repo_id=repo_id)
+        assert kw.get('streaming') is True
+        return _Stream()
+
+    mod.load_dataset = load_dataset
+    monkeypatch.setitem(sys.modules, 'datasets', mod)
+    return calls
+
+
+class _ClassLabelStub:
+    def __init__(self, names):
+        self.names = names
+
+
+def test_decode_preview_renders_fields_from_streamed_row(
+        admin_client, monkeypatch):
+    """Row 0 through the column→kind mapping: image → data-URI thumb,
+    label → index + ClassLabel name, text → the string."""
+    import numpy as np
+    from PIL import Image as PILImage
+
+    img = PILImage.fromarray(np.zeros((8, 8, 3), dtype=np.uint8))
+    rows = [
+        {'image': img, 'label': 1, 'caption': 'hello world'},
+        {'image': img, 'label': 0, 'caption': 'second row'},
+    ]
+    _stub_datasets_streaming(
+        monkeypatch, rows,
+        features={'label': _ClassLabelStub(['neg', 'pos'])})
+    monkeypatch.setattr('benchhub.hf_search.fetch_split_row_counts',
+                        lambda repo_id, **k: {'test': 2})
+
+    r = admin_client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/y', 'split': 'test', 'sample_index': 0,
+        'fields': [
+            {'name': 'image', 'source_column': 'image', 'kind': 'image', 'params': {}},
+            {'name': 'label', 'source_column': 'label', 'kind': 'label', 'params': {}},
+            {'name': 'caption', 'source_column': 'caption', 'kind': 'text', 'params': {}},
+        ]})
+    assert r.status_code == 200, r.data
+    data = r.get_json()
+    assert data['sample_index'] == 0 and data['total_samples'] == 2
+    by_name = {f['name']: f for f in data['fields']}
+    assert by_name['image']['ok'] and by_name['image']['image'].startswith('data:image/jpeg;base64,')
+    assert by_name['label']['ok'] and 'pos' in by_name['label']['text']
+    assert by_name['caption']['ok'] and 'hello world' in by_name['caption']['text']
+
+
+def test_decode_preview_sample_index_steps_the_stream(admin_client, monkeypatch):
+    rows = [{'caption': 'first'}, {'caption': 'second'}]
+    _stub_datasets_streaming(monkeypatch, rows)
+    monkeypatch.setattr('benchhub.hf_search.fetch_split_row_counts',
+                        lambda repo_id, **k: {})
+    r = admin_client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/y', 'split': 'test', 'sample_index': 1,
+        'fields': [{'name': 'caption', 'source_column': 'caption',
+                    'kind': 'text', 'params': {}}]})
+    data = r.get_json()
+    assert data['sample_index'] == 1
+    assert 'second' in data['fields'][0]['text']
+
+
+def test_decode_preview_wrong_kind_reports_per_field_error(
+        admin_client, monkeypatch):
+    """A kind that doesn't fit the value (mask on a string column) fails
+    just that field with a readable message — not the whole preview."""
+    _stub_datasets_streaming(monkeypatch, [{'caption': 'not a mask'}])
+    monkeypatch.setattr('benchhub.hf_search.fetch_split_row_counts',
+                        lambda repo_id, **k: {})
+    r = admin_client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/y', 'split': 'test',
+        'fields': [{'name': 'caption', 'source_column': 'caption',
+                    'kind': 'mask', 'params': {}}]})
+    data = r.get_json()
+    f = data['fields'][0]
+    assert not f['ok'] and "doesn't decode as kind 'mask'" in f['error']
+
+
+def test_decode_preview_requires_login(client, db_session):
+    r = client.post('/admin/import_from_hf/decode_preview', json={
+        'repo_id': 'x/y', 'fields': [{'name': 'a', 'kind': 'text'}]})
+    assert r.status_code == 302
