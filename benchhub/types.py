@@ -26,6 +26,15 @@ from typing import Any, ClassVar
 import numpy as np
 from PIL import Image as PILImage
 
+# Optional codecs: importing the plugin registers the format with PIL
+# process-wide. JPEG XL (.jxl) sources are transcoded to canonical PNG at
+# the import boundary, so only the server needs this; a client install
+# without the plugin is a harmless no-op.
+try:
+    import pillow_jxl  # noqa: F401
+except ImportError:
+    pass
+
 
 DTYPES: dict[str, type["DataType"]] = {}
 

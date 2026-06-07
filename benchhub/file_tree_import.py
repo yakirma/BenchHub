@@ -214,6 +214,7 @@ _EXT_KIND_LOADER = {
     'png': ('image', 'file'), 'jpg': ('image', 'file'), 'jpeg': ('image', 'file'),
     'bmp': ('image', 'file'), 'tif': ('image', 'file'), 'tiff': ('image', 'file'),
     'webp': ('image', 'file'), 'gif': ('image', 'file'),
+    'jxl': ('image', 'file'),
     'wav': ('audio', 'file'), 'mp3': ('audio', 'file'), 'flac': ('audio', 'file'),
     'txt': ('text', 'file'), 'json': ('json', 'file'),
     'npz': ('depth', 'npz'), 'npy': ('depth', 'file'),
@@ -499,6 +500,45 @@ def resolve_samples(spec, files, fetch=None):
     return samples, index
 
 
+def _transcode_to_canonical(kind, raw, dest_noext, src_label=''):
+    """Re-encode a non-canonical source (jpg/webp/jxl image, flac/mp3
+    audio, …) into the kind's canonical staging format. Decode failures
+    raise ValueError with a readable message — a wrong kind mapping or an
+    unsupported codec should fail the import loudly, not stage garbage.
+    (The decode preview runs this same path, so users can catch it before
+    committing.)"""
+    dest = dest_noext + _STAGE_EXT[kind]
+    try:
+        if kind in ('image', 'mask'):
+            try:
+                import pillow_jxl  # noqa: F401 — registers .jxl with PIL
+            except ImportError:
+                pass
+            from PIL import Image as _Img
+            im = _Img.open(io.BytesIO(raw))
+            im.load()
+            # Masks keep their integer modes (P / L / I;16 all save as
+            # PNG); photographic oddballs (CMYK, YCbCr…) normalise to RGB.
+            if kind == 'image' and im.mode not in ('RGB', 'RGBA', 'L'):
+                im = im.convert('RGB')
+            im.save(dest, format='PNG')
+        elif kind == 'audio':
+            import soundfile as sf
+            data, sr = sf.read(io.BytesIO(raw))
+            sf.write(dest, data, sr, format='WAV')
+        else:
+            with open(dest, 'wb') as fh:
+                fh.write(raw)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(
+            f"can't decode {os.path.basename(str(src_label)) or 'file'} as "
+            f"{kind} ({type(e).__name__}: {e}) — wrong kind mapping, or a "
+            f"codec the server doesn't have?")
+    return os.path.basename(dest)
+
+
 def _stage_value(kind, raw, dest_noext):
     """Write one decoded value to `dest_noext + ext` and return the
     relative-style basename written. `raw` is either bytes (file loaders)
@@ -782,10 +822,20 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                     src = fetch(_substitute(f['pattern'], s['tokens']))
                     with open(src, 'rb') as fh:
                         raw = fh.read()
-                    # Copy file-backed kinds verbatim with their real ext.
                     ext = os.path.splitext(src)[1] or _STAGE_EXT.get(kind, '')
                     if kind in ('image', 'mask', 'audio'):
-                        shutil.copyfile(src, dest_noext + ext)
+                        # The typed-manifest contract is ONE canonical ext
+                        # per kind (image/mask → .png, audio → .wav); the
+                        # importer's existence check + every downstream
+                        # consumer assume it. Canonical sources copy
+                        # verbatim; anything else (jpg, webp, jxl, flac …)
+                        # transcodes here, at the boundary — so e.g. JXL
+                        # needs its PIL plugin only on the server.
+                        if ext.lower() == _STAGE_EXT[kind]:
+                            shutil.copyfile(src, dest_noext + ext)
+                        else:
+                            _transcode_to_canonical(kind, raw, dest_noext,
+                                                    src_label=src)
                     else:
                         _stage_value(kind, raw, dest_noext)
                 elif loader == 'npz':

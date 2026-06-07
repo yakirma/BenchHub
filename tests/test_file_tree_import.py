@@ -594,3 +594,99 @@ def test_sequence_loader_groups_frames_into_clip(tmp_path):
     assert len(z.namelist()) == 3                     # 3 frames in the clip
     seq = Sequence.decode((st / "video" / f"{s0}.zip").read_bytes(), vf["params"])
     assert len(seq.frames) == 3
+
+
+# --- Canonical-ext transcoding at the staging boundary -------------------
+# The typed-manifest contract is ONE canonical ext per kind (image/mask →
+# .png, audio → .wav). Non-canonical sources (jpg, webp, jxl, flac …) must
+# transcode at staging — verbatim copy used to stage `image/<s>.jpg` and
+# the importer's existence check then failed on the expected `<s>.png`.
+
+def _validate_staging(staging):
+    """The importer's missing-file check, standalone (no DB)."""
+    from pathlib import Path
+    from benchhub.manifest import _DATA_BEARING_ROLES, expected_file_path
+    manifest = json.loads((Path(staging) / "manifest.json").read_text())
+    missing = []
+    for f in manifest["fields"]:
+        if f.get("role", "gt") not in _DATA_BEARING_ROLES:
+            continue
+        for s in manifest["samples"]:
+            if not expected_file_path(staging, f, s).exists():
+                missing.append(f"{f['name']}/{s}")
+    return missing
+
+
+def test_jpg_image_transcodes_to_canonical_png(tmp_path):
+    from PIL import Image as PILImage
+    root = tmp_path / "repo"; (root / "img").mkdir(parents=True)
+    PILImage.fromarray(np.full((8, 8, 3), 120, np.uint8)).save(root / "img" / "a.jpg")
+    spec = [{"name": "image", "kind": "image", "role": "input",
+             "loader": "file", "pattern": "img/{id}.jpg"}]
+    st = tmp_path / "st"
+    materialize_file_tree(spec, ["img/a.jpg"], _fetch(str(root)), str(st),
+                          dataset_name="t")
+    assert (st / "image" / "a.png").exists()       # canonical, not a.jpg
+    assert _validate_staging(st) == []             # importer check passes
+    arr = np.asarray(PILImage.open(st / "image" / "a.png").convert("RGB"))
+    assert abs(int(arr[0, 0, 0]) - 120) <= 3       # jpg-lossy tolerance
+
+
+def test_jxl_image_transcodes_to_canonical_png(tmp_path):
+    pytest.importorskip("pillow_jxl")
+    from PIL import Image as PILImage
+    root = tmp_path / "repo"; (root / "img").mkdir(parents=True)
+    PILImage.fromarray(np.full((8, 8, 3), 64, np.uint8)).save(root / "img" / "a.jxl")
+    spec = [{"name": "image", "kind": "image", "role": "input",
+             "loader": "file", "pattern": "img/{id}.jxl"}]
+    st = tmp_path / "st"
+    materialize_file_tree(spec, ["img/a.jxl"], _fetch(str(root)), str(st),
+                          dataset_name="t")
+    assert (st / "image" / "a.png").exists()
+    assert _validate_staging(st) == []
+    arr = np.asarray(PILImage.open(st / "image" / "a.png").convert("RGB"))
+    assert abs(int(arr[0, 0, 0]) - 64) <= 3
+
+
+def test_flac_audio_transcodes_to_canonical_wav(tmp_path):
+    sf = pytest.importorskip("soundfile")
+    root = tmp_path / "repo"; (root / "au").mkdir(parents=True)
+    wave = np.sin(np.linspace(0, 200, 1600)).astype(np.float32)
+    sf.write(root / "au" / "a.flac", wave, 16000, format="FLAC")
+    spec = [{"name": "audio", "kind": "audio", "role": "input",
+             "loader": "file", "pattern": "au/{id}.flac"}]
+    st = tmp_path / "st"
+    materialize_file_tree(spec, ["au/a.flac"], _fetch(str(root)), str(st),
+                          dataset_name="t")
+    assert (st / "audio" / "a.wav").exists()
+    assert _validate_staging(st) == []
+    data, sr = sf.read(st / "audio" / "a.wav")
+    assert sr == 16000 and len(data) == 1600
+
+
+def test_canonical_png_still_copies_verbatim(tmp_path):
+    from PIL import Image as PILImage
+    root = tmp_path / "repo"; (root / "img").mkdir(parents=True)
+    PILImage.fromarray(np.zeros((8, 8, 3), np.uint8)).save(root / "img" / "a.png")
+    src_bytes = (root / "img" / "a.png").read_bytes()
+    spec = [{"name": "image", "kind": "image", "role": "input",
+             "loader": "file", "pattern": "img/{id}.png"}]
+    st = tmp_path / "st"
+    materialize_file_tree(spec, ["img/a.png"], _fetch(str(root)), str(st),
+                          dataset_name="t")
+    assert (st / "image" / "a.png").read_bytes() == src_bytes  # untouched
+
+
+def test_undecodable_bytes_fail_with_readable_error(tmp_path):
+    root = tmp_path / "repo"; (root / "img").mkdir(parents=True)
+    (root / "img" / "a.jpg").write_bytes(b"definitely not an image")
+    spec = [{"name": "image", "kind": "image", "role": "input",
+             "loader": "file", "pattern": "img/{id}.jpg"}]
+    with pytest.raises(ValueError, match="can't decode a.jpg as image"):
+        materialize_file_tree(spec, ["img/a.jpg"], _fetch(str(root)),
+                              str(tmp_path / "st"), dataset_name="t")
+
+
+def test_jxl_ext_maps_to_image_kind():
+    from benchhub.file_tree_import import _kind_loader_for_ext
+    assert _kind_loader_for_ext("jxl") == ("image", "file")

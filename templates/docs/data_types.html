@@ -25,7 +25,10 @@
     <div class="card-header"><code>image</code> &mdash; RGB(A) or grayscale photo</div>
     <div class="card-body">
         <p>A <code>uint8</code> array, shape <code>(H,W)</code>, <code>(H,W,3)</code>, or
-            <code>(H,W,4)</code>. Stored as PNG. Rendered as the image.</p>
+            <code>(H,W,4)</code>. Stored as PNG. Rendered as the image.
+            Imports accept the common encodings (png, jpg, webp, tiff,
+            <strong>jxl</strong>, &hellip;) and transcode to the canonical PNG
+            at import time.</p>
         <pre><code class="language-python">bh.Image(np.zeros((256, 256, 3), dtype=np.uint8))</code></pre>
     </div>
 </div>

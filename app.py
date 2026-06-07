@@ -8140,7 +8140,7 @@ def _list_hf_repo_files(repo_id, *, token=None,
 # by anything else can't be mapped into image/mask/depth/audio/text without
 # a new kind.
 _FILE_TREE_RENDERABLE_EXTS = {
-    'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp', 'gif',  # image/mask
+    'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp', 'gif', 'jxl',  # image/mask
     'wav', 'mp3', 'flac',                                       # audio
     'txt', 'json', 'csv', 'parquet',                            # text/table
     'npz', 'npy',                                               # arrays
