@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Map {{ ref }} — Kaggle import{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 980px;">
+    <a href="{{ url_for('import_from_kaggle') }}" class="small text-decoration-none">
+        <i class="bi bi-arrow-left"></i> Back to Kaggle search</a>
+    <h1 class="fw-bold mt-2 mb-1 font-monospace">{{ ref }}</h1>
+
+    {% if card %}
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body py-3">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="fw-semibold">{{ card.title }}</div>
+                    {% if card.subtitle %}<div class="small text-body-secondary">{{ card.subtitle }}</div>{% endif %}
+                </div>
+                <div class="text-end">
+                    {% if card.redistributable %}
+                    <span class="badge bg-success-subtle text-success-emphasis">{{ card.license_name or 'open' }}</span>
+                    {% else %}
+                    <span class="badge bg-warning-subtle text-warning-emphasis"
+                          title="Not redistributable — imports private-only">
+                        {{ card.license_name or 'restricted' }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% if card.description %}<p class="small text-body-secondary mt-2 mb-0">{{ card.description }}</p>{% endif %}
+            <div class="small text-body-secondary mt-2">
+                {% if card.total_bytes %}{{ (card.total_bytes / 1048576) | round(1) }} MB · {% endif %}
+                usability {{ card.usability }} · ▲{{ card.votes }}
+                {% if card.version %} · v{{ card.version }}{% endif %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# --- Detected shape --- #}
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body py-3">
+            <div class="d-flex align-items-center gap-2 mb-1">
+                <span class="fw-semibold">Detected shape:</span>
+                {% if detect.shape %}
+                <span class="badge bg-primary-subtle text-primary-emphasis">{{ detect.shape }}</span>
+                <span>{{ detect.shape_label }}</span>
+                {% else %}
+                <span class="text-body-secondary">{{ detect.shape_label }}</span>
+                {% endif %}
+            </div>
+            {% if not detect.benchmarkable %}
+            <div class="alert alert-warning py-2 small mb-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                {{ detect.reason or "Couldn't auto-detect a benchmarkable shape." }}
+                You can still edit the mapping below and import manually.
+            </div>
+            {% endif %}
+            {% for w in detect.warnings %}
+            <div class="small text-warning-emphasis"><i class="bi bi-info-circle me-1"></i>{{ w }}</div>
+            {% endfor %}
+            {% if detect.needs_conversion %}
+            <div class="small text-body-secondary mt-1">
+                Conversions applied at import: <code>{{ detect.needs_conversion | join(', ') }}</code>
+            </div>
+            {% endif %}
+            {% if detect.hidden_gt %}
+            <div class="small text-body-secondary mt-1">
+                {{ detect.hidden_gt | length }} competition test file(s) excluded from ground truth.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# --- Preview --- #}
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body py-3">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="fw-semibold">Preview a sample</span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" id="kg-prev" disabled>&lsaquo; Prev</button>
+                    <button class="btn btn-outline-secondary" id="kg-preview-btn">
+                        <i class="bi bi-eye me-1"></i>Decode sample</button>
+                    <button class="btn btn-outline-secondary" id="kg-next" disabled>Next &rsaquo;</button>
+                </div>
+            </div>
+            <div class="small text-body-secondary mt-1">
+                Downloads the dataset once (cached for the import). Large datasets may take a while.
+            </div>
+            <div id="kg-preview" class="row g-2 mt-1"></div>
+        </div>
+    </div>
+
+    {# --- Mapping + commit --- #}
+    <form method="post" action="{{ url_for('import_from_kaggle_commit') }}"
+          class="card border-0 shadow-sm">
+        <div class="card-body p-4">
+            <input type="hidden" name="ref" value="{{ ref }}">
+            <label class="form-label fw-semibold" for="dataset_name">Dataset name</label>
+            <input type="text" id="dataset_name" name="dataset_name"
+                   class="form-control mb-3" value="{{ ref }}">
+
+            <label class="form-label fw-semibold" for="spec_json">
+                Field mapping (spec) — edit if a column name or pattern is wrong</label>
+            <textarea id="spec_json" name="spec_json" class="form-control font-monospace"
+                      rows="14" spellcheck="false">{{ spec_json }}</textarea>
+            <div class="form-text small">
+                Each entry is a field: <code>name</code>, <code>kind</code>,
+                <code>role</code> (input/gt), <code>loader</code>, <code>pattern</code>,
+                plus loader-specific keys (e.g. RLE: <code>id_column</code>,
+                <code>value_column</code>, <code>class_column</code>).
+            </div>
+
+            <div class="d-flex gap-2 mt-3">
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-download me-1"></i>Import this dataset</button>
+                <span class="align-self-center small text-body-secondary">
+                    {{ total_files }} file(s) in the dataset.</span>
+            </div>
+        </div>
+    </form>
+
+    {% if file_sample %}
+    <details class="mt-3">
+        <summary class="small text-body-secondary">Show file list ({{ total_files }})</summary>
+        <pre class="small bg-body-tertiary p-2 rounded mt-2"
+             style="max-height: 320px; overflow:auto;">{{ file_sample | join('\n') }}</pre>
+    </details>
+    {% endif %}
+</div>
+
+<script>
+(function () {
+  const REF = {{ ref | tojson }};
+  let idx = 0, total = 0;
+  const out = document.getElementById('kg-preview');
+  const specEl = document.getElementById('spec_json');
+  const prevBtn = document.getElementById('kg-prev');
+  const nextBtn = document.getElementById('kg-next');
+
+  function parseSpec() {
+    try { return JSON.parse(specEl.value); }
+    catch (e) { out.innerHTML = '<div class="col-12 text-danger small">Spec isn\'t valid JSON: ' + e + '</div>'; return null; }
+  }
+  async function preview(i) {
+    const spec = parseSpec();
+    if (!spec) return;
+    out.innerHTML = '<div class="col-12 text-body-secondary small">Decoding…</div>';
+    try {
+      const r = await fetch('{{ url_for("import_from_kaggle_decode_preview") }}', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ref: REF, spec: spec, sample_index: i})
+      });
+      const d = await r.json();
+      if (d.error) { out.innerHTML = '<div class="col-12 text-danger small">' + d.error + '</div>'; return; }
+      idx = d.sample_index; total = d.total_samples;
+      prevBtn.disabled = idx <= 0; nextBtn.disabled = idx >= total - 1;
+      const cards = (d.fields || []).map(f => {
+        const body = f.image
+          ? '<img src="' + f.image + '" class="img-fluid rounded" style="max-height:160px">'
+          : (f.ok ? '<pre class="small mb-0" style="white-space:pre-wrap">' + (f.text || '') + '</pre>'
+                  : '<span class="text-danger small">' + (f.error || 'no data') + '</span>');
+        return '<div class="col-6 col-md-4"><div class="border rounded p-2 h-100">'
+          + '<div class="small fw-semibold">' + f.name + ' <span class="text-body-secondary">(' + f.kind + ')</span></div>'
+          + body + '</div></div>';
+      }).join('');
+      out.innerHTML = '<div class="col-12 small text-body-secondary">Sample '
+        + (idx + 1) + ' / ' + total + ' — <code>' + (d.sample_name || '') + '</code></div>' + cards;
+    } catch (e) {
+      out.innerHTML = '<div class="col-12 text-danger small">Preview failed: ' + e + '</div>';
+    }
+  }
+  document.getElementById('kg-preview-btn').addEventListener('click', () => preview(0));
+  prevBtn.addEventListener('click', () => preview(Math.max(0, idx - 1)));
+  nextBtn.addEventListener('click', () => preview(idx + 1));
+})();
+</script>
+{% endblock %}

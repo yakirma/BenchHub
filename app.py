@@ -480,6 +480,15 @@ class Dataset(db.Model):
     # idempotently in check_and_migrate_db for legacy HF rows.
     card_description = db.Column(db.Text, nullable=True)
 
+    # Kaggle provenance + the license gate (plan §8). source_kind='kaggle'.
+    # license_redistributable drives the publish guard: a restricted dataset
+    # (CC-BY-NC*, GPL, "Other"/"Unknown", …) can't be flipped public, and an
+    # import of one lands importer-private regardless of admin status.
+    kaggle_slug = db.Column(db.String(160), nullable=True)
+    kaggle_version = db.Column(db.Integer, nullable=True)
+    license_name = db.Column(db.String(120), nullable=True)
+    license_redistributable = db.Column(db.Boolean, nullable=True)
+
     @property
     def source_metadata_parsed(self):
         """Parsed source_metadata or {} on any error. Used by templates
@@ -6799,6 +6808,18 @@ def set_dataset_visibility(dataset_id):
     if target not in ('public', 'private', 'unlisted'):
         flash("Invalid visibility.", "warning")
         return redirect(url_for('dataset_settings', dataset_id=ds.id))
+    # License gate (plan §8): a Kaggle dataset whose license isn't
+    # redistributable can never go public — caching + re-serving its bytes
+    # to other users would be redistribution. This is a legal constraint,
+    # NOT a permission, so admins do NOT bypass it.
+    if (target == 'public'
+            and getattr(ds, 'license_name', None)
+            and ds.license_redistributable is False):
+        flash(
+            f'Can\'t publish "{ds.name}" — its source license '
+            f'({ds.license_name}) does not permit redistribution, so it must '
+            f'stay private/unlisted (your own use only).', "danger")
+        return redirect(url_for('dataset_settings', dataset_id=ds.id))
     # Publish pre-flight: moving a private dataset to public shifts
     # its `storage_bytes` onto the public quota bucket. Admins bypass.
     if (target == 'public' and ds.visibility != 'public'
@@ -8670,6 +8691,320 @@ def import_from_files_commit():
     flash(f"Importing {repo_id}{_suffix} in the background — progress shows "
           f"on the dataset page.", "success")
     return redirect(url_for('dataset_view', dataset_id=ds_row.id))
+
+
+# ===========================================================================
+# Kaggle importer — find → understand → (preview) → import. Mirrors the HF
+# discovery routes + the file-tree commit, with a license gate (plan §8) and
+# the hidden-GT guard. Discovery is cheap metadata; bytes land only on
+# preview/commit. Service-account creds (KAGGLE_USERNAME/KAGGLE_KEY) gate the
+# whole feature — without them the page renders a "configure credentials"
+# notice instead of search/trending.
+# ===========================================================================
+
+def _kaggle_client():
+    """A KaggleClient from the server's service-account creds (env or
+    ~/.kaggle/kaggle.json). Cheap; built per request."""
+    from benchhub.kaggle_client import KaggleClient
+    return KaggleClient.from_env()
+
+
+def _kaggle_cache_root():
+    return os.path.join(os.path.dirname(app.config['UPLOAD_FOLDER']),
+                        'kaggle_cache')
+
+
+def _kaggle_peek_from_files(file_meta):
+    """Build detect_shape's `peek` from Kaggle's file metadata — the
+    list-files response sometimes carries per-CSV `columns`, which is
+    enough to detect tabular / image+CSV / RLE shapes without downloading
+    a byte."""
+    peek = {}
+    for f in file_meta:
+        name = f.get('name') or f.get('nameNullable')
+        cols = f.get('columns')
+        if name and isinstance(cols, list):
+            names = [c.get('name') for c in cols
+                     if isinstance(c, dict) and c.get('name')]
+            if names:
+                peek[name] = {'columns': names}
+    return peek
+
+
+@app.route('/import_from_kaggle', methods=['GET'])
+@login_required
+def import_from_kaggle():
+    """Entry page: a Kaggle dataset ref input + search + a trending grid.
+    Open to any signed-in user (self-service caching); the license gate +
+    private-for-non-admins + one-import guard live in the commit handler."""
+    client = _kaggle_client()
+    return render_template('import_from_kaggle.html',
+                           is_admin_user=is_admin(g.current_user),
+                           kaggle_enabled=client.has_credentials)
+
+
+@app.route('/import_from_kaggle/search')
+@login_required
+def import_from_kaggle_search():
+    """JSON proxy over Kaggle's /datasets/list search. Needs the service
+    account; returns {error} (503) when it isn't configured."""
+    from benchhub.kaggle_search import search_datasets
+    from benchhub.kaggle_client import KaggleAuthError, KaggleAPIError
+    client = _kaggle_client()
+    if not client.has_credentials:
+        return jsonify({'error': 'Kaggle credentials not configured.'}), 503
+    q = (request.args.get('q') or '').strip()
+    sort_by = (request.args.get('sort') or '').strip() or None
+    try:
+        return jsonify({'datasets': search_datasets(client, q, limit=20,
+                                                     sort_by=sort_by)})
+    except (KaggleAuthError, KaggleAPIError) as e:
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/import_from_kaggle/card')
+@login_required
+def import_from_kaggle_card():
+    """JSON card summary (title, description, size, usability, license
+    verdict) for one dataset ref."""
+    from benchhub.kaggle_search import card_summary
+    client = _kaggle_client()
+    if not client.has_credentials:
+        return jsonify({}), 503
+    ref = (request.args.get('ref') or '').strip()
+    if not ref:
+        return jsonify({}), 400
+    return jsonify(card_summary(client, ref) or {})
+
+
+@app.route('/import_from_kaggle/trending')
+@login_required
+def import_from_kaggle_trending():
+    """JSON: top datasets per ML domain, cached 1h in the helper."""
+    from benchhub.kaggle_search import trending_by_domain
+    client = _kaggle_client()
+    if not client.has_credentials:
+        return jsonify({}), 503
+    try:
+        limit = int(request.args.get('limit', 6))
+    except (TypeError, ValueError):
+        limit = 6
+    return jsonify(trending_by_domain(client, limit_per_domain=max(3, min(limit, 20))))
+
+
+@app.route('/import_from_kaggle/inspect', methods=['GET', 'POST'])
+@login_required
+def import_from_kaggle_inspect():
+    """List a dataset's files (cheap, no bytes), auto-detect its shape +
+    the hidden-GT guard, and render the mapping/confirm page. The detected
+    spec is shown as editable JSON so the user can correct column names /
+    patterns before committing."""
+    from benchhub.kaggle_detect import detect_shape
+    from benchhub.kaggle_search import card_summary
+    from benchhub.kaggle_client import (split_ref, KaggleAuthError,
+                                         KaggleAPIError)
+    ref = (request.values.get('ref') or '').strip()
+    if not ref:
+        flash("Enter a Kaggle dataset ref (owner/slug).", "warning")
+        return redirect(url_for('import_from_kaggle'))
+    client = _kaggle_client()
+    if not client.has_credentials:
+        flash("Kaggle credentials aren't configured on the server.", "danger")
+        return redirect(url_for('import_from_kaggle'))
+    try:
+        split_ref(ref)
+    except ValueError:
+        flash(f"{ref!r} isn't a valid Kaggle ref (expected owner/slug).",
+              "warning")
+        return redirect(url_for('import_from_kaggle'))
+    try:
+        file_meta = client.list_files(ref)
+    except (KaggleAuthError, KaggleAPIError) as e:
+        flash(f"Couldn't list files for {ref!r}: {e}", "danger")
+        return redirect(url_for('import_from_kaggle'))
+    names = [str(f.get('name') or f.get('nameNullable') or '')
+             for f in file_meta if (f.get('name') or f.get('nameNullable'))]
+    peek = _kaggle_peek_from_files(file_meta)
+    detect = detect_shape(names, peek=peek)
+    card = card_summary(client, ref)
+    return render_template(
+        'import_from_kaggle_map.html', ref=ref, card=card, detect=detect,
+        spec_json=json.dumps(detect['spec'], indent=2),
+        file_sample=names[:400], total_files=len(names),
+        all_kinds=_all_kind_names(), all_roles=['input', 'gt', 'skip'],
+    )
+
+
+@app.route('/import_from_kaggle/decode_preview', methods=['POST'])
+@login_required
+def import_from_kaggle_decode_preview():
+    """Decode ONE resolved sample through the spec so the user can confirm
+    the interpretation before committing. This downloads the dataset zip
+    (cached by slug+version — the same archive the commit reuses), so a
+    preview on a huge dataset pulls it once."""
+    import tempfile
+    import base64
+    data = request.json or {}
+    ref = (data.get('ref') or '').strip()
+    spec = data.get('spec') or []
+    try:
+        sample_index = max(0, int(data.get('sample_index') or 0))
+    except (TypeError, ValueError):
+        sample_index = 0
+    if not ref or not spec:
+        return jsonify({'error': 'ref and spec required'}), 400
+    client = _kaggle_client()
+    if not client.has_credentials:
+        return jsonify({'error': 'Kaggle credentials not configured.'}), 503
+    try:
+        from benchhub.kaggle_client import KaggleClient
+        from benchhub.file_tree_import import (materialize_file_tree,
+                                               resolve_samples)
+        from benchhub.preview import render_preview
+        cache_dir = client.download(ref, _kaggle_cache_root())
+        files = []
+        for dp, _dn, fns in os.walk(cache_dir):
+            for fn in fns:
+                rel = os.path.relpath(os.path.join(dp, fn), cache_dir)
+                files.append(rel.replace(os.sep, '/'))
+        _fetch = KaggleClient.fetch_factory(cache_dir)
+        samples, _ = resolve_samples(spec, files, fetch=_fetch)
+        n_total = len(samples)
+        if n_total:
+            sample_index = min(sample_index, n_total - 1)
+        with tempfile.TemporaryDirectory(prefix='bh_kgprev_') as staging:
+            materialize_file_tree(spec, files, _fetch, staging,
+                                  sample_cap=1, sample_offset=sample_index,
+                                  dataset_name='preview')
+            manifest = json.load(open(os.path.join(staging, 'manifest.json')))
+            sname = manifest['samples'][0] if manifest['samples'] else None
+            fields_out = []
+            for f in spec:
+                entry = {'name': f['name'], 'kind': f['kind'], 'ok': False}
+                fdir = os.path.join(staging, f['name'])
+                hit = None
+                if sname and os.path.isdir(fdir):
+                    for fn in os.listdir(fdir):
+                        if os.path.splitext(fn)[0] == sname:
+                            hit = os.path.join(fdir, fn)
+                            break
+                if hit is None:
+                    entry['error'] = 'no file resolved for this sample'
+                    fields_out.append(entry)
+                    continue
+                try:
+                    if f['kind'] in ('image', 'mask', 'depth'):
+                        payload = (np.load(hit)['depth'] if f['kind'] == 'depth'
+                                   else open(hit, 'rb').read())
+                        png, _ext = render_preview(f['kind'], payload)
+                        entry['image'] = ('data:image/jpeg;base64,'
+                                          + base64.b64encode(png).decode())
+                        entry['ok'] = True
+                    else:
+                        with open(hit, 'r', errors='replace') as fh:
+                            entry['text'] = fh.read(500)
+                        entry['ok'] = True
+                except Exception as de:
+                    entry['error'] = f'decode failed: {de}'
+                fields_out.append(entry)
+        return jsonify({'sample_name': sname, 'total_samples': n_total,
+                        'sample_index': sample_index, 'fields': fields_out})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'preview failed: {e}'}), 500
+
+
+@app.route('/import_from_kaggle/commit', methods=['POST'])
+@login_required
+def import_from_kaggle_commit():
+    """Validate the (possibly user-edited) spec, classify the license,
+    create the Dataset row, and enqueue run_kaggle_import. Non-admins:
+    private + private quota + one import at a time. License gate: a
+    non-redistributable dataset is forced private (even for admins) and the
+    publish-flip guard keeps it that way."""
+    from benchhub.kaggle_client import (split_ref, classify_license,
+                                         license_name_from_view,
+                                         KaggleAuthError, KaggleAPIError)
+    ref = (request.form.get('ref') or '').strip()
+    dataset_name = (request.form.get('dataset_name') or '').strip()
+    spec_json = request.form.get('spec_json') or '[]'
+    try:
+        spec = json.loads(spec_json)
+        assert isinstance(spec, list) and spec
+    except (ValueError, AssertionError):
+        flash("The mapping spec is empty or invalid JSON.", "warning")
+        return redirect(url_for('import_from_kaggle_inspect', ref=ref))
+    try:
+        owner_slug, slug, version = split_ref(ref)
+    except ValueError:
+        flash(f"{ref!r} isn't a valid Kaggle ref.", "warning")
+        return redirect(url_for('import_from_kaggle'))
+    dataset_name = dataset_name or f"{owner_slug}/{slug}"
+
+    is_adm = is_admin(g.current_user)
+    if not is_adm:
+        inflight = Dataset.query.filter_by(
+            owner_user_id=g.current_user.id, import_status='importing').count()
+        if inflight:
+            flash("You already have an import running — let it finish first.",
+                  "warning")
+            return redirect(url_for('datasets_list'))
+
+    client = _kaggle_client()
+    if not client.has_credentials:
+        flash("Kaggle credentials aren't configured on the server.", "danger")
+        return redirect(url_for('import_from_kaggle'))
+
+    # Authoritative license read at commit time (the legal gate).
+    license_name, redistributable = None, False
+    try:
+        view = client.view(ref)
+        license_name = license_name_from_view(view) or None
+        redistributable = classify_license(license_name)['redistributable']
+        if version is None:
+            version = view.get('currentVersionNumber')
+    except (KaggleAuthError, KaggleAPIError) as e:
+        flash(f"Couldn't read dataset metadata: {e}", "danger")
+        return redirect(url_for('import_from_kaggle_inspect', ref=ref))
+
+    # Visibility: a restricted dataset is ALWAYS private (legal), regardless
+    # of admin status; a redistributable one follows the usual admin rule.
+    if not redistributable:
+        visibility = 'private'
+    else:
+        visibility = 'public' if is_adm else 'private'
+
+    import tasks as _tasks
+    row = Dataset(name=dataset_name, owner_user_id=g.current_user.id,
+                  visibility=visibility, import_status='importing',
+                  kaggle_slug=f"{owner_slug}/{slug}", kaggle_version=version,
+                  license_name=license_name,
+                  license_redistributable=redistributable,
+                  source_kind='kaggle',
+                  source_url=f"https://www.kaggle.com/datasets/{owner_slug}/{slug}",
+                  import_progress_json=json.dumps({
+                      'phase': 'queued', 'current': 0, 'total': 0,
+                      'message': 'Waiting for a worker…'}))
+    db.session.add(row)
+    db.session.commit()
+    res = _tasks.run_kaggle_import.delay(
+        dataset_id=row.id, ref=ref, spec=spec, dataset_name=dataset_name,
+        sample_cap=-1, owner_user_id=g.current_user.id,
+        license_name=license_name, license_redistributable=redistributable,
+        kaggle_version=version)
+    try:
+        row.import_task_id = res.id
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    lic_note = ("" if redistributable else
+                f" Its license ({license_name or 'unknown'}) isn't "
+                f"redistributable, so it's kept private to you.")
+    flash(f"Importing {owner_slug}/{slug} in the background — progress shows "
+          f"on the dataset page.{lic_note}", "success")
+    return redirect(url_for('dataset_view', dataset_id=row.id))
 
 
 def _ingest_typed_dataset_zip(upload, *, owner_user, visibility):
@@ -18200,6 +18535,22 @@ def check_and_migrate_db():
                         print("Migration successful: Added 'source_url' column to dataset.")
                     except Exception as e:
                         print(f"Migration error (dataset.source_url): {e}")
+
+                # Kaggle import provenance + license gate (plan §12).
+                for _kcol, _kddl in (
+                    ('kaggle_slug', "VARCHAR(160) DEFAULT NULL"),
+                    ('kaggle_version', "INTEGER DEFAULT NULL"),
+                    ('license_name', "VARCHAR(120) DEFAULT NULL"),
+                    ('license_redistributable', "BOOLEAN DEFAULT NULL"),
+                ):
+                    if _kcol not in dataset_columns:
+                        print(f"Migrating DB: Adding '{_kcol}' to 'dataset' table...")
+                        try:
+                            cursor.execute(
+                                f"ALTER TABLE dataset ADD COLUMN {_kcol} {_kddl}")
+                            conn.commit()
+                        except Exception as e:
+                            print(f"Migration error (dataset.{_kcol}): {e}")
 
                 # --- Relax global UNIQUE on GlobalMetric.name + GlobalVisualization.name ---
                 # Private rows now coexist with the same name across users; only

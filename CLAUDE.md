@@ -35,6 +35,8 @@ Big chunks of legacy machinery were removed (commits `6707189`, `97f4b6c`, `66ff
 
 ⚠️ **This list is stale**: several named symbols (`_infer_mapping`, `_VirtualSample`, `_HF_SPLIT_PREFERENCE`, `_pwc_task_to_category`, `populate_lb_samples`, `process_submission_zip`, `detect_custom_fields`, `_llm_generate_metric_code`) reappear in current `app.py`/`metric_engine.py` — a later import system (agent-mode + file-tree, see `scripts/import_hf_agent.py`, `benchhub/file_tree_import.py`) was built on the cleared ground. Verify against code before trusting any "deleted"/"live" claim.
 
+**Kaggle importer** (newest import path, source-agnostic adapter over the file-tree engine): `/import_from_kaggle*` routes + `benchhub/kaggle_{client,search,detect,convert}.py` + `tasks.run_kaggle_import`. Carries a **license gate** (`Dataset.license_redistributable=False` ⇒ can't be flipped public; enforced in `set_dataset_visibility`, admins do NOT bypass) and a hidden-GT guard. Detail → `benchhub/CLAUDE.md`; design/build-log → `docs/KAGGLE_IMPORT_{PLAN,PROGRESS}.md`.
+
 ## Running the app
 ```bash
 redis-server                                          # broker + result backend (6379)

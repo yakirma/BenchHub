@@ -52,6 +52,8 @@ _STAGE_EXT = {
     'image': '.png', 'mask': '.png', 'depth': '.npz', 'audio': '.wav',
     'text': '.txt', 'json': '.json', 'scalar': '.txt', 'label': '.txt',
     'label_list': '.json', 'sequence': '.zip',
+    # Kaggle annotation kinds (converted via benchhub.kaggle_convert).
+    'bboxes': '.json', 'coco_detections': '.json',
 }
 
 _TOKEN_RE = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
@@ -453,6 +455,10 @@ def resolve_samples(spec, files, fetch=None):
                         and '{id}' in (f.get('member') or '')]
     seq_fields = [f for f in spec if f.get('loader') == 'sequence'
                   and 'frame' in _TOKEN_RE.findall(f.get('pattern') or '')]
+    # A shared-source index (pure-tabular CSV/parquet, RLE CSV, or COCO
+    # JSON) enumerates samples from the source itself — no per-file index.
+    shared_index = [f for f in spec if f.get('index')
+                    and f.get('loader') in ('csv', 'parquet', 'rle', 'coco')]
     if file_fields:
         index = file_fields[0]
         matches, names = match_files(index['pattern'], files)
@@ -476,10 +482,20 @@ def resolve_samples(spec, files, fetch=None):
             d = {t: m[t] for t in id_toks}
             d['_path'] = m['_path']
             matches.append(d)
+    elif shared_index:
+        index = shared_index[0]
+        if fetch is None:
+            return [], index   # defer enumeration to materialize (has fetch)
+        samples = _resolve_shared_index_samples(index, fetch)
+        if not samples:
+            raise ValueError(
+                f"Index source {index.get('pattern')!r} yielded no samples.")
+        return samples, index
     else:
         raise ValueError("Need an index modality: a field with loader "
                          "'file', a 'zip'/'tar' field whose member uses {id}, "
-                         "or a 'sequence' field whose pattern uses {frame}.")
+                         "a 'sequence' field whose pattern uses {frame}, or a "
+                         "'csv'/'parquet'/'rle'/'coco' field marked index.")
     if not matches:
         raise ValueError(
             f"Pattern {index.get('pattern')!r} matched no files/members. "
@@ -598,6 +614,154 @@ def _load_array_bytes(b):
     if hasattr(obj, 'files'):  # npz
         return obj[obj.files[0]]
     return obj
+
+
+# --- Kaggle annotation conversion adapters. The numeric converters live in
+#     benchhub.kaggle_convert; these adapt CSV/JSON/XML sources to them and
+#     are driven by the rle/coco/voc/yolo loaders in materialize_file_tree. ---
+
+def _stem(path):
+    base = str(path).rsplit('/', 1)[-1]
+    return base.rsplit('.', 1)[0] if '.' in base else base
+
+
+def _id_matches(cell, sid):
+    """True when a table id cell refers to sample id `sid`, tolerant of a
+    file extension on either side (ImageId '00.jpg' vs sample id '00')."""
+    if cell is None:
+        return False
+    a, b = str(cell), str(sid)
+    return a == b or _stem(a) == b or a == _stem(b) or _stem(a) == _stem(b)
+
+
+def _read_table_rows(loader, local_path):
+    if loader == 'parquet':
+        import pandas as pd
+        return pd.read_parquet(local_path).to_dict('records')
+    import csv as _csv
+    with open(local_path, newline='') as fh:
+        return list(_csv.DictReader(fh))
+
+
+def _parse_voc_xml(xml_text, *, one_indexed=True):
+    """Pascal VOC annotation XML → (boxes_xyxy, labels). Malformed objects
+    are skipped rather than failing the whole sample."""
+    import xml.etree.ElementTree as ET
+    from .kaggle_convert import voc_box_to_xyxy
+    root = ET.fromstring(xml_text)
+    boxes, labels = [], []
+    for obj in root.findall('.//object'):
+        bnd = obj.find('bndbox')
+        if bnd is None:
+            continue
+        try:
+            box = voc_box_to_xyxy(bnd.findtext('xmin'), bnd.findtext('ymin'),
+                                  bnd.findtext('xmax'), bnd.findtext('ymax'),
+                                  one_indexed=one_indexed)
+        except (TypeError, ValueError):
+            continue
+        boxes.append([round(float(v), 2) for v in box])
+        labels.append((obj.findtext('name') or '').strip())
+    return boxes, labels
+
+
+def _coco_index(doc):
+    """Index a COCO detection doc → {filename_stem: [detection dicts]}, each
+    detection in benchhub.types.CocoDetections shape (bbox is COCO xywh)."""
+    cats = {c['id']: c.get('name') for c in doc.get('categories', [])}
+    by_img = defaultdict(list)
+    for ann in doc.get('annotations', []):
+        rec = {'category_id': ann.get('category_id')}
+        if ann.get('category_id') in cats:
+            rec['category_name'] = cats[ann['category_id']]
+        bbox = ann.get('bbox')
+        if bbox is not None and len(bbox) == 4:
+            rec['bbox'] = [float(v) for v in bbox]
+        if ann.get('segmentation'):
+            rec['segmentation'] = ann['segmentation']
+        if ann.get('area') is not None:
+            rec['area'] = float(ann['area'])
+        if ann.get('iscrowd') is not None:
+            rec['iscrowd'] = int(ann['iscrowd'])
+        by_img[ann.get('image_id')].append(rec)
+    out = {}
+    for im in doc.get('images', []):
+        out[_stem(im.get('file_name') or im.get('id'))] = by_img.get(im.get('id'), [])
+    return out
+
+
+def _paired_image_dims(spec, tokens, fetch):
+    """(H, W) read from the first image-input file field paired with a
+    sample — the source of truth for RLE/YOLO masks that don't carry their
+    own dimensions."""
+    from PIL import Image as _Img
+    img = next((f for f in spec if f.get('kind') == 'image'
+                and f.get('loader') == 'file'), None)
+    if img is None:
+        raise ValueError("mask needs image dimensions but no paired image "
+                         "field was found; set height/width on the field.")
+    with _Img.open(fetch(_substitute(img['pattern'], tokens))) as im:
+        w, h = im.size
+    return h, w
+
+
+def _rle_dims(field, rows, spec, tokens, fetch):
+    """Resolve (H, W) for an RLE mask: fixed field dims, then CSV columns,
+    then the paired image."""
+    if field.get('height') and field.get('width'):
+        return int(field['height']), int(field['width'])
+    hc, wc = field.get('height_column'), field.get('width_column')
+    if hc and wc and rows:
+        return int(float(rows[0][hc])), int(float(rows[0][wc]))
+    return _paired_image_dims(spec, tokens, fetch)
+
+
+def _resolve_shared_index_samples(index, fetch):
+    """Enumerate samples for a dataset whose index is a shared source (a
+    pure-tabular CSV/parquet, an RLE CSV, or a COCO JSON) — used when no
+    per-file/container/sequence index modality exists."""
+    loader = index.get('loader')
+    local = fetch(index['pattern'])
+    samples, seen = [], set()
+
+    def _emit(rid, tokens, order):
+        nm = re.sub(r'[^A-Za-z0-9._-]', '_', str(rid)) or 'sample'
+        base, k = nm, 1
+        while nm in seen:
+            k += 1
+            nm = f"{base}#{k}"
+        seen.add(nm)
+        samples.append({'name': nm, 'tokens': tokens,
+                        '_index_path': f"{index['pattern']}#{order:09d}"})
+
+    if loader in ('csv', 'parquet'):
+        rows = _read_table_rows(loader, local)
+        idcol = (index.get('id_column') or '').strip()
+        for r, row in enumerate(rows):
+            rid = (str(row.get(idcol))
+                   if idcol and row.get(idcol) not in (None, '') else f"row_{r:06d}")
+            _emit(rid, {'id': rid, '_row': r}, r)
+    elif loader == 'rle':
+        tbl = 'parquet' if index['pattern'].endswith('.parquet') else 'csv'
+        rows = _read_table_rows(tbl, local)
+        idcol = (index.get('id_column') or '').strip()
+        order, seen_ids = 0, set()
+        for row in rows:
+            rid = str(row.get(idcol)) if idcol else f"row_{order:06d}"
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            _emit(rid, {'id': rid}, order)
+            order += 1
+    elif loader == 'coco':
+        with open(local) as fh:
+            doc = json.load(fh)
+        for r, im in enumerate(doc.get('images', [])):
+            _emit(_stem(im.get('file_name') or im.get('id')), {'id': None}, r)
+        # tokens carry the stem under 'id' for the coco loader join.
+        for s, im in zip(samples, doc.get('images', [])):
+            s['tokens']['id'] = _stem(im.get('file_name') or im.get('id'))
+    return samples
 
 
 class _SafeFmt(dict):
@@ -741,7 +905,7 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
 
     # Cache shared sources so a .npz / .json / .csv is loaded once, not
     # per sample.
-    archive_cache, json_cache, csv_cache = {}, {}, {}
+    archive_cache, json_cache, csv_cache, coco_cache = {}, {}, {}, {}
 
     def _load_archive(path):
         if path not in archive_cache:
@@ -782,6 +946,11 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
         if idcol:
             sid = s['tokens'].get(f.get('id_token') or 'id')
             return next((r for r in rows if str(r.get(idcol)) == str(sid)), None)
+        # Table-indexed sample carries its absolute row ordinal (immune to
+        # sample_offset/cap re-ranking); else fall back to shared ordinal.
+        if '_row' in s['tokens']:
+            r = s['tokens']['_row']
+            return rows[r] if 0 <= r < len(rows) else None
         ordn = shared_ordinals.get(f['name'], {}).get(i, 0)
         return rows[ordn] if ordn < len(rows) else None
 
@@ -894,6 +1063,60 @@ def materialize_file_tree(spec, files, fetch, staging_dir, *,
                                    'rb') as gf:
                         data = gf.read()
                     _stage_value(kind, data, dest_noext)
+                elif loader == 'rle':
+                    # RLE-in-CSV → integer label-map Mask (the dominant
+                    # Kaggle segmentation encoding; column-major by default).
+                    from .kaggle_convert import rle_rows_to_labelmap
+                    path = _substitute(f['pattern'], s['tokens'])
+                    rows = (_load_parquet if path.endswith('.parquet')
+                            else _load_csv)(path)
+                    idcol = (f.get('id_column') or '').strip()
+                    sid = s['tokens'].get(f.get('id_token') or 'id')
+                    sel = ([r for r in rows if _id_matches(r.get(idcol), sid)]
+                           if idcol else rows)
+                    if not sel:
+                        raise FileNotFoundError('rle rows')
+                    H, W = _rle_dims(f, sel, spec, s['tokens'], fetch)
+                    lm = rle_rows_to_labelmap(
+                        sel, H, W,
+                        value_key=f.get('value_column') or 'EncodedPixels',
+                        class_key=f.get('class_column'),
+                        order=f.get('order', 'F'),
+                        one_indexed=f.get('one_indexed', True))
+                    _stage_value('mask', lm, dest_noext)
+                elif loader == 'coco':
+                    doc = _load_json(_substitute(f['pattern'], s['tokens']))
+                    idx = coco_cache.get(id(doc))
+                    if idx is None:
+                        idx = _coco_index(doc)
+                        coco_cache[id(doc)] = idx
+                    sid = s['tokens'].get(f.get('id_token') or 'id')
+                    dets = idx.get(str(sid))
+                    if dets is None:
+                        dets = idx.get(_stem(sid), [])
+                    _stage_value(kind, dets, dest_noext)
+                elif loader == 'voc':
+                    with open(fetch(_substitute(f['pattern'], s['tokens']))) as fh:
+                        xml = fh.read()
+                    boxes, labels = _parse_voc_xml(
+                        xml, one_indexed=f.get('one_indexed', True))
+                    _stage_value(kind, {'boxes': boxes, 'format': 'xyxy',
+                                        'labels': labels}, dest_noext)
+                elif loader == 'yolo':
+                    from .kaggle_convert import yolo_line_to_xyxy
+                    with open(fetch(_substitute(f['pattern'], s['tokens']))) as fh:
+                        lines = fh.read().splitlines()
+                    H, W = _paired_image_dims(spec, s['tokens'], fetch)
+                    boxes, labels = [], []
+                    for ln in lines:
+                        if not ln.strip():
+                            continue
+                        cls, x1, y1, x2, y2 = yolo_line_to_xyxy(ln, W, H)
+                        boxes.append([round(x1, 2), round(y1, 2),
+                                      round(x2, 2), round(y2, 2)])
+                        labels.append(cls)
+                    _stage_value(kind, {'boxes': boxes, 'format': 'xyxy',
+                                        'labels': labels}, dest_noext)
                 elif loader == 'sequence':
                     import zipfile
                     id_toks, by_key = seq_frames[name]

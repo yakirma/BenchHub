@@ -2,8 +2,8 @@
 
 {% block docs_content %}
 <h1>Importing datasets</h1>
-<p class="lead">Cache any HuggingFace dataset into BenchHub &mdash; tabular or file-tree
-    &mdash; from one button.</p>
+<p class="lead">Cache any HuggingFace <em>or Kaggle</em> dataset into BenchHub &mdash; tabular,
+    file-tree, or auto-detected &mdash; from one button.</p>
 <hr>
 
 <h3>One button, two paths</h3>
@@ -120,8 +120,15 @@
         <tr><td><code>zip</code> / <code>tar</code></td><td>A container: point at a <strong>member</strong> inside (<code>images/{id}.png</code>). A zip/tar whose member uses <code>{id}</code> can be the index.</td></tr>
         <tr><td><code>gz</code></td><td>A single gzip-compressed file (e.g. <code>{id}.json.gz</code>), decompressed whole into the field value &mdash; no member pointer.</td></tr>
         <tr><td><code>sequence</code></td><td>Group frames into a clip (video): pattern uses <code>{frame}</code>; samples are the groups. See <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.</td></tr>
+        <tr><td><code>rle</code></td><td>Run-length-encoded masks in a CSV (the dominant Kaggle segmentation format) &rarr; an integer-label-map <code>mask</code>. Column-major (Fortran) order, 1-indexed by default. Multiple rows per image composite into one map (per-class via <code>class_column</code>, else per-instance).</td></tr>
+        <tr><td><code>coco</code></td><td>A COCO detection JSON (<code>images</code>+<code>annotations</code>+<code>categories</code>) &rarr; <code>coco_detections</code> per image (bbox kept as COCO xywh).</td></tr>
+        <tr><td><code>voc</code></td><td>Per-image Pascal VOC XML &rarr; <code>bboxes</code> (VOC's 1-indexed corners shifted to 0-indexed xyxy).</td></tr>
+        <tr><td><code>yolo</code></td><td>Per-image YOLO TXT (class + normalized cxcywh) &rarr; <code>bboxes</code> (denormalized against the paired image's size, xyxy).</td></tr>
     </tbody>
 </table>
+<p class="small text-body-secondary">A <code>csv</code>/<code>parquet</code> or <code>rle</code>/<code>coco</code> field marked
+    <code>index</code> enumerates the samples from the source itself &mdash; for pure-tabular
+    datasets that have no per-file index modality (one row = one sample).</p>
 
 <h3 class="mt-3">Examples</h3>
 <pre><code class="language-text"># Paired RGB + depth, depth packed as one stacked array per sequence
@@ -173,6 +180,35 @@ clip  : loader=sequence  pattern=clips/{id}/{frame}.png  (item_kind=image)</code
         <em>separate datasets</em>, one per value (e.g. a <code>{quality}</code> token with
         <code>low</code>/<code>normal</code> &rarr; <code>&lt;name&gt;_low</code>,
         <code>&lt;name&gt;_normal</code>).</li>
+</ul>
+
+<h2 class="mt-4">Kaggle import</h2>
+<p>Open <code>/import_from_kaggle</code> (linked from <em>Datasets &rarr; Add dataset</em>).
+    Search or paste a dataset ref (<code>owner/slug</code>), and BenchHub
+    <strong>auto-detects the shape</strong> and pre-fills the field mapping &mdash; you
+    review/correct it, optionally preview a decoded sample, then import. Browsing uses only
+    cheap metadata; bytes download on preview/commit (whole archive, cached by
+    <code>slug</code>+version).</p>
+<p>Recognised shapes include single-table <strong>tabular</strong> classification/regression
+    and text classification, <strong>ImageFolder</strong> (class dirs), <strong>image+CSV</strong>
+    label maps, paired <strong>image/mask</strong> segmentation, restoration
+    <strong>image pairs</strong> (dirty&rarr;clean), and the detection/segmentation annotation
+    formats above (COCO, VOC, YOLO, RLE-in-CSV).</p>
+<ul>
+    <li><strong>Hidden-GT guard</strong> &mdash; competition <code>test.csv</code> /
+        <code>sample_submission.csv</code> / unlabeled <code>test/</code> dirs have no labels,
+        so they're excluded from ground truth; the eval split is built from labeled
+        <code>train</code> data. A dataset with no usable GT is flagged <em>not
+        benchmarkable</em> rather than importing an empty leaderboard.</li>
+    <li><strong>License gate</strong> &mdash; only datasets under a redistributable license
+        (CC0, CC-BY, CC-BY-SA, ODbL, PDDL/DbCL, CDLA-Permissive, U.S. Government Works,
+        Apache/MIT/BSD) can be made public. Non-commercial (NC), no-derivatives (ND), GPL,
+        &ldquo;Other&rdquo;, and &ldquo;Unknown&rdquo; are imported <em>private to you</em> and
+        can't be published &mdash; caching and re-serving their bytes would be redistribution.</li>
+    <li><strong>Access</strong> &mdash; mirrors the other importers: any signed-in user can
+        import (lands private, charged to the private quota, one import at a time); admins'
+        redistributable imports default to public. Needs a server-side Kaggle service account
+        (<code>KAGGLE_USERNAME</code>/<code>KAGGLE_KEY</code>).</li>
 </ul>
 
 <p class="mt-4">See the <a href="{{ url_for('docs', page='tutorials') }}">tutorials</a> for

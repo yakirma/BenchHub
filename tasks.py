@@ -311,6 +311,152 @@ def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
             return {'dataset_id': dataset_id, 'error': str(e)}
 
 
+@celery.task(bind=True, name='tasks.run_kaggle_import')
+def run_kaggle_import(self, *, dataset_id, ref, spec, dataset_name,
+                      sample_cap, owner_user_id, license_name=None,
+                      license_redistributable=False, kaggle_version=None,
+                      token_filter=None):
+    """Background Kaggle importer — the Kaggle analogue of
+    run_file_tree_import. Downloads the dataset archive once (cached by
+    slug+version under ~/.dtofbenchmarking/kaggle_cache), decodes the
+    declared spec through benchhub.file_tree_import.materialize_file_tree
+    into a typed-manifest staging dir, then imports preview-only. The
+    Dataset row is pre-created ('importing') by the route; credentials are
+    the server's service account (KAGGLE_USERNAME/KAGGLE_KEY).
+
+    The license verdict is persisted so the visibility/publish-flip guard
+    can keep a non-redistributable dataset importer-private (plan §8). No
+    Celery time limit, for the same reason as run_hf_import."""
+    from benchhub.file_tree_import import materialize_file_tree
+    from benchhub.manifest import import_typed_dataset
+    from benchhub.kaggle_client import KaggleClient, split_ref
+    from app import _registered_extra_kinds
+
+    with app.app_context():
+        def _persist(state):
+            ds = Dataset.query.get(dataset_id)
+            if ds is None:
+                return
+            ds.import_progress_json = json.dumps(state)
+            db.session.commit()
+            try:
+                self.update_state(state='PROGRESS', meta=state)
+            except Exception:
+                pass
+
+        _persist({'phase': 'starting', 'current': 0, 'total': 0,
+                  'message': 'Connecting to Kaggle…'})
+        try:
+            owner_slug, slug, ref_version = split_ref(ref)
+            version = kaggle_version or ref_version
+            client = KaggleClient.from_env()
+            if not client.has_credentials:
+                raise RuntimeError(
+                    'No Kaggle credentials configured on the server '
+                    '(set KAGGLE_USERNAME / KAGGLE_KEY in .env).')
+
+            data_dir = os.path.dirname(app.config['UPLOAD_FOLDER'])
+            cache_root = os.path.join(data_dir, 'kaggle_cache')
+            dl_ref = (f'{owner_slug}/{slug}'
+                      + (f'/versions/{version}' if version else ''))
+
+            _persist({'phase': 'downloading', 'current': 0, 'total': 0,
+                      'message': f'Downloading {owner_slug}/{slug} from Kaggle…'})
+
+            def _dl_progress(n):
+                _persist({'phase': 'downloading', 'current': n, 'total': 0,
+                          'message': f'Downloaded {n // (1 << 20)} MB…'})
+
+            cache_dir = client.download(dl_ref, cache_root,
+                                        progress_cb=_dl_progress)
+            # The extracted cache dir IS the repo; list it as repo-relative
+            # paths for materialize_file_tree (same shape as an HF file list).
+            files = []
+            for dp, _dn, fns in os.walk(cache_dir):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp, fn), cache_dir)
+                    files.append(rel.replace(os.sep, '/'))
+            _fetch = KaggleClient.fetch_factory(cache_dir)
+
+            with tempfile.TemporaryDirectory(prefix='bh_kaggle_import_') as staging:
+                mat = materialize_file_tree(
+                    spec, files, _fetch, staging,
+                    sample_cap=sample_cap, dataset_name=dataset_name,
+                    token_filter=token_filter, progress_cb=_persist,
+                )
+                # Quota check against actual staged bytes.
+                _persist({'phase': 'quota-check', 'current': 0, 'total': 0,
+                          'message': 'Checking storage quota…'})
+                staged_bytes = 0
+                for dp, _, fns in os.walk(staging):
+                    for fn in fns:
+                        try:
+                            staged_bytes += os.path.getsize(os.path.join(dp, fn))
+                        except OSError:
+                            continue
+                from app import check_quota, User, _format_bytes
+                owner = User.query.get(owner_user_id) if owner_user_id else None
+                if owner is not None:
+                    ok, msg = check_quota(owner, kind='dataset_create',
+                                          incoming_bytes=staged_bytes,
+                                          visibility='private')
+                    if not ok:
+                        raise RuntimeError(
+                            f"{msg} (this import would write "
+                            f"{_format_bytes(staged_bytes)})")
+
+                _persist({'phase': 'importing', 'current': 0, 'total': 0,
+                          'message': 'Writing rows to the database…'})
+                existing = Dataset.query.get(dataset_id)
+                _, summary = import_typed_dataset(
+                    staging, db_session=db.session,
+                    Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+                    DatasetField=DatasetField,
+                    upload_folder=app.config['UPLOAD_FOLDER'],
+                    existing_dataset=existing, preview_only=True,
+                    extra_kinds=_registered_extra_kinds(
+                        getattr(existing, 'owner_user_id', None)),
+                )
+                existing.preview_only = True
+                existing.source_kind = 'kaggle'
+                existing.source_url = (f'https://www.kaggle.com/datasets/'
+                                       f'{owner_slug}/{slug}')
+                existing.kaggle_slug = f'{owner_slug}/{slug}'
+                existing.kaggle_version = version
+                existing.license_name = license_name
+                existing.license_redistributable = bool(license_redistributable)
+                existing.source_metadata = json.dumps({
+                    'ref': dl_ref, 'slug': f'{owner_slug}/{slug}',
+                    'version': version, 'importer': 'kaggle', 'spec': spec,
+                    'license_name': license_name,
+                    'license_redistributable': bool(license_redistributable),
+                    'samples_imported': summary['samples'],
+                    'total_rows_in_split': mat.get('total_rows_in_split'),
+                })
+                existing.import_status = 'ready'
+                existing.import_error = None
+                existing.import_progress_json = json.dumps({
+                    'phase': 'done', 'current': summary['samples'],
+                    'total': summary['samples'],
+                    'message': f"Imported {summary['samples']} sample(s)."})
+                db.session.commit()
+                return {'dataset_id': dataset_id, **summary}
+        except Exception as e:
+            db.session.rollback()
+            ds = Dataset.query.get(dataset_id)
+            if ds is not None:
+                ds.import_status = 'failed'
+                ds.import_error = str(e)
+                ds.import_progress_json = json.dumps({
+                    'phase': 'failed', 'current': 0, 'total': 0,
+                    'message': str(e)})
+                folder = os.path.join(app.config['UPLOAD_FOLDER'], 'datasets',
+                                      str(dataset_id))
+                shutil.rmtree(folder, ignore_errors=True)
+                db.session.commit()
+            return {'dataset_id': dataset_id, 'error': str(e)}
+
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
