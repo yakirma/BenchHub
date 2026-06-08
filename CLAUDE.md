@@ -8,16 +8,16 @@ The legacy folder-name ZIP path is gone; the strict typed contract is the spine 
 
 **The pipeline now:**
 
-1. **Admin uploads a typed dataset** via `POST /admin/import_typed_dataset` (server-side path) or the `scripts/import_typed_dataset.py` CLI. Format: a directory with `manifest.json` + `<field>/<sample>.<ext>` per field. The importer materialises Dataset + Sample + CustomField rows and copies file-backed kinds under `uploads/datasets/<id>/`. Inline kinds (Scalar, Label) decode into `value_float` / `value_text`.
-2. **A leaderboard declares its contract** via `Leaderboard.required_pred_fields_json` (list of `{name, kind, params, role}` entries; `role ∈ {input, gt, pred}`).
-3. **Submitters use `benchhub-client`** — `bh.Client(token)` → `client.submission(lb_id).predict(sample, **kwargs).submit()`. The client validates each `DataType` instance at stage time, packs them into a ZIP matching the server's on-disk format, and POSTs to `/api/submit/<lb_id>`.
-4. **Server validates** the submission manifest against the LB contract (every required pred name present, kinds match), writes Submission + CustomField pred rows, enqueues `tasks.process_submission`.
-5. **Metric engine** builds the per-sample context with both primitive (`gt_depth_pred`) AND typed (`__typed__gt_depth_pred`) entries. Metrics that declared `GlobalMetric.input_kinds` (non-empty JSON array) receive `bh.Depth` instances; legacy metrics keep the primitive. Five typed reference metrics seeded: `accuracy`, `rmse_depth`, `mae_depth`, `iou_mask`, `exact_match_text`.
+1. **Admin uploads a typed dataset** via `POST /admin/import_typed_dataset` or `scripts/import_typed_dataset.py`. Format: a dir with `manifest.json` + `<field>/<sample>.<ext>`. Materialises Dataset + Sample + CustomField rows, copies file-backed kinds under `uploads/datasets/<id>/`; inline kinds (Scalar, Label) decode into `value_float`/`value_text`.
+2. **LB declares its contract** via `Leaderboard.required_pred_fields_json` (`{name, kind, params, role}`; `role ∈ {input,gt,pred}`).
+3. **Submitters use `benchhub-client`** — `bh.Client(token)` → `client.submission(lb_id).predict(sample, **kwargs).submit()`. Client validates each `DataType` at stage time, packs a ZIP matching the server's on-disk format, POSTs to `/api/submit/<lb_id>`.
+4. **Server validates** the manifest against the contract (every pred name present, kinds match), writes Submission + CustomField pred rows, enqueues `tasks.process_submission`.
+5. **Metric engine** builds per-sample context with both primitive (`gt_depth_pred`) AND typed (`__typed__gt_depth_pred`) entries. Metrics declaring `GlobalMetric.input_kinds` (non-empty JSON) get `bh.Depth` instances; legacy metrics keep the primitive. Five typed reference metrics seeded: `accuracy`, `rmse_depth`, `mae_depth`, `iou_mask`, `exact_match_text`.
 
 **Key files:**
 - `benchhub/types.py` — 9 `DataType` subclasses (`Image`, `Mask`, `Depth`, `Audio`, `Text`, `BBoxes`, `Label`, `Scalar`, `Json`). Source of truth.
 - `benchhub/manifest.py` — manifest spec + `import_typed_dataset` + `import_typed_submission` + `check_submission_matches_contract`.
-- `benchhub/client.py` — `Client`, `SubmissionBuilder`, `FlaskTestClientTransport` (the in-process transport tests use). `Client.iter_samples(lb_id, *, force_download=False)` pulls all file-backed inputs as ONE bulk ZIP from `/api/leaderboard/<id>/inputs.zip` (server route `api_leaderboard_inputs_archive`, `ZIP_STORED`), extracts to `~/.cache/benchhub/<host>/lb_<id>/` (override root via `$BENCHHUB_CACHE_DIR`), and yields decoded `bh.<Kind>` instances. Cache is keyed on the `cache_token` from `/samples` (busts when a materialisation is rebuilt) + the sorted `<field>/<sample>` entry list; `force_download=True` re-fetches. Masks pack the raw `.classid.png` so they decode to `bh.Mask`, not the palette `bh.Image`. Falls back to per-sample `fetch_bytes` if the archive route 404s (older server). Tests must isolate the cache — `conftest` points `$BENCHHUB_CACHE_DIR` at the session tmp and wipes it per test (LB ids repeat across tests).
+- `benchhub/client.py` — `Client`, `SubmissionBuilder`, `FlaskTestClientTransport` (in-process transport tests use). `Client.iter_samples(lb_id, *, force_download=False)` pulls all file-backed inputs as ONE bulk ZIP from `/api/leaderboard/<id>/inputs.zip` (route `api_leaderboard_inputs_archive`, `ZIP_STORED`), extracts to `~/.cache/benchhub/<host>/lb_<id>/` (override via `$BENCHHUB_CACHE_DIR`), yields decoded `bh.<Kind>`. Cache keyed on `cache_token` from `/samples` (busts on re-materialise) + sorted `<field>/<sample>` list; `force_download=True` re-fetches. Masks pack raw `.classid.png` → decode to `bh.Mask`, not palette `bh.Image`. Falls back to per-sample `fetch_bytes` if the archive route 404s (older server). Tests isolate the cache — `conftest` points `$BENCHHUB_CACHE_DIR` at session tmp, wipes per test (LB ids repeat).
 - `scripts/import_typed_dataset.py` — admin CLI.
 - `scripts/seed_reference_metrics.py` — idempotent typed-metric seed.
 - `metric_engine.py:_typed_for_cf` / `_stash_typed` / `_metric_wants_typed` — the typed-instance plumbing.
@@ -29,31 +29,19 @@ The legacy folder-name ZIP path is gone; the strict typed contract is the spine 
 The catalog now defaults to a lightweight preview tier; full-resolution bytes only land on disk for leaderboards that bind a subset and materialise.
 
 **Two-tier storage:**
-- **Preview** (always present): `uploads/datasets/<id>/<field>/<sample>.<ext>` — downscaled+JPG-encoded image/mask/depth (max 512px, q85), waveform PNG for audio, inline content for text/json/scalar/label. Marked `Dataset.preview_only=True`. ~30–50 KB per visual sample. The dataset_view samples table renders directly from here; users can't tell visually it's not full-resolution.
-- **Materialised** (per-LB): `uploads/lb_materializations/<lb_id>/<field>/<sample>.<ext>` — full-resolution bytes for the subset the LB chose. Counts against the LB owner's quota.
+- **Preview** (always present): `uploads/datasets/<id>/<field>/<sample>.<ext>` — downscaled+JPG image/mask/depth (max 512px, q85), waveform PNG for audio, inline text/json/scalar/label. `Dataset.preview_only=True`, ~30–50 KB/sample. dataset_view renders from here (visually indistinguishable from full-res).
+- **Materialised** (per-LB): `uploads/lb_materializations/<lb_id>/<field>/<sample>.<ext>` — full-res bytes for the LB's chosen subset; counts against the LB owner's quota.
 
-**Per-LB sample selection:**
-- The `/create_lb_for_dataset` page (and `/create_lb_chooser`) carries a wizard: `sample_cap`, `sampling` (head / random / stratified), `stratify_field`, `sampling_seed`.
-- Random is default; stratified is auto-default when the dataset has a `label`-kind field.
-- POST to `/create_leaderboard` writes a `LeaderboardMaterialization` row + `.delay()`s `tasks.materialize_leaderboard`.
-- The Celery task runs `benchhub.lb_materialize.materialize_for_lb` — picks samples via `pick_samples()`, re-runs `materialize_hf_to_typed_dir` at full resolution into a temp dir, copies the chosen subset into `uploads/lb_materializations/<lb_id>/`, sets status `ready`. Failures stay in `status='failed'` with `error_message` and surface a Retry button on the LB page (`/leaderboard/<id>/materialize/retry`).
+**Per-LB sample selection:** `/create_lb_for_dataset` (+ `/create_lb_chooser`) wizard: `sample_cap`, `sampling` (head/random/stratified), `stratify_field`, `sampling_seed`. Random default; stratified auto-default when the dataset has a `label` field. POST `/create_leaderboard` writes a `LeaderboardMaterialization` + `.delay()`s `tasks.materialize_leaderboard` → `benchhub.lb_materialize.materialize_for_lb` (picks via `pick_samples()`, re-runs `materialize_hf_to_typed_dir` at full res into temp, copies subset to `uploads/lb_materializations/<lb_id>/`, status `ready`). Failures → `status='failed'` + `error_message` + Retry button (`/leaderboard/<id>/materialize/retry`).
 
-**Path resolution at scoring time:**
-- `extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)` for file-backed `gt_<field>` lookups consults `benchhub.lb_materialize.materialized_or_preview_path()`. Materialised file wins when present; preview fallback otherwise. Inline kinds (scalar/label/text/json) unaffected.
-- `execute_visualization` route passes `leaderboard_id=lv.leaderboard_id`, so the COCO overlay viz on an LB renders against full-resolution images even though the dataset row itself is preview-only.
+**Path resolution at scoring:** for file-backed `gt_<field>`, `extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)` consults `materialized_or_preview_path()` — materialised wins, preview fallback (inline scalar/label/text/json unaffected). `execute_visualization` passes `leaderboard_id=lv.leaderboard_id` so LB viz renders full-res even on a preview-only dataset row.
 
-**Quotas (split-bucket, Phase 13):**
-- Every user has two byte caps on `User`:
-  - `quota_public_max_bytes` — **50 GB** default (dropped from 100 GB at public launch; `check_and_migrate_db` backfills old-default rows). Charged whenever a row whose own `visibility == 'public'` is created or grown. Covers public Datasets + LB materialisations owned by the user.
-  - `quota_private_max_bytes` — **10 GB** default. Charged for `visibility in {'private', 'unlisted', NULL}`. Working space for unpublished content.
-- `check_quota(user, *, kind='dataset_create', incoming_bytes, visibility=...)` reads the bucket implied by the row being written; the visibility kwarg is **required** for new code (default `'private'` fails safe on the smaller bucket).
-- `storage_used_bytes(user, *, visibility=...)` partitions per bucket; pass `None` for the legacy total.
-- Helpers live next to each other in `app.py` (~1763–1944): `_visibility_bucket`, `storage_used_bytes`, `quota_cap_for`, `check_quota`.
-- **Publish flip pre-flight**: `set_dataset_visibility` and `set_leaderboard_visibility` reject a private→public flip when the user's public bucket can't absorb the moving bytes. Surfaces a flash and 302s back to the settings page. Admins bypass.
-- Submission ZIPs are not charged to either bucket — the LB owner already paid for the materialised inputs the submitter is responding to.
-- The legacy `quota_max_storage_bytes` column stays around for back-compat with old admin tools but `check_quota` no longer reads it.
-- Admins still bypass entirely via `is_admin()`.
-- Quota gate is pre-flight on uploads (refusal) and pre-flight on publish-flip (refusal); the post-flight write of `Dataset.storage_bytes` is the authoritative number used by future gauges.
+**Quotas (split-bucket, Phase 13):** two byte caps on `User`:
+- `quota_public_max_bytes` — **50 GB** default (was 100 GB; `check_and_migrate_db` backfills old rows). Charged when a `visibility=='public'` row is created/grown (public Datasets + LB materialisations).
+- `quota_private_max_bytes` — **10 GB** default. Charged for `visibility in {'private','unlisted',NULL}`.
+- `check_quota(user, *, kind='dataset_create', incoming_bytes, visibility=...)` reads the bucket implied by the row; `visibility` is **required** for new code (default `'private'` fails safe on the smaller bucket). `storage_used_bytes(user, *, visibility=...)` partitions per bucket (`None` = legacy total). Helpers cluster in `app.py` (~1763–1944): `_visibility_bucket`, `storage_used_bytes`, `quota_cap_for`, `check_quota`.
+- **Publish-flip pre-flight**: `set_dataset_visibility`/`set_leaderboard_visibility` reject a private→public flip when the public bucket can't absorb the moving bytes (flash + 302 back). Admins bypass everything via `is_admin()`.
+- Submission ZIPs aren't charged (LB owner already paid for the materialised inputs). Legacy `quota_max_storage_bytes` column stays for old admin tools but `check_quota` ignores it. Gate is pre-flight (refusal) on uploads + publish-flip; post-flight `Dataset.storage_bytes` is the authoritative gauge number.
 
 **Key files:**
 - `benchhub/preview.py` — `image_preview`, `depth_preview` (turbo colormap), `mask_preview` (deterministic palette), `audio_preview` (waveform PNG), single dispatch via `render_preview(kind, payload)`.
@@ -61,24 +49,21 @@ The catalog now defaults to a lightweight preview tier; full-resolution bytes on
 - `benchhub/lb_materialize.py` — `pick_samples()` (head/random/stratified) + `materialize_for_lb()` (re-fetches full bytes for the subset) + `materialized_or_preview_path()` (the resolver).
 - `tasks.py:materialize_leaderboard` — Celery wrapper around `materialize_for_lb` so big imports don't block the request handler.
 
-**Migration notes:**
-- `Dataset.preview_only` column added in `check_and_migrate_db`.
-- `leaderboard_materialization` table created in `check_and_migrate_db`.
-- A one-shot at `/tmp/migrate_to_preview.py` converted all 25 pre-existing full-storage datasets in place (18 GB → 1.8 GB on disk, no failed renders, all 26 datasets are now preview-only). Refuses to migrate any dataset whose bound LBs have non-zero submissions — that case needs Stage C materialisation first.
-- `tasks.run_hf_import` (admin /import_from_hf path) currently does NOT set `preview_only=True` — the bulk LLM loop does. Consider unifying.
+**Migration notes:** `Dataset.preview_only` column + `leaderboard_materialization` table added in `check_and_migrate_db`. A one-shot `/tmp/migrate_to_preview.py` converted the 25 pre-existing full-storage datasets in place (18 GB → 1.8 GB; refuses any dataset whose bound LBs have submissions — that needs Stage C materialisation first). `tasks.run_hf_import` does NOT set `preview_only=True` (the bulk LLM loop does) — consider unifying.
 
 ## ⚠️ Pre-existing deletions (Phase A delete pile)
 
 Big chunks of legacy machinery were already removed. Read this before touching code or writing docs that reference deleted concepts.
 
-**Deleted (Phase A delete pile, commits `6707189`, `97f4b6c`, `66ffcc6`)**:
-- HuggingFace import: every `import_from_hf*`, `admin_pwc_*`, `admin_lb_sota*`, `populate_lb_samples_route`, `hf_token_*` route; `_VirtualSample` / `_VirtualCustomField`; `_infer_mapping`; `_resolve_hf_split_and_load` / `_HF_SPLIT_PREFERENCE`; `_persist_hf_eval_snapshots`; `_create_lb_from_pwc_benchmark` and PWC task helpers; `_HF_MASK_TOKENS`; `pwc_client.py` entirely.
-- SOTA / Colab notebook generation: `_static_colab_notebook`, `_personalize_notebook_for_user`, `_ensure_user_colab_gist`, `_ensure_colab_gist`, `_push_one_off_gist`, `_llm_generate_metric_code`, `_llm_generate_visualization_code`, `_llm_propose_text_evaluation_suite`, `_llm_infer_mapping`, `_llm_colab_notebook`, `_llm_sota_colab_notebook`, `leaderboard_colab_*`.
-- `canonicality` concept: `admin_promote_leaderboard` route + UI form. Column stays in DB for back-compat but no code reads it. `canonical_for_repo` column also dead (HF-only metadata).
-- Folder-prefix ZIP ingest: `detect_custom_fields`, `_classify_image_path`, `_folder_name_prefix_kind`, `_FIELD_TYPE_PREFIXES`, `process_dataset_zip`, `process_submission_zip`, `upload_dataset` route, `upload_submission` route. Upload UI replaced with a "paused" placeholder pointing at `/supported_types`.
-- Legacy per-sample tables: `HistogramData`, `SignalShape`, `ConfigData` model classes. The SQLite tables themselves stay for existing DBs. `Sample.histogram_data` / `.signal_shape` / `.config_data` accesses now resolve to `None`.
-- Tests: 26 entire test files removed (HF, PWC, colab, sota, llm proposer, smart-num-classlabel, auto-lb-metrics, lb-preview-extras, detect-custom-fields, process-dataset-zip, process-submission-zip, prune-incomplete-datasets, routes-dataset, remote-submissions, quotas-curated, canonicality, account-delete-hf, attachment-iter, get-metric-context, sota-picker, submission-colab-link, text-gt, create-lb-chooser, hf-* full suite).
-- `/explore` is now a back-compat 302 → `/leaderboards`. The `Explore samples` button on LB pages is gone; the catalog is at `/leaderboards` only.
+**Deleted (Phase A delete pile, commits `6707189`, `97f4b6c`, `66ffcc6`)** — don't reintroduce:
+- Old HuggingFace/PWC import stack (`import_from_hf*`, `admin_pwc_*`, `admin_lb_sota*`, `_VirtualSample`/`_VirtualCustomField`, `_infer_mapping`, `_resolve_hf_split_and_load`/`_HF_SPLIT_PREFERENCE`, `_persist_hf_eval_snapshots`, `_create_lb_from_pwc_benchmark` + PWC helpers, `_HF_MASK_TOKENS`, `pwc_client.py`).
+- SOTA/Colab notebook generation (`*_colab_*`, `_llm_generate_*`, `_llm_propose_*`, `_llm_infer_mapping`, `leaderboard_colab_*`).
+- `canonicality` concept: `admin_promote_leaderboard` route + UI form. Column stays in DB but no code reads it; `canonical_for_repo` likewise dead (HF-only metadata).
+- Folder-prefix ZIP ingest (`detect_custom_fields`, `_classify_image_path`, `_folder_name_prefix_kind`, `_FIELD_TYPE_PREFIXES`, `process_*_zip`, `upload_dataset`/`upload_submission` routes). Upload UI → "paused" placeholder pointing at `/supported_types`.
+- Legacy per-sample model classes `HistogramData`/`SignalShape`/`ConfigData` (SQLite tables stay; `Sample.histogram_data`/`.signal_shape`/`.config_data` resolve to `None`). 26 test files removed.
+- `/explore` → back-compat 302 to `/leaderboards`; the catalog lives only there.
+
+⚠️ **This list is stale**: some named symbols (`_infer_mapping`, `_VirtualSample`, `_HF_SPLIT_PREFERENCE`, `_pwc_task_to_category`, `populate_lb_samples`, `process_submission_zip`, `detect_custom_fields`, `_llm_generate_metric_code`) reappear in current `app.py`/`metric_engine.py` — a later import system (agent-mode + file-tree, see `scripts/import_hf_agent.py`, `benchhub/file_tree_import.py`) was built on the cleared ground. Verify against code before trusting any "deleted"/"live" claim below.
 
 **Live state**: 800+ passing tests, zero xfailed, zero TODOs in source. Site serves cleanly at `runbenchhub.com`.
 
@@ -107,75 +92,33 @@ celery -A app.celery worker --loglevel=info
 python app.py
 ```
 
-**Tests live under `tests/`** (60+ files) and run with `pytest tests/`. Shared fixtures are in `tests/conftest.py`:
-- Per-session `app` fixture wires Flask + Celery into TEST mode (`task_always_eager=True`) so submission/eval flows run inline.
-- Per-test `db_session` drops + recreates all tables, so tests are independent.
-- `auth_client` is a `client` with `session['user_id']` already set to a fresh `logged_in_user`.
-- `make_zip(name, layout, root_folder=...)` builds a fake submission/dataset ZIP for upload-path tests.
+**Tests** under `tests/` (60+ files), run `pytest tests/`. Fixtures in `tests/conftest.py`: per-session `app` (Flask+Celery in TEST mode, `task_always_eager=True`); per-test `db_session` (drop+recreate all tables → independent); `auth_client` (client with `session['user_id']` = fresh `logged_in_user`); `make_zip(name, layout, root_folder=...)`. `BENCHHUB_DATA_DIR` → per-session tempdir so tests never touch `~/.dtofbenchmarking`. Root-level `test_chain*.py` are ad-hoc Celery experiments, NOT in the suite — use `pytest tests/`, not bare `pytest`.
 
-`BENCHHUB_DATA_DIR` is redirected to a per-session tempdir so tests never touch `~/.dtofbenchmarking`.
-
-The standalone `test_chain.py` / `test_celery_chain.py` / `test_chain_app.py` files at the repo root are ad-hoc Celery experiments — NOT part of the pytest suite. Run pytest with `pytest tests/` (not bare `pytest`) so it doesn't try to collect them.
-
-No lint or build commands are wired up.
-
-Dependencies: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery, redis, numpy, scipy, matplotlib, Pillow, h5py, soundfile, …). `pytest` isn't pinned in requirements.txt — install separately for the test suite.
+No lint/build wired up. Deps: `pip install -r requirements.txt` (Flask, Flask-SQLAlchemy, celery, redis, numpy, scipy, matplotlib, Pillow, h5py, soundfile, …); `pytest` isn't pinned — install separately.
 
 ## Deployment
 
-Production is **self-hosted** on a home Ubuntu 24.04 box at
-`runbenchhub.com`. gunicorn + celery + redis run directly under systemd
-(no Docker), nginx + certbot in front, Cloudflare DNS in DNS-only mode,
-`ddclient` for DDNS. The operational runbook — code-push flow, `.env`
-keys, log tailing, rollback, breakages — is **`docs/SELFHOST_RUNBOOK.md`**;
-read it before suggesting deploy/operations commands.
-
-**Claude Code runs on the box itself**, not on a laptop. There are two
-checkouts on disk and you need to keep them straight:
+**Self-hosted** on a home Ubuntu 24.04 box at `runbenchhub.com`: gunicorn + celery + redis under systemd (no Docker), nginx + certbot, Cloudflare DNS-only, `ddclient` for DDNS. Full runbook (push flow, `.env` keys, logs, rollback): **`docs/SELFHOST_RUNBOOK.md`** — read before suggesting ops commands. Claude Code runs **on the box** (the runbook's `ssh` step is skippable). Two checkouts:
 
 | Path | Role |
 |---|---|
-| `~/Git/BenchHub` (current working dir) | **Dev checkout** — edits + commits land here. Hot edits do NOT touch the live app. |
-| `~/benchhub` | **Production checkout** — what gunicorn/celery actually serve. Updated only via `git pull`. |
+| `~/Git/BenchHub` (cwd) | **Dev** — edits + commits land here; does NOT touch the live app. |
+| `~/benchhub` | **Prod** — what gunicorn/celery serve. Updated only via `git pull`. Never edit directly (next `git pull` clobbers it). |
 
-The runbook's "ssh -p 2222 ymatri@runbenchhub.com" step is skippable —
-you're already on the box. The deploy reduces to: commit + push from
-`~/Git/BenchHub`, then `cd ~/benchhub && git pull && sudo systemctl
-reload benchhub-web` from anywhere. **Never edit `~/benchhub` directly**;
-it's the equivalent of editing prod on a server, and the next `git pull`
-will clobber it (or worse, conflict).
-
-**Fly.io is dead.** The artifacts (`fly.toml`, `Dockerfile`,
-`.dockerignore`, `start.sh`, `entrypoint.sh`, `DEPLOY.md`,
-`runner/fly.toml`) were moved to `archive/fly/` so a future Fly redeploy
-can rebuild from there — they are NOT used by anything live. Don't
-suggest `fly deploy`, `fly logs`, `fly secrets set`, or anything
-Fly-specific; use the systemd / `git pull` flow from the runbook.
-`runner/Dockerfile`, `runner/harness.py`, `runner/server.py` stayed in
-place — local sandbox tests (`tests/test_sandbox_*`) still reference
-them. Quick reference:
+Deploy = commit + push from `~/Git/BenchHub`, then from anywhere on the box:
 
 ```bash
-# From the dev checkout (~/Git/BenchHub):
-git push origin main
-
-# Then from anywhere on the box — we're already in:
 cd ~/benchhub && git pull
-sudo systemctl reload benchhub-web        # graceful HUP, no dropped requests
-sudo systemctl restart benchhub-celery    # celery has no SIGHUP code-reload
-
-# .env change or new schema column → full restart (HUP doesn't re-read env or rerun migrations)
+sudo systemctl restart benchhub-web        # ⚠️ unit has NO ExecReload — `reload` errors ("Job type reload is not applicable"); use restart
+sudo systemctl restart benchhub-celery     # celery has no SIGHUP code-reload either
+# .env change / new schema column → restart both (HUP wouldn't re-read env or migrate anyway)
 sudo systemctl restart benchhub-web benchhub-celery
-
-# Tail logs
-journalctl -u benchhub-web -f
-journalctl -u benchhub-celery -f
+# logs: journalctl -u benchhub-web -f   /   -u benchhub-celery -f
 ```
 
-`BENCHHUB_AUTO_MIGRATE=1` is set in `.env`, so `check_and_migrate_db()`
-runs on every process boot — that's what makes a model-column ALTER apply
-on `restart`. Secrets live only in `~/benchhub/.env` on the box; there's
-no `fly secrets list` to recover them from.
+`BENCHHUB_AUTO_MIGRATE=1` in `.env` runs `check_and_migrate_db()` on every boot, so a model-column ALTER applies on `restart`. Secrets live only in `~/benchhub/.env`.
+
+**Fly.io is dead** — artifacts moved to `archive/fly/`; don't suggest any `fly *` command. `runner/{Dockerfile,harness.py,server.py}` stay in place (local sandbox tests `tests/test_sandbox_*` reference them).
 
 ## Data and config locations
 
@@ -186,30 +129,24 @@ no `fly secrets list` to recover them from.
 ## Architecture
 
 ### One-file Flask app
-`app.py` is ~6600 lines and holds essentially everything: SQLAlchemy models, all Flask routes, ZIP processing, DB migrations, custom-field detection, and visualization rendering. When extending, prefer editing `app.py` over creating new modules — the existing code does not have a layered structure to slot into. Two small helpers live outside:
-- `metric_engine.py` — `evaluate_dynamic_metric` (exec's user-supplied Python code), `get_metric_context` (assembles the kwargs for a metric call), and `sort_metrics_by_dependency` (Kahn's-algorithm topo sort so metric B can consume metric A's output).
-- `tasks.py` — Celery tasks. **Important circular import shape**: `tasks.py` imports from `app` (`celery, db, Submission, ...`), and `app.py` lazily imports `tasks` inside route handlers (search for `tasks.process_submission.delay`). Don't move task definitions into `app.py` or rearrange imports without understanding this.
-- `metric_routes.py` — orphaned legacy snippets (uses `@app.route` without importing `app`). Not actually wired into the running app; the equivalents live in `app.py`. Treat as dead code unless explicitly resurrecting.
+`app.py` (~6600 lines) holds nearly everything: models, all routes, ZIP processing, DB migrations, custom-field detection, viz rendering. Prefer editing `app.py` over new modules — there's no layered structure to slot into. Helpers outside:
+- `metric_engine.py` — `evaluate_dynamic_metric` (exec's user code), `get_metric_context` (assembles metric kwargs), `sort_metrics_by_dependency` (Kahn topo sort so metric B consumes metric A's output).
+- `tasks.py` — Celery tasks. **Circular-import shape**: `tasks.py` imports from `app`; `app.py` lazily imports `tasks` inside route handlers (`tasks.process_submission.delay`). Don't move task defs into `app.py` or rearrange imports without understanding this.
+- `metric_routes.py` — orphaned legacy snippets (uses `@app.route` without importing `app`); dead code, equivalents live in `app.py`.
 
 ### Domain model (`app.py` ~270–510)
 - **Project** → has many **Leaderboard**s. `Project` is just a namespace; URLs are prefixed with `/<project_name>/...` and resolved via `@app.before_request load_project_context` (cookie-fallback to `active_project_id`).
 - **Dataset** is **global** (not project-scoped, despite older code comments). Linked to leaderboards via the `leaderboard_datasets` association table — a leaderboard can have multiple datasets. The legacy `Leaderboard.dataset_id` column is deprecated but still populated for back-compat.
 - **Sample** belongs to a Dataset. `HistogramData`, `SignalShape`, `ConfigData` are legacy per-sample tables; new data flows through `CustomField` instead. The `Sample.histogram_data` / `Sample.signal_shape` Python @properties shadow the SQLAlchemy relationships and transparently fall back to `CustomField` rows — be aware when querying.
-- **CustomField** is the unified, dynamically-typed bag for arbitrary per-sample (Dataset) and per-(submission, sample) data. `field_type` ∈ `{image, scalar, metric, histogram, depth, json, text}`. Per-sample metric *outputs* are also written here as `name=f"lm_{leaderboard_metric_id}"`, which is what enables `reaggregate_submission_metrics` to recompute pooling without re-running user code.
-- **GlobalMetric** / **GlobalVisualization** store user-uploaded Python source. **LeaderboardMetric** / **LeaderboardVisualization** are link tables that bind a global definition to a leaderboard with `arg_mappings` (JSON dict mapping function arg → context key), `target_name` (display alias used as the dependency name for chaining), `pooling_type` (`mean|median|percentile|min|max`), `sort_direction`, and `tag_filter`.
+- **CustomField** — unified dynamically-typed bag for per-sample (Dataset) and per-(submission,sample) data. `field_type ∈ {image,scalar,metric,histogram,depth,json,text}`. Per-sample metric *outputs* also land here as `name=f"lm_{leaderboard_metric_id}"`, which lets `reaggregate_submission_metrics` re-pool without re-running user code.
+- **GlobalMetric**/**GlobalVisualization** store user Python source. **LeaderboardMetric**/**LeaderboardVisualization** link a global def to an LB with `arg_mappings` (arg → context key), `target_name` (dependency-chaining alias), `pooling_type` (`mean|median|percentile|min|max`), `sort_direction`, `tag_filter`.
 - **MetricResult** stores the final aggregated scalar per (submission, leaderboard_metric).
 
 ### Submission processing pipeline
-1. Upload (`upload_submission` route) → `process_submission_zip` extracts ZIP into `uploads/submissions/<id>/`, runs `detect_custom_fields` to populate `CustomField` rows.
-2. `tasks.process_submission.delay(sub.id)` enqueues async work.
-3. `_process_submission_impl` in `tasks.py`:
-   - Builds a per-sample context dict via `get_metric_context` (GT custom fields + submission custom fields + on-the-fly entropy from histogram folders).
-   - Topo-sorts `LeaderboardMetric`s (`sort_metrics_by_dependency`) so dependencies run first; their outputs are merged back into each sample's context.
-   - For per-sample metrics: writes each value to a `CustomField` row (so re-aggregation can skip re-execution), then pools via `pooling_type`.
-   - For aggregated metrics: passes the full list of values for non-aggregated dependencies and the scalar for aggregated dependencies.
-   - Pre-caches aggregated visualizations.
-   - Updates `Submission.processing_status` granularly (`Pending` → `Processing: Metric N/M (name)` → `Generating Visualizations` → `Processed` / `Error: ...`).
-4. Batch recalculation uses `process_submissions_batch_sequential` which runs submissions one-at-a-time on purpose — concurrency was rolled back (see commit `8a77b48`), so don't re-introduce a `group()`/`chord()` here without checking why.
+1. Upload (`upload_submission`) → `process_submission_zip` extracts to `uploads/submissions/<id>/`, runs `detect_custom_fields`.
+2. `tasks.process_submission.delay(sub.id)` enqueues.
+3. `_process_submission_impl` (`tasks.py`): builds per-sample context via `get_metric_context` (GT + submission CFs + on-the-fly histogram entropy); topo-sorts `LeaderboardMetric`s (`sort_metrics_by_dependency`) and merges outputs back into context; per-sample metrics write each value to a `CustomField` (so re-aggregation skips re-exec) then pool via `pooling_type`; aggregated metrics get the full value list for non-aggregated deps / scalar for aggregated deps; pre-caches aggregated viz; updates `Submission.processing_status` granularly (`Pending`→`Processing: Metric N/M`→`Generating Visualizations`→`Processed`/`Error:`).
+4. Batch recalc uses `process_submissions_batch_sequential` — one-at-a-time on purpose (concurrency rolled back in `8a77b48`; don't re-add `group()`/`chord()` without checking why).
 
 ### Folder convention for ZIPs (`<type>_<field_name>`)
 The canonical naming for any dataset/submission folder is `<type>_<field_name>`. Recognised type prefixes live in `_FIELD_TYPE_PREFIXES`:
@@ -226,20 +163,16 @@ The canonical naming for any dataset/submission folder is `<type>_<field_name>`.
 | `histogram` | `histogram_dtof` | `<sample>.npz` (`bins`, `counts`) |
 | `metric` | `metric_iou` | `<sample>.txt` (pre-computed) |
 
-`_folder_name_prefix_kind(folder_name)` returns the canonical kind when the prefix matches, and that decision is **authoritative** — the content-peek heuristics (`_classify_image_path`, `_classify_npz`) only run for folders without a recognised prefix (back-compat with legacy datasets). The `tags` folder is the one hardcoded exception (always text).
-
-The same convention is mirrored on the HF-import side: `_infer_mapping` emits `target_field=<kind>_<col>` for every kind so the field name on the LB matches what a BH-uploaded dataset would use. If the HF column name already starts with that kind prefix, it's not double-prefixed.
-
-`git_info.json` (or `git.info`) at the ZIP root is parsed for commit metadata; if `author` is absent, `get_author_from_git_commit` shells out to `git -C $GIT_REPO_PATH log origin/<branch>` to recover it.
+`_folder_name_prefix_kind(folder_name)` is **authoritative** when the prefix matches; content-peek heuristics (`_classify_image_path`, `_classify_npz`) run only for unrecognised prefixes (legacy back-compat). `tags` folder is hardcoded text. Mirrored on HF import: `_infer_mapping` emits `target_field=<kind>_<col>` (not double-prefixed if the col already starts with the kind). `git_info.json`/`git.info` at ZIP root → commit metadata; missing `author` ⇒ `get_author_from_git_commit` shells `git -C $GIT_REPO_PATH log origin/<branch>`.
 
 ### Frontend
 Server-rendered Jinja templates in `templates/` (no framework, vanilla JS). The big screens are `leaderboard.html`, `comparison.html`, `dataset_view.html`, `edit_leaderboard.html`. Static assets are minimal (`static/css/`, `static/js/`).
 
 ### DLP-safe code path
-Some networks block `.py` uploads. The metric editor encodes user code as `BASE64:<...>` client-side; `handle_dlp_safe_code` (in `app.py`) detects the prefix and decodes server-side. `scripts/obfuscator.html` and `scripts/obfuscator_gui.py` are standalone helper tools for the same pipeline. Preserve this pathway when touching metric upload/edit endpoints.
+Some networks block `.py` uploads. The metric editor encodes code as `BASE64:<...>` client-side; `handle_dlp_safe_code` decodes server-side. `scripts/obfuscator.html` + `scripts/obfuscator_gui.py` are standalone helpers. Preserve this when touching metric upload/edit endpoints.
 
 ### DB migrations
-There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__main__':`) runs raw SQLite `PRAGMA table_info` checks and `ALTER TABLE ... ADD COLUMN` against `~/.dtofbenchmarking/database.db` on every startup. When adding a new column to a model, also add a migration block here or existing installations will break. SQLite is opened with `journal_mode=WAL` and a 120s `busy_timeout`.
+No Alembic. `check_and_migrate_db()` (called from `if __name__ == '__main__':`) runs raw SQLite `PRAGMA table_info` + `ALTER TABLE ... ADD COLUMN` against `~/.dtofbenchmarking/database.db` on every startup — add a block here for every new model column or existing installs break. SQLite opened `journal_mode=WAL`, 120s `busy_timeout`.
 
 ## Things to be careful with
 - The `Sample` class redefines `histogram_data` and `signal_shape` as @properties *after* declaring them as relationships; the Python descriptor wins at attribute access time. Don't "clean this up" without verifying every read site.
@@ -262,34 +195,24 @@ There is no Alembic. `check_and_migrate_db()` (called from `if __name__ == '__ma
 - **Mobile pattern for long lists** (metrics, visualizations): render a `<select>` with `d-md-none`, hide the sidebar with `d-none d-md-block`. Keeps the detail pane on-screen without a Bootstrap collapse dance.
 
 ## HF dataset attachment patterns
-- **`_HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']`** in `app.py`. PWC bulk imports default `Attachment.hf_split='train'`, but that's a hint, not a hard preference. `_resolve_hf_split_and_load(att, load_fn)` walks the preference order, probes row 0 to verify mapped GT columns aren't all null, falls back to first loadable split if none have full GT, and **persists the resolved split back via `_persist_resolved_split`** so the LB-detail badge tells the truth.
-- **`_infer_mapping(features)` defaults string→text, Audio→audio, everything-else→json.** Used to skip-and-leave-empty for any column it didn't recognise, silently dropping most QA / relation-extraction / structured GT. If you change this, double-check `_persist_hf_eval_snapshots` and `_virtual_sample_from_hf_row` still know how to persist the new kind.
-- **`Value:unknown` (HF's flattening of nested types) → json**, not skip. DocRED's `sents`/`vertexSet`/`labels` look like this.
-- **`_pwc_task_to_category` strips domain prefixes** (Medical, Aerial, Satellite, Few-Shot, Self-Supervised, …) before classification, so "Medical Image Segmentation" → "Vision/Image Segmentation". New prefixes go in `_DOMAIN_PREFIXES` — order them shortest-first so "medical image" doesn't get half-eaten.
-- **`populate_lb_samples` has a 5-min `soft_time_limit`.** PWC's `suggest_hf_repo` fallback sometimes lands on a monolithic HDF5 repo (e.g. `btherien/imagenet-64x64x3` is 100GB+ behind `load_dataset`), and without the timeout one task takes down the whole worker. **The Fly machine hosts Flask + Celery + Redis on one box** — don't bulk-enqueue dozens of populate tasks; the site becomes unresponsive. Use the per-LB "Populate samples" button instead, or rate-limit any bulk operation.
+(Much of this names Phase-A-era HF/PWC code — verify against current `app.py` before relying on it.)
+- **`_HF_SPLIT_PREFERENCE = ['test','validation','val','dev','train']`**. `_resolve_hf_split_and_load(att, load_fn)` walks the order, probes row 0 to verify mapped GT cols aren't all null, falls back to first loadable split, and **persists the resolved split via `_persist_resolved_split`** so the LB badge tells the truth.
+- **`_infer_mapping(features)`**: string→text, Audio→audio, else→json. `Value:unknown` (HF's flattened nested types, e.g. DocRED `sents`/`vertexSet`/`labels`) → json, not skip. Changing it ⇒ check `_persist_hf_eval_snapshots` + `_virtual_sample_from_hf_row` persist the new kind.
+- **`_pwc_task_to_category`** strips domain prefixes (Medical, Aerial, Few-Shot, …) before classifying ("Medical Image Segmentation" → "Vision/Image Segmentation"). New prefixes → `_DOMAIN_PREFIXES`, shortest-first.
+- **`populate_lb_samples` has a 5-min `soft_time_limit`** — `suggest_hf_repo` can land on a monolithic 100GB+ HDF5 repo and hang the worker. Flask+Celery+Redis share one box; don't bulk-enqueue populate tasks (site goes unresponsive) — use the per-LB "Populate samples" button or rate-limit.
 
 ## Input vs GT roles on dataset columns
-Every HF-attachment mapping entry now carries an optional `role` field: `input` (conditioning given to the submitter at inference time, NOT predicted) or `gt` (held server-side, target of prediction). Default = `gt` when missing (back-compat).
-- `_pwc_task_input_kinds(task_name)` returns the set of `target_kind`s that should be flagged `input` for a given PWC task. New entries land via `_create_lb_from_pwc_benchmark` at import time.
-- `_lb_submission_pred_fields` filters out pred fields whose GT column is flagged `input` — so e.g. `label_pred` no longer appears in the Image-Generation submission contract.
-- Owner-editable on `/edit_leaderboard/<id>` → Prediction-fields tab → "Dataset field roles" panel. Frozen on LBs with verified submissions.
-- The arg_mappings on LeaderboardMetric rows must reference a GT-role column or the metric won't have a valid pred field. The `.tag_input_gt.py` one-shot script (kept for reference) walks every PWC LB, flips roles per task, and rewrites arg_mappings to point at the highest-priority GT field.
+Each mapping entry carries optional `role`: `input` (conditioning given to submitter, NOT predicted) or `gt` (held server-side, prediction target). Default `gt` (back-compat). `_pwc_task_input_kinds(task_name)` returns the `target_kind`s to flag `input`. `_lb_submission_pred_fields` drops pred fields whose GT col is `input` (so `label_pred` won't appear in an Image-Generation contract). Owner-editable on `/edit_leaderboard/<id>` → Prediction-fields → "Dataset field roles"; frozen once verified subs exist. `LeaderboardMetric.arg_mappings` must reference a GT-role column or the metric has no valid pred field (`.tag_input_gt.py` one-shot rewrites these per task).
 
 ## Metric / Visualization input-kind declarations
-`GlobalMetric.input_kinds` and `GlobalVisualization.input_kinds` are nullable JSON arrays of accepted `target_kind` strings in argument order. NULL = unconstrained (legacy / undeclared). The metric detail pane on `/metrics?selected=<id>` surfaces a small "Accepts: <kind>×<kind>" row; backfilled for 18 curated metrics in `.backfill_input_kinds.py`. The LB→metric binding UI doesn't yet *enforce* the kinds — that's the next step in a follow-up. Add new patterns to `KIND_HINTS` in `.backfill_input_kinds.py` when a new metric ships.
+`GlobalMetric.input_kinds` / `GlobalVisualization.input_kinds` are nullable JSON arrays of accepted `target_kind`s in arg order (NULL = unconstrained). `/metrics?selected=<id>` shows an "Accepts: <kind>×<kind>" row; backfilled for 18 metrics in `.backfill_input_kinds.py` (add patterns to `KIND_HINTS` there). The LB→metric binding UI doesn't yet *enforce* kinds.
 
 ## User-registered data types (`DataTypeDef`) + the decode hook
-- A user can register a new `kind` BenchHub doesn't ship (NIfTI, point clouds, EEG, …) from the dedicated page **`/datatypes/new`** (route `datatype_new`; the `/supported_types` "Add a data type" button links here — there is no inline form anymore) or the client (`client.create_datatype(...)`). The `/datatypes/create` POST (`create_datatype_web`) redirects back to `/datatypes/new` on error, `/supported_types` on success. `/datatypes` 302s to `/supported_types`.
-- `DataTypeDef` columns: `name` (globally unique, joins the same namespace as built-in `DTYPES`), `file_ext` (NULL ⇒ inline text), `viz_mime`, `visualize_code` (`def visualize(blob, params) -> PIL.Image`), **`decode_code`** (optional `def decode(blob, params) -> object`), `owner_user_id`, `visibility`. Storage is **bytes-verbatim** (encode = identity). Both `visualize` and `decode` run **only in the sandbox**.
-- **The decode hook is the deserialize side of the contract.** When `decode_code` is set, a metric that consumes the registered kind receives the decoded object instead of raw bytes (mirrors built-in `bh.Depth.array`); absent ⇒ the metric gets the raw bytes. Wiring:
-  - `metric_engine.RegisteredBlob` is the in-context carrier (`kind`, `blob`, `params`, `decode_code`). `get_metric_context` emits it for any GT/input CustomField whose `data_type` is **not** in `DTYPES` (via `_registered_blob_for_cf`, lazy `from app import DataTypeDef`).
-  - Sandbox: `_jsonify_kwarg(RegisteredBlob)` → `{"__dtype__","decode","params","b64"}`; `runner/harness.py:_decode_arg` runs `decode` **inside the metric's own container** (no extra spawn) or returns the raw bytes.
-  - In-process (non-sandbox) path: `evaluate_dynamic_metric` resolves `RegisteredBlob` via `_resolve_registered_blob` right before calling the metric.
-- **Import admission**: `benchhub.manifest` (the standalone package) can't see `DataTypeDef`, so `validate_manifest` / `load_manifest` / `expected_file_path` / `import_typed_dataset` all take an optional **`extra_kinds={name: file_ext}`** map; a kind in `extra_kinds` is accepted and stored bytes-verbatim (no `DTYPES` class, no preview render). Server callers pass `app._registered_extra_kinds(owner_user_id)` (public + owner's own). The four call sites: `_ingest_typed_dataset_zip`, `admin_import_typed_dataset` (request scope, use `g`), and `tasks.run_hf_import` / `tasks.run_file_tree_import` (Celery — **lazy-import** `_registered_extra_kinds` inside the task to avoid the app↔tasks circular import; do NOT add it to the top-level `from app import (...)`).
-- **Registered-kind predictions (bytes-in).** Both GT/input AND pred fields now support registered kinds. The submitter serializes their model output themselves and the client packs it **verbatim** — there is deliberately **no `encode` hook** (the producer owns serialization, exactly as a dataset author produces the GT file; `decode` is the only hook because only the *server* must deserialize to score). Wiring:
-  - Client: `benchhub.RawPrediction(kind, data, *, file_ext=None, params=None)` (`.from_file(...)` for a path). `SubmissionBuilder.predict(sample, field=RawPrediction(...))` accepts it alongside `DataType`s; `build_manifest`/`build_zip` derive kind from `.kind` and pack the bytes under the field's ext. The ext comes from the LB **contract** (`/api/leaderboard/<id>/contract` entries are enriched with `file_ext` via `_kind_file_ext`) — so `set_contract()`/`fetch_contract()` (or an explicit `file_ext=`) is required for a registered pred, else `build_zip` raises.
-  - Server: `validate_submission_manifest` / `import_typed_submission` take `extra_kinds` (same shape as the dataset importer); the submit route passes `_registered_extra_kinds(lb.owner_user_id)`. Registered pred bytes store verbatim; `get_metric_context` emits a `RegisteredBlob` for the pred CustomField (the `cf.data_type not in DTYPES` branch in the `sub` loop), decoded for the metric just like GT.
-  - `check_submission_matches_contract` is kind-string only (no `DTYPES` gate), so it needed no change. `_enforce_shape_constraint` skips registered kinds (no spatial shape).
+- Register a new `kind` BenchHub doesn't ship (NIfTI, point clouds, EEG, …) via **`/datatypes/new`** (route `datatype_new`; `/supported_types` "Add a data type" links here) or `client.create_datatype(...)`. POST `/datatypes/create` (`create_datatype_web`) → back to `/datatypes/new` on error, `/supported_types` on success; `/datatypes` 302s to `/supported_types`.
+- `DataTypeDef` columns: `name` (globally unique, shares the `DTYPES` namespace), `file_ext` (NULL ⇒ inline text), `viz_mime`, `visualize_code` (`def visualize(blob, params)->PIL.Image`), optional **`decode_code`** (`def decode(blob, params)->object`), `owner_user_id`, `visibility`. Storage is **bytes-verbatim** (encode=identity); `visualize`/`decode` run **only in the sandbox**.
+- **Decode hook = deserialize side of the contract.** With `decode_code` set, a consuming metric gets the decoded object (mirrors `bh.Depth.array`); absent ⇒ raw bytes. Wiring: `metric_engine.RegisteredBlob` (`kind,blob,params,decode_code`) is the carrier — `get_metric_context` emits it for any GT/input/pred CustomField whose `data_type` ∉ `DTYPES` (via `_registered_blob_for_cf`, lazy `from app import DataTypeDef`). Sandbox: `_jsonify_kwarg` → `{"__dtype__","decode","params","b64"}`, `runner/harness.py:_decode_arg` runs `decode` inside the metric's own container. In-process: `evaluate_dynamic_metric` resolves via `_resolve_registered_blob`.
+- **Import admission**: `benchhub.manifest` can't see `DataTypeDef`, so `validate_manifest`/`load_manifest`/`expected_file_path`/`import_typed_dataset` take optional **`extra_kinds={name: file_ext}`** (accepted, stored verbatim, no preview). Server passes `app._registered_extra_kinds(owner_user_id)` (public + owner's own) at 4 sites: `_ingest_typed_dataset_zip`, `admin_import_typed_dataset` (request scope → `g`), `tasks.run_hf_import`/`tasks.run_file_tree_import` (Celery — **lazy-import** inside the task; do NOT add to top-level `from app import`, circular).
+- **Registered-kind predictions (bytes-in).** Both GT/input AND pred support registered kinds. Submitter serializes their output; client packs **verbatim** — deliberately **no `encode` hook** (producer owns serialization; `decode` is the only hook since only the *server* deserializes to score). Client: `benchhub.RawPrediction(kind, data, *, file_ext=None, params=None)` (`.from_file(...)`); `SubmissionBuilder.predict(sample, field=RawPrediction(...))` packs bytes under the field's ext, which comes from the LB **contract** (`/contract` entries enriched with `file_ext` via `_kind_file_ext`) — so `set_contract()`/`fetch_contract()` (or explicit `file_ext=`) required or `build_zip` raises. Server: `validate_submission_manifest`/`import_typed_submission` take `extra_kinds`; submit route passes `_registered_extra_kinds(lb.owner_user_id)`. `check_submission_matches_contract` is kind-string only (no change); `_enforce_shape_constraint` skips registered kinds.
 - A registered kind used by a public LB can't be deleted or made private (`_datatype_used_by_public_lb` guard).
 
 ## Editing the LB pred-field schema
@@ -299,9 +222,9 @@ Every HF-attachment mapping entry now carries an optional `role` field: `input` 
 - `_create_lb_from_pwc_benchmark` picks the gt_field for arg_mappings via `_pwc_task_pred_kind_priority(task_name)` — task-aware ordering so image-generation tasks land on the image kind, segmentation on mask, depth on depth, etc. Falls back to the default `(scalar > depth > image > mask > text)` order. Add new patterns there when a future bulk import lands a task type that's not covered.
 
 ## Mask vs image disambiguation
-Both upload paths now route segmentation masks to `target_kind='mask'` (rendered with the deterministic-hue palette + paired with IoU-family metric defaults) rather than 'image':
-- **HF datasets** (`_infer_mapping`): an `Image`-typed column whose name contains any of `mask`, `segmentation`, `segment_map`, `seg_map`, `annotation`, `panoptic`, `label_map`, `semseg` → mask. Tokens live in `_HF_MASK_TOKENS`; check via `_col_name_looks_like_mask(col)`.
-- **BH ZIP uploads** (`detect_custom_fields`): folder-name token check short-circuits to mask. Otherwise `_classify_image_path(path)` peeks the first file and inspects PIL `mode` + unique-value/color count (downsampled to 256×256 for speed): mode `P` → mask; mode `L`/`I` with ≤32 unique values → mask; mode `RGB`/`RGBA` with ≤32 unique colors → mask; else image.
+Both upload paths route segmentation masks to `target_kind='mask'` (deterministic-hue palette + IoU-family defaults), not 'image':
+- **HF** (`_infer_mapping`): an `Image` column whose name contains `mask`/`segmentation`/`segment_map`/`seg_map`/`annotation`/`panoptic`/`label_map`/`semseg` → mask (`_HF_MASK_TOKENS`, via `_col_name_looks_like_mask`).
+- **BH ZIP** (`detect_custom_fields`): folder-name token short-circuits to mask; else `_classify_image_path` peeks first file (downsampled 256×256): PIL mode `P` → mask; `L`/`I` with ≤32 unique values → mask; `RGB`/`RGBA` with ≤32 unique colors → mask; else image.
 
 ## Field-type taxonomy (CustomField.field_type)
 
@@ -323,49 +246,34 @@ Both upload paths now route segmentation masks to `target_kind='mask'` (rendered
 - **The template gates header+cell on `all_field_types.get(col_key) != 'metric'`** (used to be `not in ['scalar', 'metric']`). If you add a new field type, make sure it isn't accidentally excluded.
 
 ## "Explorable" status
-- `_compute_explorable_lb_ids(lb_ids)` returns the LB IDs whose GT is actually cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — the HF-stub marker rows). Drives the green/yellow pill on `/leaderboards`, `/home`, `/landing`, and the "Explore samples" button label on the LB detail page. (`/explore` is a back-compat redirect to `/leaderboards` since commit `21b5222`; all in-app links use `url_for('leaderboards', ...)`.)
-- **An LB with `canonical_for_repo IS NOT NULL` and zero GT CFs is effectively broken** — surface the owner-only "Populate samples" button instead of silently rendering an empty Explore page.
-- **`/datasets` lists two sections**: the regular `Dataset` rows (BH ZIP uploads) and a "Cached HuggingFace datasets" section built from distinct `Attachment.hf_repo_id` rows whose owning LB is in `_compute_explorable_lb_ids`. Each HF row links to the first LB's Explore-samples view. Filter is intentional: a non-explorable HF row would link to an empty page.
+- `_compute_explorable_lb_ids(lb_ids)` = LB IDs whose GT is cached: BH dataset Sample rows OR LB-scoped CustomField rows (sample_id+submission_id both NULL — HF-stub markers). Drives the green/yellow pill on `/leaderboards`,`/home`,`/landing` + the "Explore samples" label. (`/explore` → 302 to `/leaderboards` since `21b5222`; all links use `url_for('leaderboards', ...)`.)
+- An LB with `canonical_for_repo IS NOT NULL` + zero GT CFs is **broken** — show the owner-only "Populate samples" button, not an empty Explore page.
+- **`/datasets` has two sections**: regular `Dataset` rows + "Cached HuggingFace datasets" from distinct `Attachment.hf_repo_id` whose owning LB is explorable (each links to the first LB's Explore view — filter is intentional, else dead links).
 
 ## Metric authoring
-- **LLM-authored metrics from `_llm_generate_metric_code` are not safe to ship verbatim** for non-trivial cases (rank-based, span-overlap, BLEU-family). They tend to mix scalar-vs-list logic awkwardly and quietly return the wrong number. The rank-based LBs (Link Prediction) needed manual rewrites with `_rank_of_gt(gt, pred_list)` helpers; spot-check any new ones before relying on the column.
-- **Metrics are stored as Python source on `GlobalMetric.python_code`** and exec'd inside `evaluate_dynamic_metric` with `numpy as np` available. To replace one cleanly, query the row by name and overwrite `python_code` — no migration needed.
+- **LLM-authored metrics (`_llm_generate_metric_code`) aren't safe verbatim** for non-trivial cases (rank-based, span-overlap, BLEU) — they mix scalar-vs-list logic and return the wrong number. Rank LBs (Link Prediction) needed manual `_rank_of_gt(gt, pred_list)` rewrites; spot-check new ones.
+- Metrics stored as source on `GlobalMetric.python_code`, exec'd in `evaluate_dynamic_metric` with `numpy as np`. Replace cleanly by overwriting `python_code` (no migration).
 
 ## Migration patterns
-- **Every model-level column add needs a corresponding `ALTER TABLE ... ADD COLUMN` block in `check_and_migrate_db()`** (no Alembic). Recent additions: `Leaderboard.category` (two-level "Area/Task" taxonomy).
-- **Idempotent data backfill belongs in the same `check_and_migrate_db()` block** after the ALTER, gated on "any existing rows still NULL". The PWC-category backfill at `--- 3b. ---` is the template: probe optional resources (`pwc_client._index_path()`), best-effort match, swallow exceptions so fresh installs aren't blocked.
+- **Every model column add needs an `ALTER TABLE ... ADD COLUMN` block in `check_and_migrate_db()`** (no Alembic). Recent: `Leaderboard.category` (two-level "Area/Task").
+- **Idempotent data backfill goes in the same block** after the ALTER, gated on "any rows still NULL". Template: PWC-category backfill at `--- 3b. ---` — probe optional resources, best-effort match, swallow exceptions so fresh installs aren't blocked.
 
 ## Tests
-The pytest suite under `tests/` already covers most of the regression-prone surface — PWC import, HF features fallback, attachment iteration, metric context, comparison routes, smart_num, etc. **Add a test next to the closest existing one when you fix a bug** rather than writing it after the fact:
-
-| Touched code | Test file to extend |
-|--------------|---------------------|
-| `_pwc_task_to_category`, `_PWC_AREA_RULES`, `_DOMAIN_PREFIXES` | `tests/test_pwc_category.py` |
-| `_resolve_hf_split_and_load`, `_HF_SPLIT_PREFERENCE`, `_persist_resolved_split` | `tests/test_hf_split_resolver.py` |
-| `_infer_mapping` (the `Value:unknown` → json fall-through, Audio kind, Sequence-of-* fallback) | `tests/test_pwc_import.py` or `tests/test_hf_features_fallback.py` |
-| `_compute_explorable_lb_ids` | `tests/test_explorable.py` |
-| `_VirtualSample` / `_VirtualCustomField` json/topk_list/audio dispatch | `tests/test_attachment_iter.py` |
-| `get_metric_context` deserialization of text/json/topk_list | `tests/test_metric_context_arrays.py` |
-| Samples-only mode in `comparison_view` (incl. pagination + form param threading) | `tests/test_routes_comparison.py` |
-
-Run with `pytest tests/` (not bare `pytest`, to avoid the ad-hoc root-level `test_chain*.py` files).
+**Add a test next to the closest existing one when you fix a bug.** Map of touched code → test file: `_pwc_task_to_category`/`_DOMAIN_PREFIXES` → `test_pwc_category.py`; `_resolve_hf_split_and_load` → `test_hf_split_resolver.py`; `_infer_mapping` → `test_pwc_import.py`/`test_hf_features_fallback.py`; `_compute_explorable_lb_ids` → `test_explorable.py`; `_VirtualSample` dispatch → `test_attachment_iter.py`; `get_metric_context` text/json/topk_list → `test_metric_context_arrays.py`; samples-only `comparison_view` → `test_routes_comparison.py`. Run `pytest tests/` (not bare `pytest` — avoids root-level `test_chain*.py`).
 
 ## User-owned content visibility
-- `GlobalMetric` and `GlobalVisualization` rows created by a non-admin user default to `visibility='private'`. Admins (BENCHHUB_ADMIN_EMAILS / `is_admin` flag) default their new rows to `public`. Owners can flip via the detail-pane select on `/metrics?selected=<id>` and `/visualizations?selected=<id>` (routes: `set_global_metric_visibility`, `set_global_visualization_visibility`).
-- **Name uniqueness is two-tier**: `GlobalMetric.name` and `GlobalVisualization.name` are NOT globally unique anymore. Two users can each have a private `my_iou` metric. Two SQLite indexes (added in `check_and_migrate_db`) carry the new contract:
-  - `uq_<table>_name_public` — partial unique on `name` WHERE `visibility='public'` (cross-user uniqueness only for public).
-  - `uq_<table>_name_per_owner` — composite unique on `(owner_user_id, name)` so a single user can't have two metrics named the same.
-- **Promote-to-public collision UX**: `set_global_metric_visibility` (and the viz variant) detects a public-name collision before flipping the row and redirects to `resolve_name_collision.html`, which proposes a `<name>_<N>` suggestion via `_suggest_unique_public_name()` and lets the user edit. The `/visibility/confirm` route is the second hop — it re-checks (and re-suggests if the user tried another taken name) before committing.
-- `Leaderboard.canonicality` is **dropped** as a concept. The column stays in the DB for back-compat (no destructive column drop on SQLite) but no code reads it. Visibility (public/private/unlisted) is the only catalog-membership flag. The legacy `admin_promote_leaderboard` route still exists as a back-compat alias that just flips `visibility`; it's owner-OR-admin now, not admin-only.
-- `Leaderboard.canonical_for_repo` is **informational metadata** ("this LB tracks the X HF repo"). Multiple LBs may share a repo. Admin-only `admin_set_canonical_for_repo` route lets you adjust the label without affecting visibility.
+- `GlobalMetric`/`GlobalVisualization` rows default to `visibility='private'` for non-admins, `public` for admins (BENCHHUB_ADMIN_EMAILS / `is_admin`). Owners flip via the detail-pane select on `/metrics?selected=<id>` / `/visualizations?selected=<id>` (`set_global_metric_visibility`, `set_global_visualization_visibility`).
+- **Name uniqueness is two-tier** (names no longer globally unique — two users can each have a private `my_iou`). Two SQLite indexes in `check_and_migrate_db`: `uq_<table>_name_public` (partial unique on `name` WHERE `visibility='public'`) + `uq_<table>_name_per_owner` (composite on `(owner_user_id, name)`).
+- **Promote-to-public collision UX**: the visibility route detects a public-name collision pre-flip and redirects to `resolve_name_collision.html`, which proposes `<name>_<N>` via `_suggest_unique_public_name()`; the `/visibility/confirm` second hop re-checks before committing.
+- `Leaderboard.canonicality` **dropped** — column stays in DB unread; visibility (public/private/unlisted) is the only catalog-membership flag. `admin_promote_leaderboard` is a back-compat alias that just flips `visibility` (owner-OR-admin now). `Leaderboard.canonical_for_repo` is informational ("tracks X HF repo", multiple LBs may share); admin-only `admin_set_canonical_for_repo` edits it without touching visibility.
 
 ## FeatureRequest
 - New `FeatureRequest` table backs `/feature_requests` (user-facing form + list of own submissions) and `/admin/feature_requests` (admin triage with status + note). Used for new-data-type asks now that we're NOT shipping a user-pluggable field-type system this round.
 - Statuses: `open` (default), `planned`, `in_progress`, `resolved`, `declined`. Admin can attach an `admin_note` visible to the requester.
 
 ## OAuth
-- GitHub + Google are wired through Authlib (`oauth.github`, `oauth.google`). Configure with `GITHUB_CLIENT_ID/SECRET` and `GOOGLE_CLIENT_ID/SECRET` (env vars in dev, `fly secrets set` in prod). Google's authorized redirect URI on the Cloud Console must be `<site>/oauth/callback/google`.
-- Apple sign-in is NOT wired up. It needs a signing key + team ID + key ID from the Apple Developer portal, which isn't something the repo can generate. When you set that up, follow the same pattern: register an `oauth.apple` Authlib client with a JWT-generated `client_secret` and add `/login/apple` + `/oauth/callback/apple` routes mirroring the Google ones.
+- GitHub + Google via Authlib (`oauth.github`, `oauth.google`), configured with `GITHUB_CLIENT_ID/SECRET` + `GOOGLE_CLIENT_ID/SECRET` (env vars). Google's Cloud Console redirect URI must be `<site>/oauth/callback/google`.
+- Apple sign-in NOT wired (needs signing key + team/key ID from the Apple portal). To add: register `oauth.apple` with a JWT-generated `client_secret` + `/login/apple` + `/oauth/callback/apple` mirroring Google.
 
 ## Depth visualization
 - Depth-kind GT thumbs cache as **8-bit grayscale PNG** (normalized 0..255 of the source range). Don't burn a colormap at cache time.
