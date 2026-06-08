@@ -121,8 +121,9 @@ def main():
                 np.savez_compressed(buf, volume=np.asarray(images[i]))
                 (root / "volume" / f"{sid}.npz").write_bytes(buf.getvalue())
                 cls = int(np.asarray(labels[i]).flatten()[0])
-                name = CLASS_NAMES[cls] if cls < len(CLASS_NAMES) else str(cls)
-                (root / "label" / f"{sid}.txt").write_text(name)
+                # Label is stored inline as JSON (Label.decode does json.loads);
+                # store the integer class index, names carried in field params.
+                (root / "label" / f"{sid}.txt").write_text(json.dumps(cls))
             manifest = {
                 "name": DATASET_NAME, "version": "1.0",
                 "fields": [
