@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import random
+import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,45 @@ from benchhub.types import DTYPES
 
 
 _VALID_STRATEGIES = {"head", "uniform", "stratified"}
+
+# Committed parquet shard naming: "<split>-NNNNN-of-MMMMM[-NNNNN].parquet".
+# The optional trailing "-NNNNN" group covers repos that sub-shard each
+# logical shard (e.g. OpenFake's core/train-00000-of-00032-00000.parquet).
+_SHARD_RE = re.compile(r"^(?P<split>.+?)-\d{3,6}-of-\d{3,6}(?:-\d{3,6})?\.parquet$")
+
+
+def list_parquet_shards(repo_id, *, config_name=None, revision=None,
+                        hf_token=None):
+    """Map each split → its ordered list of parquet shard repo-paths.
+
+    Understands the *committed* parquet layouts HF datasets use:
+    ``<config>/<split>-NNNNN-of-MMMMM.parquet`` (multi-config repos like
+    OpenFake), the same without a config dir, and single-shard
+    ``<split>.parquet``. Returns ``{}`` (so the caller falls back to a
+    normal full ``load_dataset``) for layouts it can't address —
+    loader-script repos, the ``refs/convert/parquet`` auto-export
+    branch, exotic directory names. Lexicographic file order matches the
+    ``-NNNNN-of-`` numbering, so "first K shards" is deterministic.
+    """
+    from huggingface_hub import HfApi
+    files = HfApi().list_repo_files(repo_id, repo_type="dataset",
+                                    revision=revision, token=hf_token or None)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for f in files:
+        if not f.endswith(".parquet"):
+            continue
+        parts = f.split("/")
+        # With a config, only files directly under that config dir count
+        # (the <config>/<split>-*.parquet convention); without one, take
+        # whatever parquet the repo exposes.
+        if config_name:
+            if len(parts) < 2 or parts[0] != config_name:
+                continue
+        base = parts[-1]
+        m = _SHARD_RE.match(base)
+        split = m.group("split") if m else base[: -len(".parquet")]
+        groups[split].append(f)
+    return {s: sorted(v) for s, v in groups.items()}
 
 
 def _pick_indices(
@@ -259,6 +300,7 @@ def materialize_hf_to_typed_dir(
     seed: int = 42,
     sample_name_from: str | None = None,
     config_name: str | None = None,
+    shard_cap: int = -1,
     progress_cb=None,
 ) -> dict:
     """Download up to `sample_cap` rows of `repo_id[:split]` and lay
@@ -301,15 +343,51 @@ def materialize_hf_to_typed_dir(
     if split:
         ds_kwargs["split"] = split
 
-    ds = load_dataset(repo_id, **ds_kwargs)
-    # `load_dataset` returns a `DatasetDict` when split is unspecified.
-    # For the admin form path we always pick a split upstream, but be
-    # forgiving: if a Dict comes back, pick the first split.
-    if hasattr(ds, "keys") and not hasattr(ds, "__getitem__") or (
-        hasattr(ds, "keys") and not hasattr(ds, "num_rows")
-    ):
-        first_split = next(iter(ds.keys()))
-        ds = ds[first_split]
+    # Shard cap (only when the split is multi-shard parquet): download
+    # just the first K shards and load those, instead of letting
+    # load_dataset pull the entire split. Bounds download bytes + time —
+    # the real constraint on large repos — at the cost of a possibly
+    # skewed slice when rows aren't shuffled across shards. Falls back to
+    # a normal full load when the layout isn't shard-addressable.
+    shards_used = shards_total = None
+    chosen_shards: list[str] = []
+    if shard_cap and shard_cap > 0 and split:
+        try:
+            chosen_shards = list_parquet_shards(
+                repo_id, config_name=config_name, revision=revision,
+                hf_token=hf_token).get(split) or []
+        except Exception:
+            chosen_shards = []
+
+    if len(chosen_shards) > 1 and shard_cap < len(chosen_shards):
+        from huggingface_hub import hf_hub_download
+        use = chosen_shards[:shard_cap]
+        shards_used, shards_total = len(use), len(chosen_shards)
+        local_paths: list[str] = []
+        for i, sp in enumerate(use):
+            if progress_cb is not None:
+                try:
+                    progress_cb({"phase": "downloading", "current": i,
+                                 "total": len(use),
+                                 "message": (f"Downloading shard {i + 1}/"
+                                             f"{len(use)} of {len(chosen_shards)}"
+                                             f" — {repo_id}…")})
+                except Exception:
+                    pass
+            local_paths.append(hf_hub_download(
+                repo_id, sp, repo_type="dataset",
+                revision=revision, token=hf_token or None))
+        ds = load_dataset("parquet", data_files=local_paths, split="train")
+    else:
+        ds = load_dataset(repo_id, **ds_kwargs)
+        # `load_dataset` returns a `DatasetDict` when split is unspecified.
+        # For the admin form path we always pick a split upstream, but be
+        # forgiving: if a Dict comes back, pick the first split.
+        if hasattr(ds, "keys") and not hasattr(ds, "__getitem__") or (
+            hasattr(ds, "keys") and not hasattr(ds, "num_rows")
+        ):
+            first_split = next(iter(ds.keys()))
+            ds = ds[first_split]
 
     # For label fields, lift the class-name vocab off the HF
     # `ClassLabel` feature (e.g. ['airplane', 'automobile', ...] for
@@ -450,5 +528,9 @@ def materialize_hf_to_typed_dir(
         "sampling": sampling,
         "seed": int(seed),
         "split": split,
+        # When shard-capped, `total` is the rows in the downloaded shards,
+        # not the whole split — shards_used/total make the cap explicit.
         "total_rows_in_split": total,
+        "shards_used": shards_used,
+        "shards_total": shards_total,
     }

@@ -7495,6 +7495,17 @@ def admin_import_from_hf_commit():
     # everyone, per the no-cap policy. Storage quota is the bound: a
     # too-big import is refused by the pre/post-materialize quota checks,
     # not by truncating the dataset.
+    # shard_cap: for multi-shard parquet splits, download only the first
+    # N shards instead of the whole split — bounds download bytes/time on
+    # huge repos (e.g. OpenFake core/test). -1 = all shards. The form
+    # only surfaces it for shardable splits; ignored otherwise.
+    raw_shard = (request.form.get('shard_cap') or '').strip()
+    try:
+        shard_cap = int(raw_shard) if raw_shard else -1
+    except ValueError:
+        shard_cap = -1
+    if shard_cap <= 0:
+        shard_cap = -1
     sampling = (request.form.get('sampling') or 'head').strip().lower()
     if sampling not in ('head', 'uniform', 'stratified'):
         sampling = 'head'
@@ -7617,6 +7628,7 @@ def admin_import_from_hf_commit():
         split=split,
         config_name=config_name,
         sample_cap=sample_cap,
+        shard_cap=shard_cap,
         sampling=sampling,
         sampling_seed=sampling_seed,
         dataset_name=dataset_name,
@@ -7763,6 +7775,16 @@ def admin_import_from_hf_preview():
     # degrades the UI cleanly to "no count available".
     from benchhub.hf_search import fetch_class_label_vocabs, fetch_split_row_counts
     split_counts = fetch_split_row_counts(repo_id, config_name=selected_config)
+    # Per-split parquet shard counts so the form can offer a "Max shards"
+    # cap on multi-shard splits (download only the first K shards of a
+    # giant split). Best-effort — an empty map just hides the control.
+    try:
+        from benchhub.hf_materialize import list_parquet_shards
+        split_shards = {s: len(v) for s, v in list_parquet_shards(
+            repo_id, config_name=selected_config,
+            hf_token=getattr(g.current_user, 'hf_token', None)).items()}
+    except Exception:
+        split_shards = {}
     # Pull HF ClassLabel.names off the datasets-server /info endpoint
     # so the label-kind params textarea can pre-fill the vocab — the
     # materializer would lift it anyway at commit time, but showing
@@ -7796,6 +7818,7 @@ def admin_import_from_hf_preview():
         config_names=config_names,
         selected_config=selected_config,
         split_counts=split_counts,
+        split_shards=split_shards,
         all_kinds=_all_kind_names(),
         # Each HF column carries actual data — the role choices here
         # are only "where does the data live in the BH contract":

@@ -211,12 +211,13 @@
                             {% for s in schema.splits %}
                             <option value="{{ s }}"
                                     data-row-count="{{ split_counts.get(s, 0) }}"
+                                    data-shard-count="{{ (split_shards or {}).get(s, 0) }}"
                                     {{ 'selected' if s in ('test', 'validation', 'val') }}>
                                 {{ s }}{% if split_counts.get(s) %} ({{ '{:,}'.format(split_counts[s]) }}){% endif %}
                             </option>
                             {% endfor %}
                         {% else %}
-                            <option value="" data-row-count="0">(unspecified — uses the only split)</option>
+                            <option value="" data-row-count="0" data-shard-count="0">(unspecified — uses the only split)</option>
                         {% endif %}
                     </select>
                 </div>
@@ -229,6 +230,25 @@
                     <input type="number" id="sample-cap" name="sample_cap"
                            class="form-control" value="-1" min="-1">
                     <div id="sample-cap-hint" class="form-text small mt-1"></div>
+                </div>
+            </div>
+
+            {# Shard cap — only meaningful for multi-shard parquet splits.
+               JS reveals this row + fills the count when the chosen split
+               has >1 shard, and hides it (sending -1) otherwise. Downloads
+               only the first N shards instead of the whole split, bounding
+               download bytes/time on huge repos. A non-shuffled dataset
+               yields a skewed slice — that's the trade for a cheap import. #}
+            <div class="row g-3 mb-4 d-none" id="shard-row">
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold mb-1" for="shard-cap">Max shards to download</label>
+                    <input type="number" id="shard-cap" name="shard_cap"
+                           class="form-control" value="-1" min="-1">
+                    <div id="shard-cap-hint" class="form-text small mt-1"></div>
+                    <div class="form-text small text-warning-emphasis mt-1">
+                        Shards aren't guaranteed shuffled — a capped slice may be skewed
+                        (e.g. one class dominating). Fine for a quick test import.
+                    </div>
                 </div>
             </div>
 
@@ -699,6 +719,36 @@
         samplingRow.classList.toggle('d-none', v === -1);
     }
     capInput.addEventListener('input', refresh);
+    refresh();
+})();
+
+// ---- 4a2. Shard cap — only for multi-shard splits ----------------
+// Reveal "Max shards to download" only when the selected split has
+// more than one parquet shard (data-shard-count). For single-shard or
+// non-shardable splits, hide it and force -1 so no cap is sent.
+(function () {
+    const splitSel = document.getElementById('split');
+    const shardRow = document.getElementById('shard-row');
+    const shardCap = document.getElementById('shard-cap');
+    const shardHint = document.getElementById('shard-cap-hint');
+    if (!splitSel || !shardRow || !shardCap || !shardHint) return;
+    function refresh() {
+        const opt = splitSel.options[splitSel.selectedIndex];
+        const n = parseInt(opt && opt.dataset.shardCount || '0', 10) || 0;
+        if (n > 1) {
+            shardRow.classList.remove('d-none');
+            shardCap.setAttribute('max', String(n));
+            const req = parseInt(shardCap.value || '-1', 10);
+            shardHint.textContent = (req === -1 || req >= n)
+                ? `${n} shards — downloads the whole split`
+                : `first ${req} of ${n} shards (~${Math.round(req / n * 100)}% of the split) — bounds the download`;
+        } else {
+            shardRow.classList.add('d-none');
+            shardCap.value = '-1';   // not shardable → never cap
+        }
+    }
+    splitSel.addEventListener('change', refresh);
+    shardCap.addEventListener('input', refresh);
     refresh();
 })();
 
