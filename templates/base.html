@@ -1319,8 +1319,14 @@
                 this.zoomHandler = zoomHandler;
                 this.values = { x: 0, y: 0, z: 0 };
                 this.panel = null;
-                this.inputs = {};
+                this.dragging = false;
+                this.start = { x: 0, y: 0, rotX: 0, rotY: 0, rotZ: 0, button: 0, shift: false };
+                this.onMouseDownCapture = this.onMouseDownCapture.bind(this);
+                this.onMouseMove = this.onMouseMove.bind(this);
+                this.onMouseUp = this.onMouseUp.bind(this);
+                this.onContextMenu = this.onContextMenu.bind(this);
                 this.build();
+                this.attachDrag();
                 this.apply();
             }
 
@@ -1336,52 +1342,18 @@
                 panel.className = 'volume-cube-rotation-controls border rounded bg-body shadow-sm';
                 panel.style.cssText = [
                     'position:absolute',
-                    'left:16px',
+                    'right:16px',
                     'bottom:16px',
                     'z-index:10',
-                    'width:min(320px, calc(100% - 32px))',
-                    'padding:10px 12px',
-                    'text-align:left',
+                    'padding:6px',
                 ].join(';');
-
-                ['x', 'y', 'z'].forEach((axis) => {
-                    const row = document.createElement('label');
-                    row.className = 'd-flex align-items-center gap-2 small mb-1';
-                    row.style.minWidth = '0';
-
-                    const axisLabel = document.createElement('span');
-                    axisLabel.className = 'font-monospace text-uppercase';
-                    axisLabel.style.width = '1.4rem';
-                    axisLabel.textContent = axis;
-
-                    const input = document.createElement('input');
-                    input.type = 'range';
-                    input.min = '-180';
-                    input.max = '180';
-                    input.step = '1';
-                    input.value = '0';
-                    input.className = 'form-range flex-grow-1';
-                    input.style.minWidth = '0';
-                    input.addEventListener('input', () => {
-                        this.values[axis] = Number(input.value) || 0;
-                        this.apply();
-                    });
-
-                    const value = document.createElement('span');
-                    value.className = 'font-monospace text-body-secondary';
-                    value.style.width = '3.2rem';
-                    value.textContent = '0deg';
-
-                    input._valueLabel = value;
-                    this.inputs[axis] = input;
-                    row.append(axisLabel, input, value);
-                    panel.appendChild(row);
-                });
 
                 const reset = document.createElement('button');
                 reset.type = 'button';
-                reset.className = 'btn btn-sm btn-outline-secondary w-100 mt-1';
-                reset.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Reset Rotation';
+                reset.className = 'btn btn-sm btn-outline-secondary';
+                reset.title = 'Reset rotation';
+                reset.setAttribute('aria-label', 'Reset rotation');
+                reset.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i>';
                 reset.addEventListener('click', () => this.reset());
                 panel.appendChild(reset);
 
@@ -1389,15 +1361,69 @@
                 this.panel = panel;
             }
 
+            attachDrag() {
+                if (!this.targetElement) return;
+                this.targetElement.style.cursor = 'grab';
+                this.targetElement.style.userSelect = 'none';
+                this.targetElement.style.touchAction = 'none';
+                this.targetElement.addEventListener('mousedown', this.onMouseDownCapture, true);
+                this.targetElement.addEventListener('contextmenu', this.onContextMenu);
+            }
+
+            onContextMenu(e) {
+                e.preventDefault();
+            }
+
+            onMouseDownCapture(e) {
+                if (e.button !== 0 && e.button !== 2) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                this.dragging = true;
+                this.start = {
+                    x: e.clientX,
+                    y: e.clientY,
+                    rotX: this.values.x,
+                    rotY: this.values.y,
+                    rotZ: this.values.z,
+                    button: e.button,
+                    shift: e.shiftKey,
+                };
+                this.targetElement.style.cursor = 'grabbing';
+                document.addEventListener('mousemove', this.onMouseMove, true);
+                document.addEventListener('mouseup', this.onMouseUp, true);
+            }
+
+            onMouseMove(e) {
+                if (!this.dragging) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                const dx = e.clientX - this.start.x;
+                const dy = e.clientY - this.start.y;
+                const rollMode = this.start.button === 2 || this.start.shift || e.shiftKey;
+                if (rollMode) {
+                    this.values.z = this.start.rotZ + dx * 0.7;
+                } else {
+                    this.values.y = this.start.rotY + dx * 0.45;
+                    this.values.x = this.start.rotX - dy * 0.45;
+                }
+                this.apply();
+            }
+
+            onMouseUp(e) {
+                if (!this.dragging) return;
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                this.dragging = false;
+                if (this.targetElement) this.targetElement.style.cursor = 'grab';
+                document.removeEventListener('mousemove', this.onMouseMove, true);
+                document.removeEventListener('mouseup', this.onMouseUp, true);
+            }
+
             transform() {
                 return `rotateX(${this.values.x}deg) rotateY(${this.values.y}deg) rotateZ(${this.values.z}deg)`;
             }
 
             apply() {
-                Object.entries(this.inputs).forEach(([axis, input]) => {
-                    input.value = String(this.values[axis]);
-                    if (input._valueLabel) input._valueLabel.textContent = `${this.values[axis]}deg`;
-                });
                 if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
                     this.zoomHandler.setExtraTransform(this.transform());
                 } else if (this.targetElement) {
@@ -1411,6 +1437,15 @@
             }
 
             destroy() {
+                if (this.targetElement) {
+                    this.targetElement.removeEventListener('mousedown', this.onMouseDownCapture, true);
+                    this.targetElement.removeEventListener('contextmenu', this.onContextMenu);
+                    this.targetElement.style.cursor = '';
+                    this.targetElement.style.userSelect = '';
+                    this.targetElement.style.touchAction = '';
+                }
+                document.removeEventListener('mousemove', this.onMouseMove, true);
+                document.removeEventListener('mouseup', this.onMouseUp, true);
                 if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
                     this.zoomHandler.setExtraTransform('');
                 } else if (this.targetElement) {
