@@ -280,7 +280,7 @@
             {% set _last_task.v = _task %}
         {% endif %}
         {% if not _open_grid.v %}
-            <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3 mb-3">
+            <div class="bh-card-grid mb-3">
             {% set _open_grid.v = True %}
         {% endif %}
 
@@ -288,7 +288,7 @@
         {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
         {% set _hf = _hf_atts[0] if _hf_atts else None %}
         {% set _bh_ds_count = lb.datasets|length %}
-        <div class="col">
+        <div>
             <div class="card home-card h-100 border-0 shadow-sm position-relative">
                 {% if thumb %}
                 <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>

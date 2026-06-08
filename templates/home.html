@@ -56,9 +56,9 @@
         </div>
 
         {% if datasets %}
-        <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" id="home-dataset-grid">
+        <div class="bh-card-grid" id="home-dataset-grid">
             {% for ds in datasets %}
-            <div class="col home-grid-item" data-name="{{ ds.name|lower }}">
+            <div class="home-grid-item" data-name="{{ ds.name|lower }}">
                 <div class="card home-card h-100 border-0 shadow-sm">
                     {% if ds.visibility == 'private' %}
                     <span class="badge text-bg-danger-subtle text-danger-emphasis border visibility-badge"
@@ -149,7 +149,7 @@
 
     {# ---- Leaderboards ---- #}
     {% macro lb_card(lb, idx) %}
-    <div class="col home-grid-item" data-name="{{ lb.name|lower }}">
+    <div class="home-grid-item" data-name="{{ lb.name|lower }}">
         <div class="card home-card h-100 border-0 shadow-sm">
             {# Public is the implicit default — only flag non-public LBs
                via the upper-right badge. Inline lock/link icon next to
@@ -286,7 +286,7 @@
                     <span class="text-body-secondary small">({{ leaderboards|length }})</span>
                 </div>
                 {% if leaderboards %}
-                <div class="row row-cols-2 row-cols-md-3 g-3" id="home-lb-grid">
+                <div class="bh-card-grid" id="home-lb-grid">
                     {% for lb in leaderboards %}{{ lb_card(lb, loop.index0) }}{% endfor %}
                 </div>
                 {% else %}

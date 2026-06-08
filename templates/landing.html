@@ -244,9 +244,9 @@
         </div>
         <a href="{{ url_for('datasets_list') }}" class="btn btn-sm btn-outline-secondary">Browse all <i class="bi bi-arrow-right"></i></a>
     </div>
-    <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
+    <div class="bh-card-grid">
         {% for ds in featured_datasets %}
-        <div class="col">
+        <div>
             <div class="card home-card h-100 border-0 shadow-sm position-relative">
                 {% if ds.thumb %}
                 <div class="home-card-thumb" style="background-image: url('{{ ds.thumb }}');"></div>
@@ -279,9 +279,9 @@
         {% if active_leaderboards %}<a href="{{ url_for('leaderboards') }}" class="btn btn-sm btn-outline-secondary">All leaderboards <i class="bi bi-arrow-right"></i></a>{% endif %}
     </div>
     {% if active_leaderboards %}
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+    <div class="bh-card-grid">
         {% for lb in active_leaderboards %}
-        <div class="col">
+        <div>
             <div class="card home-card h-100 border-0 shadow-sm position-relative">
                 {% if lb.thumb %}
                 <div class="home-card-thumb" style="background-image: url('{{ lb.thumb }}');"></div>

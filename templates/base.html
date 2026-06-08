@@ -453,6 +453,24 @@
         .home-card-tint-3 { background-color: rgba(34, 197, 94, 0.10); }
         .home-card-tint-4 { background-color: rgba(217, 119, 6, 0.10); }
         .home-card-tint-5 { background-color: rgba(56, 189, 248, 0.10); }
+
+        /* Shared catalog card grid — datasets + leaderboards on the home,
+           landing, /datasets and /leaderboards pages. A fixed-width
+           responsive grid (auto-fill) so a card is the SAME size on every
+           page regardless of how wide its container is: the column COUNT
+           flexes to fill the row, the card WIDTH stays put. 12rem ≈ the
+           home dataset card at desktop, which is the size everything else
+           is matched to. Phones keep the tidy 2-up the old row-cols-2 gave.
+           Replaces the per-page `row row-cols-* g-3` wrappers (whose card
+           size drifted with each container's width). */
+        .bh-card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+            gap: 1rem;
+        }
+        @media (max-width: 767.98px) {
+            .bh-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
         .visibility-badge {
             position: absolute;
             top: 0.5rem;
