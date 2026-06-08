@@ -17,8 +17,15 @@ from metric_engine import (
 import numpy as np
 
 
-@celery.task(bind=True, name='tasks.run_hf_import',
-             soft_time_limit=1800, time_limit=2100)
+# No soft/hard time limit: a dataset import is user-initiated and
+# progress-reporting (per-shard download + per-row materialize heartbeat
+# on Dataset.import_progress_json), and a large split can legitimately
+# run well past 30 min. A flat wall-clock limit killed progressing
+# imports mid-download, so it's removed. Trade-off: a genuinely wedged
+# import holds one of the worker's slots until a celery restart — the
+# non-admin one-import-at-a-time guard bounds the blast radius; use the
+# shard cap / Max samples to keep imports short.
+@celery.task(bind=True, name='tasks.run_hf_import')
 def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                   sampling_seed, dataset_name, fields, sample_name_from,
                   hf_token, owner_user_id, config_name=None, shard_cap=-1):
@@ -183,8 +190,10 @@ def run_hf_import(self, *, dataset_id, repo_id, split, sample_cap, sampling,
                 return {'dataset_id': dataset_id, 'error': str(e)}
 
 
-@celery.task(bind=True, name='tasks.run_file_tree_import',
-             soft_time_limit=3600, time_limit=4200)
+# No soft/hard time limit — same rationale as run_hf_import: a
+# progress-reporting, user-initiated import shouldn't be killed for
+# taking long. Keep imports short with the shard cap / Max samples.
+@celery.task(bind=True, name='tasks.run_file_tree_import')
 def run_file_tree_import(self, *, dataset_id, repo_id, spec, dataset_name,
                          sample_cap, hf_token, owner_user_id, token_filter=None,
                          path_prefix=None):
