@@ -854,6 +854,17 @@ class LeaderboardMaterialization(db.Model):
     # Field name used for stratification (e.g. 'label'). NULL for
     # non-stratified sampling.
     stratify_field = db.Column(db.String(100), nullable=True)
+    # --- Whole-split fetch params (decouple the LB eval set from the
+    # dataset's preview cache). The materialiser fetches from the SOURCE
+    # using these, samples over the whole split, and writes an LB-scoped GT
+    # set (CustomField rows keyed by leaderboard_id + sample_name). shard_cap
+    # -1 = all shards (true whole split), 0 = auto (just enough for the cap,
+    # head-biased), N = first N. split/config_name override the dataset's
+    # when set (NULL = inherit from the dataset's source_metadata). ---
+    shard_cap = db.Column(db.Integer, nullable=False, default=-1,
+                          server_default='-1')
+    split = db.Column(db.String(100), nullable=True)
+    config_name = db.Column(db.String(100), nullable=True)
     materialized_at = db.Column(db.DateTime, nullable=True)
     storage_bytes = db.Column(db.BigInteger, nullable=True)
     status = db.Column(
@@ -4542,8 +4553,13 @@ def extract_viz_arg_value(sample, submission, field_key, *, leaderboard_id=None)
         field_name = field_key[3:]
         if not sample: return None
 
-        # Optimize: Preloaded custom fields would be better, but simple query for now
-        cf = CustomField.query.filter_by(sample_id=sample.id, name=field_name).first()
+        cf = next((c for c in (getattr(sample, 'custom_fields', None) or [])
+                   if c.name == field_name and c.submission_id is None), None)
+        if cf is None:
+            cf = CustomField.query.filter_by(
+                sample_id=sample.id, name=field_name,
+                submission_id=None,
+            ).first()
         if cf:
             value = cf.get_value()
             # File-backed kinds: swap in the materialised path when
@@ -7032,6 +7048,30 @@ def _resolve_lb_input_samples(lb):
     sample_filter = None
     mat = getattr(lb, 'materialization', None)
     mat_ready = bool(mat and mat.status == 'ready')
+    if mat_ready and _lb_scoped_gt_exists(lb.id):
+        samples_rows = _lb_scoped_samples(lb.id)
+        input_names = [df.name for df in input_fields]
+        cfs_by_sample: dict[int, dict[str, CustomField]] = {}
+        if samples_rows and input_names:
+            sample_names = [s.name for s in samples_rows]
+            cf_rows = CustomField.query.filter(
+                CustomField.leaderboard_id == lb.id,
+                CustomField.sample_id.is_(None),
+                CustomField.submission_id.is_(None),
+                CustomField.sample_name.in_(sample_names),
+                CustomField.name.in_(input_names),
+            ).all()
+            id_by_name = {s.name: s.id for s in samples_rows}
+            for cf in cf_rows:
+                sid = id_by_name.get(cf.sample_name)
+                if sid is not None:
+                    cfs_by_sample.setdefault(sid, {})[cf.name] = cf
+        if getattr(mat, 'materialized_at', None):
+            cache_token = f'mat:{lb.id}:{mat.materialized_at.isoformat()}'
+        else:
+            cache_token = f'mat:{lb.id}:ready'
+        return ds, input_fields, samples_rows, cfs_by_sample, cache_token
+
     if mat_ready:
         from benchhub.lb_materialize import list_materialized_samples
         mat_names = list_materialized_samples(
@@ -12183,6 +12223,64 @@ def _natural_sample_name(row, fallback):
 _HF_SPLIT_PREFERENCE = ['test', 'validation', 'val', 'dev', 'train']
 
 
+class _VirtualSample:
+    """Sample-row-shaped object backed by LB-scoped CustomField rows."""
+    __slots__ = ('id', 'name', 'display_name', 'tags', 'custom_fields',
+                 'signal_shape', 'histogram_data', 'config_data', 'dataset')
+
+    def __init__(self, name, idx, custom_fields=None, display_name=None):
+        self.id = idx
+        self.name = name
+        self.display_name = display_name
+        self.tags = ''
+        self.custom_fields = list(custom_fields or [])
+        self.signal_shape = None
+        self.histogram_data = None
+        self.config_data = None
+        self.dataset = None
+
+
+def _lb_scoped_gt_exists(leaderboard_id):
+    return db.session.query(CustomField.id).filter(
+        CustomField.leaderboard_id == leaderboard_id,
+        CustomField.submission_id.is_(None),
+        CustomField.sample_id.is_(None),
+        CustomField.sample_name.isnot(None),
+    ).first() is not None
+
+
+def _lb_scoped_samples(leaderboard_id, sample_names=None):
+    """Return virtual samples grouped from LB-scoped GT CustomFields."""
+    q = CustomField.query.filter(
+        CustomField.leaderboard_id == leaderboard_id,
+        CustomField.submission_id.is_(None),
+        CustomField.sample_id.is_(None),
+        CustomField.sample_name.isnot(None),
+    )
+    if sample_names is not None:
+        q = q.filter(CustomField.sample_name.in_(list(sample_names)))
+    rows = q.order_by(
+        func.length(CustomField.sample_name),
+        CustomField.sample_name,
+        CustomField.name,
+    ).all()
+    grouped = {}
+    display = {}
+    order = []
+    for cf in rows:
+        if cf.sample_name not in grouped:
+            grouped[cf.sample_name] = []
+            order.append(cf.sample_name)
+        if cf.name == '__display_name__':
+            display[cf.sample_name] = cf.value_text
+        else:
+            grouped[cf.sample_name].append(cf)
+    return [
+        _VirtualSample(name, idx + 1, grouped.get(name, []), display.get(name))
+        for idx, name in enumerate(order)
+    ]
+
+
 def _iter_lb_eval_samples(lb):
     """Yield (sample, attachment) tuples for every sample the LB evaluates
     against. Walks Attachment rows for the primary dataset(s), plus any
@@ -12198,6 +12296,14 @@ def _iter_lb_eval_samples(lb):
     mat_names = None
     mat = getattr(lb, 'materialization', None)
     if mat and mat.status == 'ready':
+        if _lb_scoped_gt_exists(lb.id):
+            att = next((a for a in lb.attachments
+                        if a.role == 'primary' and a.dataset is not None), None)
+            if att is None and lb.attachments:
+                att = next((a for a in lb.attachments if a.role == 'primary'), None)
+            for sample in _lb_scoped_samples(lb.id):
+                yield sample, att
+            return
         from benchhub.lb_materialize import list_materialized_samples
         names = list_materialized_samples(app.config['UPLOAD_FOLDER'], lb.id)
         if names:
@@ -12752,6 +12858,19 @@ def create_leaderboard():
         except (TypeError, ValueError):
             sampling_seed = 42
         stratify_field = (request.form.get('stratify_field') or '').strip() or None
+        # Whole-split fetch params: the LB now samples from the SOURCE split
+        # directly (not the dataset's preview cache), so it can pick rows the
+        # dataset never cached. shard_cap default: head sampling only needs
+        # the first shards (auto=0); random/stratified need the whole split
+        # (-1) for unbiased coverage. The wizard may override via `num_shards`.
+        raw_shards = (request.form.get('num_shards') or '').strip()
+        try:
+            shard_cap = int(raw_shards) if raw_shards else (
+                0 if sampling == 'head' else -1)
+        except ValueError:
+            shard_cap = 0 if sampling == 'head' else -1
+        mat_split = (request.form.get('mat_split') or '').strip() or None
+        mat_config = (request.form.get('mat_config') or '').strip() or None
 
         matrow = LeaderboardMaterialization(
             leaderboard_id=new_leaderboard.id,
@@ -12759,6 +12878,9 @@ def create_leaderboard():
             sampling=sampling,
             sampling_seed=sampling_seed,
             stratify_field=stratify_field,
+            shard_cap=shard_cap,
+            split=mat_split,
+            config_name=mat_config,
             status='pending',
         )
         db.session.add(matrow)
@@ -13325,15 +13447,21 @@ def comparison_view(leaderboard_id):
     #     predictions even though the GT lives on huggingface.co.
     dataset_ids = [ds.id for ds in leaderboard.datasets] if leaderboard.datasets else [leaderboard.dataset_id]
     has_real_dataset = bool(leaderboard.datasets)
-    hf_stub_mode = not has_real_dataset and bool(leaderboard.attachments)
+    _mat = getattr(leaderboard, 'materialization', None)
+    lb_scoped_gt_mode = bool(
+        _mat and getattr(_mat, 'status', None) == 'ready'
+        and _lb_scoped_gt_exists(leaderboard.id)
+    )
+    hf_stub_mode = lb_scoped_gt_mode or (
+        not has_real_dataset and bool(leaderboard.attachments)
+    )
     samples_query = Sample.query.filter(Sample.dataset_id.in_(dataset_ids))
 
     # Restrict to the materialised subset when the LB has one — those are
     # the only samples submitters can predict (iter_samples streams the
     # subset), so showing the other dataset rows just yields empty
     # prediction columns (e.g. s000002 on cifar, which isn't materialised).
-    _mat = getattr(leaderboard, 'materialization', None)
-    if _mat and getattr(_mat, 'status', None) == 'ready':
+    if _mat and getattr(_mat, 'status', None) == 'ready' and not lb_scoped_gt_mode:
         from benchhub.lb_materialize import list_materialized_samples
         _mat_names = list_materialized_samples(app.config['UPLOAD_FOLDER'], leaderboard.id)
         if _mat_names:
@@ -13418,31 +13546,12 @@ def comparison_view(leaderboard_id):
     
     custom_scalar_metric_names = [name for name, ftype in all_field_types.items() if ftype in ['scalar', 'metric']]
 
-    # HF-attached LBs have no Sample rows — synthesize stubs from the
-    # sample_names already written into CustomField by the eval task.
-    # The rest of the route operates on these stubs the same way it
-    # operates on real Sample objects, since most lookups are by name.
-    # `.id` is a stable per-page integer (urls hitting /sample/<int:id>/
-    # 404 in this mode — they reference GT bytes we don't have on disk).
+    # HF-attached LBs and decoupled LB materialisations use LB-scoped
+    # CustomFields instead of dataset Sample rows. Synthesize stubs from
+    # CustomField.sample_name; the rest of the route operates on them the
+    # same way it operates on real Sample objects because prediction joins
+    # are by sample_name.
     if hf_stub_mode:
-        class _SampleStub:
-            __slots__ = ('id', 'name', 'display_name', 'tags',
-                         'custom_fields', 'signal_shape',
-                         'histogram_data', 'config_data', 'dataset')
-
-            def __init__(self, name, idx):
-                self.id = idx
-                self.name = name
-                # Filled in below from the persisted __display_name__
-                # marker CF when one exists for this sample_name.
-                self.display_name = None
-                self.tags = ''
-                self.custom_fields = []
-                self.signal_shape = None
-                self.histogram_data = None
-                self.config_data = None
-                self.dataset = None
-
         sub_ids_for_stubs = [s.id for s in submissions]
         # Collect sample names from both the submission rows AND the
         # LB-scoped GT snapshot so a fresh sub with no submission CFs
@@ -13466,7 +13575,7 @@ def comparison_view(leaderboard_id):
             names = [n for n in names if needle in n.lower()]
         if sort_by == 'name' and sort_order == 'desc':
             names.reverse()
-        all_stubs = [_SampleStub(n, i) for i, n in enumerate(names)]
+        all_stubs = [_VirtualSample(n, i + 1) for i, n in enumerate(names)]
         total = len(all_stubs)
         paginated_items = all_stubs[(page-1)*per_page : page*per_page]
 
@@ -14823,6 +14932,9 @@ def lb_materialization_status(leaderboard_id: int):
         'sampling': m.sampling,
         'sampling_seed': m.sampling_seed,
         'stratify_field': m.stratify_field,
+        'shard_cap': m.shard_cap,
+        'split': m.split,
+        'config_name': m.config_name,
         'storage_bytes': m.storage_bytes,
         'error_message': m.error_message,
         'progress': progress,
@@ -14876,6 +14988,14 @@ def edit_lb_materialization(leaderboard_id: int):
     except (TypeError, ValueError):
         sampling_seed = matrow.sampling_seed
     stratify_field = (request.form.get('stratify_field') or '').strip() or None
+    raw_shards = (request.form.get('num_shards') or '').strip()
+    try:
+        shard_cap = int(raw_shards) if raw_shards else (
+            0 if sampling == 'head' else -1)
+    except ValueError:
+        shard_cap = matrow.shard_cap
+    mat_split = (request.form.get('mat_split') or '').strip() or None
+    mat_config = (request.form.get('mat_config') or '').strip() or None
 
     # Wipe the previous materialisation on disk — new sample set =
     # different files. Storage bytes get reset on re-materialise.
@@ -14888,6 +15008,9 @@ def edit_lb_materialization(leaderboard_id: int):
     matrow.sampling = sampling
     matrow.sampling_seed = sampling_seed
     matrow.stratify_field = stratify_field
+    matrow.shard_cap = shard_cap
+    matrow.split = mat_split
+    matrow.config_name = mat_config
     matrow.status = 'pending'
     matrow.error_message = None
     matrow.progress_json = None
@@ -18950,6 +19073,9 @@ def check_and_migrate_db():
                         "  sampling VARCHAR(20) NOT NULL DEFAULT 'random',"
                         "  sampling_seed INTEGER NOT NULL DEFAULT 42,"
                         "  stratify_field VARCHAR(100),"
+                        "  shard_cap INTEGER NOT NULL DEFAULT -1,"
+                        "  split VARCHAR(100),"
+                        "  config_name VARCHAR(100),"
                         "  materialized_at DATETIME,"
                         "  storage_bytes BIGINT,"
                         "  status VARCHAR(20) NOT NULL DEFAULT 'pending',"
@@ -18970,6 +19096,16 @@ def check_and_migrate_db():
                             "ALTER TABLE leaderboard_materialization "
                             "ADD COLUMN progress_json TEXT"
                         )
+                    # Whole-split fetch params (decoupled LB eval set).
+                    for _mcol, _mddl in (
+                        ('shard_cap', "INTEGER NOT NULL DEFAULT -1"),
+                        ('split', "VARCHAR(100)"),
+                        ('config_name', "VARCHAR(100)"),
+                    ):
+                        if _mcol not in cols:
+                            cursor.execute(
+                                "ALTER TABLE leaderboard_materialization "
+                                f"ADD COLUMN {_mcol} {_mddl}")
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (leaderboard_materialization): {e}")

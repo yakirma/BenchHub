@@ -19,6 +19,7 @@ import json
 import io
 import time
 import random
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -144,6 +145,84 @@ def pick_samples(
 
 # ----- the materialiser -----
 
+def _write_lb_scoped_gt(
+    staging_dir: str | os.PathLike,
+    fields: list[dict],
+    sample_names: list[str],
+    *,
+    leaderboard_id: int,
+    upload_folder: str | os.PathLike,
+    db_session,
+    CustomField,
+    out_dir: Path,
+) -> tuple[int, int]:
+    """Convert a full-resolution typed staging dir into the LB's OWN GT
+    set: per (sample, field) it writes an **LB-scoped** CustomField row
+    (`leaderboard_id` set, `sample_id`/`submission_id` NULL, keyed by
+    `sample_name`) — the same shape `import_typed_dataset` writes for a
+    dataset, but tied to the leaderboard instead of dataset Sample rows.
+    File-backed kinds are copied full-res under
+    `uploads/lb_materializations/<lb_id>/<field>/`; inline kinds decode
+    into value_float/value_text. Returns (cf_rows, files_copied).
+
+    Mirrors manifest.import_typed_dataset's per-kind branch so the eval +
+    input paths read these CFs identically to dataset CFs."""
+    from benchhub.types import DTYPES
+    from benchhub.manifest import expected_file_path
+
+    src_root = Path(staging_dir)
+    n_cf = files_copied = 0
+    for f in fields:
+        if f.get('role', 'gt') == 'pred':
+            continue
+        kind = f['kind']
+        params = f.get('params') or {}
+        cls = DTYPES.get(kind)
+        # Inline kinds (scalar/label/label_list) have file_ext None.
+        # Registered (non-DTYPES) kinds are stored file-backed verbatim.
+        is_inline = (cls is not None and cls.file_ext is None)
+        field_dir = out_dir / f['name']
+        if not is_inline:
+            field_dir.mkdir(parents=True, exist_ok=True)
+        for s_name in sample_names:
+            src = expected_file_path(src_root, f, s_name)
+            if not src.exists():
+                continue
+            cf = CustomField(
+                leaderboard_id=leaderboard_id, sample_id=None,
+                submission_id=None, sample_name=s_name,
+                name=f['name'], data_type=kind,
+                source_column=f.get('source_column') or f['name'],
+            )
+            if params:
+                cf.set_params(params)
+            if is_inline:
+                blob = src.read_bytes()
+                if cls is None:
+                    cf.value_text = blob.decode('utf-8', 'replace').rstrip('\n')
+                else:
+                    inst = cls.decode(blob, params)
+                    if kind == 'scalar':
+                        cf.value_float = float(inst.value)
+                    else:
+                        cf.value_text = blob.decode('utf-8').rstrip('\n')
+            else:
+                dst = field_dir / src.name
+                shutil.copy2(src, dst)
+                files_copied += 1
+                cf.value_text = str(dst.relative_to(upload_folder))
+                # text/json render their CONTENT from value_text (not the
+                # path) — mirror import_typed_dataset's override.
+                if kind in ('text', 'json'):
+                    try:
+                        cf.value_text = dst.read_text(encoding='utf-8').rstrip('\n')
+                    except (OSError, UnicodeDecodeError):
+                        pass
+            db_session.add(cf)
+            n_cf += 1
+    return n_cf, files_copied
+
+
 def materialize_for_lb(
     *,
     leaderboard,
@@ -154,14 +233,17 @@ def materialize_for_lb(
     LeaderboardMaterialization,
     progress_cb=None,
 ) -> dict:
-    """Run materialisation for the given LB. Reads its
-    `LeaderboardMaterialization` row, picks samples, re-fetches full
-    bytes from HF, writes to disk, updates the row. Returns a summary.
+    """Materialise the LB's evaluation set, DECOUPLED from the dataset's
+    preview cache. Reads the `LeaderboardMaterialization` row and fetches
+    from the SOURCE split directly using the LB's own parameters
+    (sample_cap / sampling / seed / shard_cap / split / config), so the LB
+    can sample rows the dataset never cached. The chosen samples are written
+    as an LB-scoped GT set (full-res files under
+    `uploads/lb_materializations/<lb_id>/` + LB-scoped CustomField rows);
+    the dataset's preview tier is never touched.
 
-    Assumes: dataset is HF-sourced (source_metadata.repo_id present)
-    and preview_only=True. Non-HF datasets are skipped — they were
-    full-storage to begin with so the materialisation is the
-    dataset's own files.
+    Non-HF datasets are a noop — they were full-storage to begin with, so
+    LB scoring falls back to the dataset's own files.
     """
     # Lazy import — avoid pulling materialize_hf_to_typed_dir into
     # the import path of every module that uses path resolution.
@@ -177,7 +259,9 @@ def materialize_for_lb(
     except Exception:
         pass
     repo_id = meta.get('repo_id')
-    split = meta.get('split')
+    # LB-level split/config override the dataset's; inherit when unset.
+    split = matrow.split or meta.get('split')
+    config_name = matrow.config_name or meta.get('config_name') or None
     if not (repo_id and split):
         # Non-HF dataset; nothing to materialise. The LB scoring will
         # fall back to the dataset's own files (which were always full
@@ -189,6 +273,7 @@ def materialize_for_lb(
         return {'status': 'noop', 'reason': 'non-HF dataset'}
 
     matrow.status = 'running'
+    matrow.error_message = None
     db_session.commit()
 
     def _progress(phase: str, current: int = 0, total: int = 0, message: str = ''):
@@ -205,42 +290,21 @@ def materialize_for_lb(
                 pass  # progress reporting is best-effort
 
     _progress('starting', 0, matrow.sample_cap,
-              'Resolving sample subset…')
+              'Resolving the LB sample set from the source split…')
 
-    # Resolve stratify groups from the dataset's existing CustomField rows.
-    sample_objs = sorted(dataset.samples, key=lambda s: s.name)
-    sample_names = [s.name for s in sample_objs]
-    stratify_groups = None
-    if matrow.sampling == 'stratified' and matrow.stratify_field:
-        groups = []
-        for s in sample_objs:
-            cf = next((c for c in s.custom_fields
-                       if c.name == matrow.stratify_field), None)
-            groups.append(cf.value_text if cf else None)
-        stratify_groups = groups
-
-    chosen_idx = pick_samples(
-        sample_names,
-        sample_cap=matrow.sample_cap,
-        sampling=matrow.sampling,
-        seed=matrow.sampling_seed,
-        stratify_groups=stratify_groups,
-    )
-    chosen_set = set(chosen_idx)
-    chosen_names = {sample_names[i] for i in chosen_idx}
-
-    # Re-derive the field list the dataset was originally imported
-    # with so materialize_hf_to_typed_dir can pick the right HF
-    # columns. The dataset's DatasetField rows give name+kind+role;
-    # source_column defaults to name (HF column names are sanitised
-    # to match field names at import time).
+    # Re-derive the field list the dataset was imported with so the
+    # materializer picks the right source columns. DatasetField rows give
+    # name+kind+role; source_column defaults to the field name (HF column
+    # names are sanitised to match field names at import time).
     fields = []
     for f in dataset.dataset_fields:
         if f.role == 'pred':
             continue
         prms = {}
-        try: prms = json.loads(f.params) if f.params else {}
-        except Exception: pass
+        try:
+            prms = json.loads(f.params) if f.params else {}
+        except Exception:
+            pass
         fields.append({
             'name': f.name,
             'source_column': f.name,
@@ -249,23 +313,24 @@ def materialize_for_lb(
             'params': prms,
         })
 
-    # Re-fetch from HF, then filter to the chosen sample names. We only
-    # need the shards the DATASET was originally built from — a
-    # shard-capped import (e.g. OpenFake core/test shard_cap=1) recorded
-    # `shards_used`, so we re-download just those instead of the whole
-    # split. Full-split imports (no shards_used) fall back to -1 = all.
-    # Only the chosen files survive to uploads/lb_materializations/.
-    refetch_shard_cap = meta.get('shards_used') or -1
+    # shard_cap drives how much of the split we pull: -1 = all shards (true
+    # whole-split sampling — needed for unbiased random/stratified), 0 =
+    # auto (just enough for the cap, head-biased), N = first N.
+    shard_cap = matrow.shard_cap if matrow.shard_cap is not None else -1
     out_dir = materialization_dir(upload_folder, leaderboard.id)
+    # Idempotent re-materialise: clear prior files + LB-scoped CFs.
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    CustomField.query.filter_by(
+        leaderboard_id=leaderboard.id, sample_id=None, submission_id=None,
+    ).delete()
+    db_session.commit()
 
     _progress('downloading', 0, matrow.sample_cap,
-              f'Re-fetching {len(chosen_idx)} samples from HuggingFace…')
+              f'Sampling {matrow.sample_cap} from {repo_id}[{split}]…')
     with tempfile.TemporaryDirectory(prefix='bh_lbmat_') as staging:
         def _stage_progress(state: dict):
-            # The HF materializer's own progress_cb fires per-row with
-            # {current, total, message}. Bubble it up under the
-            # "downloading" phase so the LB-page progress bar moves.
             _progress(
                 state.get('phase') or 'downloading',
                 current=state.get('current') or 0,
@@ -273,53 +338,44 @@ def materialize_for_lb(
                 message=state.get('message') or '',
             )
 
-        mat = materialize_hf_to_typed_dir(
+        # The materializer does the sampling over the WHOLE fetched split
+        # (sample_cap + strategy), so the LB's set is independent of the
+        # dataset's preview cache. Full-resolution: NO preview_only.
+        materialize_hf_to_typed_dir(
             repo_id=repo_id, split=split,
-            sample_cap=-1,   # take every row in the fetched shards; filter locally
-            shard_cap=refetch_shard_cap,  # only the shards the dataset was built from
+            sample_cap=matrow.sample_cap,
+            shard_cap=shard_cap,
             staging_dir=staging,
             dataset_name=dataset.name,
             fields=fields, hf_token=None,
-            sampling='head', seed=42, sample_name_from=None,
-            config_name=meta.get('config_name') or None,
+            sampling=matrow.sampling, seed=matrow.sampling_seed,
+            sample_name_from=meta.get('sample_name_from'),
+            config_name=config_name,
             progress_cb=_stage_progress,
-            # IMPORTANT: do NOT pass preview_only=True here. Stage C
-            # materialisations are full-resolution.
         )
 
-        # Copy chosen samples' files into uploads/lb_materializations/<lb_id>/.
-        _progress('copying', 0, len(chosen_names),
-                  f'Copying {len(chosen_names)} chosen samples to disk…')
-        staging_path = Path(staging)
-        copied = 0
-        for fi, f in enumerate(fields):
-            field_dir = out_dir / f['name']
-            src_field_dir = staging_path / f['name']
-            if not src_field_dir.is_dir():
-                continue
-            field_dir.mkdir(parents=True, exist_ok=True)
-            for src in src_field_dir.iterdir():
-                # File name = "<sample>.<ext>" — use the stem as sample name.
-                if src.stem not in chosen_names:
-                    continue
-                dst = field_dir / src.name
-                dst.write_bytes(src.read_bytes())
-                copied += 1
-            _progress('copying', fi + 1, len(fields),
-                      f'Copied field {fi+1}/{len(fields)}: {f["name"]}')
-
-        # Tally bytes on disk
+        manifest = json.loads((Path(staging) / 'manifest.json').read_text())
+        sample_names = manifest.get('samples', [])
+        _progress('copying', 0, len(sample_names),
+                  f'Writing {len(sample_names)} LB-scoped samples…')
+        n_cf, copied = _write_lb_scoped_gt(
+            staging, fields, sample_names,
+            leaderboard_id=leaderboard.id, upload_folder=upload_folder,
+            db_session=db_session, CustomField=CustomField, out_dir=out_dir,
+        )
         total_bytes = sum(p.stat().st_size for p in out_dir.rglob('*') if p.is_file())
 
     matrow.status = 'ready'
     matrow.materialized_at = datetime.utcnow()
     matrow.storage_bytes = total_bytes
-    _progress('done', copied, copied,
-              f'Materialised {copied} files for {len(chosen_names)} samples.')
+    _progress('done', len(sample_names), len(sample_names),
+              f'Materialised {len(sample_names)} samples ({copied} files, '
+              f'{n_cf} GT rows).')
     db_session.commit()
     return {
         'status': 'ready',
-        'samples_picked': len(chosen_idx),
+        'samples_picked': len(sample_names),
         'files_copied': copied,
+        'gt_rows': n_cf,
         'bytes': total_bytes,
     }

@@ -170,6 +170,27 @@
                                     deterministic — same seed = same subset
                                 </div>
                             </div>
+                            <div class="col-md-4">
+                                <label for="num_shards" class="form-label small mb-1">Shard cap</label>
+                                <input type="number" id="num_shards" name="num_shards"
+                                       class="form-control form-control-sm"
+                                       value="">
+                                <div class="form-text small">
+                                    blank = auto for head, all for random/stratified
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="mat_split" class="form-label small mb-1">Source split</label>
+                                <input type="text" id="mat_split" name="mat_split"
+                                       class="form-control form-control-sm"
+                                       value="{{ dataset.source_metadata_parsed.get('split', '') }}">
+                            </div>
+                            <div class="col-md-4">
+                                <label for="mat_config" class="form-label small mb-1">Config</label>
+                                <input type="text" id="mat_config" name="mat_config"
+                                       class="form-control form-control-sm"
+                                       value="{{ dataset.source_metadata_parsed.get('config_name', '') }}">
+                            </div>
                         </div>
                     </div>
                 </div>

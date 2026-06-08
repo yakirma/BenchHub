@@ -465,6 +465,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                    value="{{ materialization.sampling_seed }}">
                         </div>
                         <div class="col-md-3">
+                            <label class="form-label small mb-1">Shard cap</label>
+                            <input type="number" name="num_shards"
+                                   class="form-control form-control-sm"
+                                   value="{{ materialization.shard_cap if materialization.shard_cap is not none else '' }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Source split</label>
+                            <input type="text" name="mat_split"
+                                   class="form-control form-control-sm"
+                                   value="{{ materialization.split or '' }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">Config</label>
+                            <input type="text" name="mat_config"
+                                   class="form-control form-control-sm"
+                                   value="{{ materialization.config_name or '' }}">
+                        </div>
+                        <div class="col-md-3">
                             <button type="submit" class="btn btn-sm btn-primary w-100"
                                     onclick="return confirm('Re-materialize with new params? Existing files will be deleted.');">
                                 <i class="bi bi-arrow-repeat me-1"></i>Re-materialize

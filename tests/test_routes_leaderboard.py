@@ -498,10 +498,15 @@ def test_rematerialize_allowed_with_only_mirrored_submissions(auth_client, logge
     db.session.commit()
 
     r = auth_client.post(f'/leaderboard/{lb.id}/materialize/edit',
-                         data={'sample_cap': '50', 'sampling': 'head'},
+                         data={'sample_cap': '50', 'sampling': 'head',
+                               'num_shards': '3', 'mat_split': 'test',
+                               'mat_config': 'core'},
                          follow_redirects=False)
     assert r.status_code == 302
     refreshed = LeaderboardMaterialization.query.filter_by(leaderboard_id=lb.id).first()
     # Edit went through: params updated + re-queued (status reset to pending).
     assert refreshed.sample_cap == 50
+    assert refreshed.shard_cap == 3
+    assert refreshed.split == 'test'
+    assert refreshed.config_name == 'core'
     assert refreshed.status == 'pending'

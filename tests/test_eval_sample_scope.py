@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 
 from app import (
+    CustomField,
     Dataset,
     Leaderboard,
     LeaderboardMaterialization,
@@ -77,3 +78,30 @@ def test_eval_scope_full_dataset_when_materialization_not_ready(client, db_sessi
     db.session.commit()
     names = [s.name for s, _ in _iter_lb_eval_samples(lb)]
     assert len(names) == 8  # pending → no restriction
+
+
+def test_eval_scope_uses_lb_scoped_gt_beyond_dataset_cache(client, db_session):
+    """A decoupled LB materialization owns its eval set through
+    LB-scoped GT rows, even when those sample names do not exist in the
+    preview Dataset.samples cache."""
+    ds = Dataset(name='scope_decoupled_ds', visibility='public')
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(dataset_id=ds.id, name='cached_only'))
+    lb = Leaderboard(name='scope_decoupled_lb', visibility='public')
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    db.session.add(LeaderboardMaterialization(
+        leaderboard_id=lb.id, status='ready',
+        sample_cap=2, sampling='random', sampling_seed=42,
+    ))
+    db.session.add_all([
+        CustomField(leaderboard_id=lb.id, sample_name='full_s000010',
+                    name='label', data_type='label', value_text='1'),
+        CustomField(leaderboard_id=lb.id, sample_name='full_s000020',
+                    name='label', data_type='label', value_text='0'),
+    ])
+    db.session.commit()
+
+    samples = [s for s, _ in _iter_lb_eval_samples(lb)]
+    assert [s.name for s in samples] == ['full_s000010', 'full_s000020']
+    assert [s.custom_fields[0].value_text for s in samples] == ['1', '0']

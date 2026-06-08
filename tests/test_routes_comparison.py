@@ -8,7 +8,9 @@ import pytest
 from app import (
     CustomField,
     Dataset,
+    DatasetField,
     Leaderboard,
+    LeaderboardMaterialization,
     Sample,
     Submission,
     db,
@@ -178,6 +180,67 @@ def test_comparison_view_restricts_to_materialized_subset(client, project, db_se
     body = client.get(f"/comparison/{lb.id}").data.decode()
     assert "s000000" in body
     assert "s000002" not in body  # not materialised → excluded
+
+
+def test_comparison_view_uses_lb_scoped_materialized_samples(
+    client, project, db_session
+):
+    """Decoupled materializations render their LB-scoped GT samples even
+    when those samples are absent from the dataset preview cache."""
+    ds = Dataset(name="lbscoped_cmp_ds")
+    db.session.add(ds); db.session.flush()
+    db.session.add(Sample(dataset_id=ds.id, name="cached_only"))
+    lb = Leaderboard(name="lbscoped_cmp_lb", summary_metrics="")
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    db.session.add(LeaderboardMaterialization(
+        leaderboard_id=lb.id, status="ready", sample_cap=2,
+        sampling="head", sampling_seed=42))
+    db.session.add_all([
+        CustomField(leaderboard_id=lb.id, sample_name="full_s000010",
+                    name="label", data_type="label", value_text="1"),
+        CustomField(leaderboard_id=lb.id, sample_name="full_s000020",
+                    name="label", data_type="label", value_text="0"),
+    ])
+    db.session.commit()
+
+    body = client.get(f"/comparison/{lb.id}").data.decode()
+    assert "full_s000010" in body
+    assert "full_s000020" in body
+    assert "cached_only" not in body
+
+
+def test_leaderboard_samples_api_uses_lb_scoped_inputs(
+    client, project, db_session
+):
+    """The submission contract must expose the decoupled LB sample set,
+    not the dataset preview cache."""
+    ds = Dataset(name="lbscoped_api_ds")
+    db.session.add(ds); db.session.flush()
+    db.session.add(DatasetField(dataset_id=ds.id, name="image",
+                                kind="image", role="input"))
+    db.session.add(Sample(dataset_id=ds.id, name="cached_only"))
+    lb = Leaderboard(name="lbscoped_api_lb", summary_metrics="")
+    lb.datasets.append(ds)
+    db.session.add(lb); db.session.flush()
+    db.session.add(LeaderboardMaterialization(
+        leaderboard_id=lb.id, status="ready", sample_cap=2,
+        sampling="head", sampling_seed=42))
+    db.session.add_all([
+        CustomField(leaderboard_id=lb.id, sample_name="full_s000010",
+                    name="image", data_type="image",
+                    value_text="lb_materializations/1/image/full_s000010.jpg"),
+        CustomField(leaderboard_id=lb.id, sample_name="full_s000020",
+                    name="image", data_type="image",
+                    value_text="lb_materializations/1/image/full_s000020.jpg"),
+    ])
+    db.session.commit()
+
+    payload = client.get(f"/api/leaderboard/{lb.id}/samples").get_json()
+    assert [s["name"] for s in payload["samples"]] == [
+        "full_s000010", "full_s000020",
+    ]
+    assert payload["samples"][0]["inputs"]["image"]["url"]
 
 
 def test_comparison_view_pagination_preserves_compare_ids(
