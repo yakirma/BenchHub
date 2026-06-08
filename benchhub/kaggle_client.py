@@ -2,10 +2,12 @@
 
 We deliberately do NOT depend on the `kaggle` pip package (it is often
 absent, needs creds at import time, and its surface drifts). Instead this
-talks to `https://www.kaggle.com/api/v1` with `requests` (already a dep),
-HTTP-Basic-authed with a Kaggle username + key. Auth is resolved lazily so
-importing this module never fails without creds — only a *call* that needs
-the network does.
+talks to `https://www.kaggle.com/api/v1` with `requests` (already a dep).
+Two auth schemes, preferred in this order: a Bearer **access token** (the
+newer `KGAT…` token the kaggle CLI v1.8.0+ writes to ~/.kaggle/access_token
+or $KAGGLE_API_TOKEN), else HTTP-Basic with a username + key (kaggle.json /
+$KAGGLE_USERNAME+$KAGGLE_KEY). Auth is resolved lazily so importing this
+module never fails without creds — only a *call* that needs the network.
 
 The source-specific surface BenchHub's import engine needs is tiny (see
 `docs/KAGGLE_IMPORT_PLAN.md`): `list_files`, a whole-zip `download` + a
@@ -13,10 +15,12 @@ The source-specific surface BenchHub's import engine needs is tiny (see
 license classifier. Everything downstream (`file_tree_import`,
 `manifest.import_typed_dataset`, the preview tier) is source-agnostic.
 
-⚠️ REST PATHS ARE FROM THE PUBLIC KAGGLE CLI SWAGGER AND UNVERIFIED against
-a live token (none was available when this was written). They are kept as
-module constants precisely so a Phase-0 spike can correct them in one place.
-Everything else (auth, backoff, parsing, license logic) is exercised by
+REST paths were VERIFIED against the live API (Bearer token, 2026-06-08):
+`/datasets/list`, `/datasets/view/{o}/{s}`, `/datasets/list/{o}/{s}` (files,
+returns `datasetFiles`), `/datasets/download/{o}/{s}` all return 200; the
+files endpoint is `/datasets/list/...` NOT `/datasets/files/...` (404). Kept
+as module constants so any future swagger drift is a one-place fix.
+Everything (auth, backoff, parsing, license logic) is also exercised by
 tests/test_kaggle_client.py with an injected fake session — no live calls.
 """
 from __future__ import annotations
@@ -30,7 +34,7 @@ import zipfile
 API_BASE = "https://www.kaggle.com/api/v1"
 USER_AGENT = "benchhub/0.1"
 
-# Endpoint templates (see ⚠️ above — verify against a live token).
+# Endpoint templates (verified live 2026-06-08 — see module docstring).
 EP_LIST = "/datasets/list"
 EP_VIEW = "/datasets/view/{owner}/{slug}"
 EP_FILES = "/datasets/list/{owner}/{slug}"
@@ -68,6 +72,30 @@ def resolve_credentials():
             if doc.get("username") and doc.get("key"):
                 return doc["username"], doc["key"]
         except (OSError, ValueError, KeyError):
+            continue
+    return None
+
+
+def resolve_access_token():
+    """A Kaggle API *access token* (the newer `KGAT…` Bearer token), or
+    None. Order: KAGGLE_API_TOKEN / KAGGLE_ACCESS_TOKEN env, then an
+    `access_token` file under $KAGGLE_CONFIG_DIR or ~/.kaggle. The kaggle
+    CLI (v1.8.0+) writes the file; it's sent as `Authorization: Bearer`,
+    not Basic auth. Never raises."""
+    tok = (os.environ.get("KAGGLE_API_TOKEN")
+           or os.environ.get("KAGGLE_ACCESS_TOKEN"))
+    if tok and tok.strip():
+        return tok.strip()
+    for d in (os.environ.get("KAGGLE_CONFIG_DIR"),
+              os.path.join(os.path.expanduser("~"), ".kaggle")):
+        if not d:
+            continue
+        try:
+            with open(os.path.join(d, "access_token")) as fh:
+                tok = fh.read().strip()
+            if tok:
+                return tok
+        except OSError:
             continue
     return None
 
@@ -170,12 +198,16 @@ class KaggleClient:
     (requests-like: `.request(method, url, **kw) -> resp`) for tests; in
     prod it lazily builds a `requests.Session`."""
 
-    def __init__(self, *, username=None, key=None, session=None,
+    def __init__(self, *, username=None, key=None, token=None, session=None,
                  base=API_BASE, timeout=60, max_retries=4,
                  backoff_initial=1.0, sleeper=time.sleep):
         self._username = username
         self._key = key
-        self._creds_resolved = bool(username and key)
+        self._token = token
+        # Explicit constructor creds take precedence over ambient
+        # env/files, so don't overwrite them during lazy resolution.
+        self._explicit_basic = bool(username and key)
+        self._auth_resolved = bool(token) or self._explicit_basic
         self._session = session
         self.base = base.rstrip("/")
         self.timeout = timeout
@@ -185,22 +217,44 @@ class KaggleClient:
 
     @classmethod
     def from_env(cls, **kw):
-        creds = resolve_credentials()
-        if creds:
-            kw.setdefault("username", creds[0])
-            kw.setdefault("key", creds[1])
+        # Prefer a Bearer access token; fall back to a username/key pair.
+        if "token" not in kw:
+            tok = resolve_access_token()
+            if tok:
+                kw["token"] = tok
+        if not kw.get("token"):
+            creds = resolve_credentials()
+            if creds:
+                kw.setdefault("username", creds[0])
+                kw.setdefault("key", creds[1])
         return cls(**kw)
 
     @property
     def has_credentials(self):
-        return bool(self._auth())
+        self._ensure_resolved()
+        return bool(self._token or (self._username and self._key))
 
-    def _auth(self):
-        if not self._creds_resolved and not (self._username and self._key):
+    def _ensure_resolved(self):
+        """Lazily fill in ambient credentials once. A Bearer access token
+        wins over a Basic username/key pair; explicit constructor values
+        win over both."""
+        if self._auth_resolved:
+            return
+        if not self._token and not self._explicit_basic:
+            self._token = resolve_access_token()
+        if not self._token and not (self._username and self._key):
             creds = resolve_credentials()
             if creds:
                 self._username, self._key = creds
-            self._creds_resolved = True
+        self._auth_resolved = True
+
+    def _auth(self):
+        """Basic-auth (username, key) tuple for `requests`, or None. When a
+        Bearer token is in play it's applied as a header in `_request`, so
+        this returns None to keep the two schemes from colliding."""
+        self._ensure_resolved()
+        if self._token:
+            return None
         return (self._username, self._key) if (self._username and self._key) else None
 
     def _get_session(self):
@@ -210,18 +264,23 @@ class KaggleClient:
         return self._session
 
     def _request(self, path, *, params=None, stream=False, require_auth=True):
-        auth = self._auth()
-        if require_auth and auth is None:
+        self._ensure_resolved()
+        auth = self._auth()  # Basic tuple, or None when a token is used
+        headers = {"User-Agent": USER_AGENT}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        if require_auth and not (self._token or auth):
             raise KaggleAuthError(
-                "No Kaggle credentials — set KAGGLE_USERNAME/KAGGLE_KEY or "
-                "place a kaggle.json under ~/.kaggle.")
+                "No Kaggle credentials — set KAGGLE_API_TOKEN (or place an "
+                "access_token / kaggle.json under ~/.kaggle), or set "
+                "KAGGLE_USERNAME/KAGGLE_KEY.")
         url = self.base + path
         delay = self.backoff_initial
         resp = None
         for attempt in range(self.max_retries + 1):
             resp = self._get_session().request(
                 "GET", url, params=params, auth=auth,
-                headers={"User-Agent": USER_AGENT}, timeout=self.timeout,
+                headers=headers, timeout=self.timeout,
                 stream=stream)
             code = getattr(resp, "status_code", 200)
             if code == 429 or 500 <= code < 600:

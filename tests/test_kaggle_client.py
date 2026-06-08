@@ -14,6 +14,7 @@ from benchhub import kaggle_search as ks
 from benchhub.kaggle_client import (
     KaggleClient, KaggleAuthError, KaggleAPIError, classify_license,
     license_name_from_view, split_ref, resolve_credentials,
+    resolve_access_token,
 )
 
 
@@ -101,11 +102,56 @@ def test_resolve_credentials_json(monkeypatch, tmp_path):
 
 
 def test_no_credentials_raises(monkeypatch):
+    # Stub BOTH resolvers — otherwise an ambient ~/.kaggle/access_token on
+    # the dev box would make this client look authenticated.
     monkeypatch.setattr(kc, "resolve_credentials", lambda: None)
+    monkeypatch.setattr(kc, "resolve_access_token", lambda: None)
     client = KaggleClient(session=FakeSession([]))
     assert client.has_credentials is False
     with pytest.raises(KaggleAuthError):
         client.view("owner/slug")
+
+
+# --------------------------------------------------------------------------
+# access-token (KGAT Bearer) auth
+# --------------------------------------------------------------------------
+
+def test_resolve_access_token_env(monkeypatch):
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "KGAT_envtoken")
+    assert resolve_access_token() == "KGAT_envtoken"
+
+
+def test_resolve_access_token_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
+    monkeypatch.delenv("KAGGLE_ACCESS_TOKEN", raising=False)
+    (tmp_path / "access_token").write_text("KGAT_filetoken\n")
+    monkeypatch.setenv("KAGGLE_CONFIG_DIR", str(tmp_path))
+    assert resolve_access_token() == "KGAT_filetoken"
+
+
+def test_token_sends_bearer_header_not_basic(monkeypatch):
+    monkeypatch.setattr(kc, "resolve_credentials", lambda: None)
+    monkeypatch.setattr(kc, "resolve_access_token", lambda: None)
+    captured = {}
+
+    def _respond(method, url, kw):
+        captured.update(kw)
+        return FakeResp(json_data={"ok": True})
+
+    client = KaggleClient(session=FakeSession(_respond), token="KGAT_abc",
+                          sleeper=lambda s: None)
+    assert client.has_credentials is True
+    client.view("owner/slug")
+    assert captured["headers"]["Authorization"] == "Bearer KGAT_abc"
+    assert captured.get("auth") is None  # Bearer, not Basic
+
+
+def test_from_env_prefers_token_over_basic(monkeypatch):
+    monkeypatch.setattr(kc, "resolve_access_token", lambda: "KGAT_xyz")
+    monkeypatch.setattr(kc, "resolve_credentials", lambda: ("u", "k"))
+    client = KaggleClient.from_env(session=FakeSession([]))
+    assert client._token == "KGAT_xyz"
+    assert client._auth() is None  # token suppresses Basic
 
 
 # --------------------------------------------------------------------------
