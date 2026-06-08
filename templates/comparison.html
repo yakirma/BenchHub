@@ -19,6 +19,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 {% endmacro %}
 
 {% block content %}
+{% include '_signin_to_submit.html' %}
 <style>
     /* Add specific styles for draggable columns */
     #comparison-table th[draggable] {

@@ -74,11 +74,12 @@ def test_landing_renders_for_anonymous(client):
 
 def test_landing_shows_login_cta_when_anonymous(client):
     resp = client.get("/")
-    # The bottom CTA now collapses to a single button to /login (which
-    # hosts GitHub / Google / email-code options).
-    assert b"Log in / Sign up" in resp.data
+    body = resp.data
+    # Sign-in affordances: hero CTA + the inline OAuth band at the bottom.
+    assert b"Sign in" in body or b"Sign up" in body
+    assert b"Continue with GitHub" in body
     # No "dashboard" CTA when logged out.
-    assert b"Go to your dashboard" not in resp.data
+    assert b"Go to your dashboard" not in body
 
 
 def test_landing_redirects_to_home_when_logged_in(auth_client):

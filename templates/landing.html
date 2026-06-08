@@ -2,408 +2,314 @@
 
 {% block title %}BenchHub — Build, run, and share ML benchmarks{% endblock %}
 
-{# SEO override (Phase 6). Title is the hero pitch; description matches the
-   sub-headline so search-result snippets read sensibly. #}
+{# SEO override. Title is the hero pitch; description matches the sub-headline. #}
 {% set meta_title = 'BenchHub — Build, run, and share ML benchmarks' %}
-{% set meta_description = 'Open-source benchmarking platform: pick a dataset, define a leaderboard, upload predictions, see how your model ranks. No credit card.' %}
+{% set meta_description = 'Open-source benchmarking platform: explore curated datasets, define a leaderboard, upload predictions, see how your model ranks. No credit card.' %}
 
 {% block flash_messages %}{% endblock %}
 
 {% block content %}
 <style>
-    /* Multi-stop pastel wash with the brand violet leading, a hot pink
-       on the right, and warm amber bleeding in from below. Tuned to
-       barely register on background but lift the page above flat
-       white. */
     .hero-bg {
-        position: relative;
-        overflow: hidden;
+        position: relative; overflow: hidden;
         background:
             radial-gradient(900px 500px at 12% -10%, rgba(124, 58, 237, 0.18), transparent 60%),
             radial-gradient(800px 500px at 95%  8%, rgba(255,   0, 138, 0.13), transparent 60%),
             radial-gradient(700px 400px at 50% 110%, rgba(255, 200,  58, 0.13), transparent 55%);
     }
-    /* Decorative floating shapes — pure SVG, fixed in viewport,
-       behind content. pointer-events:none so they never intercept
-       clicks. */
-    .hero-decoration {
-        position: absolute;
-        pointer-events: none;
-        opacity: 0.85;
-        z-index: 0;
-    }
+    .hero-decoration { position: absolute; pointer-events: none; opacity: 0.85; z-index: 0; }
     .hero-content { position: relative; z-index: 1; }
-
-    /* Editorial headline: pull Fraunces big with a slim violet→pink
-       gradient on the highlight phrase. Tighter line-height than
-       Bootstrap's default for the display sizes. */
     .hero-headline {
         font-family: 'Fraunces', 'Charter', 'Georgia', serif;
-        font-weight: 700;
-        letter-spacing: -0.025em;
-        line-height: 1.05;
-        font-size: clamp(2.5rem, 5.5vw, 4.5rem);
-        color: var(--bh-heading-color);  /* warm-dark on light, cream on dark */
+        font-weight: 700; letter-spacing: -0.025em; line-height: 1.05;
+        font-size: clamp(2.5rem, 5.5vw, 4.5rem); color: var(--bh-heading-color);
     }
     .hero-headline .accent {
-        /* Vibrant gradient that reads on both themes — stops stay
-           saturated enough on dark, the violet → magenta → orange is
-           the same on light. Dark mode overrides to lighter stops
-           (see below) for stronger contrast. */
         background: linear-gradient(95deg, #7c3aed 0%, #c026d3 45%, #ff008a 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+        -webkit-background-clip: text; background-clip: text; color: transparent;
     }
     [data-bs-theme="dark"] .hero-headline .accent {
         background: linear-gradient(95deg, #a78bfa 0%, #e879f9 45%, #fb7185 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
+        -webkit-background-clip: text; background-clip: text;
     }
-    .hero-sub {
-        font-size: 1.2rem;
-        color: var(--bs-secondary-color);
-        max-width: 38rem;
-        margin: 0 auto;
-    }
-    /* Big chunky pill CTA. Picks up the violet primary from base.html
-       but adds a soft glow. */
+    .hero-sub { font-size: 1.2rem; color: var(--bs-secondary-color); max-width: 40rem; margin: 0 auto; }
     .hero-cta-primary {
-        padding: 0.85rem 1.6rem;
-        font-size: 1.05rem;
-        font-weight: 500;
+        padding: 0.85rem 1.6rem; font-size: 1.05rem; font-weight: 500;
         box-shadow: 0 8px 24px -8px rgba(124, 58, 237, 0.45);
     }
-    .hero-cta-primary:hover {
-        box-shadow: 0 10px 28px -8px rgba(124, 58, 237, 0.55);
+    .hero-cta-primary:hover { box-shadow: 0 10px 28px -8px rgba(124, 58, 237, 0.55); }
+    .hero-cta-secondary { padding: 0.85rem 1.6rem; font-size: 1.05rem; font-weight: 500; }
+
+    /* Stats strip */
+    .stat-tile { text-align: center; padding: 0.25rem 0.5rem; }
+    .stat-num {
+        font-family: 'Fraunces', 'Georgia', serif; font-weight: 700;
+        font-size: clamp(1.4rem, 3vw, 2.1rem); line-height: 1;
+        color: var(--bh-heading-color);
     }
-    .hero-cta-secondary {
-        padding: 0.85rem 1.6rem;
-        font-size: 1.05rem;
-        font-weight: 500;
+    .stat-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--bs-secondary-color); }
+    .live-pill {
+        display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem;
+        color: #059669; background: rgba(16,185,129,0.10);
+        border: 1px solid rgba(16,185,129,0.25); border-radius: 999px; padding: 0.2rem 0.7rem;
     }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 0 rgba(16,185,129,0.6); animation: livePulse 2s infinite; }
+    @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.5);} 70% { box-shadow: 0 0 0 7px rgba(16,185,129,0);} 100% { box-shadow: 0 0 0 0 rgba(16,185,129,0);} }
+
+    /* Sample gallery */
+    .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.6rem; }
+    .gallery-tile {
+        position: relative; aspect-ratio: 1/1; border-radius: 0.6rem; overflow: hidden;
+        background-size: cover; background-position: center; background-color: var(--bs-tertiary-bg);
+        display: block; text-decoration: none;
+        box-shadow: 0 1px 3px rgba(40,25,80,0.10); transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .gallery-tile:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 .6rem 1.4rem rgba(40,25,80,0.20); z-index: 2; }
+    .gallery-kind {
+        position: absolute; top: .4rem; left: .4rem; font-size: 0.6rem; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .03em; padding: .1rem .4rem; border-radius: 999px;
+        background: rgba(0,0,0,0.55); color: #fff; backdrop-filter: blur(2px);
+    }
+    .gallery-cap {
+        position: absolute; left: 0; right: 0; bottom: 0; padding: .9rem .5rem .35rem;
+        font-size: 0.66rem; color: #fff; text-decoration: none;
+        background: linear-gradient(transparent, rgba(0,0,0,0.75));
+        opacity: 0; transition: opacity .15s ease; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .gallery-tile:hover .gallery-cap { opacity: 1; }
+
+    /* Domain cards */
+    .domain-card {
+        display: block; text-decoration: none; height: 100%;
+        border: 1px solid var(--bs-border-color); border-radius: 0.8rem; padding: 1rem 1.1rem;
+        background: var(--bs-body-bg); transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+    }
+    .domain-card:hover { transform: translateY(-2px); box-shadow: 0 .5rem 1.3rem rgba(40,25,80,0.10); border-color: #7c3aed; }
+    .domain-icon { font-size: 1.4rem; color: #7c3aed; }
+
+    .leaderboard-card, .home-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .leaderboard-card:hover { transform: translateY(-2px); box-shadow: 0 0.5rem 1.5rem rgba(40, 25, 80, 0.10); }
 
     .feature-icon {
-        width: 3rem; height: 3rem;
-        display: inline-flex; align-items: center; justify-content: center;
-        border-radius: 0.75rem;
-        background-color: rgba(124, 58, 237, 0.10);
-        color: #7c3aed;
-        font-size: 1.5rem;
+        width: 3rem; height: 3rem; display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 0.75rem; background-color: rgba(124, 58, 237, 0.10); color: #7c3aed; font-size: 1.5rem;
     }
-    .leaderboard-card {
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    .code-snippet {
+        background: #1e1b2e; color: #e9e6f5; border-radius: 0.6rem; padding: 1rem 1.15rem;
+        font-size: 0.82rem; line-height: 1.6; overflow-x: auto; box-shadow: 0 .5rem 1.4rem rgba(40,25,80,0.18);
     }
-    .leaderboard-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 0.5rem 1.5rem rgba(40, 25, 80, 0.10);
-    }
+    .code-snippet .c-kw { color: #c4b5fd; } .code-snippet .c-str { color: #fca5a5; } .code-snippet .c-cm { color: #8b86a3; }
 </style>
 
 <!-- ===================== Hero ===================== -->
-<section class="hero-bg py-5 mb-5">
-    {# Floating background SVGs: a tilted-grid-of-dots on the left
-       (the geometric "platform" feel) and a soft asterisk on the
-       right. Both fade
-       on mobile where space is tight. #}
-    <svg class="hero-decoration d-none d-md-block" style="top: 8%; left: 3%; width: 120px; height: 120px;"
-         viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-        <g fill="#7c3aed" opacity="0.35">
-            {% for i in range(6) %}
-            {% for j in range(6) %}
-            <circle cx="{{ 10 + j * 18 }}" cy="{{ 10 + i * 18 }}" r="2"></circle>
-            {% endfor %}
-            {% endfor %}
-        </g>
+<section class="hero-bg pt-5 pb-4 mb-4">
+    <svg class="hero-decoration d-none d-md-block" style="top: 8%; left: 3%; width: 120px; height: 120px;" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <g fill="#7c3aed" opacity="0.35">{% for i in range(6) %}{% for j in range(6) %}<circle cx="{{ 10 + j * 18 }}" cy="{{ 10 + i * 18 }}" r="2"></circle>{% endfor %}{% endfor %}</g>
     </svg>
-    <svg class="hero-decoration d-none d-md-block" style="top: 12%; right: 6%; width: 90px; height: 90px;"
-         viewBox="0 0 90 90" xmlns="http://www.w3.org/2000/svg">
-        <g fill="#ff008a" opacity="0.5">
-            <circle cx="45" cy="45" r="6"></circle>
-            <path d="M45 10 L45 80 M10 45 L80 45 M20 20 L70 70 M70 20 L20 70" stroke="#ff008a" stroke-width="3" stroke-linecap="round" fill="none"></path>
-        </g>
-    </svg>
-    <svg class="hero-decoration d-none d-lg-block" style="bottom: 8%; right: 12%; width: 70px; height: 70px;"
-         viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg">
-        <rect x="6" y="6" width="58" height="58" rx="14" fill="none" stroke="#fd4f00" stroke-width="3" opacity="0.45" transform="rotate(15 35 35)"></rect>
+    <svg class="hero-decoration d-none d-md-block" style="top: 12%; right: 6%; width: 90px; height: 90px;" viewBox="0 0 90 90" xmlns="http://www.w3.org/2000/svg">
+        <g fill="#ff008a" opacity="0.5"><circle cx="45" cy="45" r="6"></circle><path d="M45 10 L45 80 M10 45 L80 45 M20 20 L70 70 M70 20 L20 70" stroke="#ff008a" stroke-width="3" stroke-linecap="round" fill="none"></path></g>
     </svg>
 
-    <div class="container py-md-5 hero-content">
+    <div class="container py-md-4 hero-content">
         <div class="row align-items-center justify-content-center text-center">
             <div class="col-lg-9">
                 <h1 class="hero-headline mb-4">
-                    Build, run, and<br>
-                    <span class="accent">share ML benchmarks.</span>
+                    Explore, benchmark,<br>
+                    <span class="accent">and rank ML models.</span>
                 </h1>
                 <p class="hero-sub mb-4">
-                    Pick a dataset, define a leaderboard, upload predictions,
-                    and see how your model ranks. Open-source. No credit card.
+                    Browse {{ '{:,}'.format(stats.samples) if stats.samples else 'thousands of' }} real samples across
+                    {{ stats.datasets }} curated datasets — images, masks, depth maps and more.
+                    Pick a leaderboard, upload predictions, see how you rank. Open-source. No credit card.
                 </p>
 
+                {# Hero search → the leaderboard catalog. #}
+                <form action="{{ url_for('leaderboards') }}" method="get"
+                      class="d-flex justify-content-center mb-3" role="search">
+                    <div class="input-group shadow-sm" style="max-width: 30rem;">
+                        <span class="input-group-text bg-body"><i class="bi bi-search"></i></span>
+                        <input type="search" name="q" class="form-control"
+                               placeholder="Search leaderboards & datasets…" aria-label="Search">
+                        <button class="btn btn-primary" type="submit">Search</button>
+                    </div>
+                </form>
+
                 <div class="d-flex flex-wrap gap-3 justify-content-center">
-                    {% if current_user %}
-                    <a href="{{ url_for('home') }}" class="btn btn-primary hero-cta-primary">
-                        <i class="bi bi-speedometer2 me-2"></i>Go to your dashboard
+                    <a href="{{ url_for('datasets_list') }}" class="btn btn-primary hero-cta-primary"
+                       onclick="if(window.gtag){gtag('event','select_content',{content_type:'cta',item_id:'explore_datasets'});}">
+                        <i class="bi bi-images me-2"></i>Explore datasets
                     </a>
-                    <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-secondary hero-cta-secondary">
-                        <i class="bi bi-database me-2"></i>Browse datasets
-                    </a>
-                    {% else %}
-                    <a href="{{ url_for('login') }}" class="btn btn-primary hero-cta-primary">
+                    {% if not current_user %}
+                    <a href="{{ url_for('login') }}" class="btn btn-outline-secondary hero-cta-secondary"
+                       onclick="if(window.gtag){gtag('event','login_start',{method:'hero_cta'});}">
                         <i class="bi bi-box-arrow-in-right me-2"></i>Sign in / Sign up
                     </a>
-                    <a href="#featured" class="btn btn-outline-secondary hero-cta-secondary">
-                        <i class="bi bi-eye me-2"></i>See the leaderboards
+                    {% else %}
+                    <a href="{{ url_for('home') }}" class="btn btn-outline-secondary hero-cta-secondary">
+                        <i class="bi bi-speedometer2 me-2"></i>Your dashboard
                     </a>
                     {% endif %}
                 </div>
+
+                <!-- Stats strip -->
+                <div class="row justify-content-center align-items-center g-2 mt-4 pt-2">
+                    {% set _stats = [
+                        ('{:,}'.format(stats.samples), 'samples', stats.samples),
+                        (stats.datasets, 'datasets', stats.datasets),
+                        (stats.leaderboards, 'leaderboards', stats.leaderboards),
+                        (stats.submissions, 'submissions', stats.submissions),
+                        (stats.data_types, 'data types', stats.data_types),
+                    ] %}
+                    {% for value, label, raw in _stats %}{% if raw %}
+                    <div class="col-auto stat-tile">
+                        <div class="stat-num">{{ value }}</div>
+                        <div class="stat-label">{{ label }}</div>
+                    </div>
+                    {% if not loop.last %}<div class="col-auto d-none d-sm-block text-body-secondary opacity-25">•</div>{% endif %}
+                    {% endif %}{% endfor %}
+                </div>
+                {% if stats.last_activity_human %}
+                <div class="mt-3">
+                    <span class="live-pill"><span class="live-dot"></span>Last submission {{ stats.last_activity_human }}</span>
+                </div>
+                {% endif %}
             </div>
         </div>
     </div>
 </section>
 
-<!-- ===================== How it works ===================== -->
-<section class="container mb-5 pb-3">
-    <div class="row text-center mb-4">
-        <div class="col">
-            <h2 class="fw-bold">How it works</h2>
-            <p class="text-body-secondary">Three steps from idea to ranked leaderboard.</p>
-        </div>
-    </div>
-
-    <div class="row row-cols-1 row-cols-md-3 g-4">
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body p-4 text-center">
-                    <div class="feature-icon mb-3">
-                        <i class="bi bi-database-fill-up"></i>
-                    </div>
-                    <h5 class="fw-semibold mb-2">1. Pick a dataset</h5>
-                    <p class="text-body-secondary small mb-0">
-                        Use your own data or pick one from the public catalog.
-                        Images, scalars, depth maps, audio — BenchHub handles
-                        the common ML data types.
-                    </p>
-                </div>
-            </div>
-        </div>
-
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body p-4 text-center">
-                    <div class="feature-icon mb-3">
-                        <i class="bi bi-trophy"></i>
-                    </div>
-                    <h5 class="fw-semibold mb-2">2. Define a leaderboard</h5>
-                    <p class="text-body-secondary small mb-0">
-                        Pick which dataset fields submissions are scored against,
-                        assign each one a role (input vs ground truth), then attach
-                        the metrics and visualisations to run on every submission.
-                    </p>
-                </div>
-            </div>
-        </div>
-
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm">
-                <div class="card-body p-4 text-center">
-                    <div class="feature-icon mb-3">
-                        <i class="bi bi-trophy-fill"></i>
-                    </div>
-                    <h5 class="fw-semibold mb-2">3. Submit, get ranked</h5>
-                    <p class="text-body-secondary small mb-0">
-                        Send your predictions, BenchHub scores them, and
-                        your run lands on the leaderboard next to
-                        everyone else's.
-                    </p>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<!-- ===================== Sharing & storage =========================== -->
-<section class="container mb-5 pb-3">
-    <div class="text-center mb-4">
-        <h2 class="fw-bold mb-1">Sharing &amp; storage</h2>
-        <p class="text-body-secondary mb-0">
-            Every dataset and leaderboard is either public or private. Generous
-            storage on either side.
-        </p>
-    </div>
-
-    <div class="row row-cols-1 row-cols-md-2 g-3 justify-content-center"
-         style="max-width: 920px; margin: 0 auto;">
-
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-public">
-                <div class="tier-stripe"></div>
-                <div class="card-body p-4">
-                    <div class="d-flex align-items-center gap-2 mb-3">
-                        <span class="tier-icon-circle tier-icon-public">
-                            <i class="bi bi-globe"></i>
-                        </span>
-                        <h3 class="h5 fw-semibold mb-0">Public</h3>
-                        <span class="badge text-bg-success-subtle text-success-emphasis border ms-auto">
-                            50 GB
-                        </span>
-                    </div>
-                    <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Listed on <code>/datasets</code> and <code>/leaderboards</code> for everyone
-                        </li>
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Anyone can submit predictions and appear on the board
-                        </li>
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Counted against your <strong>50 GB public quota</strong> — covers dataset bytes, LB materialisations, and submissions
-                        </li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-
-        <div class="col">
-            <div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-private">
-                <div class="tier-stripe"></div>
-                <div class="card-body p-4">
-                    <div class="d-flex align-items-center gap-2 mb-3">
-                        <span class="tier-icon-circle tier-icon-private">
-                            <i class="bi bi-lock-fill"></i>
-                        </span>
-                        <h3 class="h5 fw-semibold mb-0">Private</h3>
-                        <span class="badge text-bg-danger-subtle text-danger-emphasis border ms-auto">
-                            10 GB
-                        </span>
-                    </div>
-                    <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Visible only to you — not listed anywhere
-                        </li>
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Iterate without the world watching; <em>Publish</em> with one click when ready
-                        </li>
-                        <li class="mb-2">
-                            <i class="bi bi-check2 text-success me-1"></i>
-                            Counted against your <strong>10 GB private quota</strong> — separate from public
-                        </li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </div>
-</section>
-
-<style>
-    /* Tier cards on the landing page — visually echo the dataset/LB
-       card visibility cues (green globe / red lock) so the user
-       learns the icon language while reading about the tiers. */
-    .tier-card { transition: transform .15s ease, box-shadow .15s ease; }
-    .tier-card:hover { transform: translateY(-3px); }
-    .tier-stripe {
-        position: absolute; top: 0; left: 0; right: 0; height: 4px;
-        background: var(--tier-stripe-color, var(--bs-primary));
-    }
-    .tier-public  { --tier-stripe-color: #10b981; }
-    .tier-private { --tier-stripe-color: #ef4444; }
-    .tier-icon-circle {
-        display: inline-flex; align-items: center; justify-content: center;
-        width: 38px; height: 38px; border-radius: 50%;
-        font-size: 1.15rem;
-    }
-    .tier-icon-public {
-        background: rgba(16, 185, 129, 0.12);
-        color: #059669;
-    }
-    .tier-icon-private {
-        background: rgba(239, 68, 68, 0.12);
-        color: #dc2626;
-    }
-    [data-bs-theme="dark"] .tier-icon-public { color: #34d399; }
-    [data-bs-theme="dark"] .tier-icon-private { color: #f87171; }
-</style>
-
-<!-- ===================== Featured leaderboards ===================== -->
-<section id="featured" class="container mb-5 pb-3">
-    <div class="d-flex justify-content-between align-items-end mb-4 flex-wrap gap-2">
+<!-- ===================== Sample gallery (the visual hook) ===================== -->
+{% if gallery %}
+<section class="container mb-5">
+    <div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
         <div>
-            <h2 class="fw-bold mb-1">Active leaderboards</h2>
-            <p class="text-body-secondary mb-0">Most submissions in the last 30 days.</p>
+            <h2 class="fw-bold mb-1">See the data</h2>
+            <p class="text-body-secondary mb-0">Real decoded samples from the public catalog — click any to explore the dataset.</p>
         </div>
+        <a href="{{ url_for('datasets_list') }}" class="btn btn-sm btn-outline-secondary">All datasets <i class="bi bi-arrow-right"></i></a>
     </div>
+    <div class="gallery-grid">
+        {% for g in gallery %}
+        <a class="gallery-tile" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}"
+           style="background-image: url('{{ g.thumb }}');" title="{{ g.label }}"
+           onclick="if(window.gtag){gtag('event','select_content',{content_type:'gallery',item_id:g.dataset_id|string});}">
+            <span class="gallery-kind">{{ g.kind }}</span>
+            <span class="gallery-cap">{{ g.label }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
 
-    {% if featured %}
-    {# Same .home-card shape used on /home, /datasets, /leaderboards
-       and the LB grid on /dataset/<id>. Featured = top 3 by recent
-       activity, all public by definition (the route's visibility
-       filter). #}
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
-        {% for lb, recent_count in featured %}
-        {% set _hf_atts = lb.attachments|selectattr('kind', 'equalto', 'hf')|list if lb.attachments else [] %}
-        {% set _hf = _hf_atts[0] if _hf_atts else None %}
-        {% set _bh_ds_count = lb.datasets|length %}
-        {% set thumb = leaderboard_thumbs.get(lb.id) if leaderboard_thumbs else None %}
+<!-- ===================== Browse by domain ===================== -->
+{% if dataset_categories %}
+<section class="container mb-5">
+    <div class="text-center mb-4">
+        <h2 class="fw-bold mb-1">Browse by domain</h2>
+        <p class="text-body-secondary mb-0">Jump straight to the datasets in your field.</p>
+    </div>
+    {% set _area_icons = {'Vision': 'bi-eye', 'NLP': 'bi-chat-square-text', 'Audio': 'bi-soundwave',
+        'Tabular': 'bi-table', 'Medical': 'bi-heart-pulse', 'Graph': 'bi-diagram-3', 'Time Series': 'bi-graph-up'} %}
+    <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-4 g-3">
+        {% for area in dataset_categories %}
+        <div class="col">
+            <a class="domain-card" href="{{ url_for('datasets_list', category=area.area) }}">
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <i class="bi {{ _area_icons.get(area.area, 'bi-collection') }} domain-icon"></i>
+                    <span class="fw-semibold text-body">{{ area.area }}</span>
+                    <span class="badge text-bg-light border ms-auto">{{ area.count }}</span>
+                </div>
+                {% if area.tasks %}
+                <div class="d-flex flex-wrap gap-1">
+                    {% for t in area.tasks[:3] %}
+                    <span class="badge text-bg-primary-subtle text-primary-emphasis fw-normal">{{ t.name }}</span>
+                    {% endfor %}
+                    {% if area.tasks|length > 3 %}<span class="badge text-bg-light border fw-normal">+{{ area.tasks|length - 3 }}</span>{% endif %}
+                </div>
+                {% endif %}
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- ===================== Featured datasets ===================== -->
+{% if featured_datasets %}
+<section class="container mb-5">
+    <div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
+        <div>
+            <h2 class="fw-bold mb-1">Fresh datasets</h2>
+            <p class="text-body-secondary mb-0">Recently added to the public catalog.</p>
+        </div>
+        <a href="{{ url_for('datasets_list') }}" class="btn btn-sm btn-outline-secondary">Browse all <i class="bi bi-arrow-right"></i></a>
+    </div>
+    <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
+        {% for ds in featured_datasets %}
         <div class="col">
             <div class="card home-card h-100 border-0 shadow-sm position-relative">
-                {% if thumb %}
-                <div class="home-card-thumb" style="background-image: url('{{ thumb }}');"></div>
+                {% if ds.thumb %}
+                <div class="home-card-thumb" style="background-image: url('{{ ds.thumb }}');"></div>
                 {% else %}
-                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
-                    <i class="bi bi-{{ 'cloud-arrow-down' if _hf else 'trophy' }}"></i>
+                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}"><i class="bi bi-database"></i></div>
+                {% endif %}
+                <div class="card-body p-3 d-flex flex-column">
+                    <a href="{{ url_for('dataset_view', dataset_id=ds.id) }}"
+                       class="text-decoration-none stretched-link text-body fw-semibold text-truncate"
+                       title="{{ ds.name }}">{{ ds.name }}</a>
+                    {% if ds.category %}<div class="text-body-secondary text-truncate" style="font-size:0.7rem;">{{ ds.category }}</div>{% endif %}
+                    <div class="text-body-secondary mt-auto" style="font-size:0.7rem;">
+                        <i class="bi bi-grid-3x3-gap me-1"></i>{{ '{:,}'.format(ds.samples) }} samples
+                    </div>
                 </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- ===================== Active leaderboards ===================== -->
+<section id="featured" class="container mb-5">
+    <div class="d-flex justify-content-between align-items-end mb-3 flex-wrap gap-2">
+        <div>
+            <h2 class="fw-bold mb-1">Active leaderboards</h2>
+            <p class="text-body-secondary mb-0">Where models are competing right now.</p>
+        </div>
+        {% if active_leaderboards %}<a href="{{ url_for('leaderboards') }}" class="btn btn-sm btn-outline-secondary">All leaderboards <i class="bi bi-arrow-right"></i></a>{% endif %}
+    </div>
+    {% if active_leaderboards %}
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-3">
+        {% for lb in active_leaderboards %}
+        <div class="col">
+            <div class="card home-card h-100 border-0 shadow-sm position-relative">
+                {% if lb.thumb %}
+                <div class="home-card-thumb" style="background-image: url('{{ lb.thumb }}');"></div>
+                {% else %}
+                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}"><i class="bi bi-trophy"></i></div>
                 {% endif %}
                 <div class="card-body p-3 d-flex flex-column">
                     <div class="d-flex align-items-center gap-1 mb-1">
                         <a href="{{ url_for('leaderboard_view', leaderboard_id=lb.id) }}"
                            class="text-decoration-none stretched-link text-body fw-semibold text-truncate flex-grow-1"
                            title="{{ lb.name }}">{{ lb.name }}</a>
-                        <i class="bi bi-globe text-success small privacy-icon"
-                           title="Public — visible to everyone on /datasets and /leaderboards"></i>
-                        {% if lb.canonical_for_repo %}
-                        <span class="badge text-bg-info-subtle text-info-emphasis border"
-                              style="font-size: 0.6rem;"
-                              title="Imported from Papers With Code">PWC</span>
-                        {% endif %}
-                        {% if recent_count > 0 %}
-                        <span class="badge text-bg-light border"
-                              style="font-size: 0.6rem;"
-                              title="{{ recent_count }} submission{{ '' if recent_count == 1 else 's' }} in the last 30 days">
-                            <i class="bi bi-arrow-up-right"></i>{{ recent_count }}
+                        <i class="bi bi-globe text-success small privacy-icon" title="Public"></i>
+                        {% if lb.recent > 0 %}
+                        <span class="badge text-bg-light border" style="font-size: 0.6rem;" title="{{ lb.recent }} submissions in the last 30 days">
+                            <i class="bi bi-arrow-up-right"></i>{{ lb.recent }}
                         </span>
                         {% endif %}
                     </div>
                     {% if lb.tags %}
                     <div class="d-flex flex-wrap gap-1 mb-1" style="position: relative; z-index: 2;">
-                        {% for t in lb.tags[:2] %}
-                        <a href="{{ url_for('leaderboards', tag=t.name) }}"
-                           class="badge text-bg-primary-subtle text-primary-emphasis text-decoration-none small"
-                           onclick="event.stopPropagation();">{{ t.name }}</a>
+                        {% for t in lb.tags %}
+                        <a href="{{ url_for('leaderboards', tag=t) }}" class="badge text-bg-primary-subtle text-primary-emphasis text-decoration-none small" onclick="event.stopPropagation();">{{ t }}</a>
                         {% endfor %}
-                        {% if lb.tags|length > 2 %}
-                        <span class="badge text-bg-light border fw-normal">+{{ lb.tags|length - 2 }}</span>
-                        {% endif %}
                     </div>
                     {% endif %}
-                    <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center"
-                         style="font-size: 0.7rem;">
-                        <span title="Submissions">
-                            <i class="bi bi-people me-1"></i>{{ lb.submissions|length }}
-                        </span>
-                        {% if _bh_ds_count %}
-                        <span title="{{ _bh_ds_count }} BH dataset{{ '' if _bh_ds_count == 1 else 's' }}">
-                            <i class="bi bi-database me-1"></i>{{ _bh_ds_count }}
-                        </span>
-                        {% endif %}
-                        {% if _hf %}
-                        <span title="HuggingFace attachment">
-                            <i class="bi bi-cloud-arrow-down me-1"></i>HF
-                        </span>
-                        {% endif %}
+                    <div class="text-body-secondary mt-auto d-flex gap-2 flex-wrap align-items-center" style="font-size: 0.7rem;">
+                        <span title="Submissions"><i class="bi bi-people me-1"></i>{{ lb.submissions }}</span>
+                        {% if lb.datasets %}<span title="datasets"><i class="bi bi-database me-1"></i>{{ lb.datasets }}</span>{% endif %}
                     </div>
                 </div>
             </div>
@@ -414,33 +320,147 @@
     <div class="text-center py-5 text-body-secondary">
         <i class="bi bi-trophy display-5 d-block mb-3 opacity-50"></i>
         <p class="mb-3">No public leaderboards yet — be the first.</p>
-        {% if current_user %}
-        <a href="{{ url_for('datasets_list') }}" class="btn btn-primary">
-            <i class="bi bi-plus-circle me-1"></i>Create one
-        </a>
-        {% else %}
-        <a href="{{ url_for('login') }}" class="btn btn-primary">
-            <i class="bi bi-box-arrow-in-right me-1"></i>Log in to create
-        </a>
-        {% endif %}
+        <a href="{{ url_for('login') }}" class="btn btn-primary"><i class="bi bi-box-arrow-in-right me-1"></i>Sign in to create</a>
     </div>
     {% endif %}
 </section>
 
-<!-- ===================== Final CTA ===================== -->
-{% if not current_user %}
-<section class="container mb-5 py-4">
-    <div class="card border-0 shadow-sm bg-body-tertiary">
-        <div class="card-body p-5 text-center">
-            <h3 class="fw-bold mb-2">Ready to benchmark?</h3>
-            <p class="text-body-secondary mb-4">
-                Sign in with GitHub, Google, or a passwordless email code.
-                We only see your name, email, and avatar.
+<!-- ===================== How it works ===================== -->
+<section class="container mb-5 pb-2">
+    <div class="row text-center mb-4"><div class="col">
+        <h2 class="fw-bold">How it works</h2>
+        <p class="text-body-secondary">Three steps from idea to ranked leaderboard.</p>
+    </div></div>
+    <div class="row row-cols-1 row-cols-md-3 g-4">
+        <div class="col"><div class="card h-100 border-0 shadow-sm"><div class="card-body p-4 text-center">
+            <div class="feature-icon mb-3"><i class="bi bi-database-fill-up"></i></div>
+            <h5 class="fw-semibold mb-2">1. Pick a dataset</h5>
+            <p class="text-body-secondary small mb-0">Use your own data or pick one from the public catalog. Images, scalars, depth maps, audio — BenchHub handles the common ML data types.</p>
+        </div></div></div>
+        <div class="col"><div class="card h-100 border-0 shadow-sm"><div class="card-body p-4 text-center">
+            <div class="feature-icon mb-3"><i class="bi bi-trophy"></i></div>
+            <h5 class="fw-semibold mb-2">2. Define a leaderboard</h5>
+            <p class="text-body-secondary small mb-0">Pick which fields submissions are scored against, assign each a role (input vs ground truth), then attach the metrics and visualisations to run on every submission.</p>
+        </div></div></div>
+        <div class="col"><div class="card h-100 border-0 shadow-sm"><div class="card-body p-4 text-center">
+            <div class="feature-icon mb-3"><i class="bi bi-trophy-fill"></i></div>
+            <h5 class="fw-semibold mb-2">3. Submit, get ranked</h5>
+            <p class="text-body-secondary small mb-0">Send your predictions, BenchHub scores them, and your run lands on the leaderboard next to everyone else's.</p>
+        </div></div></div>
+    </div>
+</section>
+
+<!-- ===================== Submit in 3 lines ===================== -->
+<section class="container mb-5 pb-2">
+    <div class="row align-items-center g-4">
+        <div class="col-lg-5">
+            <h2 class="fw-bold mb-2">Submit in three lines</h2>
+            <p class="text-body-secondary mb-3">
+                Install the client, point it at a leaderboard, send your predictions.
+                BenchHub validates the types, scores every metric, and ranks you automatically.
             </p>
-            <div class="d-flex flex-wrap justify-content-center gap-2">
-                <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg px-4">
-                    <i class="bi bi-box-arrow-in-right me-2"></i>Log in / Sign up
-                </a>
+            <a href="{{ url_for('supported_types') }}" class="btn btn-outline-secondary btn-sm">
+                <i class="bi bi-card-list me-1"></i>See supported data types
+            </a>
+        </div>
+        <div class="col-lg-7">
+<pre class="code-snippet mb-0"><span class="c-cm"># pip install benchhub-client</span>
+<span class="c-kw">import</span> benchhub <span class="c-kw">as</span> bh
+client = bh.Client(token=<span class="c-str">"&lt;your-token&gt;"</span>)
+sub = client.submission(lb_id).predict(sample, label=<span class="c-str">"cat"</span>).submit()</pre>
+        </div>
+    </div>
+</section>
+
+<!-- ===================== Sharing & storage =========================== -->
+<section class="container mb-5 pb-2">
+    <div class="text-center mb-4">
+        <h2 class="fw-bold mb-1">Sharing &amp; storage</h2>
+        <p class="text-body-secondary mb-0">Every dataset and leaderboard is public or private. Generous storage on either side.</p>
+    </div>
+    <div class="row row-cols-1 row-cols-md-2 g-3 justify-content-center" style="max-width: 920px; margin: 0 auto;">
+        <div class="col"><div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-public">
+            <div class="tier-stripe"></div>
+            <div class="card-body p-4">
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    <span class="tier-icon-circle tier-icon-public"><i class="bi bi-globe"></i></span>
+                    <h3 class="h5 fw-semibold mb-0">Public</h3>
+                    <span class="badge text-bg-success-subtle text-success-emphasis border ms-auto">50 GB</span>
+                </div>
+                <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Listed on <code>/datasets</code> and <code>/leaderboards</code> for everyone</li>
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Anyone can submit predictions and appear on the board</li>
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Counted against your <strong>50 GB public quota</strong></li>
+                </ul>
+            </div>
+        </div></div>
+        <div class="col"><div class="card h-100 border-0 shadow-sm position-relative overflow-hidden tier-card tier-private">
+            <div class="tier-stripe"></div>
+            <div class="card-body p-4">
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    <span class="tier-icon-circle tier-icon-private"><i class="bi bi-lock-fill"></i></span>
+                    <h3 class="h5 fw-semibold mb-0">Private</h3>
+                    <span class="badge text-bg-danger-subtle text-danger-emphasis border ms-auto">10 GB</span>
+                </div>
+                <ul class="list-unstyled small mb-0 text-body-secondary lh-base">
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Visible only to you — not listed anywhere</li>
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Iterate quietly; <em>Publish</em> with one click when ready</li>
+                    <li class="mb-2"><i class="bi bi-check2 text-success me-1"></i>Counted against your <strong>10 GB private quota</strong></li>
+                </ul>
+            </div>
+        </div></div>
+    </div>
+</section>
+
+<style>
+    .tier-card { transition: transform .15s ease, box-shadow .15s ease; }
+    .tier-card:hover { transform: translateY(-3px); }
+    .tier-stripe { position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--tier-stripe-color, var(--bs-primary)); }
+    .tier-public  { --tier-stripe-color: #10b981; } .tier-private { --tier-stripe-color: #ef4444; }
+    .tier-icon-circle { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%; font-size: 1.15rem; }
+    .tier-icon-public { background: rgba(16, 185, 129, 0.12); color: #059669; }
+    .tier-icon-private { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
+    [data-bs-theme="dark"] .tier-icon-public { color: #34d399; } [data-bs-theme="dark"] .tier-icon-private { color: #f87171; }
+</style>
+
+<!-- ===================== Final CTA — inline sign-in ===================== -->
+{% if not current_user %}
+<section class="container mb-5">
+    <div class="card border-0 shadow-sm" style="background: linear-gradient(120deg, rgba(124,58,237,0.08), rgba(255,0,138,0.06));">
+        <div class="card-body p-4 p-md-5">
+            <div class="row align-items-center g-4">
+                <div class="col-lg-7">
+                    <h3 class="fw-bold mb-2">Create a free account</h3>
+                    <p class="text-body-secondary mb-3">Exploring is free and needs no account. Sign in to do more:</p>
+                    <ul class="list-unstyled small mb-0 text-body-secondary">
+                        <li class="mb-2"><i class="bi bi-check2-circle text-primary me-2"></i>Submit predictions to any public leaderboard</li>
+                        <li class="mb-2"><i class="bi bi-check2-circle text-primary me-2"></i>Import any HuggingFace dataset and define your own leaderboard</li>
+                        <li class="mb-2"><i class="bi bi-check2-circle text-primary me-2"></i>A private 10 GB workspace to iterate before publishing</li>
+                        <li class="mb-0"><i class="bi bi-check2-circle text-primary me-2"></i>Author custom metrics &amp; visualisations in Python</li>
+                    </ul>
+                </div>
+                <div class="col-lg-5">
+                    <a href="{{ url_for('login_github', next=url_for('home')) }}"
+                       class="btn btn-dark w-100 d-flex align-items-center justify-content-center mb-2"
+                       onclick="if(window.gtag){gtag('event','login_start',{method:'github'});}">
+                        <i class="bi bi-github me-2 fs-5"></i>Continue with GitHub
+                    </a>
+                    <a href="{{ url_for('login_google', next=url_for('home')) }}"
+                       class="btn w-100 d-flex align-items-center justify-content-center mb-2"
+                       style="background:#fff; color:#3c4043; border:1px solid #dadce0;"
+                       onclick="if(window.gtag){gtag('event','login_start',{method:'google'});}">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" class="me-2">
+                          <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/>
+                          <path fill="#34A853" d="M9 18c2.43 0 4.47-.81 5.96-2.18l-2.92-2.26c-.81.54-1.85.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
+                          <path fill="#FBBC05" d="M3.97 10.72A5.41 5.41 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.04l3.01-2.32z"/>
+                          <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.96l3.01 2.32C4.68 5.16 6.66 3.58 9 3.58z"/>
+                        </svg>Continue with Google
+                    </a>
+                    <a href="{{ url_for('login') }}" class="btn btn-link btn-sm w-100 text-body-secondary text-decoration-none">
+                        or use a passwordless email code
+                    </a>
+                    <p class="text-body-secondary small text-center mt-2 mb-0">We only see your name, email, and avatar.</p>
+                </div>
             </div>
         </div>
     </div>

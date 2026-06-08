@@ -3144,70 +3144,188 @@ def _compute_explorable_lb_ids(lb_ids):
     )
 
 
-@app.route('/')
-def landing():
-    """Public marketing landing page (Phase 6 Slice 1).
+_LANDING_TTL = 600  # seconds; landing aggregates are anonymous + bot-heavy
 
-    Replaces the old `redirect('/projects')` so anonymous visitors see
-    a real homepage.
 
-    Signed-in users are forwarded to /home — their dashboard is the
-    relevant entry point. Anonymous visitors see the featured-LB
-    pitch below.
+def _humanize_ago(dt):
+    """Compact 'Nm/h/d ago' for a UTC datetime; None-safe."""
+    if not dt:
+        return None
+    secs = (datetime.utcnow() - dt).total_seconds()
+    if secs < 90:
+        return 'just now'
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
 
-    Featured leaderboards: top public leaderboards by submission activity
-    in the last 30 days. Visibility filter excludes private + unlisted —
-    same rules as /explore (when that lands).
-    """
-    if getattr(g, 'current_user', None):
-        return redirect(url_for('home'))
-    cutoff = datetime.utcnow() - timedelta(days=30)
 
-    # Subquery: count submissions per leaderboard in the activity window.
-    # Use SQLAlchemy func.count + group_by so the DB does the work.
-    activity = (
-        db.session.query(
-            Submission.leaderboard_id.label('lb_id'),
-            func.count(Submission.id).label('recent_count'),
-        )
-        .filter(Submission.upload_date >= cutoff, Submission.is_archived.is_(False))
-        .group_by(Submission.leaderboard_id)
-        .subquery()
-    )
-
-    featured = (
-        db.session.query(Leaderboard, activity.c.recent_count)
-        .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
-        # Only public lists; pre-Phase-1 NULL-owner rows fall through the
-        # same branch as 'public' per visible_in_list semantics.
-        .filter(or_(
-            Leaderboard.visibility == 'public',
-            Leaderboard.owner_user_id.is_(None),
-        ))
-        # Order by recent activity (NULL = no submissions in window → 0).
-        .order_by(func.coalesce(activity.c.recent_count, 0).desc(),
-                  Leaderboard.upload_date.desc())
-        .limit(3)
+def _category_tree(model, filt):
+    """area → [{area, count, tasks:[{name,count}]}] for rows of `model`
+    (Leaderboard or Dataset, both carry a two-level 'Area/Task' .category)
+    matching `filt`. Shared by /leaderboards and the landing page."""
+    rows = (
+        db.session.query(model.category, func.count(model.id))
+        .filter(filt)
+        .filter(model.category.isnot(None))
+        .group_by(model.category)
         .all()
     )
+    tree = {}
+    for cat, cnt in rows:
+        if not cat:
+            continue
+        area, task = (cat.split('/', 1) if '/' in cat else (cat, ''))
+        bucket = tree.setdefault(area, {'count': 0, 'tasks': {}})
+        bucket['count'] += int(cnt or 0)
+        if task:
+            bucket['tasks'][task] = bucket['tasks'].get(task, 0) + int(cnt or 0)
+    return [
+        {
+            'area': area,
+            'count': v['count'],
+            'tasks': sorted(
+                [{'name': t, 'count': c} for t, c in v['tasks'].items()],
+                key=lambda x: (-x['count'], x['name']),
+            ),
+        }
+        for area, v in sorted(tree.items())
+    ]
 
-    # Render-friendly wrapper: list of (leaderboard, recent_count_int).
-    featured_rows = [(lb, int(c or 0)) for lb, c in featured]
 
-    # Per-LB thumb URL so the landing-page cards can show the same
-    # 130px hero image the rest of the site uses (home-card shape).
-    landing_thumbs = {}
-    for lb, _ in featured_rows:
-        lb_datasets = list(lb.datasets)
-        landing_thumbs[lb.id] = (
-            _dataset_thumb_url(lb_datasets[0]) if lb_datasets else None
+def _landing_gallery(n=12):
+    """Up to `n` modality-diverse decoded sample thumbnails from public
+    datasets — the visual hook on the landing page. Plain dicts only
+    (cache-safe): {thumb, dataset_id, label, kind}."""
+    pub = or_(Dataset.visibility == 'public', Dataset.owner_user_id.is_(None))
+    out = []
+    for dt in ('image', 'mask', 'depth'):
+        rows = (
+            db.session.query(CustomField.id, Sample.dataset_id, Dataset.name)
+            .join(Sample, CustomField.sample_id == Sample.id)
+            .join(Dataset, Sample.dataset_id == Dataset.id)
+            .filter(pub, CustomField.data_type == dt)
+            .order_by(CustomField.id.desc())
+            .limit(60)
+            .all()
         )
+        ds_used = set()
+        for cf_id, ds_id, ds_name in rows:
+            if ds_id in ds_used:
+                continue
+            ds_used.add(ds_id)
+            kw = {'field_id': cf_id}
+            if dt == 'depth':
+                kw['cmap'] = 'turbo'  # colourful depth instead of flat grey
+            out.append({
+                'thumb': url_for('serve_custom_field_image', **kw),
+                'dataset_id': ds_id, 'label': ds_name, 'kind': dt,
+            })
+            if len(ds_used) >= 4:
+                break
+    return out[:n]
 
-    return render_template(
-        'landing.html',
-        featured=featured_rows,
-        leaderboard_thumbs=landing_thumbs,
+
+_landing_cache = {'ts': 0.0, 'data': None}
+
+
+def _compute_landing_data():
+    """Anonymous landing payload as plain dicts (cache-safe — no ORM rows
+    cross the cache boundary)."""
+    pub_lb = or_(Leaderboard.visibility == 'public', Leaderboard.owner_user_id.is_(None))
+    pub_ds = or_(Dataset.visibility == 'public', Dataset.owner_user_id.is_(None))
+
+    stats = {
+        'datasets': db.session.query(func.count(Dataset.id)).filter(pub_ds).scalar() or 0,
+        'leaderboards': db.session.query(func.count(Leaderboard.id)).filter(pub_lb).scalar() or 0,
+        'submissions': db.session.query(func.count(Submission.id))
+                         .filter(Submission.is_archived.is_(False)).scalar() or 0,
+        'samples': db.session.query(func.count(Sample.id)).scalar() or 0,
+        'data_types': len(_all_kind_names()),
+    }
+    last_sub = (db.session.query(func.max(Submission.upload_date))
+                .filter(Submission.is_archived.is_(False)).scalar())
+    stats['last_activity_human'] = _humanize_ago(last_sub)
+
+    ds_sample_counts = dict(
+        db.session.query(Sample.dataset_id, func.count(Sample.id))
+        .group_by(Sample.dataset_id).all()
     )
+    sub_counts = dict(
+        db.session.query(Submission.leaderboard_id, func.count(Submission.id))
+        .filter(Submission.is_archived.is_(False))
+        .group_by(Submission.leaderboard_id).all()
+    )
+
+    featured_datasets = []
+    for ds in Dataset.query.filter(pub_ds).order_by(Dataset.upload_date.desc()).limit(8).all():
+        featured_datasets.append({
+            'id': ds.id, 'name': ds.name,
+            'thumb': _dataset_thumb_url(ds),
+            'category': ds.category or '',
+            'samples': int(ds_sample_counts.get(ds.id, 0)),
+        })
+
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    activity = (
+        db.session.query(Submission.leaderboard_id.label('lb_id'),
+                         func.count(Submission.id).label('recent'))
+        .filter(Submission.upload_date >= cutoff, Submission.is_archived.is_(False))
+        .group_by(Submission.leaderboard_id).subquery()
+    )
+    active_leaderboards = []
+    for lb, recent in (
+        db.session.query(Leaderboard, activity.c.recent)
+        .outerjoin(activity, Leaderboard.id == activity.c.lb_id)
+        .filter(pub_lb)
+        .order_by(func.coalesce(activity.c.recent, 0).desc(), Leaderboard.upload_date.desc())
+        .limit(6).all()
+    ):
+        dss = list(lb.datasets)
+        active_leaderboards.append({
+            'id': lb.id, 'name': lb.name,
+            'recent': int(recent or 0),
+            'submissions': int(sub_counts.get(lb.id, 0)),
+            'datasets': len(dss),
+            'thumb': _dataset_thumb_url(dss[0]) if dss else None,
+            'tags': [t.name for t in (lb.tags or [])[:2]],
+        })
+
+    return {
+        'stats': stats,
+        'gallery': _landing_gallery(12),
+        'dataset_categories': _category_tree(Dataset, pub_ds),
+        'featured_datasets': featured_datasets,
+        'active_leaderboards': active_leaderboards,
+    }
+
+
+def _landing_data():
+    # Bypass the cross-request cache under TESTING so seeded rows show up
+    # immediately (the module-level cache would otherwise bleed between
+    # tests / mask freshly-committed data).
+    if app.config.get('TESTING'):
+        return _compute_landing_data()
+    import time as _time
+    now = _time.time()
+    c = _landing_cache
+    if c['data'] is not None and (now - c['ts']) < _LANDING_TTL:
+        return c['data']
+    data = _compute_landing_data()
+    c['ts'], c['data'] = now, data
+    return data
+
+
+@app.route('/')
+def landing():
+    """Public exploration launchpad + sign-in funnel. Signed-in users go
+    to their dashboard; anonymous visitors get headline stats, a live
+    sample gallery, browse-by-domain, featured datasets, and active
+    leaderboards — all public to explore without an account."""
+    if getattr(g, 'current_user', None):
+        return redirect(url_for('home'))
+    return render_template('landing.html', **_landing_data())
 
 
 def _dataset_thumb_url(ds):
@@ -3580,37 +3698,10 @@ def leaderboards():
     # Counts are computed independent of the current category filter so
     # the tree always shows the full breakdown (clicking a leaf scopes
     # the results panel but the tree stays stable).
-    cat_rows = (
-        db.session.query(Leaderboard.category, func.count(Leaderboard.id))
-        .filter(visible_lb_filter)   # already gates by visibility + ownership
-        .filter(Leaderboard.category.isnot(None))
-        .group_by(Leaderboard.category)
-        .all()
-    )
-    category_tree = {}  # area → {'count': int, 'tasks': [(task, cnt)]}
-    for cat, cnt in cat_rows:
-        if not cat:
-            continue
-        if '/' in cat:
-            area, task = cat.split('/', 1)
-        else:
-            area, task = cat, ''
-        bucket = category_tree.setdefault(area, {'count': 0, 'tasks': {}})
-        bucket['count'] += int(cnt or 0)
-        if task:
-            bucket['tasks'][task] = bucket['tasks'].get(task, 0) + int(cnt or 0)
-    # Stable render: areas alphabetised, tasks by count desc then name.
-    category_tree = [
-        {
-            'area': area,
-            'count': v['count'],
-            'tasks': sorted(
-                [{'name': t, 'count': c} for t, c in v['tasks'].items()],
-                key=lambda x: (-x['count'], x['name']),
-            ),
-        }
-        for area, v in sorted(category_tree.items())
-    ]
+    # Full Area/Task breakdown, independent of the active category filter
+    # so the tree stays stable when a leaf is clicked. Shared with the
+    # landing page via _category_tree.
+    category_tree = _category_tree(Leaderboard, visible_lb_filter)
 
     return render_template(
         'leaderboards.html',
@@ -14078,7 +14169,7 @@ def datasets_list():
         .order_by(Dataset.upload_date.desc())
         .all()
     )
-    
+
     # Pre-calculate activity stats for leaderboards used by these datasets
     now = datetime.utcnow()
     for ds in datasets:

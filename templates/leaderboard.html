@@ -7,6 +7,7 @@
 {% set meta_description = 'Public benchmarking leaderboard "' ~ leaderboard.name ~ '" with ' ~ leaderboard.submissions|length ~ ' submission' ~ ('' if leaderboard.submissions|length == 1 else 's') ~ ' on BenchHub.' %}
 
 {% block content %}
+{% include '_signin_to_submit.html' %}
 <style>
     /* Collapsible-card chevrons (Submission contract / Metrics). */
     .collapse-chevron {
