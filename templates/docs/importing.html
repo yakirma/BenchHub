@@ -36,9 +36,10 @@
     <li><strong>params</strong> (e.g. a label vocabulary, depth unit);</li>
     <li><strong>source column</strong> (the HF column it reads from);</li>
     <li>a <strong>split</strong> dropdown (with row counts), a <strong>max samples</strong>
-        box (<code>-1</code> = the whole split), <strong>sampling</strong>
-        (head / uniform / stratified) + <strong>seed</strong>, and an optional
-        &ldquo;use as sample name&rdquo; column.</li>
+        box (<code>-1</code> = the whole split; defaults to <strong>10,000</strong> when the
+        chosen split has more than 10,000 rows, otherwise the whole split),
+        <strong>sampling</strong> (head / uniform / stratified) + <strong>seed</strong>, and
+        an optional &ldquo;use as sample name&rdquo; column.</li>
     <li><strong>Max shards to download</strong> &mdash; shown only when the chosen split is
         stored as multiple parquet shards. A split downloads in full <em>before</em>
         <em>max samples</em> is applied, so a sample cap bounds what&rsquo;s stored, not what&rsquo;s

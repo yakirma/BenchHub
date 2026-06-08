@@ -784,6 +784,34 @@
     refresh();
 })();
 
+// ---- 4a3. Default Max samples — cap big splits at 10,000 ----------
+// If the chosen split has more than 10,000 rows, default "Max samples"
+// to 10,000 (a sane import size); otherwise -1 (the whole split).
+// Re-applies when the split changes, unless the user has typed their own
+// value — tracked via event.isTrusted so our programmatic sets don't
+// count as a manual edit. Must run AFTER the hint/sampling/shard blocks
+// above so the dispatched 'input' event reaches their listeners.
+(function () {
+    const splitSel = document.getElementById('split');
+    const capInput = document.getElementById('sample-cap');
+    if (!splitSel || !capInput) return;
+    const DEFAULT_CAP = 10000;
+    let userEdited = false;
+    capInput.addEventListener('input', (e) => { if (e.isTrusted) userEdited = true; });
+    function applyDefault() {
+        if (userEdited) return;
+        const opt = splitSel.options[splitSel.selectedIndex];
+        const rows = parseInt(opt && opt.dataset.rowCount || '0', 10) || 0;
+        const want = (rows > DEFAULT_CAP) ? String(DEFAULT_CAP) : '-1';
+        if (capInput.value !== want) {
+            capInput.value = want;
+            capInput.dispatchEvent(new Event('input'));  // sync hint + sampling/shard rows
+        }
+    }
+    splitSel.addEventListener('change', applyDefault);
+    applyDefault();
+})();
+
 // ---- 4b. Sample-name-from toggle ----------------------------------
 // Click the small "use as name" badge on any text-kind field row
 // to use that column's values as sample names on disk. Single-
