@@ -7504,7 +7504,12 @@ def admin_import_from_hf_commit():
         shard_cap = int(raw_shard) if raw_shard else -1
     except ValueError:
         shard_cap = -1
-    if shard_cap <= 0:
+    # -1 = all shards, >0 = first N, 0 = auto (download just enough shards
+    # to cover Max samples). Auto is meaningless without a positive
+    # sample_cap, so fall back to "all" in that case.
+    if shard_cap < 0:
+        shard_cap = -1
+    elif shard_cap == 0 and sample_cap <= 0:
         shard_cap = -1
     sampling = (request.form.get('sampling') or 'head').strip().lower()
     if sampling not in ('head', 'uniform', 'stratified'):

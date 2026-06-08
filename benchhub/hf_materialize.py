@@ -343,40 +343,56 @@ def materialize_hf_to_typed_dir(
     if split:
         ds_kwargs["split"] = split
 
-    # Shard cap (only when the split is multi-shard parquet): download
-    # just the first K shards and load those, instead of letting
-    # load_dataset pull the entire split. Bounds download bytes + time —
-    # the real constraint on large repos — at the cost of a possibly
-    # skewed slice when rows aren't shuffled across shards. Falls back to
-    # a normal full load when the layout isn't shard-addressable.
+    # Shard cap (only when the split is multi-shard parquet): download a
+    # bounded prefix of shards instead of the whole split, then load
+    # those. shard_cap > 0 → the first N shards; shard_cap == 0 → "auto",
+    # download just enough shards (in order) to cover `sample_cap` rows;
+    # shard_cap < 0 → off (full load). Bounds download bytes + time — the
+    # real constraint on large repos — at the cost of a possibly skewed
+    # slice when rows aren't shuffled across shards. Falls back to a
+    # normal full load when the layout isn't shard-addressable.
     shards_used = shards_total = None
-    chosen_shards: list[str] = []
-    if shard_cap and shard_cap > 0 and split:
+    all_shards: list[str] = []
+    if shard_cap is not None and shard_cap >= 0 and split:
         try:
-            chosen_shards = list_parquet_shards(
+            all_shards = list_parquet_shards(
                 repo_id, config_name=config_name, revision=revision,
                 hf_token=hf_token).get(split) or []
         except Exception:
-            chosen_shards = []
+            all_shards = []
 
-    if len(chosen_shards) > 1 and shard_cap < len(chosen_shards):
+    _auto = (shard_cap == 0 and bool(sample_cap) and sample_cap > 0)
+    _firstn = (shard_cap > 0 and shard_cap < len(all_shards))
+    if len(all_shards) > 1 and (_auto or _firstn):
         from huggingface_hub import hf_hub_download
-        use = chosen_shards[:shard_cap]
-        shards_used, shards_total = len(use), len(chosen_shards)
+        import pyarrow.parquet as _pq
+        shards_total = len(all_shards)
+        limit = shard_cap if _firstn else len(all_shards)
         local_paths: list[str] = []
-        for i, sp in enumerate(use):
+        rows_so_far = 0
+        for i, sp in enumerate(all_shards[:limit]):
             if progress_cb is not None:
                 try:
                     progress_cb({"phase": "downloading", "current": i,
-                                 "total": len(use),
-                                 "message": (f"Downloading shard {i + 1}/"
-                                             f"{len(use)} of {len(chosen_shards)}"
-                                             f" — {repo_id}…")})
+                                 "total": (shard_cap if _firstn else 0),
+                                 "message": (f"Downloading shard {i + 1} of "
+                                             f"{shards_total} — {repo_id}…")})
                 except Exception:
                     pass
-            local_paths.append(hf_hub_download(
-                repo_id, sp, repo_type="dataset",
-                revision=revision, token=hf_token or None))
+            lp = hf_hub_download(repo_id, sp, repo_type="dataset",
+                                 revision=revision, token=hf_token or None)
+            local_paths.append(lp)
+            if _auto:
+                # Stop as soon as the shards downloaded hold enough rows.
+                # Read the count from the parquet footer — cheap, no full
+                # parse. (load_dataset over `local_paths` reads them once.)
+                try:
+                    rows_so_far += _pq.ParquetFile(lp).metadata.num_rows
+                except Exception:
+                    rows_so_far = sample_cap  # can't introspect → stop here
+                if rows_so_far >= sample_cap:
+                    break
+        shards_used = len(local_paths)
         ds = load_dataset("parquet", data_files=local_paths, split="train")
     else:
         ds = load_dataset(repo_id, **ds_kwargs)

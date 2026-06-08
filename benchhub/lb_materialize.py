@@ -249,10 +249,13 @@ def materialize_for_lb(
             'params': prms,
         })
 
-    # Materialise the FULL split via HF datasets-server, then
-    # filter to the chosen indices. We accept the temporary on-disk
-    # cost during materialisation; only the chosen files survive to
-    # uploads/lb_materializations/.
+    # Re-fetch from HF, then filter to the chosen sample names. We only
+    # need the shards the DATASET was originally built from — a
+    # shard-capped import (e.g. OpenFake core/test shard_cap=1) recorded
+    # `shards_used`, so we re-download just those instead of the whole
+    # split. Full-split imports (no shards_used) fall back to -1 = all.
+    # Only the chosen files survive to uploads/lb_materializations/.
+    refetch_shard_cap = meta.get('shards_used') or -1
     out_dir = materialization_dir(upload_folder, leaderboard.id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -272,7 +275,8 @@ def materialize_for_lb(
 
         mat = materialize_hf_to_typed_dir(
             repo_id=repo_id, split=split,
-            sample_cap=-1,   # full split — we filter locally
+            sample_cap=-1,   # take every row in the fetched shards; filter locally
+            shard_cap=refetch_shard_cap,  # only the shards the dataset was built from
             staging_dir=staging,
             dataset_name=dataset.name,
             fields=fields, hf_token=None,

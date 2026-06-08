@@ -241,9 +241,15 @@
                yields a skewed slice — that's the trade for a cheap import. #}
             <div class="row g-3 mb-4 d-none" id="shard-row">
                 <div class="col-md-6">
-                    <label class="form-label fw-semibold mb-1" for="shard-cap">Max shards to download</label>
-                    <input type="number" id="shard-cap" name="shard_cap"
-                           class="form-control" value="-1" min="-1">
+                    <label class="form-label fw-semibold mb-1" for="shard-mode">Max shards to download</label>
+                    <select id="shard-mode" class="form-select">
+                        <option value="all" selected>All shards — whole split</option>
+                        <option value="auto">Auto — only enough shards for Max samples</option>
+                        <option value="custom">First N shards…</option>
+                    </select>
+                    <input type="number" id="shard-cap-num" class="form-control mt-2 d-none"
+                           value="1" min="1" placeholder="number of shards">
+                    <input type="hidden" name="shard_cap" id="shard-cap" value="-1">
                     <div id="shard-cap-hint" class="form-text small mt-1"></div>
                     <div class="form-text small text-warning-emphasis mt-1">
                         Shards aren't guaranteed shuffled — a capped slice may be skewed
@@ -723,32 +729,58 @@
 })();
 
 // ---- 4a2. Shard cap — only for multi-shard splits ----------------
-// Reveal "Max shards to download" only when the selected split has
-// more than one parquet shard (data-shard-count). For single-shard or
-// non-shardable splits, hide it and force -1 so no cap is sent.
+// Reveal the "Max shards to download" control only when the selected
+// split has >1 parquet shard. Three modes feed the hidden shard_cap:
+// all → -1, auto → 0 (server downloads just enough for Max samples),
+// custom → first N. Single-shard / non-shardable splits hide it (-1).
 (function () {
     const splitSel = document.getElementById('split');
     const shardRow = document.getElementById('shard-row');
-    const shardCap = document.getElementById('shard-cap');
-    const shardHint = document.getElementById('shard-cap-hint');
-    if (!splitSel || !shardRow || !shardCap || !shardHint) return;
+    const modeSel  = document.getElementById('shard-mode');
+    const numInput = document.getElementById('shard-cap-num');
+    const hidden   = document.getElementById('shard-cap');
+    const hint     = document.getElementById('shard-cap-hint');
+    const capInput = document.getElementById('sample-cap');
+    if (!splitSel || !shardRow || !modeSel || !numInput || !hidden) return;
+
+    const opt = () => splitSel.options[splitSel.selectedIndex];
+    const shardCount = () => parseInt(opt() && opt().dataset.shardCount || '0', 10) || 0;
+    const rowCount = () => parseInt(opt() && opt().dataset.rowCount || '0', 10) || 0;
+    function autoEst() {
+        const n = shardCount(), rows = rowCount();
+        const cap = parseInt(capInput && capInput.value || '-1', 10);
+        if (n < 1 || rows < 1 || !cap || cap < 0) return null;
+        return Math.max(1, Math.min(n, Math.ceil(cap / (rows / n))));
+    }
     function refresh() {
-        const opt = splitSel.options[splitSel.selectedIndex];
-        const n = parseInt(opt && opt.dataset.shardCount || '0', 10) || 0;
-        if (n > 1) {
-            shardRow.classList.remove('d-none');
-            shardCap.setAttribute('max', String(n));
-            const req = parseInt(shardCap.value || '-1', 10);
-            shardHint.textContent = (req === -1 || req >= n)
-                ? `${n} shards — downloads the whole split`
-                : `first ${req} of ${n} shards (~${Math.round(req / n * 100)}% of the split) — bounds the download`;
+        const n = shardCount();
+        if (n <= 1) { shardRow.classList.add('d-none'); hidden.value = '-1'; return; }
+        shardRow.classList.remove('d-none');
+        numInput.max = String(n);
+        const mode = modeSel.value;
+        numInput.classList.toggle('d-none', mode !== 'custom');
+        if (mode === 'all') {
+            hidden.value = '-1';
+            hint.textContent = `${n} shards — downloads the whole split`;
+        } else if (mode === 'auto') {
+            hidden.value = '0';
+            const cap = parseInt(capInput && capInput.value || '-1', 10);
+            const est = autoEst();
+            hint.textContent = (cap > 0 && est)
+                ? `downloads ~${est} of ${n} shards — just enough for ${cap.toLocaleString()} samples`
+                : `set a positive Max samples for this to apply (otherwise all ${n} shards)`;
         } else {
-            shardRow.classList.add('d-none');
-            shardCap.value = '-1';   // not shardable → never cap
+            let v = parseInt(numInput.value || '1', 10);
+            if (!(v >= 1)) v = 1;
+            if (v > n) { v = n; numInput.value = String(n); }
+            hidden.value = String(v);
+            hint.textContent = `first ${v} of ${n} shards (~${Math.round(v / n * 100)}% of the split)`;
         }
     }
     splitSel.addEventListener('change', refresh);
-    shardCap.addEventListener('input', refresh);
+    modeSel.addEventListener('change', refresh);
+    numInput.addEventListener('input', refresh);
+    if (capInput) capInput.addEventListener('input', refresh);
     refresh();
 })();
 
