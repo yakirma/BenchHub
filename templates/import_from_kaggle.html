@@ -19,10 +19,12 @@
     {% if not kaggle_enabled %}
     <div class="alert alert-warning">
         <i class="bi bi-exclamation-triangle me-1"></i>
-        Kaggle credentials aren't configured on this server. Set
-        <code>KAGGLE_USERNAME</code> and <code>KAGGLE_KEY</code> in
-        <code>.env</code> (or mount <code>~/.kaggle/kaggle.json</code>) and
-        restart, then this page can search + import.
+        Kaggle credentials aren't configured on this server. Add an access
+        token at <code>~/.kaggle/access_token</code> (or set
+        <code>KAGGLE_API_TOKEN</code>), or use a legacy
+        <code>KAGGLE_USERNAME</code>&nbsp;+&nbsp;<code>KAGGLE_KEY</code> pair in
+        <code>.env</code> / <code>~/.kaggle/kaggle.json</code>; then this page
+        can search + import.
     </div>
     {% endif %}
 
