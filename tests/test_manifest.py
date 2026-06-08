@@ -262,3 +262,90 @@ def test_import_typed_dataset_missing_file_raises(db_session, tmp_path):
             Dataset=Dataset, Sample=Sample, CustomField=CustomField,
             upload_folder=str(uploads),
         )
+
+
+# ---------------------------------------------------------------------------
+# Sparse / optional fields (e.g. OpenFake's generation `prompt`, null for
+# real images): the pre-flight must tolerate the per-sample gaps instead of
+# failing the whole import, and keep the samples that DO have the field.
+# ---------------------------------------------------------------------------
+
+def _build_sparse_dataset_on_disk(root: Path) -> None:
+    """Three samples; image present for all, optional `prompt` present
+    only for s1 (mirrors a real-vs-synthetic dataset)."""
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "name": "imp_sparse",
+        "version": "1.0",
+        "fields": [
+            {"name": "image",  "kind": "image", "role": "input"},
+            {"name": "prompt", "kind": "text",  "role": "input", "optional": True},
+        ],
+        "samples": ["s0", "s1", "s2"],
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "image").mkdir()
+    (root / "prompt").mkdir()
+    for s in ("s0", "s1", "s2"):
+        img = bh.Image(np.zeros((4, 4, 3), dtype=np.uint8))
+        (root / "image" / f"{s}.png").write_bytes(img.encode())
+    # Only the synthetic sample carries a prompt.
+    (root / "prompt" / "s1.txt").write_bytes(bh.Text("a cat").encode())
+
+
+def test_validate_rejects_non_bool_optional():
+    m = _ok_manifest()
+    m["fields"][0]["optional"] = "yes"
+    with pytest.raises(ValueError, match="optional must be a boolean"):
+        validate_manifest(m)
+
+
+def test_import_typed_dataset_optional_field_tolerates_gaps(db_session, tmp_path):
+    src = tmp_path / "src"
+    _build_sparse_dataset_on_disk(src)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+
+    ds_id, summary = import_typed_dataset(
+        src,
+        db_session=db.session,
+        Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+        upload_folder=str(uploads),
+    )
+    db.session.commit()
+
+    # No sample dropped: all three keep their image.
+    ds = Dataset.query.get(ds_id)
+    assert {s.name for s in ds.samples} == {"s0", "s1", "s2"}
+    # The prompt CustomField exists only for the sample that had one.
+    prompts = (
+        CustomField.query.join(Sample, CustomField.sample_id == Sample.id)
+        .filter(Sample.dataset_id == ds_id, CustomField.name == "prompt")
+        .all()
+    )
+    assert len(prompts) == 1
+    s1 = Sample.query.filter_by(dataset_id=ds_id, name="s1").one()
+    assert prompts[0].sample_id == s1.id
+
+
+def test_import_typed_dataset_required_field_still_strict(db_session, tmp_path):
+    """A non-optional field with a hole must still hard-fail — the
+    sparse tolerance is opt-in per field, not a blanket relaxation."""
+    src = tmp_path / "src"
+    _build_sparse_dataset_on_disk(src)
+    # Drop the `optional` flag: now `prompt` is required and the s0/s2
+    # gaps must raise.
+    manifest = json.loads((src / "manifest.json").read_text())
+    for f in manifest["fields"]:
+        f.pop("optional", None)
+    (src / "manifest.json").write_text(json.dumps(manifest))
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="prompt/"):
+        import_typed_dataset(
+            src,
+            db_session=db.session,
+            Dataset=Dataset, Sample=Sample, CustomField=CustomField,
+            upload_folder=str(uploads),
+        )

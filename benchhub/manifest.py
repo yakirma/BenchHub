@@ -14,8 +14,9 @@ Manifest schema (all keys required unless noted):
   "version": "1.0",
   "description": "optional human description",
   "fields": [
-    {"name": "image", "kind": "image", "role": "input",  "params": {}},
-    {"name": "label", "kind": "label", "role": "gt",     "params": {"vocab": ["airplane", ...]}}
+    {"name": "image",  "kind": "image", "role": "input", "params": {}},
+    {"name": "label",  "kind": "label", "role": "gt",    "params": {"vocab": ["airplane", ...]}},
+    {"name": "prompt", "kind": "text",  "role": "input", "params": {}, "optional": true}
   ],
   "samples": ["sample_0", "sample_1", ...]
 }
@@ -24,6 +25,12 @@ Manifest schema (all keys required unless noted):
 `role` is `input` (given to submitters at inference time) or `gt`
 (held server-side, target of prediction). The same shape drives
 the LB's `required_pred_fields_json` (with role `pred`).
+
+`optional` (default `false`) marks a *sparse* field — one whose
+per-sample file may be absent for some samples (e.g. a generation
+`prompt` that's only present for synthetic rows). The importer skips
+the missing (field, sample) files for optional fields instead of
+failing, while still requiring every file of a non-optional field.
 """
 
 from __future__ import annotations
@@ -158,6 +165,8 @@ def validate_manifest(manifest: dict, extra_kinds: dict | None = None) -> None:
         params = f.get("params", {})
         if not isinstance(params, dict):
             raise ValueError(f"fields[{i}].params must be an object")
+        if "optional" in f and not isinstance(f["optional"], bool):
+            raise ValueError(f"fields[{i}].optional must be a boolean")
         # Kind-specific param requirements. LabelList is the only
         # one right now: every label_list field MUST declare an
         # integer `k` (top-K depth) so submissions can be validated
@@ -233,16 +242,20 @@ def import_typed_dataset(
 
     # Pre-flight: every data-bearing (field, sample) file must exist.
     # `role='pred'` is schema-only — no per-sample files expected.
+    # `optional=True` fields are sparse: their per-sample files may be
+    # absent (the importer skips the missing pairs below), so they're
+    # excluded from both existence checks here.
     # Default behaviour (`tolerate_incomplete=False`) is strict: any
-    # missing file raises. The HF bulk importer passes True so a
-    # single bad parquet row doesn't kill the whole import.
+    # missing file of a *required* field raises. The HF bulk importer
+    # passes True so a single bad parquet row doesn't kill the import.
     data_fields = [f for f in manifest["fields"]
                    if f.get("role", "gt") in _DATA_BEARING_ROLES]
+    required_fields = [f for f in data_fields if not f.get("optional")]
     if tolerate_incomplete:
         kept_samples: list[str] = []
         dropped: list[str] = []
         for s in manifest["samples"]:
-            sample_missing = [f["name"] for f in data_fields
+            sample_missing = [f["name"] for f in required_fields
                               if not expected_file_path(source_root, f, s, extra_kinds).exists()]
             if sample_missing:
                 dropped.append(f"{s}({','.join(sample_missing)})")
@@ -258,7 +271,7 @@ def import_typed_dataset(
             manifest.setdefault("source", {})["dropped_incomplete"] = dropped[:50]
     else:
         missing: list[str] = []
-        for f in data_fields:
+        for f in required_fields:
             for s in manifest["samples"]:
                 p = expected_file_path(source_root, f, s, extra_kinds)
                 if not p.exists():
@@ -332,6 +345,13 @@ def import_typed_dataset(
 
         for s_name in manifest["samples"]:
             src = expected_file_path(source_root, f, s_name, extra_kinds)
+            # Optional/sparse fields legitimately miss files for some
+            # samples (the pre-flight let them through). Skip the
+            # per-sample CustomField for the gap; keep the sample so its
+            # other fields still import. Required fields are guaranteed
+            # present by the pre-flight, so this only fires for optional.
+            if not src.exists():
+                continue
             cf = CustomField(
                 sample_id=samples_by_name[s_name].id,
                 name=f["name"],

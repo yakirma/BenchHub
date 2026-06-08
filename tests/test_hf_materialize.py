@@ -488,3 +488,37 @@ def test_materialize_skips_when_value_is_none(tmp_path, monkeypatch):
     assert summary["rows_written"] == 3  # img×2 + tag×1; tag for second row is None
     assert summary["rows_skipped"] == 1
     assert "s000001/tag" in summary["skipped_sample_field_pairs"]
+
+    # The sparse field (present for some-but-not-all rows) is flagged
+    # `optional` so the importer tolerates the gap instead of failing
+    # its missing-file pre-flight; the dense `img` field is not.
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    by_name = {f["name"]: f for f in manifest["fields"]}
+    assert by_name["tag"].get("optional") is True
+    assert "optional" not in by_name["img"]
+
+
+def test_materialize_all_null_field_stays_required(tmp_path, monkeypatch):
+    """A field that's null for EVERY row is almost always a column/kind
+    mis-map, not a legitimately-sparse column. Leave it un-flagged so
+    the importer's strict pre-flight surfaces it rather than silently
+    importing an empty field."""
+    rows = [
+        {"img": np.zeros((4, 4, 3), dtype=np.uint8), "tag": None},
+        {"img": np.ones((4, 4, 3), dtype=np.uint8) * 255, "tag": None},
+    ]
+    _install_fake_datasets(monkeypatch, rows)
+
+    materialize_hf_to_typed_dir(
+        "x/y", split="test", sample_cap=10,
+        staging_dir=str(tmp_path), dataset_name="allnull",
+        fields=[
+            {"name": "img", "source_column": "img", "kind": "image",
+             "role": "input", "params": {}},
+            {"name": "tag", "source_column": "tag", "kind": "text",
+             "role": "gt", "params": {}},
+        ],
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    by_name = {f["name"]: f for f in manifest["fields"]}
+    assert "optional" not in by_name["tag"]

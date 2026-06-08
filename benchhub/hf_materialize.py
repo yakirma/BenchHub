@@ -497,7 +497,6 @@ def materialize_hf_to_typed_dir(
             "row_indices": indices,
         },
     }
-    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for f in data_bearing:
         (root / f["name"]).mkdir(parents=True, exist_ok=True)
 
@@ -514,6 +513,7 @@ def materialize_hf_to_typed_dir(
 
     written = 0
     skipped: list[str] = []
+    present_counts: dict[str, int] = {f["name"]: 0 for f in data_bearing}
     # Heartbeat the progress callback every PROGRESS_EVERY rows.
     # Too frequent → wasteful DB writes; too sparse → bar feels frozen.
     PROGRESS_EVERY = max(1, n // 100) if n > 100 else 1
@@ -531,9 +531,23 @@ def materialize_hf_to_typed_dir(
             ext = cls.file_ext or ".txt"
             (root / f["name"] / f"{sample_name}{ext}").write_bytes(inst.encode())
             written += 1
+            present_counts[f["name"]] += 1
         if (sample_idx + 1) % PROGRESS_EVERY == 0 or sample_idx == n - 1:
             _emit("materializing", current=sample_idx + 1, total=n,
                   message=f"Wrote sample {sample_idx + 1}/{n}")
+
+    # Mark *sparse* fields optional so the importer tolerates the gaps
+    # instead of failing its missing-file pre-flight. A field present for
+    # SOME-but-not-all samples is legitimately sparse (e.g. OpenFake's
+    # generation `prompt`, null for real images). A field present for
+    # NONE is almost always a column/kind mis-map — leave it required so
+    # the importer surfaces it loudly rather than silently dropping it.
+    sparse = {name for name, c in present_counts.items() if 0 < c < n}
+    if sparse:
+        for fe in manifest["fields"]:
+            if fe["name"] in sparse:
+                fe["optional"] = True
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     return {
         "samples": n,

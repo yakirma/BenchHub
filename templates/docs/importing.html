@@ -56,6 +56,12 @@
     token is blocked; non-parquet or JSON-fallback columns get a warning so you know they
     won't render or score as a typed kind. Your edits <strong>autosave as a draft</strong>
     &mdash; navigate away and a banner offers to restore them.</p>
+<p><strong>Sparse columns are fine.</strong> A column that's <code>null</code> for some rows
+    (e.g. a generation <em>prompt</em> present only for synthetic images, or a caption that's
+    missing on a few samples) imports cleanly &mdash; those samples simply carry no value for
+    that field instead of failing the import. A column that's <code>null</code> for
+    <em>every</em> sampled row is treated as a likely mapping mistake and fails loudly, so you
+    can fix the kind or source column.</p>
 
 <hr class="my-4">
 <h2>File-tree import</h2>
