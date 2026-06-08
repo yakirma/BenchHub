@@ -15955,7 +15955,16 @@ def dataset_view(dataset_id):
     
     # Determine available columns based on data existence
     available_display_options = DATASET_DISPLAY_OPTIONS.copy()
-    
+
+    # Registered (DataTypeDef) kinds with a sandboxed visualize() render
+    # as images (served by serve_custom_field_image's registered-dtype
+    # branch). Computed up front so the column loop below can give them an
+    # image-style column like the built-ins.
+    _registered_render_kinds = [
+        d.name for d in
+        DataTypeDef.query.filter(DataTypeDef.visualize_code.isnot(None)).all()
+    ]
+
     # Inject detected custom fields. Scalars stay out of this list —
     # they surface in the per-source-stats panel — but every other
     # typed kind (image/mask/depth/json/text/label/audio/bboxes)
@@ -15990,6 +15999,10 @@ def dataset_view(dataset_id):
             # reserved `tags` field — that one is already surfaced via
             # the dataset's tag widget.
             available_display_options[field_name] = {'label': field_name, 'type': 'text', 'default_width': '300px'}
+        elif data_type in _registered_render_kinds:
+            # Registered DataTypeDef kind (e.g. `volume`) — image-style
+            # column rendered via the sandboxed visualize().
+            available_display_options[field_name] = {'label': field_name, 'type': data_type, 'default_width': '150px'}
         # Scalars are not added as individual columns - they appear in per_source_stats
     
     # Check if any sample has data for these fields
@@ -16085,12 +16098,6 @@ def dataset_view(dataset_id):
         c.strip() for raw in _known_cats_raw for c in raw.split(',') if c.strip()
     })
 
-    # Registered kinds with a sandboxed visualize() render as images too
-    # (served by serve_custom_field_image's registered-dtype branch).
-    _registered_render_kinds = [
-        d.name for d in
-        DataTypeDef.query.filter(DataTypeDef.visualize_code.isnot(None)).all()
-    ]
     image_render_kinds = ['image', 'depth', 'mask', 'audio'] + _registered_render_kinds
 
     return render_template('dataset_view.html',
