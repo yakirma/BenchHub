@@ -184,6 +184,9 @@ Both upload paths route segmentation masks to `target_kind='mask'` (deterministi
 - Depth-kind GT thumbs cache as **8-bit grayscale PNG** (normalized 0..255 of the source range). Don't burn a colormap at cache time.
 - `/api/gt_viz/<lb_id>/<col>/<sample_name>?cmap=<name>` recolors the gray PNG at view time. Names: `turbo`,`jet`,`viridis`,`magma`,`inferno`,`plasma`,`gray`,`normal` (unknown → turbo). `normal` is a Sobel-based tangent-space surface-normal map — qualitative, not metric. (The comparison-view colormap `<select>` UI is in `templates/CLAUDE.md`.)
 
+## Keeping docs current
+- **Update docs in the same change, not later — stale docs are a bug in the change.** When a change alters a user-facing flow (import options, LB creation, submission/scoring, settings, quotas), update the in-app docs page under `templates/docs/*.html`. When it changes a subsystem's internals or a gotcha, update that subtree's `CLAUDE.md`. When it changes ops/deploy, update `docs/SELFHOST_RUNBOOK.md`.
+
 ## Keeping this file lean
 - **This file loads into context every session.** It hit the 40k-char limit once; keep it to the always-on app.py/operational core. Subsystem-deep detail belongs in the subdirectory `CLAUDE.md` files indexed at the top (they load only when you touch that subtree).
 - **Where a new note goes:**

@@ -39,6 +39,17 @@
         box (<code>-1</code> = the whole split), <strong>sampling</strong>
         (head / uniform / stratified) + <strong>seed</strong>, and an optional
         &ldquo;use as sample name&rdquo; column.</li>
+    <li><strong>Max shards to download</strong> &mdash; shown only when the chosen split is
+        stored as multiple parquet shards. A split downloads in full <em>before</em>
+        <em>max samples</em> is applied, so a sample cap bounds what&rsquo;s stored, not what&rsquo;s
+        downloaded; this caps the <strong>download</strong> itself. Pick
+        <em>All shards</em> (whole split), <em>Auto</em> (download just enough shards, in
+        order, to cover your max samples), or <em>First N</em>. It turns a giant split
+        (e.g. 13 shards / 67&nbsp;GB) into a few&nbsp;GB. Trade-off: shards aren&rsquo;t
+        guaranteed shuffled, so a capped slice can be skewed (e.g. one class dominating)
+        &mdash; great for a quick test import, less so for a balanced benchmark. A
+        leaderboard built from the dataset later re-fetches <em>only</em> those same
+        shards, not the whole split.</li>
 </ul>
 <p>Before committing, BenchHub <strong>screens</strong> the repo: gated/private without a
     token is blocked; non-parquet or JSON-fallback columns get a warning so you know they
