@@ -13371,7 +13371,11 @@ def comparison_view(leaderboard_id):
     # used to silently drop label columns, which is why CIFAR-10's
     # `label` GT was invisible after import.
     from benchhub.types import DTYPES as _DTYPES
-    _RENDERABLE_KINDS = set(_DTYPES) | {'metric'}  # 'metric' is a legacy precomputed-scalar marker
+    _registered_render_kinds = {
+        d.name for d in
+        DataTypeDef.query.filter(DataTypeDef.visualize_code.isnot(None)).all()
+    }
+    _RENDERABLE_KINDS = set(_DTYPES) | _registered_render_kinds | {'metric'}  # 'metric' is a legacy precomputed-scalar marker
     dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in _RENDERABLE_KINDS}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
     
@@ -13384,7 +13388,7 @@ def comparison_view(leaderboard_id):
     submission_custom_fields = {}
     submission_field_types = {}
     for sub_id, name, ftype in submission_custom_fields_query:
-        if ftype in ['image', 'depth', 'scalar', 'metric', 'label', 'label_list']:
+        if ftype in _RENDERABLE_KINDS:
             if sub_id not in submission_custom_fields:
                 submission_custom_fields[sub_id] = set()
             submission_custom_fields[sub_id].add(name)

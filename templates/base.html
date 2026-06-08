@@ -1167,6 +1167,7 @@
                 this.pointY = 0;
                 this.startX = 0;
                 this.startY = 0;
+                this.extraTransform = '';
 
                 // Ensure parent clips overflow for cleaner zoom
                 this.parent.style.overflow = 'hidden';
@@ -1196,7 +1197,12 @@
 
             setTransform() {
                 // console.log('DEBUG: ZoomHandler.setTransform', this.scale, this.pointX, this.pointY);
-                this.img.style.transform = `translate(${this.pointX}px, ${this.pointY}px) scale(${this.scale})`;
+                this.img.style.transform = `translate(${this.pointX}px, ${this.pointY}px) scale(${this.scale}) ${this.extraTransform}`.trim();
+            }
+
+            setExtraTransform(transform) {
+                this.extraTransform = transform || '';
+                this.setTransform();
             }
 
             onMouseDown(e) {
@@ -1287,7 +1293,12 @@
             }
 
             getState() {
-                return { scale: this.scale, pointX: this.pointX, pointY: this.pointY };
+                return {
+                    scale: this.scale,
+                    pointX: this.pointX,
+                    pointY: this.pointY,
+                    extraTransform: this.extraTransform,
+                };
             }
 
             setState(state) {
@@ -1295,10 +1306,120 @@
                 this.scale = state.scale || 1;
                 this.pointX = state.pointX || 0;
                 this.pointY = state.pointY || 0;
+                this.extraTransform = state.extraTransform || '';
                 this.setTransform();
                 this.updateCursor();
             }
         }
+
+        window.VolumeCubeRotationControls = class VolumeCubeRotationControls {
+            constructor(modalElement, targetElement, zoomHandler) {
+                this.modalElement = modalElement;
+                this.targetElement = targetElement;
+                this.zoomHandler = zoomHandler;
+                this.values = { x: 0, y: 0, z: 0 };
+                this.panel = null;
+                this.inputs = {};
+                this.build();
+                this.apply();
+            }
+
+            build() {
+                const wrapper = this.modalElement.querySelector('#modal-content-wrapper')
+                    || this.modalElement.querySelector('.modal-body');
+                if (!wrapper) return;
+                wrapper.style.perspective = '1000px';
+                wrapper.style.transformStyle = 'preserve-3d';
+                wrapper.style.overflow = 'hidden';
+
+                const panel = document.createElement('div');
+                panel.className = 'volume-cube-rotation-controls border rounded bg-body shadow-sm';
+                panel.style.cssText = [
+                    'position:absolute',
+                    'left:16px',
+                    'bottom:16px',
+                    'z-index:10',
+                    'width:min(320px, calc(100% - 32px))',
+                    'padding:10px 12px',
+                    'text-align:left',
+                ].join(';');
+
+                ['x', 'y', 'z'].forEach((axis) => {
+                    const row = document.createElement('label');
+                    row.className = 'd-flex align-items-center gap-2 small mb-1';
+                    row.style.minWidth = '0';
+
+                    const axisLabel = document.createElement('span');
+                    axisLabel.className = 'font-monospace text-uppercase';
+                    axisLabel.style.width = '1.4rem';
+                    axisLabel.textContent = axis;
+
+                    const input = document.createElement('input');
+                    input.type = 'range';
+                    input.min = '-180';
+                    input.max = '180';
+                    input.step = '1';
+                    input.value = '0';
+                    input.className = 'form-range flex-grow-1';
+                    input.style.minWidth = '0';
+                    input.addEventListener('input', () => {
+                        this.values[axis] = Number(input.value) || 0;
+                        this.apply();
+                    });
+
+                    const value = document.createElement('span');
+                    value.className = 'font-monospace text-body-secondary';
+                    value.style.width = '3.2rem';
+                    value.textContent = '0deg';
+
+                    input._valueLabel = value;
+                    this.inputs[axis] = input;
+                    row.append(axisLabel, input, value);
+                    panel.appendChild(row);
+                });
+
+                const reset = document.createElement('button');
+                reset.type = 'button';
+                reset.className = 'btn btn-sm btn-outline-secondary w-100 mt-1';
+                reset.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Reset Rotation';
+                reset.addEventListener('click', () => this.reset());
+                panel.appendChild(reset);
+
+                wrapper.appendChild(panel);
+                this.panel = panel;
+            }
+
+            transform() {
+                return `rotateX(${this.values.x}deg) rotateY(${this.values.y}deg) rotateZ(${this.values.z}deg)`;
+            }
+
+            apply() {
+                Object.entries(this.inputs).forEach(([axis, input]) => {
+                    input.value = String(this.values[axis]);
+                    if (input._valueLabel) input._valueLabel.textContent = `${this.values[axis]}deg`;
+                });
+                if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
+                    this.zoomHandler.setExtraTransform(this.transform());
+                } else if (this.targetElement) {
+                    this.targetElement.style.transform = this.transform();
+                }
+            }
+
+            reset() {
+                this.values = { x: 0, y: 0, z: 0 };
+                this.apply();
+            }
+
+            destroy() {
+                if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
+                    this.zoomHandler.setExtraTransform('');
+                } else if (this.targetElement) {
+                    this.targetElement.style.transform = '';
+                }
+                if (this.panel) this.panel.remove();
+                this.panel = null;
+            }
+        };
         class GalleryModalManager {
             constructor(modalId, footerContainerId, onSelectCallback, onNavigateVerticalCallback,
                         onLayerOpacityCallback = null) {

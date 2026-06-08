@@ -1785,6 +1785,26 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // ZoomHandler moved to base.html
 
         let visZoomHandler = null;
+        let visRotationControls = null;
+
+        function clearVisRotationControls() {
+            if (visRotationControls) {
+                visRotationControls.destroy();
+                visRotationControls = null;
+            }
+        }
+
+        function syncVisRotationControls(visType, targetEl) {
+            clearVisRotationControls();
+            const visModal = document.getElementById('vis-modal');
+            if (visType === 'volume' && targetEl && visModal && window.VolumeCubeRotationControls) {
+                visRotationControls = new VolumeCubeRotationControls(
+                    visModal,
+                    targetEl,
+                    visZoomHandler
+                );
+            }
+        }
 
         const visModal = document.getElementById('vis-modal');
         if (visModal) {
@@ -1792,8 +1812,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 var triggerElement = event.relatedTarget;
                 // Reset zoom handler on fresh open
                 visZoomHandler = null;
+                clearVisRotationControls();
                 updateVisGallery(triggerElement);
                 updateVisModalContent(triggerElement);
+            });
+            visModal.addEventListener('hidden.bs.modal', function () {
+                clearVisRotationControls();
             });
 
             // Navigation Button Logic
@@ -1862,6 +1886,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // when the user dials in a second layer.
             const layersWrap = visModal.querySelector('#vis-modal-layers');
             if (layersWrap && layersWrap.children.length > 0) {
+                clearVisRotationControls();
                 const modalImgEl = visModal.querySelector('#modal-vis-img');
                 const modalPlotlyEl = visModal.querySelector('#modal-plotly-div');
                 const loadingSpinnerEl = visModal.querySelector('#modal-loading-spinner');
@@ -1907,6 +1932,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
 
             if (visType === 'depth') {
+                clearVisRotationControls();
                 // Interactive Depth Map
                 if (loadingSpinner) loadingSpinner.style.display = 'block';
 
@@ -1951,6 +1977,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         console.warn('Interactive depth map unavailable; falling back to static thumb:', error);
                         if (loadingSpinner) loadingSpinner.style.display = 'none';
                         if (modalPlotly) modalPlotly.style.display = 'none';
+                        clearVisRotationControls();
                         if (modalImg && visUrl) {
                             modalImg.style.display = 'block';
                             modalImg.src = visUrl;
@@ -1991,6 +2018,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             visZoomHandler.reset();
                         }
                     }
+                    syncVisRotationControls(visType, modalImg);
                 }
                 if (modalPlotly) modalPlotly.style.display = 'none';
                 if (loadingSpinner) loadingSpinner.style.display = 'none';

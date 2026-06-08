@@ -1854,12 +1854,32 @@
 
         // Custom Field Image Modal Logic
         let customFieldZoomHandler = null;
+        let customFieldRotationControls = null;
         const customFieldModal = document.getElementById('custom-field-modal');
+        function clearCustomFieldRotationControls() {
+            if (customFieldRotationControls) {
+                customFieldRotationControls.destroy();
+                customFieldRotationControls = null;
+            }
+        }
+        function syncCustomFieldRotationControls(visType, modalImg) {
+            clearCustomFieldRotationControls();
+            if (visType === 'volume' && modalImg && window.VolumeCubeRotationControls) {
+                customFieldRotationControls = new VolumeCubeRotationControls(
+                    customFieldModal,
+                    modalImg,
+                    customFieldZoomHandler
+                );
+            }
+        }
         if (customFieldModal) {
             customFieldModal.addEventListener('show.bs.modal', function (event) {
                 const button = event.relatedTarget;
                 updateVisGallery(button, customFieldGallery, 'custom-field-modal');
                 window.updateDatasetCustomFieldModalContent(button);
+            });
+            customFieldModal.addEventListener('hidden.bs.modal', function () {
+                clearCustomFieldRotationControls();
             });
 
             const btnPrev = customFieldModal.querySelector('#btn-prev-custom-sample');
@@ -2142,6 +2162,7 @@
             // bounding rect.
             const layersWrap = customFieldModal.querySelector('#custom-field-modal-layers');
             if (layersWrap && layersWrap.children.length > 0) {
+                clearCustomFieldRotationControls();
                 const baseImg = customFieldModal.querySelector('#modal-custom-field-img');
                 const basePlotly = customFieldModal.querySelector('#modal-plotly-div');
                 const baseSpinner = customFieldModal.querySelector('#modal-loading-spinner');
@@ -2176,6 +2197,7 @@
             }
 
             if (visType === 'depth') {
+                clearCustomFieldRotationControls();
                 // Interactive Depth Map
                 if (modalImg) modalImg.style.display = 'none';
                 if (modalPlotly) modalPlotly.style.display = 'none';
@@ -2275,6 +2297,7 @@
                         if (savedState) customFieldZoomHandler.setState(savedState);
                         else customFieldZoomHandler.reset();
                     }
+                    syncCustomFieldRotationControls(visType, modalImg);
                 }
             }
         };
