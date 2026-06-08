@@ -1903,6 +1903,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 } else {
                     visZoomHandler.reset();
                 }
+                syncVisRotationControls(visType, layersWrap);
                 return;
             }
 

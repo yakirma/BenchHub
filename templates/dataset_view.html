@@ -2162,7 +2162,6 @@
             // bounding rect.
             const layersWrap = customFieldModal.querySelector('#custom-field-modal-layers');
             if (layersWrap && layersWrap.children.length > 0) {
-                clearCustomFieldRotationControls();
                 const baseImg = customFieldModal.querySelector('#modal-custom-field-img');
                 const basePlotly = customFieldModal.querySelector('#modal-plotly-div');
                 const baseSpinner = customFieldModal.querySelector('#modal-loading-spinner');
@@ -2172,6 +2171,13 @@
                     basePlotly.innerHTML = '';
                 }
                 if (baseSpinner) baseSpinner.style.display = 'none';
+                layersWrap.style.pointerEvents = 'auto';
+                if (!customFieldZoomHandler || customFieldZoomHandler.img !== layersWrap) {
+                    customFieldZoomHandler = new ZoomHandler(layersWrap);
+                } else {
+                    customFieldZoomHandler.reset();
+                }
+                syncCustomFieldRotationControls(visType, layersWrap);
                 return;
             }
 
