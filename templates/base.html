@@ -26,35 +26,15 @@
     <title>{% block title %}BenchHub{% endblock %}</title>
 
     {# Google Analytics 4 — only emitted when $GA_MEASUREMENT_ID is set (prod).
-       Dev/tests leave it unset, so nothing here renders and no request hits
-       Google. GA is HARD-GATED behind GDPR consent: gtag.js is NOT loaded
-       until the visitor clicks Accept in the consent banner (markup +
-       handlers near </body>). Returning visitors who already accepted get
-       GA fired here immediately; declined / undecided ⇒ zero Google traffic.
-       localStorage key: bh_analytics_consent ∈ {granted, denied}. #}
+       Dev/tests leave it unset, so no tag fires and no request hits Google.
+       Placed high in <head> per Google's guidance. #}
     {% if ga_measurement_id %}
+    <script async src="https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}"></script>
     <script>
-    (function () {
-        var GA_ID = '{{ ga_measurement_id }}';
-        // Idempotent loader — injects gtag.js + config once, only after consent.
-        window.__bhLoadGA = function () {
-            if (window.__bhGALoaded) return;
-            window.__bhGALoaded = true;
-            var s = document.createElement('script');
-            s.async = true;
-            s.src = 'https://www.googletagmanager.com/gtag/js?id=' + GA_ID;
-            document.head.appendChild(s);
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            window.gtag = gtag;
-            gtag('js', new Date());
-            gtag('config', GA_ID);
-        };
-        try {
-            if (localStorage.getItem('bh_analytics_consent') === 'granted')
-                window.__bhLoadGA();
-        } catch (e) {}
-    })();
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', '{{ ga_measurement_id }}');
     </script>
     {% endif %}
 
@@ -1567,60 +1547,6 @@
     })();
     </script>
     {% block scripts %}{% endblock %}
-
-    {# ---- GDPR cookie-consent banner (only when GA is configured) ----
-       Hard gate: GA is loaded by the accept handler via window.__bhLoadGA
-       (defined in <head>). The banner shows only while the choice is
-       undecided; Accept/Decline persist to localStorage so it never nags a
-       returning visitor. Decline ⇒ GA is never loaded. #}
-    {% if ga_measurement_id %}
-    <style>
-        #bh-consent {
-            position: fixed; left: 1rem; right: 1rem; bottom: 1rem;
-            z-index: 1045; max-width: 640px; margin-inline: auto;
-            background: #f5efe2; color: #3a2614;
-            border: 1px solid #e8dfc8; border-radius: .75rem;
-            box-shadow: 0 .5rem 1.5rem rgba(58, 38, 20, .18);
-            padding: 1rem 1.15rem;
-        }
-        #bh-consent p { margin: 0 0 .6rem; font-size: .9rem; line-height: 1.45; }
-        #bh-consent a { color: #7c3aed; }
-        #bh-consent .bh-consent-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
-    </style>
-    <div id="bh-consent" role="dialog" aria-live="polite"
-         aria-label="Cookie consent" hidden>
-        <p>
-            BenchHub uses Google Analytics cookies to understand traffic and
-            improve the site. We only load them if you agree. See our
-            <a href="{{ url_for('privacy') }}">Privacy Policy</a>.
-        </p>
-        <div class="bh-consent-actions">
-            <button id="bh-consent-accept" type="button"
-                    class="btn btn-primary btn-sm">Accept</button>
-            <button id="bh-consent-decline" type="button"
-                    class="btn btn-outline-secondary btn-sm">Decline</button>
-        </div>
-    </div>
-    <script>
-    (function () {
-        var KEY = 'bh_analytics_consent';
-        var el = document.getElementById('bh-consent');
-        if (!el) return;
-        var decided = null;
-        try { decided = localStorage.getItem(KEY); } catch (e) {}
-        if (decided !== 'granted' && decided !== 'denied') el.hidden = false;
-        function decide(value) {
-            try { localStorage.setItem(KEY, value); } catch (e) {}
-            el.hidden = true;
-            if (value === 'granted' && window.__bhLoadGA) window.__bhLoadGA();
-        }
-        document.getElementById('bh-consent-accept')
-            .addEventListener('click', function () { decide('granted'); });
-        document.getElementById('bh-consent-decline')
-            .addEventListener('click', function () { decide('denied'); });
-    })();
-    </script>
-    {% endif %}
 </body>
 
 </html>
