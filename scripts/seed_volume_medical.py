@@ -34,30 +34,72 @@ VISUALIZE_CODE = '''
 def visualize(blob, params):
     import io
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageDraw
     z = np.load(io.BytesIO(blob))
     arr = np.asarray(z[z.files[0]])
     while arr.ndim > 3:        # drop a leading channel axis if present
         arr = arr[0]
+    if arr.ndim == 2:
+        arr = arr[None, ...]
     a = arr.astype("float32")
     rng = float(a.max() - a.min()) or 1.0
-    a = ((a - a.min()) / rng * 255.0).astype("uint8")
-    if a.ndim == 2:
-        return Image.fromarray(a).convert("RGB")
+    a = (a - a.min()) / rng                        # normalise 0..1
     D, H, W = a.shape
-    n = min(9, D)
-    idxs = np.linspace(0, D - 1, n).astype(int)
-    cols = 3
-    rows = (n + cols - 1) // cols
-    canvas = np.zeros((rows * H, cols * W), dtype="uint8")
-    for i, si in enumerate(idxs):
-        r, c = divmod(i, cols)
-        canvas[r * H:(r + 1) * H, c * W:(c + 1) * W] = a[int(si)]
-    img = Image.fromarray(canvas).convert("RGB")
-    scale = max(1, 384 // max(img.size))
+
+    # Three orthogonal max-intensity projections -> the cube's visible faces.
+    front = a.max(axis=0)                          # (H, W) along depth
+    top = a.max(axis=1)                            # (D, W) looking down
+    right = a.max(axis=2).T                        # (H, D) from the side
+
+    def to_img(x, bright):
+        g = np.clip(x * 255.0 * bright, 0, 255).astype("uint8")
+        return Image.fromarray(g).convert("RGB")
+
+    # Cabinet (oblique) projection geometry.
+    s = 150
+    dep = int(s * 0.55)
+    ang = np.deg2rad(32.0)
+    ox, oy = int(dep * np.cos(ang)), -int(dep * np.sin(ang))
+    pad = 18
+    cw = s + abs(ox) + 2 * pad
+    ch = s + abs(oy) + 2 * pad
+    x0, y0 = pad, pad + abs(oy)
+    FTL = (x0, y0); FTR = (x0 + s, y0)
+    FBL = (x0, y0 + s); FBR = (x0 + s, y0 + s)
+    BTL = (x0 + ox, y0 + oy); BTR = (x0 + s + ox, y0 + oy)
+    BBR = (x0 + s + ox, y0 + s + oy)
+
+    canvas = Image.new("RGB", (cw, ch), (17, 15, 28))
+
+    def paste_par(src, p0, p1, p2):
+        w, h = src.size
+        M = np.array([[p0[0], p0[1], 1.0], [p1[0], p1[1], 1.0], [p2[0], p2[1], 1.0]])
+        cx = np.linalg.solve(M, np.array([0.0, float(w), 0.0]))
+        cy = np.linalg.solve(M, np.array([0.0, 0.0, float(h)]))
+        coeffs = (cx[0], cx[1], cx[2], cy[0], cy[1], cy[2])
+        warped = src.transform((cw, ch), Image.AFFINE, coeffs, resample=Image.BILINEAR)
+        mask = Image.new("L", src.size, 255).transform(
+            (cw, ch), Image.AFFINE, coeffs, resample=Image.BILINEAR)
+        canvas.paste(warped, (0, 0), mask)
+
+    f_img = to_img(front, 1.00).resize((s, s), Image.BILINEAR)
+    t_img = to_img(top, 0.80).resize((s, dep), Image.BILINEAR)
+    r_img = to_img(right, 0.62).resize((dep, s), Image.BILINEAR)
+
+    paste_par(t_img, BTL, BTR, FTL)                # top face
+    paste_par(r_img, FTR, BTR, FBR)                # right face
+    canvas.paste(f_img, (x0, y0))                  # front face
+
+    d = ImageDraw.Draw(canvas)
+    edge = (215, 210, 235)
+    for u, v in [(FTL, FTR), (FTR, FBR), (FBR, FBL), (FBL, FTL),
+                 (FTL, BTL), (FTR, BTR), (FBR, BBR), (BTL, BTR), (BTR, BBR)]:
+        d.line([u, v], fill=edge, width=1)
+
+    scale = max(1, 360 // max(canvas.size))
     if scale > 1:
-        img = img.resize((img.size[0] * scale, img.size[1] * scale), Image.NEAREST)
-    return img
+        canvas = canvas.resize((canvas.size[0] * scale, canvas.size[1] * scale), Image.NEAREST)
+    return canvas
 '''
 
 DECODE_CODE = '''
@@ -72,6 +114,8 @@ def decode(blob, params):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="cap samples (0 = all in split)")
+    ap.add_argument("--update-viz", action="store_true",
+                    help="update the existing volume dtype's visualize/decode code, then exit")
     args = ap.parse_args()
 
     os.environ.setdefault("BENCHHUB_DATA_DIR", os.path.expanduser("~/.dtofbenchmarking"))
@@ -80,6 +124,16 @@ def main():
     from benchhub.manifest import import_typed_dataset
 
     with A.app.app_context():
+        if args.update_viz:
+            dt = A.DataTypeDef.query.filter_by(name="volume").first()
+            if dt is None:
+                print("no 'volume' dtype registered yet"); return
+            dt.visualize_code = VISUALIZE_CODE.strip()
+            dt.decode_code = DECODE_CODE.strip()
+            A.db.session.commit()
+            print(f"updated 'volume' dtype id={dt.id} "
+                  f"({len(dt.visualize_code)} chars of visualize); cache busts via code hash")
+            return
         # 1. Register the `volume` data type (admin-owned, public) ----------
         dt = A.DataTypeDef.query.filter_by(name="volume").first()
         if dt is None:
