@@ -51,6 +51,30 @@ def visualize(blob, params):
     top = a.max(axis=1)                            # (D, W) looking down
     right = a.max(axis=2).T                        # (H, D) from the side
 
+    # Zoom-modal 3D cube: return the six faces as a horizontal sprite
+    # [front, back, top, bottom, right, left] (each square, full bright;
+    # the frontend dims faces for ambient shading). Opposite faces reuse
+    # the MIP mirrored -- qualitative, like any MIP cube viewer.
+    if (params or {}).get("view") == "faces":
+        F = 192
+        def _face(x, fx=False, fy=False):
+            g = np.clip(x * 255.0, 0, 255).astype("uint8")
+            im = Image.fromarray(g).convert("RGB").resize((F, F), Image.BILINEAR)
+            if fx:
+                im = im.transpose(Image.FLIP_LEFT_RIGHT)
+            if fy:
+                im = im.transpose(Image.FLIP_TOP_BOTTOM)
+            return im
+        faces = [
+            _face(front), _face(front, fx=True),       # front, back
+            _face(top), _face(top, fy=True),           # top, bottom
+            _face(right), _face(right, fx=True),       # right, left
+        ]
+        strip = Image.new("RGB", (F * 6, F), (17, 15, 28))
+        for i, im in enumerate(faces):
+            strip.paste(im, (i * F, 0))
+        return strip
+
     def to_img(x, bright):
         g = np.clip(x * 255.0 * bright, 0, 255).astype("uint8")
         return Image.fromarray(g).convert("RGB")

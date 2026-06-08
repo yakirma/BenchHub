@@ -1312,15 +1312,35 @@
             }
         }
 
-        window.VolumeCubeRotationControls = class VolumeCubeRotationControls {
-            constructor(modalElement, targetElement, zoomHandler) {
+        // Append/replace a query param on a viz URL (relative or absolute).
+        window.withVizView = function (url, view) {
+            if (!url) return url;
+            try {
+                const u = new URL(url, window.location.origin);
+                u.searchParams.set('view', view);
+                return u.toString();
+            } catch (e) {
+                return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'view=' + encodeURIComponent(view);
+            }
+        };
+
+        // Interactive 3D volume viewer for the zoom modal. The server's
+        // visualize(blob, {view:'faces'}) returns a horizontal 6-face MIP
+        // sprite [front, back, top, bottom, right, left]; we assemble those
+        // into a genuine CSS 3D cube (each face is a slice of the sprite),
+        // so dragging orbits a solid box instead of tilting a flat picture.
+        // Replaces the old flat-image rotateX/Y/Z hack (which read as a thin
+        // sheet because a single <img> has no depth).
+        window.VolumeCubeViewer = class VolumeCubeViewer {
+            constructor(modalElement, faceUrl) {
                 this.modalElement = modalElement;
-                this.targetElement = targetElement;
-                this.zoomHandler = zoomHandler;
-                this.values = { x: 0, y: 0, z: 0 };
-                this.panel = null;
+                this.faceUrl = faceUrl;
+                // Default oblique angle so it opens reading as a 3D box.
+                this.values = { x: -24, y: -32, z: 0 };
                 this.dragging = false;
                 this.start = { x: 0, y: 0, rotX: 0, rotY: 0, rotZ: 0, button: 0, shift: false };
+                this.host = null;
+                this.stage = null;
                 this.onMouseDownCapture = this.onMouseDownCapture.bind(this);
                 this.onMouseMove = this.onMouseMove.bind(this);
                 this.onMouseUp = this.onMouseUp.bind(this);
@@ -1334,40 +1354,85 @@
                 const wrapper = this.modalElement.querySelector('#modal-content-wrapper')
                     || this.modalElement.querySelector('.modal-body');
                 if (!wrapper) return;
-                wrapper.style.perspective = '1000px';
-                wrapper.style.transformStyle = 'preserve-3d';
                 wrapper.style.overflow = 'hidden';
 
-                const panel = document.createElement('div');
-                panel.className = 'volume-cube-rotation-controls border rounded bg-body shadow-sm';
-                panel.style.cssText = [
-                    'position:absolute',
-                    'right:16px',
-                    'bottom:16px',
-                    'z-index:10',
-                    'padding:6px',
+                const host = document.createElement('div');
+                host.className = 'volume-cube-host';
+                host.style.cssText = [
+                    'position:relative',
+                    'width:100%',
+                    'min-height:60vh',
+                    'display:flex',
+                    'align-items:center',
+                    'justify-content:center',
+                    'perspective:1400px',
                 ].join(';');
+
+                const S = 300;            // cube edge in px
+                const H = S / 2;
+                const stage = document.createElement('div');
+                stage.className = 'volume-cube-stage';
+                stage.title = 'Drag to rotate · right-drag (or Shift) to roll';
+                stage.style.cssText = [
+                    'position:relative',
+                    'width:' + S + 'px',
+                    'height:' + S + 'px',
+                    'transform-style:preserve-3d',
+                    'cursor:grab',
+                    'transition:transform 0.05s linear',
+                ].join(';');
+
+                // [transform, sprite x-position, ambient brightness]
+                const faces = [
+                    ['translateZ(' + H + 'px)', '0%', 1.0],                       // front
+                    ['rotateY(180deg) translateZ(' + H + 'px)', '20%', 0.6],      // back
+                    ['rotateX(90deg) translateZ(' + H + 'px)', '40%', 0.85],      // top
+                    ['rotateX(-90deg) translateZ(' + H + 'px)', '60%', 0.7],      // bottom
+                    ['rotateY(90deg) translateZ(' + H + 'px)', '80%', 0.78],      // right
+                    ['rotateY(-90deg) translateZ(' + H + 'px)', '100%', 0.78],    // left
+                ];
+                faces.forEach(([t, px, bright]) => {
+                    const f = document.createElement('div');
+                    f.className = 'volume-cube-face';
+                    f.style.cssText = [
+                        'position:absolute',
+                        'width:' + S + 'px',
+                        'height:' + S + 'px',
+                        'background-image:url("' + this.faceUrl + '")',
+                        'background-size:600% 100%',
+                        'background-position:' + px + ' 0%',
+                        'background-repeat:no-repeat',
+                        'background-color:#11090f',
+                        'transform:' + t,
+                        'filter:brightness(' + bright + ')',
+                        'box-shadow:inset 0 0 0 1px rgba(215,210,235,0.45)',
+                    ].join(';');
+                    stage.appendChild(f);
+                });
+
+                host.appendChild(stage);
+                wrapper.appendChild(host);
 
                 const reset = document.createElement('button');
                 reset.type = 'button';
                 reset.className = 'btn btn-sm btn-outline-secondary';
                 reset.title = 'Reset rotation';
                 reset.setAttribute('aria-label', 'Reset rotation');
+                reset.style.cssText = 'position:absolute;right:16px;bottom:16px;z-index:10;';
                 reset.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i>';
                 reset.addEventListener('click', () => this.reset());
-                panel.appendChild(reset);
+                host.appendChild(reset);
 
-                wrapper.appendChild(panel);
-                this.panel = panel;
+                this.host = host;
+                this.stage = stage;
             }
 
             attachDrag() {
-                if (!this.targetElement) return;
-                this.targetElement.style.cursor = 'grab';
-                this.targetElement.style.userSelect = 'none';
-                this.targetElement.style.touchAction = 'none';
-                this.targetElement.addEventListener('mousedown', this.onMouseDownCapture, true);
-                this.targetElement.addEventListener('contextmenu', this.onContextMenu);
+                if (!this.stage) return;
+                this.stage.style.userSelect = 'none';
+                this.stage.style.touchAction = 'none';
+                this.stage.addEventListener('mousedown', this.onMouseDownCapture, true);
+                this.stage.addEventListener('contextmenu', this.onContextMenu);
             }
 
             onContextMenu(e) {
@@ -1388,7 +1453,10 @@
                     button: e.button,
                     shift: e.shiftKey,
                 };
-                this.targetElement.style.cursor = 'grabbing';
+                if (this.stage) {
+                    this.stage.style.cursor = 'grabbing';
+                    this.stage.style.transition = 'none';
+                }
                 document.addEventListener('mousemove', this.onMouseMove, true);
                 document.addEventListener('mouseup', this.onMouseUp, true);
             }
@@ -1414,45 +1482,36 @@
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 this.dragging = false;
-                if (this.targetElement) this.targetElement.style.cursor = 'grab';
+                if (this.stage) {
+                    this.stage.style.cursor = 'grab';
+                    this.stage.style.transition = 'transform 0.05s linear';
+                }
                 document.removeEventListener('mousemove', this.onMouseMove, true);
                 document.removeEventListener('mouseup', this.onMouseUp, true);
             }
 
-            transform() {
-                return `rotateX(${this.values.x}deg) rotateY(${this.values.y}deg) rotateZ(${this.values.z}deg)`;
-            }
-
             apply() {
-                if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
-                    this.zoomHandler.setExtraTransform(this.transform());
-                } else if (this.targetElement) {
-                    this.targetElement.style.transform = this.transform();
+                if (this.stage) {
+                    this.stage.style.transform =
+                        'rotateX(' + this.values.x + 'deg) rotateY(' + this.values.y + 'deg) rotateZ(' + this.values.z + 'deg)';
                 }
             }
 
             reset() {
-                this.values = { x: 0, y: 0, z: 0 };
+                this.values = { x: -24, y: -32, z: 0 };
                 this.apply();
             }
 
             destroy() {
-                if (this.targetElement) {
-                    this.targetElement.removeEventListener('mousedown', this.onMouseDownCapture, true);
-                    this.targetElement.removeEventListener('contextmenu', this.onContextMenu);
-                    this.targetElement.style.cursor = '';
-                    this.targetElement.style.userSelect = '';
-                    this.targetElement.style.touchAction = '';
+                if (this.stage) {
+                    this.stage.removeEventListener('mousedown', this.onMouseDownCapture, true);
+                    this.stage.removeEventListener('contextmenu', this.onContextMenu);
                 }
                 document.removeEventListener('mousemove', this.onMouseMove, true);
                 document.removeEventListener('mouseup', this.onMouseUp, true);
-                if (this.zoomHandler && typeof this.zoomHandler.setExtraTransform === 'function') {
-                    this.zoomHandler.setExtraTransform('');
-                } else if (this.targetElement) {
-                    this.targetElement.style.transform = '';
-                }
-                if (this.panel) this.panel.remove();
-                this.panel = null;
+                if (this.host) this.host.remove();
+                this.host = null;
+                this.stage = null;
             }
         };
         class GalleryModalManager {

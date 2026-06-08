@@ -1794,15 +1794,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
         }
 
-        function syncVisRotationControls(visType, targetEl) {
+        function syncVisRotationControls(visType, targetEl, visUrl) {
             clearVisRotationControls();
             const visModal = document.getElementById('vis-modal');
-            if (visType === 'volume' && targetEl && visModal && window.VolumeCubeRotationControls) {
-                visRotationControls = new VolumeCubeRotationControls(
-                    visModal,
-                    targetEl,
-                    visZoomHandler
-                );
+            if (visType === 'volume' && visUrl && visModal && window.VolumeCubeViewer) {
+                // Hide the flat <img>/layers stack — the 3D cube is the display.
+                if (targetEl) targetEl.style.display = 'none';
+                visRotationControls = new VolumeCubeViewer(
+                    visModal, window.withVizView(visUrl, 'faces'));
             }
         }
 
@@ -1903,7 +1902,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 } else {
                     visZoomHandler.reset();
                 }
-                syncVisRotationControls(visType, layersWrap);
+                syncVisRotationControls(visType, layersWrap, visUrl);
                 return;
             }
 
@@ -2019,7 +2018,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             visZoomHandler.reset();
                         }
                     }
-                    syncVisRotationControls(visType, modalImg);
+                    syncVisRotationControls(visType, modalImg, visUrl);
                 }
                 if (modalPlotly) modalPlotly.style.display = 'none';
                 if (loadingSpinner) loadingSpinner.style.display = 'none';

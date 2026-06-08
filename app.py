@@ -6733,20 +6733,31 @@ def _serve_registered_dtype_image(cf, dt):
     if not os.path.exists(path):
         return "Not found", 404
     code_hash = hashlib.md5((dt.visualize_code or '').encode()).hexdigest()[:12]
+    # Optional render variant: ?view=faces asks the dtype's visualize() for
+    # an alternate layout (the volume kind returns a 6-face MIP sprite the
+    # zoom modal assembles into a CSS 3D cube). Whitelisted so arbitrary
+    # query args can't pollute the on-disk render cache.
+    view = request.args.get('view')
+    if view not in ('faces',):
+        view = None
     try:
         mtime = int(os.path.getmtime(path))
     except OSError:
         mtime = 0
     cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f'dtype_{cf.id}_{mtime}_{code_hash}.png')
+    view_suffix = f'_{view}' if view else ''
+    cache_path = os.path.join(cache_dir, f'dtype_{cf.id}_{mtime}_{code_hash}{view_suffix}.png')
     if os.path.exists(cache_path):
         return send_file(cache_path, mimetype='image/png')
     with open(path, 'rb') as fh:
         blob = fh.read()
     params = cf.get_params() if hasattr(cf, 'get_params') else {}
+    params = dict(params or {})
+    if view:
+        params['view'] = view
     from metric_engine import visualize_dtype_in_sandbox
-    png, err = visualize_dtype_in_sandbox(dt.visualize_code, blob, params or {})
+    png, err = visualize_dtype_in_sandbox(dt.visualize_code, blob, params)
     if err or not png:
         return create_error_image((err or 'render failed')[:50])
     try:

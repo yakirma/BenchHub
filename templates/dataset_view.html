@@ -1862,14 +1862,13 @@
                 customFieldRotationControls = null;
             }
         }
-        function syncCustomFieldRotationControls(visType, modalImg) {
+        function syncCustomFieldRotationControls(visType, modalImg, imgUrl) {
             clearCustomFieldRotationControls();
-            if (visType === 'volume' && modalImg && window.VolumeCubeRotationControls) {
-                customFieldRotationControls = new VolumeCubeRotationControls(
-                    customFieldModal,
-                    modalImg,
-                    customFieldZoomHandler
-                );
+            if (visType === 'volume' && imgUrl && customFieldModal && window.VolumeCubeViewer) {
+                // Hide the flat <img>/layers stack — the 3D cube is the display.
+                if (modalImg) modalImg.style.display = 'none';
+                customFieldRotationControls = new VolumeCubeViewer(
+                    customFieldModal, window.withVizView(imgUrl, 'faces'));
             }
         }
         if (customFieldModal) {
@@ -2177,7 +2176,7 @@
                 } else {
                     customFieldZoomHandler.reset();
                 }
-                syncCustomFieldRotationControls(visType, layersWrap);
+                syncCustomFieldRotationControls(visType, layersWrap, imgUrl);
                 return;
             }
 
@@ -2303,7 +2302,7 @@
                         if (savedState) customFieldZoomHandler.setState(savedState);
                         else customFieldZoomHandler.reset();
                     }
-                    syncCustomFieldRotationControls(visType, modalImg);
+                    syncCustomFieldRotationControls(visType, modalImg, imgUrl);
                 }
             }
         };
