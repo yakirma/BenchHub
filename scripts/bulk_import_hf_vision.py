@@ -206,6 +206,8 @@ def _try_import_one(
     max_bytes: int,
     owner_user_id: int,
     dry_run: bool,
+    force_split: str | None = None,
+    force_config: str | None = None,
 ) -> CandidateOutcome:
     """Run the criteria checks + materialize+import for a single
     repo. Always returns a CandidateOutcome; never raises."""
@@ -246,7 +248,7 @@ def _try_import_one(
     if not schema.fields or len(schema.fields) < 2:
         return outcome("skipped", "schema has < 2 fields")
 
-    split = _pick_split(repo_id)
+    split = force_split or _pick_split(repo_id)
     if not split:
         return outcome("skipped", "no recognised split")
 
@@ -315,6 +317,7 @@ def _try_import_one(
                 sampling="head",      # deterministic for bulk runs
                 seed=42,
                 sample_name_from=sample_name_from,
+                config_name=force_config,
             )
 
             staged_bytes = sum(
@@ -332,7 +335,9 @@ def _try_import_one(
                     DatasetField=DatasetField,
                     upload_folder=app.config["UPLOAD_FOLDER"],
                     existing_dataset=existing,
+                    preview_only=True,
                 )
+                existing.preview_only = True
                 existing.source_kind = "hf"
                 existing.source_url = f"https://huggingface.co/datasets/{repo_id}"
                 existing.source_metadata = json.dumps({
@@ -430,6 +435,15 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--per-task", type=int, default=15,
                    help="how many top-downloaded datasets per task to consider")
+    p.add_argument("--repo", type=str, default=None,
+                   help="import a single repo_id directly (skips task discovery); "
+                        "use for targeted diverse picks")
+    p.add_argument("--split", type=str, default=None,
+                   help="force this split instead of auto-picking test/validation/val "
+                        "(e.g. 'train' for datasets that ship no eval split)")
+    p.add_argument("--config", type=str, default=None,
+                   help="HuggingFace dataset config/subset name "
+                        "(e.g. 'full' for Roboflow datasets that require a named config)")
     p.add_argument("--max-datasets", type=int, default=0,
                    help="global cap on dataset attempts (0 = no cap)")
     p.add_argument("--sample-cap", type=int, default=-1,
@@ -468,6 +482,22 @@ def main(argv=None) -> int:
         print("fatal: no admin user found — set User.is_admin on at "
               "least one user before running.", file=sys.stderr)
         return 1
+
+    # Single-repo mode: import one named repo and exit. Lets subagents
+    # drive targeted, diverse picks through the same Croissant pipeline
+    # the task-discovery loop uses.
+    if args.repo:
+        with app.app_context():
+            o = _try_import_one(
+                args.repo, task="manual", sample_cap=args.sample_cap,
+                max_bytes=args.max_bytes, owner_user_id=owner,
+                dry_run=args.dry_run, force_split=args.split,
+                force_config=args.config,
+            )
+        print(f"[{o.status}] {args.repo} — {o.reason}"
+              f"  ({o.samples} samples, {o.bytes_on_disk/1e6:.0f} MB, "
+              f"{o.elapsed_s:.1f}s)")
+        return 0 if o.status == "imported" else 1
 
     _install_sigint()
     global _STOP
