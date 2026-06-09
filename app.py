@@ -14672,10 +14672,31 @@ def datasets_list():
     # Sort datasets by their last associated activity (most recent first)
     datasets.sort(key=lambda x: x.last_associated_activity, reverse=True)
             
-    # Same thumbnail-picking pass /home does — first image-or-depth
-    # custom field on any sample, rendered to PNG by the existing
-    # /custom_field_image endpoint. None when the dataset is metric-only.
-    dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
+    # Representative thumbnail per dataset (first image, else depth CF),
+    # batched into two grouped-MIN queries instead of the per-dataset
+    # _dataset_thumb_url pass (2 queries EACH) — that pass was ~3s of the
+    # catalog load at ~160 datasets. min(CustomField.id) within a kind ≈
+    # the first sample's field (CFs are created in sample order); image is
+    # preferred over depth, matching _dataset_thumb_url's ordering.
+    _thumb_ids = [ds.id for ds in datasets]
+
+    def _thumb_min_cf(kind):
+        return dict(
+            db.session.query(Sample.dataset_id, func.min(CustomField.id))
+            .join(CustomField, CustomField.sample_id == Sample.id)
+            .filter(Sample.dataset_id.in_(_thumb_ids or [0]),
+                    CustomField.data_type == kind)
+            .group_by(Sample.dataset_id)
+            .all()
+        )
+
+    _img_cf = _thumb_min_cf('image')
+    _dep_cf = _thumb_min_cf('depth')
+    dataset_thumbs = {}
+    for _did in _thumb_ids:
+        _cf_id = _img_cf.get(_did) or _dep_cf.get(_did)
+        if _cf_id is not None:
+            dataset_thumbs[_did] = url_for('serve_custom_field_image', field_id=_cf_id)
 
     # HF-attached datasets. These don't live as Dataset rows — they're
     # referenced by Attachment rows pointing at huggingface.co. Group by
