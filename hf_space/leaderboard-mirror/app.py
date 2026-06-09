@@ -54,8 +54,11 @@ def _standings(lb_id):
         name = r.get("name", "")
         link = r.get("link")
         sub = f"[{name}]({link})" if link else name
+        author = r.get("author") or ""
+        a_url = r.get("author_url")
+        author_cell = f"[{author}]({a_url})" if a_url else author
         scores = [r["scores"].get(str(c["metric_id"])) for c in cols]
-        rows.append([r.get("rank"), sub, r.get("author"), *scores,
+        rows.append([r.get("rank"), sub, author_cell, *scores,
                      (r.get("created") or "")[:10]])
     df = pd.DataFrame(rows, columns=headers)
 
@@ -88,7 +91,7 @@ def _standings(lb_id):
 
     # Per-column datatype so numbers render as numbers (the original look) while
     # the Submission column renders its markdown link.
-    datatype = ["number", "markdown", "str"] + ["number"] * len(metric_labels) + ["str"]
+    datatype = ["number", "markdown", "markdown"] + ["number"] * len(metric_labels) + ["str"]
 
     submit = data.get("submit_url", f"{SITE}/leaderboard/{lb_id}")
     view = data.get("url", f"{SITE}/leaderboard/{lb_id}")

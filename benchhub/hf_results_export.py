@@ -56,6 +56,22 @@ def _safe_author(sub) -> str:
     return "Anonymous"
 
 
+def _author_fields(sub):
+    """(author, author_url) crediting the MODEL's owner for HF-model
+    submissions — the namespace in the submission link
+    (huggingface.co/<owner>/<model>), linking to that owner's HF page — not
+    the BenchHub user who ran the eval. Falls back to the scrubbed submitter
+    when the link isn't an HF model URL."""
+    link = getattr(sub, "link", None) or ""
+    if "huggingface.co/" in link:
+        rest = link.split("huggingface.co/", 1)[1].strip("/")
+        parts = [p for p in rest.split("/") if p]
+        if len(parts) >= 2:                      # <owner>/<model>
+            owner = parts[0]
+            return owner, f"https://huggingface.co/{owner}"
+    return _safe_author(sub), None
+
+
 def _score(mr) -> float | None:
     """Cell value (fix #1): the already-pooled scalar, or None. NEVER the
     error_message — it can embed GT/sample/prediction values."""
@@ -119,9 +135,11 @@ def build_lb_standings(lb, *, MetricResult) -> dict:
             cells[(mr.submission_id, mr.leaderboard_metric_id)] = mr
 
     def row(s) -> dict:
+        author, author_url = _author_fields(s)
         return {
             "name": s.name,
-            "author": _safe_author(s),
+            "author": author,
+            "author_url": author_url,
             "created": s.upload_date.isoformat() if s.upload_date else None,
             "description": (s.description or None),
             "link": (s.link or None),
