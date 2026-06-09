@@ -1203,6 +1203,31 @@ def run_standings_sync(*, dry_run_dir=None):
         )
         shutil.rmtree(out, ignore_errors=True)
         logger.info(f'standings sync pushed {len(lbs)} public LB(s) to {repo}')
+
+        # Keep the Space's `datasets:` card metadata current with the LBs'
+        # HF source datasets (so HF cross-links the mirror). Only re-uploads
+        # (=> Space rebuild) when the set actually changed.
+        space_repo = os.environ.get('HF_SPACE_REPO')
+        if space_repo:
+            try:
+                from benchhub.hf_results_export import hf_source_repos, set_card_datasets
+                src_repos = hf_source_repos(lbs)
+                # Compare the dataset SET (not README text) so a no-op sync
+                # doesn't churn the Space card / trigger a needless rebuild.
+                current = sorted((api.space_info(space_repo).cardData or {}).get('datasets') or [])
+                if current != src_repos:
+                    from huggingface_hub import hf_hub_download
+                    rp = hf_hub_download(space_repo, 'README.md', repo_type='space',
+                                         token=token, force_download=True)
+                    new = set_card_datasets(open(rp, encoding='utf-8').read(), src_repos)
+                    api.upload_file(
+                        path_or_fileobj=new.encode('utf-8'), path_in_repo='README.md',
+                        repo_id=space_repo, repo_type='space',
+                        commit_message=f'sync linked datasets ({len(src_repos)})')
+                    logger.info(f'space {space_repo}: linked datasets {current} -> {src_repos}')
+            except Exception as e:
+                logger.warning(f'space datasets sync skipped: {e}')
+
         return {'mode': 'push', 'repo': repo, 'n_lbs': len(lbs)}
 
 

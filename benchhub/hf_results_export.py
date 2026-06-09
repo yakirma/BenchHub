@@ -247,3 +247,44 @@ def build_repo_files(lbs, *, MetricResult, generated_at: str):
     files["_manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False)
     files["README.md"] = _readme(generated_at, len(lbs))
     return files, manifest
+
+
+def hf_source_repos(lbs):
+    """Sorted unique HuggingFace dataset repo ids backing the given LBs
+    (parsed from each linked Dataset.source_url). Feeds the Space's
+    `datasets:` card metadata so HF cross-links the mirror to its sources."""
+    import re
+    repos = set()
+    for lb in lbs:
+        for d in (getattr(lb, "datasets", None) or []):
+            m = re.search(r"huggingface\.co/datasets/([^/?#\s]+/[^/?#\s]+)",
+                          getattr(d, "source_url", None) or "")
+            if m:
+                repos.add(m.group(1).rstrip("/"))
+    return sorted(repos)
+
+
+def set_card_datasets(readme_text, repos):
+    """Return `readme_text` with its YAML-frontmatter `datasets:` block
+    replaced by `repos` (line-based; preserves every other frontmatter key)."""
+    import re
+    lines = readme_text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return readme_text
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        return readme_text
+    fm, body = lines[1:end], lines[end + 1:]
+    out, i = [], 0
+    while i < len(fm):
+        if fm[i].rstrip() == "datasets:":
+            i += 1
+            while i < len(fm) and re.match(r"\s+-\s", fm[i]):
+                i += 1
+            continue
+        out.append(fm[i]); i += 1
+    if repos:
+        out.append("datasets:")
+        out.extend(f"  - {r}" for r in repos)
+    return "\n".join(["---"] + out + ["---"] + body)
