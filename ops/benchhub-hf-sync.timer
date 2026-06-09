@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily BenchHub leaderboard-standings mirror sync (04:00 local) + on-boot catch-up
+
+[Timer]
+# 04:00 local, offset from the 03:00 DB-backup so they don't overlap.
+# Persistent=true catches up a missed run after a power-off/suspend.
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=600
+Unit=benchhub-hf-sync.service
+
+[Install]
+WantedBy=timers.target

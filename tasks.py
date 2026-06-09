@@ -894,6 +894,13 @@ def _process_submission_impl(submission_id, sample_filters=None, task_instance=N
         session.commit()
         logger.info(f"Processing submission {submission_id} done.")
 
+        # Refresh the public HF standings mirror (debounced; no-op unless
+        # HF_RESULTS_REPO is configured). See docs/HF_SPACE_MIRROR_PLAN.md.
+        try:
+            _maybe_enqueue_standings_push(submission.leaderboard_id)
+        except Exception:
+            pass
+
         # Disk-savings closeout: for remote submissions, tear down
         # the extracted `uploads/submissions/<id>/` folder now that
         # CustomFields are persisted. The cached ZIP under bench_cache
@@ -1129,3 +1136,108 @@ def materialize_leaderboard(self, leaderboard_id: int):
             matrow.status = 'failed'
             matrow.error_message = str(e)[:500]
             db.session.commit()
+
+
+# ---------------------------------------------------------------------------
+# HF leaderboard-standings mirror (docs/HF_SPACE_MIRROR_PLAN.md).
+# Producer side: build moat-safe public-LB standings and push them to a HF
+# dataset repo for a read-only Space to consume. INERT until HF_RESULTS_REPO
+# is set in the environment, so committing/deploying this before the HF org
+# exists is a no-op.
+# ---------------------------------------------------------------------------
+
+def run_standings_sync(*, dry_run_dir=None):
+    """Build the moat-safe standings files for every PUBLIC leaderboard and
+    either write them to `dry_run_dir` (offline verify, no HF call) or push
+    them to the HF dataset repo named by $HF_RESULTS_REPO.
+
+    Full reconcile: uploads all current per-LB files + index/manifest/readme
+    in ONE commit and deletes `leaderboards/*.json` for LBs no longer public
+    (HuggingFace upload_folder delete_patterns — required fix #3). Re-derivable
+    from the DB, so a deploy restart mid-push loses nothing."""
+    from datetime import datetime
+    from app import Leaderboard, MetricResult, visible_in_list
+    from benchhub.hf_results_export import build_repo_files
+    logger = logging.getLogger(__name__)
+
+    with app.app_context():
+        lbs = Leaderboard.query.filter(visible_in_list(Leaderboard, None)).all()
+        generated_at = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        files, _manifest = build_repo_files(
+            lbs, MetricResult=MetricResult, generated_at=generated_at)
+
+        out = dry_run_dir or tempfile.mkdtemp(prefix='bh_standings_')
+        for rel, content in files.items():
+            fp = os.path.join(out, rel)
+            os.makedirs(os.path.dirname(fp) or out, exist_ok=True)
+            with open(fp, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+
+        if dry_run_dir is not None:
+            logger.info(f'standings dry-run: wrote {len(files)} files for '
+                        f'{len(lbs)} public LB(s) to {out}')
+            return {'mode': 'dry_run', 'dir': out,
+                    'files': sorted(files), 'n_lbs': len(lbs)}
+
+        repo = os.environ.get('HF_RESULTS_REPO')
+        if not repo:
+            logger.info('standings sync skipped: HF_RESULTS_REPO unset')
+            shutil.rmtree(out, ignore_errors=True)
+            return {'mode': 'skipped', 'reason': 'HF_RESULTS_REPO unset'}
+
+        token = os.environ.get('HF_PUSH_TOKEN')
+        if not token:
+            try:
+                from huggingface_hub import get_token
+                token = get_token()
+            except Exception:
+                token = None
+
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo, repo_type='dataset', exist_ok=True, private=False)
+        api.upload_folder(
+            folder_path=out, repo_id=repo, repo_type='dataset',
+            commit_message=f'standings sync {generated_at}',
+            delete_patterns=['leaderboards/*.json'],
+        )
+        shutil.rmtree(out, ignore_errors=True)
+        logger.info(f'standings sync pushed {len(lbs)} public LB(s) to {repo}')
+        return {'mode': 'push', 'repo': repo, 'n_lbs': len(lbs)}
+
+
+@celery.task(bind=True, name='tasks.push_standings_to_hf',
+             max_retries=2, ignore_result=True)
+def push_standings_to_hf(self, leaderboard_id=None):
+    """Celery wrapper around run_standings_sync (full reconcile). The
+    leaderboard_id arg is only a debounce key — the sync always rebuilds the
+    whole public set so it can also reconcile deletions."""
+    return run_standings_sync()
+
+
+def _maybe_enqueue_standings_push(leaderboard_id):
+    """Best-effort, debounced enqueue of a standings push after a submission
+    is processed (required fix #4). No-op unless HF_RESULTS_REPO is set; never
+    raises into the scoring path."""
+    if not os.environ.get('HF_RESULTS_REPO'):
+        return
+    logger = logging.getLogger(__name__)
+    try:
+        lb = Leaderboard.query.get(leaderboard_id)
+        if lb is None or not (lb.visibility == 'public' or lb.owner_user_id is None):
+            return
+        # Per-LB coalesce so a bulk recalc (N submissions) fires ONE push, not
+        # N. Redis is the Celery broker, so it's available even with backend
+        # off; a redis hiccup just falls through to enqueue (push is idempotent).
+        enqueue = True
+        try:
+            import redis
+            r = redis.Redis.from_url(celery.conf.broker_url or 'redis://localhost:6379/0')
+            enqueue = bool(r.set(f'hf_push_pending:{leaderboard_id}', 1, nx=True, ex=120))
+        except Exception:
+            pass
+        if enqueue:
+            push_standings_to_hf.apply_async(
+                kwargs={'leaderboard_id': leaderboard_id}, countdown=120)
+    except Exception as e:
+        logger.warning(f'standings-push enqueue skipped (LB {leaderboard_id}): {e}')

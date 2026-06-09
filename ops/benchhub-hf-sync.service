@@ -1,0 +1,17 @@
+[Unit]
+Description=Push BenchHub public leaderboard standings to the HF mirror
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ymatri/benchhub
+# HF_RESULTS_REPO + HF_PUSH_TOKEN live here; the sync no-ops if unset.
+EnvironmentFile=/home/ymatri/benchhub/.env
+# Run the reconcile inline (no Celery worker dependency). Idempotent +
+# re-derivable from the DB, so an interrupted run self-heals next tick.
+ExecStart=/home/ymatri/benchhub/.venv/bin/python -c "import tasks; print(tasks.run_standings_sync())"
+StandardOutput=journal
+StandardError=journal
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
