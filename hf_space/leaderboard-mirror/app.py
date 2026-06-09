@@ -103,57 +103,74 @@ def _standings(lb_id):
     return gr.update(value=value, datatype=datatype), links
 
 
-def build():
-    idx = _index()
-    entries = idx.get("leaderboards", [])
-    for e in entries:
+def _entries():
+    """Fetch the LB index FRESH (etag-cached) so new leaderboards/scores show
+    up without a Space restart."""
+    es = _index().get("leaderboards", [])
+    for e in es:
         e["_area"] = (e.get("category") or "Uncategorized").split("/", 1)[0]
-    areas = [ALL] + sorted({e["_area"] for e in entries})
-    gen = idx.get("generated_at") or "n/a"
+    return es
 
-    def choices(area, query):
-        q = (query or "").strip().lower()
-        out = []
-        for e in entries:
-            if area and area != ALL and e["_area"] != area:
-                continue
-            if q and q not in f"{e['name']} {e.get('category') or ''}".lower():
-                continue
-            out.append((_label(e), e["id"]))   # (display, value=lb_id)
-        return out
 
-    def on_filter(area, query):
-        ch = choices(area, query)
-        first = ch[0][1] if ch else None
-        df, links = _standings(first)
-        return gr.update(choices=ch, value=first), df, links
+def _choices(entries, area, query):
+    q = (query or "").strip().lower()
+    out = []
+    for e in entries:
+        if area and area != ALL and e["_area"] != area:
+            continue
+        if q and q not in f"{e['name']} {e.get('category') or ''}".lower():
+            continue
+        out.append((_label(e), e["id"]))   # (display, value=lb_id)
+    return out
 
-    def on_pick(lb_id):
-        return _standings(lb_id)
 
+def build():
     with gr.Blocks(title="BenchHub Leaderboards (mirror)", head=HEAD,
                    theme=gr.themes.Soft()) as demo:
         gr.Markdown("# 🏆 BenchHub Leaderboards — read-only mirror")
         gr.Markdown(
             f"Live boards & model submission at **[runbenchhub.com]({SITE})**. "
             f"Mirrors *public leaderboard standings only* — no ground-truth data, "
-            f"no submissions.\n\n<sub>Last synced: {gen} · {len(entries)} "
-            f"leaderboard(s) across {len(areas) - 1} domain(s)</sub>"
+            f"no submissions."
         )
+        synced = gr.Markdown()
         with gr.Row():
-            area_dd = gr.Dropdown(choices=areas, value=ALL, label="Domain", scale=1)
-            search = gr.Textbox(label="Search", scale=2,
+            area_dd = gr.Dropdown(choices=[ALL], value=ALL, label="Domain", scale=2)
+            search = gr.Textbox(label="Search", scale=3,
                                 placeholder="filter by leaderboard name or category, then Enter…")
-        init = choices(ALL, "")
-        lb_dd = gr.Dropdown(choices=init, value=(init[0][1] if init else None),
-                            label="Leaderboard")
+            refresh_btn = gr.Button("🔄 Refresh", scale=0)
+        lb_dd = gr.Dropdown(choices=[], label="Leaderboard")
         links = gr.Markdown()
         table = gr.Dataframe(interactive=False, wrap=True)
+
+        def on_filter(area, query):
+            ch = _choices(_entries(), area, query)
+            first = ch[0][1] if ch else None
+            tbl, md = _standings(first)
+            return gr.update(choices=ch, value=first), tbl, md
+
+        def on_pick(lb_id):
+            return _standings(lb_id)
+
+        def refresh():
+            # Re-read the index on every page load / click: picks up new
+            # leaderboards, domains, and scores with no Space restart.
+            es = _entries()
+            areas = [ALL] + sorted({e["_area"] for e in es})
+            ch = _choices(es, ALL, "")
+            first = ch[0][1] if ch else None
+            tbl, md = _standings(first)
+            gen = _index().get("generated_at") or "n/a"
+            note = (f"<sub>Last synced: {gen} · {len(es)} leaderboard(s) across "
+                    f"{len(areas) - 1} domain(s)</sub>")
+            return (gr.update(choices=areas, value=ALL), "",
+                    gr.update(choices=ch, value=first), tbl, md, note)
 
         area_dd.change(on_filter, [area_dd, search], [lb_dd, table, links])
         search.submit(on_filter, [area_dd, search], [lb_dd, table, links])
         lb_dd.change(on_pick, lb_dd, [table, links])
-        demo.load(on_filter, [area_dd, search], [lb_dd, table, links])
+        refresh_btn.click(refresh, None, [area_dd, search, lb_dd, table, links, synced])
+        demo.load(refresh, None, [area_dd, search, lb_dd, table, links, synced])
     return demo
 
 
