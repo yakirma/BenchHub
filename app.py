@@ -14742,6 +14742,17 @@ def datasets_list():
         )
         hf_datasets.append(bucket)
 
+    # Per-dataset sample counts in ONE grouped query. `len(ds.samples)`
+    # below would materialise every Sample row (300k+ across the catalog)
+    # just to count them — that single line dominated the page load.
+    ds_ids = [ds.id for ds in datasets]
+    sample_counts = dict(
+        db.session.query(Sample.dataset_id, func.count(Sample.id))
+        .filter(Sample.dataset_id.in_(ds_ids or [0]))
+        .group_by(Sample.dataset_id)
+        .all()
+    )
+
     # Unified entries: BH-uploaded Datasets + cached HF entries grouped
     # under one Area/Task hierarchy. Each entry carries a `kind`
     # discriminator so the template can branch on the small handful of
@@ -14761,7 +14772,7 @@ def datasets_list():
             'task': task,
             'bh': ds,
             'thumb_url': dataset_thumbs.get(ds.id),
-            'sample_count': len(ds.samples),
+            'sample_count': sample_counts.get(ds.id, 0),
             'name': ds.name,
         })
     for bucket in hf_datasets:
