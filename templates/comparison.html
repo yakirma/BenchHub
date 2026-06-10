@@ -157,23 +157,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
     /* Sticky column headers + submission legend — and ONLY those.
        Everything else above the table (view options, range, aggregated
-       viz) scrolls away with the page. The legend pins to the viewport
-       top; #table-container is sticky just below it (JS sets the exact
-       `top`/`max-height` from the legend's measured height) and scrolls
-       its rows internally, so the outer header row stays pinned. The
-       navbar is static, so offsets are relative to the viewport top. */
-    #cmp-legend {
+       viz) scrolls away with the page. The legend + the scrollable table
+       live in ONE sticky flex region (#cmp-frozen) so they pin and
+       release together — wrapping them avoids the bug where the table
+       (lower in the DOM) un-sticks before the legend when you scroll to
+       the footer, letting the legend occlude the header. JS sets the
+       region's `top`/`max-height` from the fixed navbar's height. */
+    #cmp-frozen {
         position: sticky;
-        top: 0;
-        z-index: 1036;
+        top: 0;                 /* JS → navbar height */
+        z-index: 1030;
+        max-height: 100vh;      /* JS → calc(100vh - navbar) */
+        display: flex;
+        flex-direction: column;
         background-color: var(--bs-body-bg);
     }
-
-    #table-container {
-        position: sticky;
-        /* top + max-height set by layoutStickyTable() (legend height). */
+    #cmp-frozen #cmp-legend {
+        flex: 0 0 auto;         /* natural height; the table flexes */
+        margin-bottom: 0;
+    }
+    #cmp-frozen #table-container {
+        flex: 1 1 auto;
+        min-height: 0;          /* let the flex child shrink so it scrolls */
         overflow: auto;
-        z-index: 1030;
         background-color: var(--bs-body-bg);
     }
     /* The top horizontal-scrollbar mirror assumed page scroll; with the
@@ -656,22 +662,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 <div class="page-container">
     <div class="content-wrapper">
-        {# Skip the per-submission status legend when every submission is
-           a mirrored PWC row — there's no per-sample data to inspect,
-           so the legend is busy decoration. #}
-        {% if not all_mirrored %}
-        <div class="mb-3 p-2 bg-body-tertiary border rounded" id="cmp-legend">
-            <strong>Submissions:</strong>
-            {% for sub in submissions %}
-            <span class="badge {{ 'bg-success' if sub.processing_status == 'Processed' else 'bg-warning' }} me-2"
-                id="status-{{ sub.id }}">
-                Sub{{ loop.index }}: {{ sub.processing_status }}
-            </span>
-            <span class="me-2">{{ sub.name }}</span>{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        </div>
-        {% endif %}
-
+        {# The submission legend now lives inside #cmp-frozen (just above
+           the table) so the two pin/release as one sticky unit. #}
         <!-- Aggregated Visualizations -->
         {% set aggregated_viz_list = [] %}
         {% if leaderboard_viz_list %}
@@ -737,6 +729,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
         {% endif %}
 
+        {# Frozen region: legend + scrollable table pin together. #}
+        <div id="cmp-frozen">
+        {% if not all_mirrored %}
+        <div class="mb-3 p-2 bg-body-tertiary border rounded" id="cmp-legend">
+            <strong>Submissions:</strong>
+            {% for sub in submissions %}
+            <span class="badge {{ 'bg-success' if sub.processing_status == 'Processed' else 'bg-warning' }} me-2"
+                id="status-{{ sub.id }}">
+                Sub{{ loop.index }}: {{ sub.processing_status }}
+            </span>
+            <span class="me-2">{{ sub.name }}</span>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
         <div class="top-scrollbar-container" id="top-scroll-container">
             <div class="top-scrollbar-content" id="top-scroll-content"></div>
         </div>
@@ -1234,6 +1240,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </tbody>
             </table>
         </div>
+        </div>{# /#cmp-frozen #}
     </div>
 </div>
 
@@ -1515,47 +1522,30 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // header stays put while everything above (view options, range,
         // aggregated viz) scrolls away with the page. The navbar is
         // static, so the legend height is the only offset.
-        const legend = document.getElementById('cmp-legend');
         // The site navbar is `position: fixed` (<header class="fixed-top">),
-        // so it overlays the top of the viewport. Sticky offsets must clear
-        // it: the legend pins just below the navbar, and the table-container
-        // just below the legend. Without this the legend pinned at top:0 sat
-        // behind the navbar and shoved the header row up under it.
+        // so it overlays the top of the viewport. The frozen region (legend
+        // + scrollable table, one sticky unit) must clear it: pin its top at
+        // the navbar height and cap its height to the rest of the viewport.
+        // Because the legend + table are ONE element, they pin/release
+        // together — the table can't un-stick under the legend at the bottom.
+        const frozen = document.getElementById('cmp-frozen');
         const navbarEl = document.querySelector('header.fixed-top')
             || document.querySelector('.navbar');
         function layoutStickyTable() {
+            if (!frozen) return;
             const navH = navbarEl ? Math.ceil(navbarEl.getBoundingClientRect().height) : 0;
-            let legendH = 0;
-            if (legend) {
-                const cs = getComputedStyle(legend);
-                const mb = parseFloat(cs.marginBottom) || 0;
-                // offsetHeight = full border-box (incl. wrapped lines);
-                // + margin + a clear gap so the header never tucks under.
-                legendH = Math.ceil(legend.offsetHeight + mb) + 6;
-                legend.style.top = navH + 'px';
-            }
-            tableContainer.style.top = (navH + legendH) + 'px';
-            // Fill from just below the legend to the viewport bottom (small
-            // gutter for the container's own horizontal scrollbar).
-            const h = window.innerHeight - navH - legendH - 16;
-            tableContainer.style.maxHeight = Math.max(h, 320) + 'px';
+            frozen.style.top = navH + 'px';
+            // Fill from just below the navbar to the viewport bottom (small
+            // gutter for the table's own horizontal scrollbar).
+            const h = window.innerHeight - navH - 12;
+            frozen.style.maxHeight = Math.max(h, 320) + 'px';
         }
         layoutStickyTable();
         window.addEventListener('resize', layoutStickyTable);
         window.addEventListener('load', layoutStickyTable);
-        // Track the legend's own size (wrapping / status-badge text changes).
-        if (legend && window.ResizeObserver) {
-            new ResizeObserver(layoutStickyTable).observe(legend);
+        if (navbarEl && window.ResizeObserver) {
+            new ResizeObserver(layoutStickyTable).observe(navbarEl);
         }
-        // Safety net: re-measure on scroll (rAF-throttled) so the offset is
-        // always current even if a late reflow slipped past the observers.
-        let _raf = 0;
-        window.addEventListener('scroll', function () {
-            if (_raf) return;
-            _raf = requestAnimationFrame(function () { _raf = 0; layoutStickyTable(); });
-        }, { passive: true });
-        setTimeout(layoutStickyTable, 300);
-        setTimeout(layoutStickyTable, 1200);
     }
 
     // --- UI Refresh / Polling Logic ---
