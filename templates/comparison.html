@@ -155,13 +155,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         background-color: #0d6efd;
     }
 
-    /* Sticky column headers. The table body scrolls INSIDE
-       #table-container (height-bounded to the viewport by JS so the page
-       itself doesn't scroll and the submission legend above stays
-       visible), and the outer header row stays pinned at the top.
-       `> thead` keeps this off the nested per-source-stats sub-tables. */
+    /* Sticky column headers + submission legend — and ONLY those.
+       Everything else above the table (view options, range, aggregated
+       viz) scrolls away with the page. The legend pins to the viewport
+       top; #table-container is sticky just below it (JS sets the exact
+       `top`/`max-height` from the legend's measured height) and scrolls
+       its rows internally, so the outer header row stays pinned. The
+       navbar is static, so offsets are relative to the viewport top. */
+    #cmp-legend {
+        position: sticky;
+        top: 0;
+        z-index: 1036;
+        background-color: var(--bs-body-bg);
+    }
+
     #table-container {
-        overflow-y: auto;
+        position: sticky;
+        /* top + max-height set by layoutStickyTable() (legend height). */
+        overflow: auto;
+        z-index: 1030;
+        background-color: var(--bs-body-bg);
+    }
+    /* The top horizontal-scrollbar mirror assumed page scroll; with the
+       table now scrolling internally it just overlaps the pinned legend,
+       so hide it — #table-container has its own bottom scrollbar. */
+    #top-scroll-container {
+        display: none !important;
     }
 
     #comparison-table > thead th {
@@ -617,7 +636,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
            a mirrored PWC row — there's no per-sample data to inspect,
            so the legend is busy decoration. #}
         {% if not all_mirrored %}
-        <div class="mb-3 p-2 bg-body-tertiary border rounded">
+        <div class="mb-3 p-2 bg-body-tertiary border rounded" id="cmp-legend">
             <strong>Submissions:</strong>
             {% for sub in submissions %}
             <span class="badge {{ 'bg-success' if sub.processing_status == 'Processed' else 'bg-warning' }} me-2"
@@ -1438,36 +1457,38 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             isSyncingTable = false;
         };
 
-        // Resize observer to match width and show/hide
+        // The top scrollbar mirror is hidden in this view (the table now
+        // scrolls internally and has its own bottom scrollbar), so keep it
+        // collapsed and just re-measure the sticky layout when the table
+        // or container resizes.
+        topScrollContainer.style.setProperty('display', 'none', 'important');
         const ro = new ResizeObserver(entries => {
-            const tableWidth = table.scrollWidth;
-            const containerWidth = tableContainer.clientWidth;
-            topScrollContent.style.width = tableWidth + 'px';
-
-            // Show if table is significantly wider than container
-            if (tableWidth > containerWidth + 2) {
-                topScrollContainer.style.setProperty('display', 'block', 'important');
-            } else {
-                topScrollContainer.style.setProperty('display', 'none', 'important');
-            }
+            layoutStickyTable();
         });
 
         ro.observe(table);
         ro.observe(tableContainer);
 
-        // Bound the table's height to the remaining viewport so vertical
-        // scrolling happens INSIDE the container (sticky header pins) and
-        // the page itself doesn't scroll (submission legend stays put).
-        function sizeTableViewport() {
-            const docTop = tableContainer.getBoundingClientRect().top + window.scrollY;
-            const h = window.innerHeight - docTop - 24;  // small bottom gutter
+        // Pin ONLY the submission legend + the table's header row. The
+        // legend is sticky at the viewport top (CSS); the table-container
+        // is sticky just below it and scrolls its rows internally, so the
+        // header stays put while everything above (view options, range,
+        // aggregated viz) scrolls away with the page. The navbar is
+        // static, so the legend height is the only offset.
+        const legend = document.getElementById('cmp-legend');
+        function layoutStickyTable() {
+            const legendH = legend ? legend.offsetHeight : 0;
+            tableContainer.style.top = legendH + 'px';
+            // Fill from just below the legend to the viewport bottom (small
+            // gutter for the container's own horizontal scrollbar).
+            const h = window.innerHeight - legendH - 16;
             tableContainer.style.maxHeight = Math.max(h, 320) + 'px';
         }
-        sizeTableViewport();
-        window.addEventListener('resize', sizeTableViewport);
-        // Re-measure once late content (images, charts) has reflowed the
-        // rows above the table.
-        window.addEventListener('load', sizeTableViewport);
+        layoutStickyTable();
+        window.addEventListener('resize', layoutStickyTable);
+        // Re-measure once late content (images, charts, a wrapped legend)
+        // has reflowed.
+        window.addEventListener('load', layoutStickyTable);
     }
 
     // --- UI Refresh / Polling Logic ---
