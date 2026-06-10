@@ -1298,6 +1298,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     title="Reset Zoom & Pan">
                     <i class="bi bi-arrow-counterclockwise"></i> Reset
                 </button>
+                {# Depth-only: recolour the interactive heatmap inside the
+                   modal. This is preview-only — it never changes the table
+                   cell's colormap (closing the modal leaves the cell as it
+                   was). Shown only for depth samples. #}
+                <select id="modal-depth-cmap" class="form-select form-select-sm d-none ms-2"
+                        style="width: auto;" title="Colormap (this zoom view only)">
+                    <option value="turbo" selected>turbo</option>
+                    <option value="viridis">viridis</option>
+                    <option value="jet">jet</option>
+                    <option value="hot">hot</option>
+                    <option value="electric">electric</option>
+                    <option value="portland">portland</option>
+                    <option value="gray">gray</option>
+                    <option value="inverse">inverse depth</option>
+                </select>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center" style="position: relative;">
@@ -1722,6 +1737,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
         }
 
+        // Map the in-modal depth colormap selector to a Plotly heatmap
+        // trace. 'inverse depth' inverts the grid (1/d) under the turbo
+        // ramp; the rest map to Plotly named colorscales.
+        function modalDepthTrace(grid, cmap) {
+            const M = { turbo: 'turbo', viridis: 'Viridis', jet: 'Jet',
+                        hot: 'Hot', electric: 'Electric', portland: 'Portland',
+                        gray: 'Greys' };
+            if (cmap === 'inverse') {
+                const z = grid.map(function (row) {
+                    return row.map(function (v) {
+                        return (typeof v === 'number' && isFinite(v) && Math.abs(v) > 1e-9)
+                            ? 1.0 / v : null;
+                    });
+                });
+                return { z: z, colorscale: 'turbo' };
+            }
+            return { z: grid, colorscale: M[cmap] || 'turbo' };
+        }
+
         function syncVisRotationControls(visType, targetEl, visUrl) {
             clearVisRotationControls();
             const visModal = document.getElementById('vis-modal');
@@ -1745,7 +1779,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
             visModal.addEventListener('hidden.bs.modal', function () {
                 clearVisRotationControls();
+                // The in-modal depth colormap is preview-only — hide + reset
+                // it on close so the table cell keeps its own colormap.
+                const sel = document.getElementById('modal-depth-cmap');
+                if (sel) { sel.classList.add('d-none'); sel.value = 'turbo'; }
+                window._modalDepthGrid = null;
             });
+
+            // Recolour the interactive depth heatmap from the in-modal
+            // selector (does NOT touch the table cell's colormap).
+            const depthCmapSel = document.getElementById('modal-depth-cmap');
+            if (depthCmapSel) {
+                depthCmapSel.addEventListener('change', function () {
+                    if (!window._modalDepthGrid || !window.Plotly) return;
+                    const styled = modalDepthTrace(window._modalDepthGrid, this.value);
+                    Plotly.restyle('modal-plotly-div',
+                        { z: [styled.z], colorscale: [styled.colorscale] });
+                });
+            }
 
             // Navigation Button Logic
             const btnPrev = visModal.querySelector('#btn-prev-sample');
@@ -1848,6 +1899,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             console.log("DEBUG vis-modal elements:", { modalImg, modalPlotly, loadingSpinner, errorContainer });
 
             // Reset state
+            // Hide the depth colormap selector by default; the depth
+            // Plotly success path re-shows it.
+            const _depthCmapSel = document.getElementById('modal-depth-cmap');
+            if (_depthCmapSel) _depthCmapSel.classList.add('d-none');
             if (modalImg) modalImg.style.display = 'none';
             if (modalPlotly) {
                 modalPlotly.style.display = 'none';
@@ -1876,13 +1931,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         if (loadingSpinner) loadingSpinner.style.display = 'none';
                         if (modalPlotly) modalPlotly.style.display = 'block';
 
-                        const plotData = [{
-                            z: data.data,
+                        // Stash the raw grid so the in-modal colormap
+                        // selector can restyle (and so 'inverse depth' can
+                        // invert z) without re-fetching.
+                        window._modalDepthGrid = data.data;
+                        const cmapSel = document.getElementById('modal-depth-cmap');
+                        if (cmapSel) cmapSel.classList.remove('d-none');
+                        const cmap0 = cmapSel ? cmapSel.value : 'turbo';
+                        const styled = modalDepthTrace(data.data, cmap0);
+
+                        const plotData = [Object.assign({
                             type: 'heatmap',
-                            colorscale: 'turbo',
                             hoverongaps: false,
                             hovertemplate: 'X: %{x}<br>Y: %{y}<br>Depth: %{z}<extra></extra>'
-                        }];
+                        }, styled)];
 
                         const layout = {
                             title: 'Interactive Depth Map',
