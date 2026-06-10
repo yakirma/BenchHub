@@ -1278,6 +1278,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center fw-bold">
                                 {{ "%.4f"|format(data.custom_fields[col_key].sub_scalars[pred.sub_id]) }}
                             </div>
+                            {# text / json predictions (e.g. captions, OCR transcriptions, VQA
+                               answers): show the raw predicted value in a scrollbox. #}
+                            {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].sub_texts and
+                            data.custom_fields[col_key].sub_texts.get(pred.sub_id) is not none %}
+                            <div class="text-start small p-1"
+                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">
+                                {{ data.custom_fields[col_key].sub_texts[pred.sub_id] }}
+                            </div>
                             {% else %}
                             <span class="text-muted">N/A</span>
                             {% endif %}

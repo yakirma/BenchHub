@@ -13865,7 +13865,8 @@ def comparison_view(leaderboard_id):
                     'gt_text_value': cf.value_text if cf.data_type in ('text', 'json') else None,
                     'gt_field_type': cf.data_type,
                     'submissions': {},
-                    'sub_scalars': {}
+                    'sub_scalars': {},
+                    'sub_texts': {}
                 }
 
 
@@ -13884,18 +13885,21 @@ def comparison_view(leaderboard_id):
             
             # Add submission custom fields for this sample
             for cf in sub.custom_fields:
-                if cf.data_type in ['image', 'depth', 'scalar'] and cf.sample_name == sample.name:
-                    if cf.name not in sample_info['custom_fields']:
-                        sample_info['custom_fields'][cf.name] = {
-                            'gt_field_id': None,
-                            'gt_scalar_value': None,
-                            'submissions': {},
-                            'sub_scalars': {}
-                        }
-                    if cf.data_type in ['image', 'depth']:
-                        sample_info['custom_fields'][cf.name]['submissions'][sub.id] = cf.id
+                if cf.data_type in ['image', 'depth', 'mask', 'audio', 'scalar', 'text', 'json'] and cf.sample_name == sample.name:
+                    entry = sample_info['custom_fields'].setdefault(cf.name, {
+                        'gt_field_id': None, 'gt_scalar_value': None, 'gt_text_value': None,
+                        'gt_field_type': cf.data_type, 'submissions': {},
+                        'sub_scalars': {}, 'sub_texts': {},
+                    })
+                    entry.setdefault('sub_texts', {})
+                    # image/depth/mask/audio are served as images by field id; scalar is a
+                    # number; text/json render the raw predicted value (e.g. a caption / answer).
+                    if cf.data_type in ['image', 'depth', 'mask', 'audio']:
+                        entry['submissions'][sub.id] = cf.id
                     elif cf.data_type == 'scalar':
-                        sample_info['custom_fields'][cf.name]['sub_scalars'][sub.id] = cf.value_float
+                        entry['sub_scalars'][sub.id] = cf.value_float
+                    elif cf.data_type in ['text', 'json']:
+                        entry['sub_texts'][sub.id] = cf.value_text
                 
                 # Add submission custom metric fields for this sample
                 if cf.data_type == 'metric' and cf.sample_name == sample.name:
