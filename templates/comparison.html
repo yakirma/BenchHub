@@ -757,12 +757,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% for _b in sub_col_badges.get(col_key, {}).get(sub.id, []) %}<span class="badge text-bg-info ms-1" title="Type parameter">{{ _b }}</span>{% endfor %}
                             {# Colormap selector for a prediction-side depth column (the GT
                                selector only covers the GT column; pred depth is a separate
-                               column). One selector controls all of this column's depth cells. #}
-                            {% if _is_depth and col_key not in dataset_custom_fields and loop.first %}
+                               column). One selector PER submission so changing one
+                               submission's colormap doesn't recolour the others. #}
+                            {% if _is_depth and col_key not in dataset_custom_fields %}
                             <select class="form-select form-select-sm depth-cmap-select d-inline-block ms-1"
                                     style="width: auto; max-width: 140px;" draggable="false"
                                     onmousedown="event.stopPropagation();" onclick="event.stopPropagation();"
-                                    data-col-key="{{ col_key }}" title="Colormap to apply to the predicted depth map">
+                                    data-col-key="{{ col_key }}" data-sub-id="{{ sub.id }}" title="Colormap to apply to this submission's predicted depth map">
                                 <option value="gray">gray</option>
                                 <option value="turbo" selected>turbo</option>
                                 <option value="jet">jet</option>
@@ -1264,7 +1265,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% set _sub_field_id = data.custom_fields[col_key].submissions[pred.sub_id] %}
                             {% set _sub_src = url_for('serve_custom_field_image', field_id=_sub_field_id) %}
                             {% set _sub_initial_src = (_sub_src + '?cmap=turbo') if _sub_vis_type == 'depth' else _sub_src %}
-                            <div class="text-center depth-cell" data-depth-base="{{ _sub_src }}" data-col-key="{{ col_key }}">
+                            <div class="text-center depth-cell" data-depth-base="{{ _sub_src }}" data-col-key="{{ col_key }}" data-sub-id="{{ pred.sub_id }}">
                                 {% if _sub_vis_type == 'sequence' %}
                                 <video src="{{ url_for('api_viz', cf_id=_sub_field_id) }}"
                                        class="border rounded shadow-sm"
@@ -3517,11 +3518,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         const sel = ev.target;
         if (!sel || !sel.classList || !sel.classList.contains('depth-cmap-select')) return;
         const colKey = sel.getAttribute('data-col-key');
+        const subId = sel.getAttribute('data-sub-id');
         const cmap = sel.value || '';
         // Only recolour depth columns. The cell selector is gated on
         // matching col_key so we don't smear the same query param onto
-        // a sibling image_image column.
-        document.querySelectorAll('.depth-cell[data-col-key="' + colKey + '"]').forEach(function (cell) {
+        // a sibling image_image column. Pred selectors also carry a
+        // data-sub-id so changing one submission's colormap only
+        // rewrites that submission's cells (GT has no sub-id → whole
+        // GT column).
+        let cellSel = '.depth-cell[data-col-key="' + colKey + '"]';
+        if (subId) cellSel += '[data-sub-id="' + subId + '"]';
+        document.querySelectorAll(cellSel).forEach(function (cell) {
             const base = cell.getAttribute('data-depth-base');
             if (!base) return;
             const url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
