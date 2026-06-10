@@ -114,15 +114,28 @@ def _entries():
     es = [e for e in _index().get("leaderboards", [])
           if (e.get("n_verified") or 0) > 0]
     for e in es:
-        e["_area"] = (e.get("category") or "Uncategorized").split("/", 1)[0]
+        cat = (e.get("category") or "Uncategorized")
+        parts = cat.split("/", 1)
+        e["_area"] = parts[0]                                   # e.g. "Vision"
+        e["_subarea"] = parts[1].strip() if len(parts) > 1 else ""  # e.g. "Image Segmentation"
     return es
 
 
-def _choices(entries, area, query):
+def _subareas(entries, area):
+    """Sub-domains available under the chosen domain (the part after the
+    first `/` in the category). `ALL` first; empty when none exist."""
+    subs = sorted({e["_subarea"] for e in entries
+                   if (not area or area == ALL or e["_area"] == area) and e["_subarea"]})
+    return [ALL] + subs
+
+
+def _choices(entries, area, sub, query):
     q = (query or "").strip().lower()
     out = []
     for e in entries:
         if area and area != ALL and e["_area"] != area:
+            continue
+        if sub and sub != ALL and e["_subarea"] != sub:
             continue
         if q and q not in f"{e['name']} {e.get('category') or ''}".lower():
             continue
@@ -142,6 +155,7 @@ def build():
         synced = gr.Markdown()
         with gr.Row():
             area_dd = gr.Dropdown(choices=[ALL], value=ALL, label="Domain", scale=2)
+            sub_dd = gr.Dropdown(choices=[ALL], value=ALL, label="Sub-domain", scale=2)
             search = gr.Textbox(label="Search", scale=3,
                                 placeholder="filter by leaderboard name or category, then Enter…")
             refresh_btn = gr.Button("🔄 Refresh", scale=0)
@@ -149,8 +163,19 @@ def build():
         links = gr.Markdown()
         table = gr.Dataframe(interactive=False, wrap=True)
 
-        def on_filter(area, query):
-            ch = _choices(_entries(), area, query)
+        def on_area(area, query):
+            # Domain changed: repopulate the sub-domain choices for it
+            # (reset to All) and re-filter the leaderboard list.
+            es = _entries()
+            subs = _subareas(es, area)
+            ch = _choices(es, area, ALL, query)
+            first = ch[0][1] if ch else None
+            tbl, md = _standings(first)
+            return (gr.update(choices=subs, value=ALL),
+                    gr.update(choices=ch, value=first), tbl, md)
+
+        def on_filter(area, sub, query):
+            ch = _choices(_entries(), area, sub, query)
             first = ch[0][1] if ch else None
             tbl, md = _standings(first)
             return gr.update(choices=ch, value=first), tbl, md
@@ -163,20 +188,23 @@ def build():
             # leaderboards, domains, and scores with no Space restart.
             es = _entries()
             areas = [ALL] + sorted({e["_area"] for e in es})
-            ch = _choices(es, ALL, "")
+            subs = _subareas(es, ALL)
+            ch = _choices(es, ALL, ALL, "")
             first = ch[0][1] if ch else None
             tbl, md = _standings(first)
             gen = _index().get("generated_at") or "n/a"
             note = (f"<sub>Last synced: {gen} · {len(es)} leaderboard(s) across "
                     f"{len(areas) - 1} domain(s)</sub>")
-            return (gr.update(choices=areas, value=ALL), "",
+            return (gr.update(choices=areas, value=ALL),
+                    gr.update(choices=subs, value=ALL), "",
                     gr.update(choices=ch, value=first), tbl, md, note)
 
-        area_dd.change(on_filter, [area_dd, search], [lb_dd, table, links])
-        search.submit(on_filter, [area_dd, search], [lb_dd, table, links])
+        area_dd.change(on_area, [area_dd, search], [sub_dd, lb_dd, table, links])
+        sub_dd.change(on_filter, [area_dd, sub_dd, search], [lb_dd, table, links])
+        search.submit(on_filter, [area_dd, sub_dd, search], [lb_dd, table, links])
         lb_dd.change(on_pick, lb_dd, [table, links])
-        refresh_btn.click(refresh, None, [area_dd, search, lb_dd, table, links, synced])
-        demo.load(refresh, None, [area_dd, search, lb_dd, table, links, synced])
+        refresh_btn.click(refresh, None, [area_dd, sub_dd, search, lb_dd, table, links, synced])
+        demo.load(refresh, None, [area_dd, sub_dd, search, lb_dd, table, links, synced])
     return demo
 
 
