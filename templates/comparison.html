@@ -1225,9 +1225,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                in a small scrollbox so long QA answers
                                or JSON payloads stay inside the cell. #}
                             <div class="text-start small p-1"
-                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">
-                                {{ data.custom_fields[col_key].gt_text_value }}
-                            </div>
+                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">{{- data.custom_fields[col_key].gt_text_value | trim -}}</div>
                             {% endif %}
                         </td>
                         {% endif %}
@@ -1283,9 +1281,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].sub_texts and
                             data.custom_fields[col_key].sub_texts.get(pred.sub_id) is not none %}
                             <div class="text-start small p-1"
-                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">
-                                {{ data.custom_fields[col_key].sub_texts[pred.sub_id] }}
-                            </div>
+                                 style="max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">{{- data.custom_fields[col_key].sub_texts[pred.sub_id] | trim -}}</div>
                             {% else %}
                             <span class="text-muted">N/A</span>
                             {% endif %}

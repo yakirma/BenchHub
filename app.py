@@ -13589,7 +13589,20 @@ def comparison_view(leaderboard_id):
         DataTypeDef.query.filter(DataTypeDef.visualize_code.isnot(None)).all()
     }
     _RENDERABLE_KINDS = set(_DTYPES) | _registered_render_kinds | {'metric'}  # 'metric' is a legacy precomputed-scalar marker
-    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query if ftype in _RENDERABLE_KINDS}
+
+    def _is_source_ref(name, ftype):
+        # Source-reference text fields (image_url, *_path, filename, …) are
+        # ingest metadata, not eval content — don't show them as comparison
+        # columns (they're just URLs/paths, e.g. conceptual-captions image_url).
+        if ftype != 'text':
+            return False
+        n = (name or '').lower()
+        return (n in ('image_url', 'image_path', 'url', 'path', 'filename',
+                      'file_name', 'filepath', 'file_path')
+                or n.endswith('_url') or n.endswith('_path'))
+
+    dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query
+                             if ftype in _RENDERABLE_KINDS and not _is_source_ref(name, ftype)}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
     
     # Submission fields
