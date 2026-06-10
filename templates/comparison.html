@@ -726,6 +726,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }}; overflow: hidden; text-overflow: ellipsis;">
                             GT ({{ label }})
+                            {% for _b in gt_col_badges.get(col_key, []) %}<span class="badge text-bg-info ms-1" title="Type parameter">{{ _b }}</span>{% endfor %}
                             {% if _is_depth %}
                             <select class="form-select form-select-sm depth-cmap-select d-inline-block ms-1"
                                     style="width: auto; max-width: 140px;"
@@ -733,7 +734,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     onmousedown="event.stopPropagation();"
                                     onclick="event.stopPropagation();"
                                     data-col-key="{{ col_key }}"
-                                    title="Colormap to apply to the cached grayscale depth map">
+                                    title="Colormap to apply to the depth map">
                                 <option value="gray">gray</option>
                                 <option value="turbo" selected>turbo</option>
                                 <option value="jet">jet</option>
@@ -742,6 +743,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <option value="inferno">inferno</option>
                                 <option value="plasma">plasma</option>
                                 <option value="normal">normal map</option>
+                                <option value="inverse">inverse depth</option>
                             </select>
                             {% endif %}
                             <div class="resizer"></div>
@@ -752,6 +754,26 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }}; overflow: hidden; text-overflow: ellipsis;">
                             Sub{{ loop.index }} ({{ label }})
+                            {% for _b in sub_col_badges.get(col_key, {}).get(sub.id, []) %}<span class="badge text-bg-info ms-1" title="Type parameter">{{ _b }}</span>{% endfor %}
+                            {# Colormap selector for a prediction-side depth column (the GT
+                               selector only covers the GT column; pred depth is a separate
+                               column). One selector controls all of this column's depth cells. #}
+                            {% if _is_depth and col_key not in dataset_custom_fields and loop.first %}
+                            <select class="form-select form-select-sm depth-cmap-select d-inline-block ms-1"
+                                    style="width: auto; max-width: 140px;" draggable="false"
+                                    onmousedown="event.stopPropagation();" onclick="event.stopPropagation();"
+                                    data-col-key="{{ col_key }}" title="Colormap to apply to the predicted depth map">
+                                <option value="gray">gray</option>
+                                <option value="turbo" selected>turbo</option>
+                                <option value="jet">jet</option>
+                                <option value="viridis">viridis</option>
+                                <option value="magma">magma</option>
+                                <option value="inferno">inferno</option>
+                                <option value="plasma">plasma</option>
+                                <option value="normal">normal map</option>
+                                <option value="inverse">inverse depth</option>
+                            </select>
+                            {% endif %}
                             <div class="resizer"></div>
                         </th>
                         {% endif %}

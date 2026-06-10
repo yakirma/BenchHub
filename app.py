@@ -13626,6 +13626,39 @@ def comparison_view(leaderboard_id):
     all_custom_fields = sorted(list(dataset_custom_fields | all_submission_fields))
     all_field_types = dataset_field_types.copy()
     all_field_types.update(submission_field_types)
+
+    # Typed-param badges (unit / is_inverse) for column headers — one per GT
+    # field and per (field, submission), read off the CustomField data_params.
+    def _param_badges(dp):
+        try:
+            p = json.loads(dp) if dp else {}
+        except (TypeError, ValueError):
+            return []
+        out = {'millimeters': ['mm'], 'centimeters': ['cm'], 'meters': ['m']}.get(p.get('unit'), [])
+        if p.get('is_inverse'):
+            out = out + ['inverse']
+        return out
+
+    gt_col_badges = {}        # col_key -> [badges]
+    sub_col_badges = {}       # col_key -> {sub_id -> [badges]}
+    _samp_ids = [s.id for s in samples]
+    if _samp_ids:
+        for name, dp in (db.session.query(CustomField.name, CustomField.data_params)
+                         .filter(CustomField.sample_id.in_(_samp_ids),
+                                 CustomField.data_params.isnot(None))
+                         .group_by(CustomField.name).all()):
+            b = _param_badges(dp)
+            if b:
+                gt_col_badges[name] = b
+    _sub_ids = [s.id for s in submissions]
+    if _sub_ids:
+        for sid, name, dp in (db.session.query(CustomField.submission_id, CustomField.name, CustomField.data_params)
+                              .filter(CustomField.submission_id.in_(_sub_ids),
+                                      CustomField.data_params.isnot(None))
+                              .group_by(CustomField.submission_id, CustomField.name).all()):
+            b = _param_badges(dp)
+            if b:
+                sub_col_badges.setdefault(name, {})[sid] = b
     
     # Map internal IDs to labels for all metrics including dynamic ones
     metric_labels = {}
@@ -14484,6 +14517,8 @@ def comparison_view(leaderboard_id):
                            all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
                            label_vocabs=label_vocabs,
+                           gt_col_badges=gt_col_badges,
+                           sub_col_badges=sub_col_badges,
                            selected_metrics=all_selected_metrics,
                            chart_metrics_data=chart_metrics_data, 
                            submissions_json=submissions_json,
@@ -14599,17 +14634,24 @@ def serve_depth_image(filepath):
         # Constant arrays land at 0 (avoids divide-by-zero).
         arr = np.asarray(arr, dtype=np.float32)
         arr = np.where(np.isfinite(arr), arr, 0.0)
+
+        cmap = (request.args.get('cmap') or 'turbo').strip().lower()
+        if cmap == 'inverse':
+            # Inverse depth (disparity ~ 1/depth): near<->far swap, turbo LUT.
+            pos = arr[arr > 1e-6]
+            eps = float(pos.min()) if pos.size else 1e-3
+            arr = 1.0 / np.clip(arr, eps, None)
+
         vmin, vmax = float(arr.min()), float(arr.max())
         if vmax > vmin:
             gray = ((arr - vmin) / (vmax - vmin) * 255.0).clip(0, 255).astype(np.uint8)
         else:
             gray = np.zeros_like(arr, dtype=np.uint8)
 
-        cmap = (request.args.get('cmap') or 'turbo').strip().lower()
         if cmap == 'gray':
             rgb = np.stack([gray, gray, gray], axis=-1)
         else:
-            lut = _matplotlib_lut(cmap)
+            lut = _matplotlib_lut('turbo' if cmap == 'inverse' else cmap)
             rgb = lut[gray]
 
         from PIL import Image as _PILImage
