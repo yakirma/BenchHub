@@ -10466,8 +10466,13 @@ def leaderboard_view(leaderboard_id):
     if sort_metric and sort_metric in all_metrics:
         def get_metric_value(sub):
             val = calculated_dynamic_values.get(sub.id, {}).get(sort_metric)
-            return val if val is not None else float('inf')
-        
+            if isinstance(val, (int, float)):
+                return val
+            # None, or an error-message STRING (set above when a MetricResult
+            # has error_message) — sink to the bottom regardless of direction.
+            # Mixing float and str here otherwise raises TypeError in sort().
+            return float('-inf') if sort_order == 'desc' else float('inf')
+
         submissions.sort(key=get_metric_value, reverse=(sort_order == 'desc'))
 
     # Prepare Aggregation Info for UI
