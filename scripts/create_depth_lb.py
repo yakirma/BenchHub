@@ -67,8 +67,7 @@ def main():
         db.session.commit()
 
         lm_ids = []
-        for mname in ('affine_inv_rmse_depth', 'scale_inv_rmse_depth',
-                      'affine_inv_l1_depth', 'scale_inv_l1_depth'):
+        for mname in ('rmse_depth', 'affine_inv_rmse_depth', 'scale_inv_rmse_depth'):
             gm = GlobalMetric.query.filter_by(name=mname).first()
             if gm is None:
                 continue
