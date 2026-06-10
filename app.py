@@ -10559,9 +10559,11 @@ def leaderboard_view(leaderboard_id):
     # row was created at LB-create time for preview-only datasets;
     # the page surfaces status + a retry button when failed.
     materialization = leaderboard.materialization
+    eval_summary = _lb_eval_summary(leaderboard)
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
                            materialization=materialization,
+                           eval_summary=eval_summary,
                            dataset_thumbs=dataset_thumbs,
                            pred_field_schema=pred_field_schema,
                            submission_predict_lines=submission_predict_lines,
@@ -12290,6 +12292,45 @@ def _lb_scoped_samples(leaderboard_id, sample_names=None):
         _VirtualSample(name, idx + 1, grouped.get(name, []), display.get(name))
         for idx, name in enumerate(order)
     ]
+
+
+def _lb_eval_summary(lb):
+    """Compact, display-only summary of the sample set this LB scores
+    submissions against — mirrors `_iter_lb_eval_samples`' source selection so
+    the LB page can show the eval-set size + sampling for EVERY board, not just
+    ones with a per-LB materialisation.
+
+    Returns `{count, source, sampling, seed, stratify_field}` where `source` is
+    'materialized' (a per-LB full-res subset, sub-sampled at create time) or
+    'dataset' (the attached dataset's cached samples, evaluated whole). Counts
+    via aggregate queries — never materialises the Sample rows."""
+    mat = getattr(lb, 'materialization', None)
+    if mat and mat.status == 'ready':
+        if _lb_scoped_gt_exists(lb.id):
+            count = db.session.query(
+                func.count(func.distinct(CustomField.sample_name))
+            ).filter(
+                CustomField.leaderboard_id == lb.id,
+                CustomField.submission_id.is_(None),
+                CustomField.sample_id.is_(None),
+                CustomField.sample_name.isnot(None),
+            ).scalar() or 0
+        else:
+            from benchhub.lb_materialize import list_materialized_samples
+            count = len(list_materialized_samples(app.config['UPLOAD_FOLDER'], lb.id))
+        return {'count': count, 'source': 'materialized',
+                'sampling': mat.sampling, 'seed': mat.sampling_seed,
+                'stratify_field': mat.stratify_field}
+    # No per-LB materialisation: the LB scores against the attached dataset's
+    # cached (preview-tier) samples, evaluated whole. The dataset's own
+    # import-time sampling is shown on the dataset page, not here.
+    ds_ids = {a.dataset.id for a in lb.attachments
+              if a.role == 'primary' and a.dataset is not None}
+    ds_ids |= {d.id for d in (lb.datasets or [])}
+    count = (db.session.query(func.count(Sample.id))
+             .filter(Sample.dataset_id.in_(ds_ids)).scalar() or 0) if ds_ids else 0
+    return {'count': count, 'source': 'dataset',
+            'sampling': None, 'seed': None, 'stratify_field': None}
 
 
 def _iter_lb_eval_samples(lb):

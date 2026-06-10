@@ -538,6 +538,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {{ leaderboard.upload_date.strftime('%Y-%m-%d %H:%M') if leaderboard.upload_date else '—' }}
                 <span class="mx-2 opacity-50">|</span>
                 <i class="bi bi-people me-1"></i>{{ leaderboard.submissions|length }} submission{{ '' if leaderboard.submissions|length == 1 else 's' }}
+                {# Eval-set summary, shown for EVERY board (the detailed
+                   materialization panel below only renders when a per-LB
+                   materialisation exists). #}
+                {% if eval_summary and eval_summary.count %}
+                <span class="mx-2 opacity-50">|</span>
+                {% if eval_summary.source == 'materialized' %}
+                <i class="bi bi-hdd-check me-1"
+                   title="Full-resolution subset materialised for this leaderboard."></i>{{ '{:,}'.format(eval_summary.count) }} samples evaluated —
+                {% if eval_summary.sampling == 'stratified' %}stratified{% if eval_summary.stratify_field %} by {{ eval_summary.stratify_field }}{% endif %}{% elif eval_summary.sampling == 'head' %}head-order{% else %}{{ eval_summary.sampling or 'random' }}{% endif %} sampling (seed {{ eval_summary.seed }})
+                {% else %}
+                <i class="bi bi-grid-3x3 me-1"
+                   title="Submissions are scored against the full attached dataset's cached samples."></i>{{ '{:,}'.format(eval_summary.count) }} samples evaluated — full attached dataset
+                {% endif %}
+                {% endif %}
             </p>
 
             {# Dataset / HF source rail — same look as the dataset
