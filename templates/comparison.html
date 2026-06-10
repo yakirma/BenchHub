@@ -708,16 +708,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% for col_key in selected_comparison_display_columns %}
                         {% if all_field_types.get(col_key) != 'metric' %}
                         {% if col_key == 'per_source_stats' %}
-                        {% if has_gt_scalars_or_metrics %}
-                        <th draggable="true"
-                            style="width: {{ global_settings.config_width }}; min-width: {{ global_settings.config_width }}; overflow: hidden; text-overflow: ellipsis;">
-                            GT Stats<div class="resizer"></div>
-                        </th>
-                        {% endif %}
-                        {% if has_pred_nonmetric_stats %}
+                        {# Single merged Stats column (GT + submissions),
+                           non-metric only. Sits right of the metric chart. #}
+                        {% if has_stats_column %}
                         <th draggable="true"
                             style="width: 500px; min-width: 500px; overflow: hidden; text-overflow: ellipsis;">
-                            Submission Stats<div class="resizer"></div>
+                            Stats<div class="resizer"></div>
                         </th>
                         {% endif %}
 
@@ -918,195 +914,50 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endif %}
                         {% endfor %}
 
-                        {# GT Stats Cell — suppressed when the LB has
-                           no scalar/metric GT custom fields. #}
-                        {% if has_gt_scalars_or_metrics %}
+                        {# Merged Stats cell — one column for GT + every submission,
+                           non-metric only (scalars + GT/predicted labels). Rows are the
+                           non-metric fields; a GT-role field fills only the GT column, a
+                           prediction field fills the Sub columns. Metric values are omitted
+                           on purpose (they live in the metrics chart). #}
+                        {% if has_stats_column %}
+                        {% set stat_fields = (display_scalars + display_labels)|sort %}
                         <td>
                             <div style="max-height: 250px; overflow-y: auto;">
                                 <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
                                     <thead>
                                         <tr>
                                             <th></th>
-                                            <th></th> {# Removed GT Label #}
+                                            {% if has_gt_nonmetric_stats %}<th>GT</th>{% endif %}
+                                            {% for sub in submissions %}<th>Sub{{ loop.index }}</th>{% endfor %}
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {% if display_metrics %}
-                                        {% set gt_metrics_present = [] %}
-                                        {% for m in display_metrics|sort %}
-                                        {% set gt_val = data.ground_truth.custom_fields.get(m) if
-                                        data.ground_truth.custom_fields else none %}
-                                        {% if gt_val is not none %}
-                                        {% set _ = gt_metrics_present.append((m, gt_val)) %}
-                                        {% endif %}
-                                        {% endfor %}
-
-                                        {% if gt_metrics_present %}
+                                        {% for f in stat_fields %}
+                                        {% set is_gt_field = f in dataset_custom_fields %}
+                                        {% set ftype = all_field_types.get(f) %}
+                                        {% set f_names = label_vocabs.get(f) %}
+                                        {% set gt_val = data.ground_truth.custom_fields.get(f) if data.ground_truth.custom_fields else none %}
                                         <tr>
-                                            <td colspan="2" class="fw-bold bg-body-secondary">Metrics</td>
-                                        </tr>
-                                        {% for m, gt_val in gt_metrics_present %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;"
-                                                title="{{ metric_labels.get(m, m) }}">{{ metric_labels.get(m, m) }}
-                                            </td>
-                                            <td>{{ "%.4f"|format(gt_val) if gt_val is number else gt_val }}</td>
-                                        </tr>
-                                        {% endfor %}
-                                        {% endif %}
-                                        {% endif %}
-
-                                        {% if display_scalars %}
-                                        {% set gt_scalars_present = [] %}
-                                        {% for s in display_scalars|sort %}
-                                        {% set gt_val = data.ground_truth.custom_fields.get(s) if
-                                        data.ground_truth.custom_fields else none %}
-                                        {% if gt_val is not none %}
-                                        {% set _ = gt_scalars_present.append((s, gt_val)) %}
-                                        {% endif %}
-                                        {% endfor %}
-
-                                        {% if gt_scalars_present %}
-                                        <tr>
-                                            <td colspan="2" class="fw-bold bg-body-secondary">Scalars</td>
-                                        </tr>
-                                        {% for s, gt_val in gt_scalars_present %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ s }}">{{ s }}
-                                            </td>
-                                            <td>{{ "%.4f"|format(gt_val) if gt_val is number else gt_val }}</td>
-                                        </tr>
-                                        {% endfor %}
-                                        {% endif %}
-                                        {% endif %}
-
-                                        {% if display_labels %}
-                                        {% set gt_labels_present = [] %}
-                                        {% for lbl in display_labels|sort %}
-                                        {% set gt_val = data.ground_truth.custom_fields.get(lbl) if
-                                        data.ground_truth.custom_fields else none %}
-                                        {% if gt_val is not none %}
-                                        {% set _ = gt_labels_present.append((lbl, gt_val)) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% if gt_labels_present %}
-                                        <tr>
-                                            <td colspan="2" class="fw-bold bg-body-secondary">Labels</td>
-                                        </tr>
-                                        {% for lbl, gt_val in gt_labels_present %}
-                                        {% set gt_names = label_vocabs.get(lbl) %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ lbl }}">{{ lbl }}
-                                            </td>
-                                            <td>{% if gt_val is iterable and gt_val is not string %}{{ gt_val|map('label_display', gt_names)|join(', ') }}{% else %}{{ gt_val|label_display(gt_names) }}{% endif %}</td>
-                                        </tr>
-                                        {% endfor %}
-                                        {% endif %}
-                                        {% endif %}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </td>
-                        {% endif %}
-
-                        {# Submission Stats Cell — only non-metric stats
-                           (scalars + predicted labels). Metric values are
-                           omitted on purpose: they already live in the
-                           metrics chart, so repeating them here is noise.
-                           Suppressed entirely when the LB has no such
-                           pred fields. #}
-                        {% if has_pred_nonmetric_stats %}
-                        <td>
-                            <div style="max-height: 250px; overflow-y: auto;">
-                                <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
-                                    <thead>
-                                        <tr>
-                                            <th></th>
-                                            {% for sub in submissions %}
-                                            <th>Sub{{ loop.index }}</th>
-                                            {% endfor %}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {# Submission Scalars / Labels: only render fields that AT
-                                           LEAST ONE submission has a value for. Mirrors the GT-side
-                                           filter above so a GT-only field (e.g. `label` on an HF LB)
-                                           doesn't produce an all-dashes row under "Sub1". Metric
-                                           rows are intentionally NOT rendered here (see the chart). #}
-                                        {% set sub_scalars_present = [] %}
-                                        {% for s in display_scalars|sort %}
-                                        {% set _row_values = [] %}
-                                        {% for pred in data.predictions %}
-                                        {% if pred and pred[s] is defined and pred[s] is number %}
-                                        {% set _ = _row_values.append(pred[s]) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% if _row_values %}
-                                        {% set _ = sub_scalars_present.append((s, _row_values)) %}
-                                        {% endif %}
-                                        {% endfor %}
-
-                                        {% if sub_scalars_present %}
-                                        <tr>
-                                            <td colspan="{{ submissions|length + 1 }}"
-                                                class="fw-bold bg-body-secondary">Scalars</td>
-                                        </tr>
-                                        {% for s, row_values in sub_scalars_present %}
-                                        {% set row_min = row_values|min %}
-                                        {% set row_max = row_values|max %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ s }}">{{ s }}
-                                            </td>
-                                            {% for sub in submissions %}
-                                            {% set pred = data.predictions[loop.index0] %}
-                                            {% set val = pred[s] if pred and pred[s] is defined else none %}
-                                            <td id="metric-{{ sub.id }}-{{ s }}-{{ data.sample_id }}"
-                                                style="{{ get_color_row(val, s, row_min, row_max, metric_directions) }}">
-                                                {% if val is not none %}
-                                                {{ "%.4f"|format(val) if val is number else val }}
+                                            <td class="text-truncate" style="max-width: 120px;" title="{{ f }}">{{ f }}</td>
+                                            {% if has_gt_nonmetric_stats %}
+                                            <td>
+                                                {% if is_gt_field and gt_val is not none %}
+                                                    {% if ftype in ['label', 'label_list'] %}{% if gt_val is iterable and gt_val is not string %}{{ gt_val|map('label_display', f_names)|join(', ') }}{% else %}{{ gt_val|label_display(f_names) }}{% endif %}
+                                                    {% else %}{{ "%.4f"|format(gt_val) if gt_val is number else gt_val }}{% endif %}
                                                 {% else %}-{% endif %}
                                             </td>
-                                            {% endfor %}
-                                        </tr>
-                                        {% endfor %}
-                                        {% endif %}
-
-                                        {# Predicted labels (class / top-K). Non-numeric →
-                                           shown plainly, with a green tint when the prediction
-                                           matches the GT label for this sample. #}
-                                        {% set sub_labels_present = [] %}
-                                        {% for lbl in display_labels|sort %}
-                                        {% set _has = [] %}
-                                        {% for pred in data.predictions %}
-                                        {% if pred and pred[lbl] is defined and pred[lbl] is not none %}
-                                        {% set _ = _has.append(1) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% if _has %}{% set _ = sub_labels_present.append(lbl) %}{% endif %}
-                                        {% endfor %}
-                                        {% if sub_labels_present %}
-                                        <tr>
-                                            <td colspan="{{ submissions|length + 1 }}"
-                                                class="fw-bold bg-body-secondary">Labels</td>
-                                        </tr>
-                                        {% for lbl in sub_labels_present %}
-                                        {% set lbl_names = label_vocabs.get(lbl) %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;" title="{{ lbl }}">{{ lbl }}
-                                            </td>
+                                            {% endif %}
                                             {% for sub in submissions %}
                                             {% set pred = data.predictions[loop.index0] %}
-                                            {% set val = pred[lbl] if pred and pred[lbl] is defined else none %}
-                                            {# Labels are not colour-coded (only metric rows are). #}
+                                            {% set val = pred[f] if pred and pred[f] is defined else none %}
                                             <td>
                                                 {% if val is none %}-
-                                                {% elif val is iterable and val is not string %}{{ val|map('label_display', lbl_names)|join(', ') }}
-                                                {% else %}{{ val|label_display(lbl_names) }}{% endif %}
+                                                {% elif ftype in ['label', 'label_list'] %}{% if val is iterable and val is not string %}{{ val|map('label_display', f_names)|join(', ') }}{% else %}{{ val|label_display(f_names) }}{% endif %}
+                                                {% else %}{{ "%.4f"|format(val) if val is number else val }}{% endif %}
                                             </td>
                                             {% endfor %}
                                         </tr>
                                         {% endfor %}
-                                        {% endif %}
                                     </tbody>
                                 </table>
                             </div>

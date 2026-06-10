@@ -232,25 +232,26 @@ def get_column_priority(key, column_type=None, is_dataset_field=False):
     (lower = further left).
 
     Layout, left → right:
-      sample name → tags → GT data fields → pred data fields →
-      metric chart → stats → leaderboard viz → leftovers.
+      sample name → tags → metric chart → stats → GT data fields →
+      pred data fields → leaderboard viz → leftovers.
 
-    The *data fields* are grouped by role — every GT (dataset) field
-    before every prediction (submission) field — and within each role
-    block ordered by modality: text → image → mask → depth → audio →
-    sequence → json → histogram → scalar → label → other. The metric
-    chart sits immediately LEFT of the stats column; name/tags/chart/
-    stats are fixed and never enter the data-field modality ordering.
+    The metric chart and the stats column sit to the LEFT of every data
+    field (chart immediately left of stats). The *data fields* are then
+    grouped by role — every GT (dataset) field before every prediction
+    (submission) field — and within each role block ordered by modality:
+    text → image → mask → depth → audio → sequence → json → histogram →
+    scalar → label → other. name/tags/chart/stats are fixed and never
+    enter the data-field modality ordering.
     """
     # --- fixed framing columns ---
     if key == 'sample_name': return 0
     if key in ('dataset_tags', 'tags'): return 10
-    # Summary columns sit to the RIGHT of the data fields; the metrics
-    # chart is immediately LEFT of the stats column(s). (gt/pred
-    # histograms are also charts but belong with their role's data block,
-    # handled below — so only the metrics chart / metric columns land here.)
-    if key == 'per_sample_metrics' or column_type == 'metric': return 800
-    if key == 'per_source_stats' or column_type == 'stats': return 810
+    # Metric chart + stats sit LEFT of all data fields; the chart is
+    # immediately left of the stats column. (gt/pred histograms are also
+    # charts but belong with their role's data block, handled below — so
+    # only the metrics chart / metric columns land here.)
+    if key == 'per_sample_metrics' or column_type == 'metric': return 20
+    if key == 'per_source_stats' or column_type == 'stats': return 30
     # Leaderboard visualisations: far right.
     if key.startswith('viz_'): return 900
 
@@ -14305,30 +14306,28 @@ def comparison_view(leaderboard_id):
     if not has_gt_config: available_display_options.pop('gt_config', None)
     if not has_dataset_tags: available_display_options.pop('dataset_tags', None)
 
-    # GT-side / Submission-side scalar+metric presence drives whether
-    # the two per_source_stats columns render in the template. If both
-    # sides are empty the whole option goes away from View Options too.
-    # The per_source_stats panel now also surfaces label / label_list
-    # (GT class + predicted class), so labels alone are enough to show it.
-    _STATS_KINDS = ('scalar', 'metric', 'label', 'label_list')
-    # The submission stats cell deliberately excludes 'metric' fields —
-    # their per-sample values already live in the metrics chart, so
-    # repeating them here is noise. Only non-metric stats (scalars +
-    # predicted labels) keep the submission stats column alive.
-    _PRED_STATS_KINDS = ('scalar', 'label', 'label_list')
-    has_gt_scalars_or_metrics = any(
-        all_field_types.get(fn) in _STATS_KINDS
+    # The (single, merged) per_source_stats column shows ONLY non-metric
+    # stats — scalars + GT/predicted labels. Metric fields are excluded on
+    # purpose: their per-sample values already live in the metrics chart,
+    # so repeating them here is noise. The column renders iff EITHER the GT
+    # side or some submission has a non-metric stat field; otherwise the
+    # whole option is dropped (also from View Options).
+    _NONMETRIC_STATS = ('scalar', 'label', 'label_list')
+    has_gt_nonmetric_stats = any(
+        all_field_types.get(fn) in _NONMETRIC_STATS
         for fn in dataset_custom_fields
     )
     has_pred_nonmetric_stats = any(
-        all_field_types.get(fn) in _PRED_STATS_KINDS
+        all_field_types.get(fn) in _NONMETRIC_STATS
         for sub_id, fns in submission_custom_fields.items()
         for fn in fns
         if fn not in dataset_custom_fields
     )
-    # Back-compat alias still consumed in a couple of places.
+    has_stats_column = has_gt_nonmetric_stats or has_pred_nonmetric_stats
+    # Back-compat aliases still referenced elsewhere in this view.
+    has_gt_scalars_or_metrics = has_gt_nonmetric_stats
     has_pred_scalars_or_metrics = has_pred_nonmetric_stats
-    if not (has_gt_scalars_or_metrics or has_pred_nonmetric_stats):
+    if not has_stats_column:
         available_display_options.pop('per_source_stats', None)
 
     # 2. Check Submission fields (heuristic: check first sample for each submission)
@@ -14558,6 +14557,8 @@ def comparison_view(leaderboard_id):
                            has_gt_scalars_or_metrics=has_gt_scalars_or_metrics,
                            has_pred_scalars_or_metrics=has_pred_scalars_or_metrics,
                            has_pred_nonmetric_stats=has_pred_nonmetric_stats,
+                           has_gt_nonmetric_stats=has_gt_nonmetric_stats,
+                           has_stats_column=has_stats_column,
                            submission_has_histogram=submission_has_histogram,
                            paginated_samples=paginated_samples, 
                            per_page_options=[5, 10, 20, 100], 
