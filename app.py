@@ -232,26 +232,27 @@ def get_column_priority(key, column_type=None, is_dataset_field=False):
     (lower = further left).
 
     Layout, left → right:
-      sample name → tags → metric chart → stats → GT data fields →
+      sample name → metric chart → stats → tags → GT data fields →
       pred data fields → leaderboard viz → leftovers.
 
-    The metric chart and the stats column sit to the LEFT of every data
-    field (chart immediately left of stats). The *data fields* are then
-    grouped by role — every GT (dataset) field before every prediction
-    (submission) field — and within each role block ordered by modality:
-    text → image → mask → depth → audio → sequence → json → histogram →
-    scalar → label → other. name/tags/chart/stats are fixed and never
-    enter the data-field modality ordering.
+    The metric chart sits immediately right of the sample name, and the
+    stats column immediately right of the chart (both LEFT of every data
+    field). The *data fields* are then grouped by role — every GT
+    (dataset) field before every prediction (submission) field — and
+    within each role block ordered by modality: text → image → mask →
+    depth → audio → sequence → json → histogram → scalar → label → other.
+    name/chart/stats/tags are fixed and never enter the data-field
+    modality ordering.
     """
     # --- fixed framing columns ---
     if key == 'sample_name': return 0
-    if key in ('dataset_tags', 'tags'): return 10
-    # Metric chart + stats sit LEFT of all data fields; the chart is
-    # immediately left of the stats column. (gt/pred histograms are also
-    # charts but belong with their role's data block, handled below — so
-    # only the metrics chart / metric columns land here.)
-    if key == 'per_sample_metrics' or column_type == 'metric': return 20
-    if key == 'per_source_stats' or column_type == 'stats': return 30
+    # Metric chart + stats hug the sample-name column on the left, before
+    # tags and all data fields. (gt/pred histograms are also charts but
+    # belong with their role's data block, handled below — so only the
+    # metrics chart / metric columns land here.)
+    if key == 'per_sample_metrics' or column_type == 'metric': return 10
+    if key == 'per_source_stats' or column_type == 'stats': return 20
+    if key in ('dataset_tags', 'tags'): return 30
     # Leaderboard visualisations: far right.
     if key.startswith('viz_'): return 900
 
@@ -13618,6 +13619,21 @@ def comparison_view(leaderboard_id):
     dataset_custom_fields = {name for name, ftype in dataset_custom_fields_query
                              if ftype in _RENDERABLE_KINDS and not _is_source_ref(name, ftype)}
     dataset_field_types = {name: ftype for name, ftype in dataset_custom_fields_query}
+
+    # When the LB pins explicit field roles, only surface the dataset
+    # fields it actually uses (role input/gt). Fields the owner left
+    # unassigned — e.g. nyuv2's `semantic`/`instance` masks on a
+    # depth-only LB, cifar100's `coarse_label` (marked skip), or a bare
+    # `id` column — are noise in the comparison and get dropped. LBs with
+    # no explicit roles keep showing every renderable field (legacy).
+    _lb_roles_for_cols = _lb_field_roles(leaderboard)
+    if _lb_roles_for_cols:
+        _allowed_ds_fields = {n for n, r in _lb_roles_for_cols.items()
+                              if r in ('input', 'gt')}
+        dataset_custom_fields = {n for n in dataset_custom_fields
+                                 if n in _allowed_ds_fields}
+        dataset_field_types = {n: t for n, t in dataset_field_types.items()
+                               if n in dataset_custom_fields}
     
     # Submission fields
     sub_ids = [s.id for s in submissions]
