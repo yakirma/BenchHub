@@ -13641,24 +13641,27 @@ def comparison_view(leaderboard_id):
 
     gt_col_badges = {}        # col_key -> [badges]
     sub_col_badges = {}       # col_key -> {sub_id -> [badges]}
-    _samp_ids = [s.id for s in samples]
-    if _samp_ids:
-        for name, dp in (db.session.query(CustomField.name, CustomField.data_params)
-                         .filter(CustomField.sample_id.in_(_samp_ids),
-                                 CustomField.data_params.isnot(None))
-                         .group_by(CustomField.name).all()):
-            b = _param_badges(dp)
-            if b:
-                gt_col_badges[name] = b
-    _sub_ids = [s.id for s in submissions]
-    if _sub_ids:
-        for sid, name, dp in (db.session.query(CustomField.submission_id, CustomField.name, CustomField.data_params)
-                              .filter(CustomField.submission_id.in_(_sub_ids),
-                                      CustomField.data_params.isnot(None))
-                              .group_by(CustomField.submission_id, CustomField.name).all()):
-            b = _param_badges(dp)
-            if b:
-                sub_col_badges.setdefault(name, {})[sid] = b
+    if hf_stub_mode:
+        _gt_pq = db.session.query(CustomField.name, CustomField.data_params).filter(
+            CustomField.leaderboard_id == leaderboard.id,
+            CustomField.submission_id.is_(None), CustomField.sample_id.is_(None),
+            CustomField.data_params.isnot(None)).distinct()
+    else:
+        _gt_pq = db.session.query(CustomField.name, CustomField.data_params).join(Sample).filter(
+            Sample.dataset_id.in_(dataset_ids), CustomField.submission_id.is_(None),
+            CustomField.data_params.isnot(None)).distinct()
+    for name, dp in _gt_pq.all():
+        b = _param_badges(dp)
+        if b:
+            gt_col_badges[name] = b
+    for sid, name, dp in (db.session.query(
+            CustomField.submission_id, CustomField.name, CustomField.data_params)
+            .join(Submission, Submission.id == CustomField.submission_id)
+            .filter(Submission.leaderboard_id == leaderboard.id,
+                    CustomField.data_params.isnot(None)).distinct().all()):
+        b = _param_badges(dp)
+        if b:
+            sub_col_badges.setdefault(name, {})[sid] = b
     
     # Map internal IDs to labels for all metrics including dynamic ones
     metric_labels = {}
