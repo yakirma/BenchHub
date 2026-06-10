@@ -155,6 +155,27 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         background-color: #0d6efd;
     }
 
+    /* Sticky column headers. The table body scrolls INSIDE
+       #table-container (height-bounded to the viewport by JS so the page
+       itself doesn't scroll and the submission legend above stays
+       visible), and the outer header row stays pinned at the top.
+       `> thead` keeps this off the nested per-source-stats sub-tables. */
+    #table-container {
+        overflow-y: auto;
+    }
+
+    #comparison-table > thead th {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background-color: var(--bs-tertiary-bg);
+        /* .table-bordered borders live on the cells and scroll away with
+           the body; redraw top+bottom as insets that travel with the
+           pinned header so it stays visually separated. */
+        box-shadow: inset 0 1px 0 var(--bs-border-color),
+                    inset 0 -2px 0 var(--bs-border-color);
+    }
+
 
     /* Tag Input Styles */
     .tag-input-wrapper {
@@ -693,7 +714,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             GT Stats<div class="resizer"></div>
                         </th>
                         {% endif %}
-                        {% if has_pred_scalars_or_metrics %}
+                        {% if has_pred_nonmetric_stats %}
                         <th draggable="true"
                             style="width: 500px; min-width: 500px; overflow: hidden; text-overflow: ellipsis;">
                             Submission Stats<div class="resizer"></div>
@@ -988,9 +1009,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         </td>
                         {% endif %}
 
-                        {# Submission Stats Cell — suppressed when the
-                           LB has no scalar/metric pred custom fields. #}
-                        {% if has_pred_scalars_or_metrics %}
+                        {# Submission Stats Cell — only non-metric stats
+                           (scalars + predicted labels). Metric values are
+                           omitted on purpose: they already live in the
+                           metrics chart, so repeating them here is noise.
+                           Suppressed entirely when the LB has no such
+                           pred fields. #}
+                        {% if has_pred_nonmetric_stats %}
                         <td>
                             <div style="max-height: 250px; overflow-y: auto;">
                                 <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
@@ -1003,49 +1028,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {# Submission Metrics / Scalars: only render fields that AT
+                                        {# Submission Scalars / Labels: only render fields that AT
                                            LEAST ONE submission has a value for. Mirrors the GT-side
                                            filter above so a GT-only field (e.g. `label` on an HF LB)
-                                           doesn't produce an all-dashes row under "Sub1". #}
-                                        {% set sub_metrics_present = [] %}
-                                        {% for m in display_metrics|sort %}
-                                        {% set _row_values = [] %}
-                                        {% for pred in data.predictions %}
-                                        {% if pred and pred[m] is defined and pred[m] is number %}
-                                        {% set _ = _row_values.append(pred[m]) %}
-                                        {% endif %}
-                                        {% endfor %}
-                                        {% if _row_values %}
-                                        {% set _ = sub_metrics_present.append((m, _row_values)) %}
-                                        {% endif %}
-                                        {% endfor %}
-
-                                        {% if sub_metrics_present %}
-                                        <tr>
-                                            <td colspan="{{ submissions|length + 1 }}"
-                                                class="fw-bold bg-body-secondary">Metrics</td>
-                                        </tr>
-                                        {% for m, row_values in sub_metrics_present %}
-                                        {% set row_min = row_values|min %}
-                                        {% set row_max = row_values|max %}
-                                        <tr>
-                                            <td class="text-truncate" style="max-width: 100px;"
-                                                title="{{ metric_labels.get(m, m) }}">{{ metric_labels.get(m, m) }}
-                                            </td>
-                                            {% for sub in submissions %}
-                                            {% set pred = data.predictions[loop.index0] %}
-                                            {% set val = pred[m] if pred and pred[m] is defined else none %}
-                                            <td id="metric-{{ sub.id }}-{{ m }}-{{ data.sample_id }}"
-                                                style="{{ get_color_row(val, m, row_min, row_max, metric_directions) }}">
-                                                {% if val is not none %}
-                                                {{ "%.4f"|format(val) if val is number else val }}
-                                                {% else %}-{% endif %}
-                                            </td>
-                                            {% endfor %}
-                                        </tr>
-                                        {% endfor %}
-                                        {% endif %}
-
+                                           doesn't produce an all-dashes row under "Sub1". Metric
+                                           rows are intentionally NOT rendered here (see the chart). #}
                                         {% set sub_scalars_present = [] %}
                                         {% for s in display_scalars|sort %}
                                         {% set _row_values = [] %}
@@ -1616,6 +1603,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
         ro.observe(table);
         ro.observe(tableContainer);
+
+        // Bound the table's height to the remaining viewport so vertical
+        // scrolling happens INSIDE the container (sticky header pins) and
+        // the page itself doesn't scroll (submission legend stays put).
+        function sizeTableViewport() {
+            const docTop = tableContainer.getBoundingClientRect().top + window.scrollY;
+            const h = window.innerHeight - docTop - 24;  // small bottom gutter
+            tableContainer.style.maxHeight = Math.max(h, 320) + 'px';
+        }
+        sizeTableViewport();
+        window.addEventListener('resize', sizeTableViewport);
+        // Re-measure once late content (images, charts) has reflowed the
+        // rows above the table.
+        window.addEventListener('load', sizeTableViewport);
     }
 
     // --- UI Refresh / Polling Logic ---

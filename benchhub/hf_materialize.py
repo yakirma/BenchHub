@@ -119,10 +119,22 @@ def _pick_indices(
         return sorted(rng.sample(range(total), n))
 
     col = label_field.get("source_column") or label_field["name"]
+    # Fetch the label column in ONE shot rather than `ds[i]` per row —
+    # row indexing decodes every column (including any Image), so a
+    # row-by-row scan would decode the whole image set just to read the
+    # class id. `ds[col]` materialises only the label column (ints for a
+    # ClassLabel feature). Fall back to row access if bulk fails.
+    try:
+        col_values = list(ds[col])
+    except Exception:
+        col_values = None
     buckets: dict[Any, list[int]] = {}
     for i in range(total):
-        row = ds[i]
-        v = row.get(col) if isinstance(row, dict) else None
+        if col_values is not None:
+            v = col_values[i]
+        else:
+            row = ds[i]
+            v = row.get(col) if isinstance(row, dict) else None
         if v is None:
             continue
         # Class values must be hashable; cast tuples/lists to str so
@@ -424,6 +436,34 @@ def materialize_hf_to_typed_dir(
         f["params"] = params
 
     total = len(ds)
+
+    # --- Classification coverage policy --------------------------------
+    # A dataset whose GT is a class label must cache EVERY class with a
+    # healthy number of examples, or the preview/eval set silently drops
+    # classes — head sampling on a class-sorted split (the common HF
+    # layout) grabs only the first few classes. So for any capped import
+    # with a `label`/`labellist` GT field: force *stratified* sampling
+    # and raise the cap to max(2000, 10 × n_classes) — at least 10 images
+    # per class, or ~2000 spread uniformly across classes when there are
+    # few enough to fit. Untouched when the admin imports the whole split
+    # (cap <= 0 already covers every class).
+    _label_field = next(
+        (f for f in fields
+         if (f.get("role") or "gt") == "gt"
+         and f.get("kind") in ("label", "labellist")),
+        None,
+    )
+    if _label_field is not None and sample_cap is not None and sample_cap > 0:
+        _names = (_label_field.get("params") or {}).get("names")
+        _n_classes = len(_names) if _names else None
+        if _n_classes:
+            _policy_cap = max(2000, 10 * _n_classes)
+            if sample_cap < _policy_cap:
+                sample_cap = _policy_cap
+        # Stratify so per-class counts are balanced and complete,
+        # independent of how the source split is ordered.
+        sampling = "stratified"
+
     # sample_cap <= 0 means "import every row" — the admin set max
     # samples to -1 (or left it blank). Pre-materialize quota check
     # in the route is what's keeping unlimited imports from blowing

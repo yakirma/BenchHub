@@ -228,46 +228,52 @@ oauth.register(
 
 # Helper to determine column priority for sorting
 def get_column_priority(key, column_type=None, is_dataset_field=False):
+    """Return a numeric sort key for a comparison/dataset table column
+    (lower = further left).
+
+    Layout, left → right:
+      sample name → tags → GT data fields → pred data fields →
+      metric chart → stats → leaderboard viz → leftovers.
+
+    The *data fields* are grouped by role — every GT (dataset) field
+    before every prediction (submission) field — and within each role
+    block ordered by modality: text → image → mask → depth → audio →
+    sequence → json → histogram → scalar → label → other. The metric
+    chart sits immediately LEFT of the stats column; name/tags/chart/
+    stats are fixed and never enter the data-field modality ordering.
     """
-    Returns a numeric priority for a column key.
-    Lower number means higher priority (appears first).
-    Desired order: sample name - tags - charts - config - histograms - images - scalars
-    Dataset fields (GT) always come before Submission fields within the same type.
-    """
-    # Group 0: Metadata
+    # --- fixed framing columns ---
     if key == 'sample_name': return 0
-    
-    # Group 1: Tags (right after name)
-    if key in ['dataset_tags', 'tags']: return 5
-    
-    # Group 2: Charts (Metrics)
-    # gt_metrics removed
-    # per_sample_metrics removed
-    if key == 'per_source_stats': return 12
-    
-    # Group 3: Config/JSON
-    if key in ['gt_config', 'signal_shape']: return 30
-    if key == 'config': return 31
-    # GT JSON fields: 35, Submission JSON fields: 36
-    if column_type == 'json':
-        return 35 if is_dataset_field else 36
-    
-    # Group 4: Histograms
-    if key == 'gt_histogram': return 40
-    if key == 'histogram' or key.startswith('histogram_'): return 41
-    
-    # Group 5: Images (Custom fields)
-    # GT images: 50, Submission images: 51
-    if column_type in ['image', 'depth']:
-        return 50 if is_dataset_field else 51
-    
-    # Group 6: Scalars (Custom fields)
-    # GT scalars: 60, Submission scalars: 61
-    if column_type == 'scalar':
-        return 60 if is_dataset_field else 61
-        
-    return 100
- 
+    if key in ('dataset_tags', 'tags'): return 10
+    # Summary columns sit to the RIGHT of the data fields; the metrics
+    # chart is immediately LEFT of the stats column(s). (gt/pred
+    # histograms are also charts but belong with their role's data block,
+    # handled below — so only the metrics chart / metric columns land here.)
+    if key == 'per_sample_metrics' or column_type == 'metric': return 800
+    if key == 'per_source_stats' or column_type == 'stats': return 810
+    # Leaderboard visualisations: far right.
+    if key.startswith('viz_'): return 900
+
+    # --- data fields: GT block (100s) before pred block (200s) ---
+    _MOD = {'text': 0, 'image': 1, 'mask': 2, 'depth': 3, 'audio': 4,
+            'sequence': 5, 'json': 6, 'histogram': 7, 'chart': 7,
+            'scalar': 8, 'label': 9, 'label_list': 9}
+    # Role: explicit gt_/known keys win, else the dataset-field flag.
+    if key in ('gt_config', 'gt_histogram', 'signal_shape'):
+        is_gt = True
+    elif key in ('config', 'histogram', 'pred_histogram'):
+        is_gt = False
+    else:
+        is_gt = bool(is_dataset_field)
+    # Modality from explicit keys when the column_type is generic.
+    if key in ('gt_config', 'config', 'signal_shape'):
+        mod = _MOD['json']
+    elif key in ('gt_histogram', 'histogram', 'pred_histogram') or key.startswith('histogram_'):
+        mod = _MOD['histogram']
+    else:
+        mod = _MOD.get(column_type, 20)
+    return (100 if is_gt else 200) + mod
+
 
 # Define available display options for Dataset View
 # Reordered by priority: Name > Charts > Tags > Config > Histograms
@@ -14305,17 +14311,24 @@ def comparison_view(leaderboard_id):
     # The per_source_stats panel now also surfaces label / label_list
     # (GT class + predicted class), so labels alone are enough to show it.
     _STATS_KINDS = ('scalar', 'metric', 'label', 'label_list')
+    # The submission stats cell deliberately excludes 'metric' fields —
+    # their per-sample values already live in the metrics chart, so
+    # repeating them here is noise. Only non-metric stats (scalars +
+    # predicted labels) keep the submission stats column alive.
+    _PRED_STATS_KINDS = ('scalar', 'label', 'label_list')
     has_gt_scalars_or_metrics = any(
         all_field_types.get(fn) in _STATS_KINDS
         for fn in dataset_custom_fields
     )
-    has_pred_scalars_or_metrics = any(
-        all_field_types.get(fn) in _STATS_KINDS
+    has_pred_nonmetric_stats = any(
+        all_field_types.get(fn) in _PRED_STATS_KINDS
         for sub_id, fns in submission_custom_fields.items()
         for fn in fns
         if fn not in dataset_custom_fields
     )
-    if not (has_gt_scalars_or_metrics or has_pred_scalars_or_metrics):
+    # Back-compat alias still consumed in a couple of places.
+    has_pred_scalars_or_metrics = has_pred_nonmetric_stats
+    if not (has_gt_scalars_or_metrics or has_pred_nonmetric_stats):
         available_display_options.pop('per_source_stats', None)
 
     # 2. Check Submission fields (heuristic: check first sample for each submission)
@@ -14544,6 +14557,7 @@ def comparison_view(leaderboard_id):
                            submission_custom_fields=submission_custom_fields,
                            has_gt_scalars_or_metrics=has_gt_scalars_or_metrics,
                            has_pred_scalars_or_metrics=has_pred_scalars_or_metrics,
+                           has_pred_nonmetric_stats=has_pred_nonmetric_stats,
                            submission_has_histogram=submission_has_histogram,
                            paginated_samples=paginated_samples, 
                            per_page_options=[5, 10, 20, 100], 
