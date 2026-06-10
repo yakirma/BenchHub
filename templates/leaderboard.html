@@ -238,24 +238,28 @@
     }
 </style>
 
-{% macro get_color(value, metric_name, metrics_ranges, metric_directions) %}
-{% if value is none or value is string or not metrics_ranges.get(metric_name) or metrics_ranges[metric_name].min ==
-metrics_ranges[metric_name].max %}
+{% macro get_color(value, metric_name, metrics_ranges, metric_directions, metrics_sorted) %}
+{% if value is none or value is string %}
 background-color: transparent;
-{% else %}
-{% set min_val = metrics_ranges[metric_name].min %}
-{% set max_val = metrics_ranges[metric_name].max %}
-{% set range_val = max_val - min_val %}
-{% if range_val == 0 %}
-background-color: #d1e7dd; color: #000; /* A light green for single value */
-{% else %}
-{% set normalized_value = (value - min_val) / range_val %}
+{% elif metrics_sorted and metrics_sorted.get(metric_name) and metrics_sorted[metric_name]|length > 1 %}
+{# RANK-based green: position of this value among the column's values, evenly
+   spaced. Robust to outliers — one huge value no longer crushes the rest of
+   the column into a single shade the way min-max normalisation did. #}
+{% set _sorted = metrics_sorted[metric_name] %}
+{% set _ns = namespace(below=0) %}
+{% for _v in _sorted %}{% if _v < value %}{% set _ns.below = _ns.below + 1 %}{% endif %}{% endfor %}
+{% set normalized_value = _ns.below / (_sorted|length - 1) %}
 {% if metric_directions.get(metric_name) == 'lower_is_better' %}
 {% set normalized_value = 1.0 - normalized_value %}
 {% endif %}
 {% set lightness = 95 - (normalized_value * 45) %}
 background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
-{% endif %}
+{% elif metrics_ranges.get(metric_name) and metrics_ranges[metric_name].min != metrics_ranges[metric_name].max %}
+{% set normalized_value = (value - metrics_ranges[metric_name].min) / (metrics_ranges[metric_name].max - metrics_ranges[metric_name].min) %}
+{% if metric_directions.get(metric_name) == 'lower_is_better' %}{% set normalized_value = 1.0 - normalized_value %}{% endif %}
+background-color: hsl(120, 70%, {{ (95 - (normalized_value * 45)) | int }}%); color: #000;
+{% else %}
+background-color: transparent;
 {% endif %}
 {% endmacro %}
 
@@ -1639,7 +1643,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             {% endif %}
                             <td id="metric-{{ submission.id }}-{{ metric }}" data-lb-column="metric_{{ metric }}"
                                 data-sort-value="{{ value if (value is not none and value is not string) else '' }}"
-                                style="{{ get_color(value, metric, metrics_ranges, metric_directions) }}">
+                                style="{{ get_color(value, metric, metrics_ranges, metric_directions, metrics_sorted) }}">
                                 {% if value is string %}
                                 <a href="data:text/plain;charset=utf-8,{{ value }}"
                                     download="trace_{{ metric }}_{{ submission.id }}.txt"
@@ -2016,31 +2020,33 @@ print(sub.submit(
 
     // Current metrics ranges and directions for live coloring
     let metricsRanges = {{ metrics_ranges | tojson | safe }};
+    let metricsSorted = {{ metrics_sorted | tojson | safe }};
     let metricDirections = {{ metric_directions | tojson | safe }};
 
     /**
      * JavaScript implementation of the get_color Jinja macro
      */
     function getColorJS(value, metricName) {
-        if (value === null || typeof value === 'string' || !metricsRanges[metricName]) {
+        if (value === null || typeof value === 'string') {
             return 'background-color: transparent;';
         }
-
-        const range = metricsRanges[metricName];
-        if (range.min === range.max) {
-            return 'background-color: #d1e7dd; color: #000;'; // Light green for single value
+        let normalizedValue;
+        const sorted = metricsSorted[metricName];
+        if (sorted && sorted.length > 1) {
+            // RANK-based (outlier-robust): even spacing by sorted position.
+            let below = 0;
+            for (let i = 0; i < sorted.length; i++) { if (sorted[i] < value) below++; }
+            normalizedValue = below / (sorted.length - 1);
+        } else if (metricsRanges[metricName] && metricsRanges[metricName].min !== metricsRanges[metricName].max) {
+            const range = metricsRanges[metricName];
+            normalizedValue = (value - range.min) / (range.max - range.min);
+        } else {
+            return 'background-color: transparent;';
         }
-
-        let normalizedValue = (value - range.min) / (range.max - range.min);
-
-        // Reverse if lower is better
         if (metricDirections[metricName] === 'lower_is_better') {
             normalizedValue = 1.0 - normalizedValue;
         }
-
-        // Clamp just in case
         normalizedValue = Math.max(0, Math.min(1, normalizedValue));
-
         const lightness = 95 - (normalizedValue * 45);
         return `background-color: hsl(120, 70%, ${Math.round(lightness)}%); color: #000;`;
     }
@@ -2727,6 +2733,7 @@ print(sub.submit(
                 // Handle new API format: { 'submissions': {subId: data, ...}, 'ranges': {metric: {min, max}, ...}, 'directions': {...} }
                 const submissionsData = data.submissions || data;
                 if (data.ranges) metricsRanges = data.ranges;
+                if (data.sorted) metricsSorted = data.sorted;
                 if (data.directions) metricDirections = data.directions;
 
                 let allFinished = true;

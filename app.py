@@ -10314,6 +10314,7 @@ def leaderboard_view(leaderboard_id):
             sort_order = 'asc' if _direction == 'lower_is_better' else 'desc'
 
     metrics_ranges = {}
+    metrics_sorted = {}
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
     
@@ -10457,6 +10458,11 @@ def leaderboard_view(leaderboard_id):
                 numeric_values = [v for v in values if isinstance(v, (int, float))]
                 if numeric_values:
                     metrics_ranges[metric] = {'min': min(numeric_values), 'max': max(numeric_values)}
+                    # Sorted values for rank/percentile-based cell colouring —
+                    # robust to outliers (a single huge value, e.g. plain depth
+                    # RMSE for relative-output models, no longer crushes the rest
+                    # of the column into one shade the way min-max does).
+                    metrics_sorted[metric] = sorted(numeric_values)
                 else:
                     metrics_ranges[metric] = {'min': 0, 'max': 0}
             else:
@@ -10579,6 +10585,7 @@ def leaderboard_view(leaderboard_id):
                            all_metrics=all_metrics,
                            selected_metrics=all_metrics,
                            metrics_ranges=metrics_ranges,
+                           metrics_sorted=metrics_sorted,
                             dynamic_values=calculated_dynamic_values,
                             metric_to_lm=leaderboard_metrics_map,
                             metric_labels=metric_labels,
