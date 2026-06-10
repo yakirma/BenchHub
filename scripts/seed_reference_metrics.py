@@ -47,26 +47,42 @@ _RMSE_DEPTH = """\
 import numpy as np
 import benchhub as bh
 
-def rmse(gt: bh.Depth, pred: bh.Depth):
-    \"\"\"Per-sample root mean squared error for Depth predictions.
-    Handles unit mismatch by normalising both to meters.\"\"\"
-    if gt is None or pred is None:
-        return float('nan')
-    assert isinstance(gt, bh.Depth),   f"gt must be bh.Depth, got {type(gt).__name__}"
-    assert isinstance(pred, bh.Depth), f"pred must be bh.Depth, got {type(pred).__name__}"
-    g = gt.array.astype(np.float32)
-    p = pred.array.astype(np.float32)
-    def to_meters(arr, unit):
-        if unit == 'millimeters':
-            return arr / 1000.0
-        return arr  # 'meters' or 'unitless'
-    g = to_meters(g, gt.unit)
-    p = to_meters(p, pred.unit)
-    mask = np.isfinite(g) & np.isfinite(p)
-    if not mask.any():
-        return float('nan')
-    diff = (g[mask] - p[mask]) ** 2
-    return float(np.sqrt(diff.mean()))
+def rmse_depth(gt: bh.Depth, pred: bh.Depth):
+    \"\"\"Plain depth RMSE in METERS (no scale/affine alignment). Both GT and
+    prediction are put in DEPTH space (inverting whichever is flagged
+    is_inverse), GT converted to meters, pred resized to the GT grid.
+    Rewards true metric-depth models; penalises relative/inverse-depth
+    output left unaligned.\"\"\"
+    def arr(x):
+        if x is None:
+            return None
+        a = x.array if hasattr(x, "array") else x
+        a = np.asarray(a, dtype=np.float64)
+        return a[..., 0] if a.ndim == 3 else a
+    def to_m(a, unit):
+        if unit == "millimeters":
+            return a / 1000.0
+        if unit == "centimeters":
+            return a / 100.0
+        return a
+    def resize_nn(a, shape):
+        if a.shape == shape:
+            return a
+        H, W = shape
+        yi = np.clip(np.round(np.linspace(0, a.shape[0]-1, H)).astype(int), 0, a.shape[0]-1)
+        xi = np.clip(np.round(np.linspace(0, a.shape[1]-1, W)).astype(int), 0, a.shape[1]-1)
+        return a[yi][:, xi]
+    g = arr(gt); p = arr(pred)
+    if g is None or p is None:
+        return float("nan")
+    g = to_m(g, getattr(gt, "unit", None))
+    gd = 1.0 / np.clip(g, 1e-9, None) if getattr(gt, "is_inverse", False) else g
+    pd = 1.0 / np.clip(p, 1e-9, None) if getattr(pred, "is_inverse", False) else p
+    pd = resize_nn(pd, gd.shape)
+    m = np.isfinite(gd) & np.isfinite(pd) & (gd > 1e-3)
+    if int(m.sum()) < 10:
+        return float("nan")
+    return float(np.sqrt(np.mean((pd[m] - gd[m]) ** 2)))
 """
 
 _MAE_DEPTH = """\

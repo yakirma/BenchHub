@@ -1483,7 +1483,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             let legendH = 0;
             if (legend) {
                 const mb = parseFloat(getComputedStyle(legend).marginBottom) || 0;
-                legendH = legend.offsetHeight + mb;
+                // getBoundingClientRect().height is the rendered (wrapped)
+                // height; +margin +small buffer so a multi-line legend never
+                // occludes even tall (wrapped) column headers.
+                legendH = Math.ceil(legend.getBoundingClientRect().height + mb) + 2;
             }
             tableContainer.style.top = legendH + 'px';
             // Fill from just below the legend to the viewport bottom (small
@@ -1496,6 +1499,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // Re-measure once late content (images, charts, a wrapped legend)
         // has reflowed.
         window.addEventListener('load', layoutStickyTable);
+        // The legend wraps to more rows on narrow viewports / many
+        // submissions; track its size so the offset always matches.
+        if (legend && window.ResizeObserver) {
+            new ResizeObserver(layoutStickyTable).observe(legend);
+        }
+        setTimeout(layoutStickyTable, 300);
     }
 
     // --- UI Refresh / Polling Logic ---
