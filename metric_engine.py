@@ -525,11 +525,35 @@ def evaluate_in_sandbox(
     matches tasks.py's expectation: a per-metric fatal should mark every
     sample, not silently drop them.
     """
-    job = _build_job(global_metric, contexts, arg_mappings_json)
-    payload_or_fatal = _dispatch(
-        job, url=url, image=image, timeout_seconds=timeout_seconds,
-        memory=memory, cpus=cpus, docker_path=docker_path)
-    return _shape_results(payload_or_fatal, len(contexts))
+    if not contexts:
+        return []
+
+    # All contexts ship into ONE container, which has a hard memory cap
+    # (`memory`, default 512m). Tiny payloads (labels/text/scalars) fit by the
+    # thousands, but file-backed arrays (depth .npz, masks) can OOM-kill the
+    # container (rc 137) at a few dozen samples. Adaptively chunk so each
+    # container's JSON payload stays under MAX_CHUNK_BYTES: probe one context's
+    # job size, then size the chunk. Small-payload metrics (the common case)
+    # stay single-container, so classification/NLP scoring isn't slowed.
+    MAX_CHUNK_BYTES = 80_000_000
+    try:
+        per_ctx = max(1, len(json.dumps(_build_job(global_metric, contexts[:1], arg_mappings_json))))
+    except Exception:
+        per_ctx = MAX_CHUNK_BYTES  # un-measurable → don't chunk
+    chunk = len(contexts) if per_ctx <= 0 else max(1, MAX_CHUNK_BYTES // per_ctx)
+
+    def _run(ctxs):
+        job = _build_job(global_metric, ctxs, arg_mappings_json)
+        payload = _dispatch(job, url=url, image=image, timeout_seconds=timeout_seconds,
+                            memory=memory, cpus=cpus, docker_path=docker_path)
+        return _shape_results(payload, len(ctxs))
+
+    if chunk >= len(contexts):
+        return _run(contexts)
+    results = []
+    for i in range(0, len(contexts), chunk):
+        results.extend(_run(contexts[i:i + chunk]))
+    return results
 
 
 def _dispatch(job, *, url=None, image=None, timeout_seconds=60,
