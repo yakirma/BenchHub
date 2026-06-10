@@ -67,14 +67,18 @@ def main():
         db.session.commit()
 
         lm_ids = []
-        for mname in ('rmse_depth', 'affine_inv_rmse_depth', 'scale_inv_rmse_depth'):
+        _metrics = [('rmse_depth', 'lower_is_better'),
+                    ('affine_inv_rmse_depth', 'lower_is_better'),
+                    ('scale_inv_rmse_depth', 'lower_is_better'),
+                    ('delta1_depth', 'higher_is_better')]
+        for mname, sort_dir in _metrics:
             gm = GlobalMetric.query.filter_by(name=mname).first()
             if gm is None:
                 continue
             lm = LeaderboardMetric(
                 leaderboard_id=lb.id, global_metric_id=gm.id, target_name=mname,
                 arg_mappings=json.dumps({"gt": f"gt_{dep.name}", "pred": "sub_depth_pred"}),
-                pooling_type='mean', sort_direction='lower_is_better',
+                pooling_type='mean', sort_direction=sort_dir,
             )
             db.session.add(lm)
             db.session.commit()
