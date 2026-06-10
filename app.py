@@ -13657,6 +13657,108 @@ def comparison_view(leaderboard_id):
     all_field_types = dataset_field_types.copy()
     all_field_types.update(submission_field_types)
 
+    # --- Field-filter (mirrors dataset_view's "Filter by") -------------
+    # Narrow the sample list to rows whose chosen GT text/label/scalar
+    # field matches `filter_value`. The synthetic field `sample_name`
+    # filters the name directly. Works in both modes: real Sample rows
+    # (filter samples_query) and materialised/HF-stub virtual samples
+    # (filter the sample_name list below) — so we resolve to a set of
+    # matching sample *names* once, here.
+    filter_field = (request.args.get('filter_field') or '').strip()
+    filter_value = (request.args.get('filter_value') or '').strip()
+    # Offer sample_name + every GT text/label/scalar field as filterable.
+    _FILTERABLE_KINDS = ('text', 'label', 'label_list', 'scalar')
+    filterable_fields = ['sample_name'] + sorted(
+        n for n in dataset_custom_fields
+        if dataset_field_types.get(n) in _FILTERABLE_KINDS
+    )
+    filterable_field_types = {'sample_name': 'sample_name'}
+    filterable_field_types.update({n: dataset_field_types.get(n) for n in filterable_fields if n != 'sample_name'})
+    # Class-name vocab per GT label field (for `cat` → index translation).
+    _filter_label_vocab = {}
+    for _ds in (leaderboard.datasets or []):
+        for _df in getattr(_ds, 'fields', []) or []:
+            if _df.kind in ('label', 'label_list'):
+                _nm = (_df.get_params() or {}).get('names')
+                if _nm:
+                    _filter_label_vocab[_df.name] = _nm
+    filter_matched_names = None   # None = no field-filter active
+    filter_suggestions = []
+    if filter_field and filter_value and filter_field != 'sample_name' \
+            and filter_field in dataset_field_types:
+        import re as _re
+        _ftype = dataset_field_types.get(filter_field)
+        if hf_stub_mode:
+            _rows = db.session.query(
+                CustomField.sample_name, CustomField.value_text, CustomField.value_float,
+            ).filter(
+                CustomField.leaderboard_id == leaderboard.id,
+                CustomField.submission_id.is_(None), CustomField.sample_id.is_(None),
+                CustomField.name == filter_field,
+            ).all()
+        else:
+            _rows = db.session.query(
+                Sample.name, CustomField.value_text, CustomField.value_float,
+            ).join(CustomField, CustomField.sample_id == Sample.id).filter(
+                Sample.dataset_id.in_(dataset_ids), CustomField.submission_id.is_(None),
+                CustomField.name == filter_field,
+            ).all()
+        _needle = filter_value.strip().strip('"').strip("'")
+        _matched = set()
+        if _ftype in ('scalar', 'metric'):
+            _m = _re.match(r'^\s*(==|=|!=|<=|>=|<|>)?\s*(-?\d+(?:\.\d+)?)\s*$', filter_value)
+            _op = (_m.group(1) or '=') if _m else None
+            _num = float(_m.group(2)) if _m else None
+            for _sn, _vt, _vf in _rows:
+                if _sn is None or _vf is None or _num is None:
+                    continue
+                if {'=': _vf == _num, '==': _vf == _num, '!=': _vf != _num,
+                    '<': _vf < _num, '<=': _vf <= _num, '>': _vf > _num,
+                    '>=': _vf >= _num}.get(_op, False):
+                    _matched.add(_sn)
+        else:
+            _translated = None
+            if _ftype in ('label', 'label_list'):
+                _vocab = _filter_label_vocab.get(filter_field) or []
+                _cand = _needle.split(None, 1)
+                if len(_cand) == 2 and _cand[0].isdigit() and int(_cand[0]) < len(_vocab) \
+                        and _vocab[int(_cand[0])].lower() == _cand[1].lower():
+                    _translated = _cand[0]
+                else:
+                    for _i, _nm in enumerate(_vocab):
+                        if _nm.lower() == _needle.lower():
+                            _translated = str(_i); break
+            for _sn, _vt, _vf in _rows:
+                if _sn is None:
+                    continue
+                _val = _vt if _vt is not None else (str(_vf) if _vf is not None else '')
+                if _translated is not None:
+                    if (_val or '') == _translated:
+                        _matched.add(_sn)
+                elif _needle.lower() in (_val or '').lower():
+                    _matched.add(_sn)
+        filter_matched_names = _matched
+    # Autocomplete suggestions for the active filter field.
+    if filter_field == 'sample_name':
+        if hf_stub_mode:
+            _sg = db.session.query(CustomField.sample_name).filter(
+                CustomField.leaderboard_id == leaderboard.id,
+                CustomField.submission_id.is_(None), CustomField.sample_id.is_(None),
+            ).distinct().limit(50).all()
+        else:
+            _sg = db.session.query(Sample.name).filter(
+                Sample.dataset_id.in_(dataset_ids)).distinct().limit(50).all()
+        filter_suggestions = [r[0] for r in _sg if r[0]]
+    elif filter_field in _filter_label_vocab:
+        filter_suggestions = [f"{i} {nm}" for i, nm in enumerate(_filter_label_vocab[filter_field])]
+    # Apply the field-filter to the real-sample query now (the HF-stub /
+    # virtual path applies it to the sample_name list below).
+    if not hf_stub_mode and filter_field and filter_value:
+        if filter_field == 'sample_name':
+            samples_query = samples_query.filter(Sample.name.ilike(f'%{filter_value}%'))
+        elif filter_matched_names is not None:
+            samples_query = samples_query.filter(Sample.name.in_(filter_matched_names or {''}))
+
     # Typed-param badges (unit / is_inverse) for column headers — one per GT
     # field and per (field, submission), read off the CustomField data_params.
     def _param_badges(dp):
@@ -13737,6 +13839,15 @@ def comparison_view(leaderboard_id):
         if search_query:
             needle = search_query.lower()
             names = [n for n in names if needle in n.lower()]
+        # Field-filter (virtual-sample path): sample_name does a substring
+        # match; a GT field-value filter restricts to the matched name set
+        # resolved above.
+        if filter_field and filter_value:
+            if filter_field == 'sample_name':
+                _fn = filter_value.lower()
+                names = [n for n in names if _fn in n.lower()]
+            elif filter_matched_names is not None:
+                names = [n for n in names if n in filter_matched_names]
         if sort_by == 'name' and sort_order == 'desc':
             names.reverse()
         all_stubs = [_VirtualSample(n, i + 1) for i, n in enumerate(names)]
@@ -14593,6 +14704,11 @@ def comparison_view(leaderboard_id):
                            metric_labels=metric_labels,
                            active_metrics=active_metrics,
                            current_compare_ids=compare_ids_arg,
+                           filter_field=filter_field,
+                           filter_value=filter_value,
+                           filterable_fields=filterable_fields,
+                           filterable_field_types=filterable_field_types,
+                           filter_suggestions=filter_suggestions,
                            samples_only_mode=samples_only_mode)
 
 

@@ -548,8 +548,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <option value="desc" {% if sort_order=='desc' %}selected{% endif %}>High to Low</option>
                     </select>
 
-
-
+                    {# Field-filter: narrow the sample rows by a GT field's
+                       value (or sample name). Mirrors the dataset page. Shown
+                       only when there's at least one GT field to filter on. #}
+                    {% if filterable_fields and filterable_fields|length > 1 %}
+                    <label for="cmp-filter-field" class="form-label ms-3 me-2 mb-0 small text-muted">Filter by:</label>
+                    <select id="cmp-filter-field" name="filter_field" class="form-select form-select-sm me-2"
+                        style="width: auto;" onchange="this.form.submit()">
+                        <option value="">—</option>
+                        {% for fname in filterable_fields %}
+                        <option value="{{ fname }}" {% if filter_field==fname %}selected{% endif %}>
+                            {{ fname }}{% if fname != 'sample_name' %} ({{ filterable_field_types[fname] }}){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <input type="text" name="filter_value" class="form-control form-control-sm me-2"
+                        style="max-width: 160px;" value="{{ filter_value or '' }}" list="cmp-filter-suggestions"
+                        placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}">
+                    <datalist id="cmp-filter-suggestions">
+                        {% for sug in filter_suggestions %}<option value="{{ sug }}">{% endfor %}
+                    </datalist>
+                    {% if filter_field and filter_value %}
+                    <a class="btn btn-sm btn-outline-secondary me-2"
+                       href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, search_query=search_query, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}"
+                       title="Clear filter">×</a>
+                    {% endif %}
+                    {% endif %}
                 </div>
             </form>
             <form method="post"
@@ -610,21 +634,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         <ul class="pagination justify-content-end mb-0">
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">«
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=1, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">«
                     First</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">‹
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.prev_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">‹
                     Previous</a></li>
             <li class="page-item active"><span class="page-link">Page {{ paginated_samples.page }} of {{
                     paginated_samples.pages }}</span></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Next
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.next_num, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Next
                     ›</a></li>
             <li class="page-item {{ 'disabled' if not paginated_samples.has_next }}"><a class="page-link"
                     onclick="saveScrollPos()"
-                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Last
+                    href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, page=paginated_samples.pages, per_page=current_per_page, search_query=search_query, sort_by=sort_by, sort_order=sort_order, filter_field=filter_field, filter_value=filter_value, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">Last
                     »</a></li>
         </ul>
     </nav>
@@ -1305,12 +1329,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 <select id="modal-depth-cmap" class="form-select form-select-sm d-none ms-2"
                         style="width: auto;" title="Colormap (this zoom view only)">
                     <option value="turbo" selected>turbo</option>
-                    <option value="viridis">viridis</option>
                     <option value="jet">jet</option>
-                    <option value="hot">hot</option>
-                    <option value="electric">electric</option>
-                    <option value="portland">portland</option>
+                    <option value="viridis">viridis</option>
+                    <option value="magma">magma</option>
+                    <option value="inferno">inferno</option>
+                    <option value="plasma">plasma</option>
                     <option value="gray">gray</option>
+                    <option value="normal">normal map</option>
                     <option value="inverse">inverse depth</option>
                 </select>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -1491,14 +1516,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // aggregated viz) scrolls away with the page. The navbar is
         // static, so the legend height is the only offset.
         const legend = document.getElementById('cmp-legend');
-        let _lastLegendH = -1;
+        // The site navbar is `position: fixed` (<header class="fixed-top">),
+        // so it overlays the top of the viewport. Sticky offsets must clear
+        // it: the legend pins just below the navbar, and the table-container
+        // just below the legend. Without this the legend pinned at top:0 sat
+        // behind the navbar and shoved the header row up under it.
+        const navbarEl = document.querySelector('header.fixed-top')
+            || document.querySelector('.navbar');
         function layoutStickyTable() {
-            // The table-container is sticky just below the legend; its `top`
-            // must equal the legend's FULL pinned height or the legend will
-            // overlap (occlude) the column-header row — worse for tall,
-            // wrapped (multi-line) headers. The legend reflows as the
-            // submission status badges poll (Processing → Processed) and as
-            // it wraps on narrow viewports, so re-measure continuously.
+            const navH = navbarEl ? Math.ceil(navbarEl.getBoundingClientRect().height) : 0;
             let legendH = 0;
             if (legend) {
                 const cs = getComputedStyle(legend);
@@ -1506,14 +1532,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // offsetHeight = full border-box (incl. wrapped lines);
                 // + margin + a clear gap so the header never tucks under.
                 legendH = Math.ceil(legend.offsetHeight + mb) + 6;
+                legend.style.top = navH + 'px';
             }
-            if (legendH !== _lastLegendH) {
-                _lastLegendH = legendH;
-                tableContainer.style.top = legendH + 'px';
-            }
+            tableContainer.style.top = (navH + legendH) + 'px';
             // Fill from just below the legend to the viewport bottom (small
             // gutter for the container's own horizontal scrollbar).
-            const h = window.innerHeight - legendH - 16;
+            const h = window.innerHeight - navH - legendH - 16;
             tableContainer.style.maxHeight = Math.max(h, 320) + 'px';
         }
         layoutStickyTable();
@@ -1742,8 +1766,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // ramp; the rest map to Plotly named colorscales.
         function modalDepthTrace(grid, cmap) {
             const M = { turbo: 'turbo', viridis: 'Viridis', jet: 'Jet',
-                        hot: 'Hot', electric: 'Electric', portland: 'Portland',
-                        gray: 'Greys' };
+                        magma: 'Magma', inferno: 'Inferno', plasma: 'Plasma',
+                        gray: 'Greys', normal: 'turbo' };
             if (cmap === 'inverse') {
                 const z = grid.map(function (row) {
                     return row.map(function (v) {
@@ -1784,6 +1808,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const sel = document.getElementById('modal-depth-cmap');
                 if (sel) { sel.classList.add('d-none'); sel.value = 'turbo'; }
                 window._modalDepthGrid = null;
+                window._modalDepthImgBase = null;
             });
 
             // Recolour the interactive depth heatmap from the in-modal
@@ -1791,10 +1816,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const depthCmapSel = document.getElementById('modal-depth-cmap');
             if (depthCmapSel) {
                 depthCmapSel.addEventListener('change', function () {
-                    if (!window._modalDepthGrid || !window.Plotly) return;
-                    const styled = modalDepthTrace(window._modalDepthGrid, this.value);
-                    Plotly.restyle('modal-plotly-div',
-                        { z: [styled.z], colorscale: [styled.colorscale] });
+                    const mPlotly = document.getElementById('modal-plotly-div');
+                    const mImg = document.getElementById('modal-vis-img');
+                    if (window._modalDepthGrid && window.Plotly && mPlotly
+                            && mPlotly.style.display !== 'none') {
+                        // Interactive heatmap path.
+                        const styled = modalDepthTrace(window._modalDepthGrid, this.value);
+                        Plotly.restyle('modal-plotly-div',
+                            { z: [styled.z], colorscale: [styled.colorscale] });
+                    } else if (window._modalDepthImgBase && mImg) {
+                        // Static `?cmap` image path (materialised / HF-stub LBs);
+                        // the server route recolours all cmaps incl. normal/inverse.
+                        const base = window._modalDepthImgBase;
+                        const url = base + (base.indexOf('?') === -1 ? '?' : '&')
+                            + 'cmap=' + encodeURIComponent(this.value);
+                        mImg.src = url;
+                        mImg.setAttribute('data-vis-url', url);
+                    }
                 });
             }
 
@@ -1849,6 +1887,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             var apiUrl = triggerElement.getAttribute('data-api-url'); // Get API URL
             const sampleName = triggerElement.getAttribute('data-sample-name');
 
+            // Depth colormap selector: a depth thumb may render in the modal
+            // as an interactive Plotly heatmap (raw grid available) OR fall
+            // back to the static `?cmap` image (materialised / HF-stub LBs).
+            // Show the selector for either, and remember the image base URL
+            // (sans cmap) so the image path can recolour too.
+            const _isDepthThumb = (visType === 'depth')
+                || (triggerElement.classList && triggerElement.classList.contains('depth-img'))
+                || !!triggerElement.getAttribute('data-depth-meta-url');
+            const _cmapSelOpen = document.getElementById('modal-depth-cmap');
+            if (_cmapSelOpen) {
+                if (_isDepthThumb && visUrl) {
+                    window._modalDepthImgBase = visUrl.replace(/[?&]cmap=[^&]*/i, '');
+                    let _cur = 'turbo';
+                    const _mm = /[?&]cmap=([^&]+)/i.exec(visUrl);
+                    if (_mm) _cur = decodeURIComponent(_mm[1]);
+                    _cmapSelOpen.value = _cur;
+                    _cmapSelOpen.classList.remove('d-none');
+                } else {
+                    _cmapSelOpen.classList.add('d-none');
+                    window._modalDepthImgBase = null;
+                }
+            }
+
             // Update modal title with sample name
             const modalTitleSpan = visModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
@@ -1898,11 +1959,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
             console.log("DEBUG vis-modal elements:", { modalImg, modalPlotly, loadingSpinner, errorContainer });
 
-            // Reset state
-            // Hide the depth colormap selector by default; the depth
-            // Plotly success path re-shows it.
-            const _depthCmapSel = document.getElementById('modal-depth-cmap');
-            if (_depthCmapSel) _depthCmapSel.classList.add('d-none');
+            // Reset state (the depth colormap selector's visibility is set
+            // by the depth-thumb detection above, so don't touch it here).
             if (modalImg) modalImg.style.display = 'none';
             if (modalPlotly) {
                 modalPlotly.style.display = 'none';
