@@ -67,7 +67,7 @@ def main():
         db.session.commit()
 
         lm_ids = []
-        _metrics = [('rmse_depth', 'lower_is_better'),
+        _metrics = [('plain_rmse_depth', 'lower_is_better'),
                     ('affine_inv_rmse_depth', 'lower_is_better'),
                     ('scale_inv_rmse_depth', 'lower_is_better'),
                     ('delta1_depth', 'higher_is_better')]

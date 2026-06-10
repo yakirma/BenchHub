@@ -196,15 +196,20 @@ class Depth(DataType):
     viz_mime = "image/png"
     UNITS: ClassVar[set[str]] = {"meters", "millimeters", "unitless"}
 
-    def __init__(self, array: np.ndarray, *, unit: str = "meters"):
+    def __init__(self, array: np.ndarray, *, unit: str = "meters",
+                 is_inverse: bool = False):
         if unit not in self.UNITS:
             raise ValueError(f"unit must be one of {sorted(self.UNITS)}; got {unit!r}")
         self.array = np.asarray(array, dtype=np.float32)
         self.unit = unit
+        # True when the values are INVERSE depth / disparity (larger = nearer),
+        # e.g. raw Depth-Anything / DPT / MiDaS output. Metrics use this to put
+        # GT and prediction in the same space before scoring.
+        self.is_inverse = bool(is_inverse)
 
     @property
     def params(self) -> dict:
-        return {"unit": self.unit}
+        return {"unit": self.unit, "is_inverse": self.is_inverse}
 
     def encode(self) -> bytes:
         buf = io.BytesIO()
@@ -216,7 +221,8 @@ class Depth(DataType):
         params = params or {}
         with np.load(io.BytesIO(blob)) as data:
             array = np.asarray(data["depth"], dtype=np.float32)
-        return cls(array, unit=params.get("unit", "meters"))
+        return cls(array, unit=params.get("unit", "meters"),
+                   is_inverse=bool(params.get("is_inverse", False)))
 
     def validate(self) -> None:
         a = self.array
