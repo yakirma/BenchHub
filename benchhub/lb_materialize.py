@@ -341,6 +341,12 @@ def materialize_for_lb(
         # The materializer does the sampling over the WHOLE fetched split
         # (sample_cap + strategy), so the LB's set is independent of the
         # dataset's preview cache. Full-resolution: NO preview_only.
+        # Vocabulary bridge: the LeaderboardMaterialization model + wizard use
+        # 'random', but materialize_hf_to_typed_dir's _pick_indices speaks
+        # 'uniform' for the same seeded-random strategy — translate or every
+        # 'random' materialisation (the wizard default) raises "unknown
+        # sampling strategy 'random'".
+        _pick_sampling = {'random': 'uniform'}.get(matrow.sampling, matrow.sampling)
         materialize_hf_to_typed_dir(
             repo_id=repo_id, split=split,
             sample_cap=matrow.sample_cap,
@@ -348,7 +354,7 @@ def materialize_for_lb(
             staging_dir=staging,
             dataset_name=dataset.name,
             fields=fields, hf_token=None,
-            sampling=matrow.sampling, seed=matrow.sampling_seed,
+            sampling=_pick_sampling, seed=matrow.sampling_seed,
             sample_name_from=meta.get('sample_name_from'),
             config_name=config_name,
             progress_cb=_stage_progress,
