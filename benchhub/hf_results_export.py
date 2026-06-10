@@ -257,13 +257,19 @@ def build_repo_files(lbs, *, MetricResult, generated_at: str):
     for lb in lbs:
         p = build_lb_standings(lb, MetricResult=MetricResult)
         assert_no_leak(p)
+        # Skip empty boards — a leaderboard with no verified submissions
+        # is noise in the read-only standings mirror (nothing to rank), so
+        # don't publish its file or list it in the index. The push task's
+        # manifest diff then de-publishes any that previously had subs.
+        if not p.get("verified"):
+            continue
         files[f"leaderboards/{lb.id}.json"] = json.dumps(p, indent=2, ensure_ascii=False)
         manifest["leaderboards"][str(lb.id)] = payload_hash(p)
         index["leaderboards"].append(build_index_entry(lb, p))
     index["leaderboards"].sort(key=lambda e: ((e["category"] or "~"), (e["name"] or "").lower()))
     files["index.json"] = json.dumps(index, indent=2, ensure_ascii=False)
     files["_manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False)
-    files["README.md"] = _readme(generated_at, len(lbs))
+    files["README.md"] = _readme(generated_at, len(index["leaderboards"]))
     return files, manifest
 
 

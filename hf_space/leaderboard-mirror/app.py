@@ -109,7 +109,10 @@ def _standings(lb_id):
 def _entries():
     """Fetch the LB index FRESH (etag-cached) so new leaderboards/scores show
     up without a Space restart."""
-    es = _index().get("leaderboards", [])
+    # Hide benchmarks with no verified submissions — an empty board is
+    # noise in a read-only standings mirror (nothing to rank).
+    es = [e for e in _index().get("leaderboards", [])
+          if (e.get("n_verified") or 0) > 0]
     for e in es:
         e["_area"] = (e.get("category") or "Uncategorized").split("/", 1)[0]
     return es
