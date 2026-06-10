@@ -16916,20 +16916,29 @@ def serve_custom_field_image(field_id):
     if (custom_field.leaderboard_id is not None
             and custom_field.submission_id is None
             and custom_field.sample_id is None):
-        col = custom_field.source_column or custom_field.name
-        if not col or not custom_field.sample_name:
-            abort(404)
-        # Forward any ?cmap=<name> param (used for depth colormap
-        # selection) through the redirect — Flask doesn't carry query
-        # args across `redirect()` automatically.
-        url_kwargs = {
-            'lb_id': custom_field.leaderboard_id,
-            'col': col,
-            'sample_name': custom_field.sample_name,
-        }
-        if request.args.get('cmap'):
-            url_kwargs['cmap'] = request.args['cmap']
-        return redirect(url_for('serve_gt_viz', **url_kwargs))
+        # Materialised LB-scoped GT has a real file on the volume
+        # (lb_materializations/<lb>/<field>/<sample>.<ext>) — serve THAT via
+        # the normal depth/mask/image logic below (serve_depth_image handles
+        # the .npz, the palette renderer the class-index .png). Only HF-stub
+        # marker rows with no on-disk file redirect to the bench_cache-backed
+        # gt_viz route (which would 404 on a materialised file).
+        on_disk = bool(custom_field.value_text) and os.path.exists(
+            os.path.join(app.config['UPLOAD_FOLDER'], custom_field.value_text))
+        if not on_disk:
+            col = custom_field.source_column or custom_field.name
+            if not col or not custom_field.sample_name:
+                abort(404)
+            # Forward any ?cmap=<name> param (used for depth colormap
+            # selection) through the redirect — Flask doesn't carry query
+            # args across `redirect()` automatically.
+            url_kwargs = {
+                'lb_id': custom_field.leaderboard_id,
+                'col': col,
+                'sample_name': custom_field.sample_name,
+            }
+            if request.args.get('cmap'):
+                url_kwargs['cmap'] = request.args['cmap']
+            return redirect(url_for('serve_gt_viz', **url_kwargs))
 
     if custom_field.data_type == 'depth':
         return serve_depth_image(custom_field.value_text)
