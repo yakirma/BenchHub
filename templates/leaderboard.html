@@ -538,19 +538,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 {{ leaderboard.upload_date.strftime('%Y-%m-%d %H:%M') if leaderboard.upload_date else '—' }}
                 <span class="mx-2 opacity-50">|</span>
                 <i class="bi bi-people me-1"></i>{{ leaderboard.submissions|length }} submission{{ '' if leaderboard.submissions|length == 1 else 's' }}
-                {# Eval-set summary, shown for EVERY board (the detailed
-                   materialization panel below only renders when a per-LB
-                   materialisation exists). #}
+                {# Eval-set summary — size · split · sampling — shown for EVERY
+                   board (the detailed materialization panel below only renders
+                   when a per-LB materialisation exists). #}
                 {% if eval_summary and eval_summary.count %}
+                {% set es = eval_summary %}
                 <span class="mx-2 opacity-50">|</span>
-                {% if eval_summary.source == 'materialized' %}
-                <i class="bi bi-hdd-check me-1"
-                   title="Full-resolution subset materialised for this leaderboard."></i>{{ '{:,}'.format(eval_summary.count) }} samples evaluated —
-                {% if eval_summary.sampling == 'stratified' %}stratified{% if eval_summary.stratify_field %} by {{ eval_summary.stratify_field }}{% endif %}{% elif eval_summary.sampling == 'head' %}head-order{% else %}{{ eval_summary.sampling or 'random' }}{% endif %} sampling (seed {{ eval_summary.seed }})
-                {% else %}
-                <i class="bi bi-grid-3x3 me-1"
-                   title="Submissions are scored against the full attached dataset's cached samples."></i>{{ '{:,}'.format(eval_summary.count) }} samples evaluated — full attached dataset
-                {% endif %}
+                {% if es.source == 'materialized' %}<i class="bi bi-hdd-check me-1"
+                   title="Full-resolution subset materialised for this leaderboard."></i>{% else %}<i class="bi bi-grid-3x3 me-1"
+                   title="Scored against the attached dataset's cached samples (split + sampling fixed at import)."></i>{% endif %}{{ '{:,}'.format(es.count) }} samples evaluated{% if es.split %} · <span class="fw-semibold">{{ es.split }}</span> split{% endif %}{% if es.config %} <span class="text-body-secondary">({{ es.config }})</span>{% endif %} ·
+                {%- if es.source == 'materialized' %}
+                {% if es.sampling == 'stratified' %} stratified{% if es.stratify_field %} by <code>{{ es.stratify_field }}</code>{% endif %} sampling (seed {{ es.seed }}){% elif es.sampling == 'head' %} head order{% else %} uniform sampling (seed {{ es.seed }}){% endif %}
+                {%- else %}
+                {% if es.full %} full split{% if es.total %} ({{ '{:,}'.format(es.total) }} rows){% endif %}{% elif es.sampling == 'head' %} first {{ '{:,}'.format(es.count) }} (head order{% if es.total %} of {{ '{:,}'.format(es.total) }}{% endif %}){% elif es.sampling == 'stratified' %} stratified sample (seed {{ es.seed }}){% elif es.sampling %} {{ es.sampling }} sample (seed {{ es.seed }}){% else %} full split{% endif %}
+                {%- endif %}
                 {% endif %}
             </p>
 

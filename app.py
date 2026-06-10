@@ -12297,13 +12297,34 @@ def _lb_scoped_samples(leaderboard_id, sample_names=None):
 def _lb_eval_summary(lb):
     """Compact, display-only summary of the sample set this LB scores
     submissions against — mirrors `_iter_lb_eval_samples`' source selection so
-    the LB page can show the eval-set size + sampling for EVERY board, not just
-    ones with a per-LB materialisation.
+    the LB page can show the eval-set size, **split**, and **sampling** for
+    EVERY board, not just ones with a per-LB materialisation.
 
-    Returns `{count, source, sampling, seed, stratify_field}` where `source` is
-    'materialized' (a per-LB full-res subset, sub-sampled at create time) or
-    'dataset' (the attached dataset's cached samples, evaluated whole). Counts
-    via aggregate queries — never materialises the Sample rows."""
+    Returns `{count, source, split, config, sampling, seed, stratify_field,
+    total, full}`:
+      - `source` 'materialized' (per-LB full-res subset) or 'dataset' (the
+        attached dataset's cached samples, evaluated whole);
+      - `split`/`config` from the materialisation (or inherited from the
+        dataset's `source_metadata`);
+      - `sampling` the display token (`uniform`/`stratified`/`head`); the
+        materialisation stores 'random' for seeded-uniform, normalised here;
+      - `total` source-split row count when known; `full` True when the eval
+        set is the whole split (not sub-sampled).
+    Counts via aggregate queries — never materialises the Sample rows."""
+    # Primary dataset + its import provenance (split / config / sampling).
+    ds = next((a.dataset for a in lb.attachments
+               if a.role == 'primary' and a.dataset is not None), None)
+    ds = ds or (lb.datasets[0] if lb.datasets else None)
+    md = {}
+    if ds is not None:
+        try:
+            md = json.loads(ds.source_metadata or '{}')
+        except (TypeError, ValueError):
+            md = {}
+    ds_split = md.get('split')
+    ds_config = md.get('config_name') or md.get('config')
+    total = md.get('total_rows_in_split')
+
     mat = getattr(lb, 'materialization', None)
     if mat and mat.status == 'ready':
         if _lb_scoped_gt_exists(lb.id):
@@ -12318,19 +12339,26 @@ def _lb_eval_summary(lb):
         else:
             from benchhub.lb_materialize import list_materialized_samples
             count = len(list_materialized_samples(app.config['UPLOAD_FOLDER'], lb.id))
+        samp = mat.sampling or 'random'
         return {'count': count, 'source': 'materialized',
-                'sampling': mat.sampling, 'seed': mat.sampling_seed,
-                'stratify_field': mat.stratify_field}
+                'split': mat.split or ds_split,
+                'config': mat.config_name or ds_config,
+                'sampling': 'uniform' if samp == 'random' else samp,
+                'seed': mat.sampling_seed, 'stratify_field': mat.stratify_field,
+                'total': total, 'full': total is not None and count >= total}
     # No per-LB materialisation: the LB scores against the attached dataset's
-    # cached (preview-tier) samples, evaluated whole. The dataset's own
-    # import-time sampling is shown on the dataset page, not here.
+    # cached (preview-tier) samples — whose split/sampling were fixed at import.
     ds_ids = {a.dataset.id for a in lb.attachments
               if a.role == 'primary' and a.dataset is not None}
     ds_ids |= {d.id for d in (lb.datasets or [])}
     count = (db.session.query(func.count(Sample.id))
              .filter(Sample.dataset_id.in_(ds_ids)).scalar() or 0) if ds_ids else 0
+    cap = md.get('sample_cap')
+    full = (cap is not None and cap <= 0) or (total is not None and count >= total)
     return {'count': count, 'source': 'dataset',
-            'sampling': None, 'seed': None, 'stratify_field': None}
+            'split': ds_split, 'config': ds_config,
+            'sampling': md.get('sampling'), 'seed': md.get('sampling_seed'),
+            'stratify_field': None, 'total': total, 'full': bool(full)}
 
 
 def _iter_lb_eval_samples(lb):
