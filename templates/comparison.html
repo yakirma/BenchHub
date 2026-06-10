@@ -1477,7 +1477,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // static, so the legend height is the only offset.
         const legend = document.getElementById('cmp-legend');
         function layoutStickyTable() {
-            const legendH = legend ? legend.offsetHeight : 0;
+            // Include the legend's bottom margin (mb-3) — offsetHeight omits
+            // it, which would let the legend overlap (occlude) the pinned
+            // header by the margin amount.
+            let legendH = 0;
+            if (legend) {
+                const mb = parseFloat(getComputedStyle(legend).marginBottom) || 0;
+                legendH = legend.offsetHeight + mb;
+            }
             tableContainer.style.top = legendH + 'px';
             // Fill from just below the legend to the viewport bottom (small
             // gutter for the container's own horizontal scrollbar).
