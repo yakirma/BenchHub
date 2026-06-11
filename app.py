@@ -14766,14 +14766,48 @@ def serve_depth_image(filepath):
         return abort(404, description="File not found")
 
     # Preview-only datasets store depth as a pre-colormapped JPG (turbo
-    # baked in at import time). Serve the bytes verbatim — the per-
-    # request `?cmap=` switcher only works for raw .npz; for preview
-    # the column header dropdown is a no-op.
+    # baked in at import time). With no recolour requested (or plain
+    # turbo, no inverse) serve the bytes verbatim — fast path. When a
+    # different colormap or the inverse toggle IS requested, reverse-turbo
+    # the JPG back to a normalised grid and re-render so the depth zoom
+    # modal + column dropdown actually recolour a preview-only field
+    # (same reverse_turbo path the interactive heatmap already uses).
     ext = full_path.rsplit('.', 1)[-1].lower()
     if ext in ('jpg', 'jpeg', 'png'):
-        return send_file(full_path,
-                         mimetype=f'image/{"jpeg" if ext != "png" else "png"}',
-                         max_age=60)
+        _cmap = (request.args.get('cmap') or '').strip().lower()
+        _inv = (request.args.get('inverse') in ('1', 'true', 'yes')) or _cmap == 'inverse'
+        if _cmap == 'inverse':
+            _cmap = 'turbo'
+        if (not _cmap or _cmap == 'turbo') and not _inv:
+            return send_file(full_path,
+                             mimetype=f'image/{"jpeg" if ext != "png" else "png"}',
+                             max_age=60)
+        try:
+            from PIL import Image as _PIL
+            from benchhub.preview import reverse_turbo
+            with _PIL.open(full_path) as _im:
+                _rgb_in = np.asarray(_im.convert('RGB'))
+            normed = reverse_turbo(_rgb_in)  # (H, W) float32 in [0, 1]
+            if _inv:
+                normed = 1.0 - normed
+            gray = (np.clip(normed, 0.0, 1.0) * 255.0).astype(np.uint8)
+            if _cmap == 'gray':
+                rgb = np.stack([gray, gray, gray], axis=-1)
+            else:
+                # 'normal' has no meaningful preview projection here — fall
+                # back to turbo; all other palettes map directly.
+                lut = _matplotlib_lut('turbo' if _cmap in ('', 'normal') else _cmap)
+                rgb = lut[gray]
+            out = _PIL.fromarray(rgb, mode='RGB')
+            buf = io.BytesIO()
+            out.save(buf, format='PNG', optimize=False)
+            buf.seek(0)
+            return send_file(buf, mimetype='image/png', max_age=60)
+        except Exception as e:
+            print(f"preview depth recolor failed ({full_path}): {e}")
+            return send_file(full_path,
+                             mimetype=f'image/{"jpeg" if ext != "png" else "png"}',
+                             max_age=60)
 
     try:
         with np.load(full_path) as data:
