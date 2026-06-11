@@ -10315,14 +10315,16 @@ def leaderboard_view(leaderboard_id):
     # that metric's own sort_direction (lower_is_better → ascending,
     # else descending) so the top row is the best submission.
     if not _sort_metric_explicit and all_metrics:
-        sort_metric = all_metrics[0]
+        # Default ordering: Aggregate Rank — each submission's mean rank
+        # across ALL metrics (lower is better). Beats sorting by the single
+        # first metric, which ignores every other column.
+        sort_metric = '__aggrank__'
         if not _sort_order_explicit:
-            _lm0 = leaderboard_metrics_map.get(sort_metric)
-            _direction = getattr(_lm0, 'sort_direction', None) or 'higher_is_better'
-            sort_order = 'asc' if _direction == 'lower_is_better' else 'desc'
+            sort_order = 'asc'
 
     metrics_ranges = {}
     metrics_sorted = {}
+    aggregate_ranks = {}   # sub.id -> mean per-metric rank (lower is better)
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
     calculated_dynamic_values = {} # sub_id -> metric_name -> value
     
@@ -10476,8 +10478,61 @@ def leaderboard_view(leaderboard_id):
             else:
                 metrics_ranges[metric] = {'min': 0, 'max': 0}
     
+    # ---- Aggregate Rank: each submission's mean rank across all selected
+    # metrics (best = rank 1, honouring each metric's direction; ties get the
+    # average rank; a missing/failed value takes the worst rank for that
+    # metric). Lower is better; this is the default ordering so the overall-
+    # best submission leads rather than the best-on-one-metric. ----
+    _rank_dir = {}
+    if leaderboard.metric_directions:
+        try:
+            _rank_dir = json.loads(leaderboard.metric_directions) or {}
+        except Exception:
+            _rank_dir = {}
+    for _lm in (leaderboard.leaderboard_metrics or []):
+        if _lm.sort_direction:
+            _rank_dir[f"lm_{_lm.id}"] = _lm.sort_direction
+    if processed_submissions and all_metrics:
+        n_subs = len(processed_submissions)
+        _rank_totals = {s.id: 0.0 for s in processed_submissions}
+        _rank_counts = {s.id: 0 for s in processed_submissions}
+        for _metric in all_metrics:
+            higher_better = _rank_dir.get(_metric, 'higher_is_better') != 'lower_is_better'
+            scored, missing = [], []
+            for s in processed_submissions:
+                v = calculated_dynamic_values.get(s.id, {}).get(_metric)
+                (scored if isinstance(v, (int, float)) else missing).append(s)
+            if not scored:
+                continue
+            scored.sort(key=lambda s: calculated_dynamic_values[s.id][_metric],
+                        reverse=higher_better)
+            # Average-rank for ties (1-based).
+            i = 0
+            while i < len(scored):
+                j = i
+                vi = calculated_dynamic_values[scored[i].id][_metric]
+                while (j + 1 < len(scored)
+                       and calculated_dynamic_values[scored[j + 1].id][_metric] == vi):
+                    j += 1
+                avg_rank = (i + j) / 2.0 + 1.0
+                for k in range(i, j + 1):
+                    _rank_totals[scored[k].id] += avg_rank
+                    _rank_counts[scored[k].id] += 1
+                i = j + 1
+            # Missing / failed value → worst rank for this metric.
+            for s in missing:
+                _rank_totals[s.id] += n_subs
+                _rank_counts[s.id] += 1
+        for s in processed_submissions:
+            if _rank_counts[s.id]:
+                aggregate_ranks[s.id] = _rank_totals[s.id] / _rank_counts[s.id]
+
     # Apply sorting if requested
-    if sort_metric and sort_metric in all_metrics:
+    if sort_metric == '__aggrank__':
+        # Lower mean rank = better → ascending. Submissions with no aggregate
+        # rank (unprocessed / no metrics) sink to the bottom.
+        submissions.sort(key=lambda sub: aggregate_ranks.get(sub.id, float('inf')))
+    elif sort_metric and sort_metric in all_metrics:
         def get_metric_value(sub):
             val = calculated_dynamic_values.get(sub.id, {}).get(sort_metric)
             if isinstance(val, (int, float)):
@@ -10594,6 +10649,7 @@ def leaderboard_view(leaderboard_id):
                            selected_metrics=all_metrics,
                            metrics_ranges=metrics_ranges,
                            metrics_sorted=metrics_sorted,
+                           aggregate_ranks=aggregate_ranks,
                             dynamic_values=calculated_dynamic_values,
                             metric_to_lm=leaderboard_metrics_map,
                             metric_labels=metric_labels,

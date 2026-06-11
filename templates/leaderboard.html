@@ -1450,6 +1450,15 @@ background-color: transparent;
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
+                            <th scope="col" style="width: 84px; cursor: pointer;"
+                                data-lb-column="aggregate_rank" draggable="true" onclick="changeSort('__aggrank__')"
+                                title="Aggregate Rank — mean of this submission's rank across every metric (lower is better)"
+                                {% if sort_metric == '__aggrank__' %}data-sort-order="{{ sort_order }}"{% endif %}>
+                                Agg. Rank
+                                {% if sort_metric == '__aggrank__' %}
+                                <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }} sort-indicator"></i>
+                                {% endif %}
+                            </th>
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
                                 data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')"
                                 {% if sort_metric == 'date_uploaded' %}data-sort-order="{{ sort_order }}"{% endif %}>
@@ -1603,6 +1612,10 @@ background-color: transparent;
                                     <span class="small text-body-secondary fst-italic">no tags</span>
                                     {% endif %}
                                 </div>
+                            </td>
+                            {% set _ar = aggregate_ranks.get(submission.id) %}
+                            <td data-lb-column="aggregate_rank" class="text-center" data-sort-value="{{ _ar if _ar is not none else '' }}">
+                                {% if _ar is not none %}<span class="fw-bold" title="Mean rank across {{ all_metrics|length }} metric(s) — lower is better">{{ '%.2f'|format(_ar) }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
                             </td>
                             <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
                             </td>
@@ -2499,8 +2512,9 @@ print(sub.submit(
     // click) — a single DOM source of truth, so repeat clicks can't
     // desync from a stale JS variable.
     function _thForKey(key) {
-        const col = (key === 'name' || key === 'date_uploaded')
-            ? key : 'metric_' + key;
+        const col = (key === 'name' || key === 'date_uploaded') ? key
+            : (key === '__aggrank__') ? 'aggregate_rank'
+            : 'metric_' + key;
         return document.querySelector(
             `#leaderboard-table thead th[data-lb-column="${CSS.escape(col)}"]`
         );
@@ -2515,7 +2529,8 @@ print(sub.submit(
             const c = row.querySelector(`td[data-lb-column="${key}"]`);
             return { num: null, str: (c ? c.innerText : '').trim().toLowerCase() };
         }
-        const c = row.querySelector(`td[data-lb-column="metric_${CSS.escape(key)}"]`);
+        const col = (key === '__aggrank__') ? 'aggregate_rank' : ('metric_' + key);
+        const c = row.querySelector(`td[data-lb-column="${CSS.escape(col)}"]`);
         const raw = c ? c.getAttribute('data-sort-value') : '';
         if (raw === null || raw === '') return { num: null, str: null };
         const n = parseFloat(raw);
@@ -2548,8 +2563,11 @@ print(sub.submit(
         // Clear every existing indicator, then mark the active header.
         document.querySelectorAll('#leaderboard-table thead .sort-indicator')
             .forEach(el => el.remove());
+        const _col = (key === 'name' || key === 'date_uploaded') ? key
+            : (key === '__aggrank__') ? 'aggregate_rank'
+            : 'metric_' + CSS.escape(key);
         let th = document.querySelector(
-            `#leaderboard-table thead th[data-lb-column="${(key === 'name' || key === 'date_uploaded') ? key : 'metric_' + CSS.escape(key)}"]`
+            `#leaderboard-table thead th[data-lb-column="${_col}"]`
         );
         if (!th) return;
         const icon = document.createElement('i');
@@ -3201,10 +3219,14 @@ print(sub.submit(
     }
 
     function applyColumnVisibility(visibleColumns) {
+        // The Aggregate Rank column is the default sort and always shown —
+        // it isn't part of the toggle set, so never hide it (it carries a
+        // data-lb-column only so the sort helpers can find it).
         // Show/hide headers
         const headers = document.querySelectorAll('th[data-lb-column]');
         headers.forEach(th => {
             const col = th.dataset.lbColumn;
+            if (col === 'aggregate_rank') return;
             th.style.display = visibleColumns.includes(col) ? '' : 'none';
         });
 
@@ -3212,6 +3234,7 @@ print(sub.submit(
         const cells = document.querySelectorAll('td[data-lb-column]');
         cells.forEach(td => {
             const col = td.dataset.lbColumn;
+            if (col === 'aggregate_rank') return;
             td.style.display = visibleColumns.includes(col) ? '' : 'none';
         });
     }
