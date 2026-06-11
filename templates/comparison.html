@@ -1343,8 +1343,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <option value="plasma">plasma</option>
                     <option value="gray">gray</option>
                     <option value="normal">normal map</option>
-                    <option value="inverse">inverse depth</option>
                 </select>
+                {# Inverse is an orthogonal toggle (near<->far / disparity
+                   swap), combinable with any colormap above — not a palette
+                   entry. The chosen colormap+inverse persist per field for
+                   the life of this zoom session. #}
+                <button type="button" id="modal-depth-inverse"
+                        class="btn btn-outline-secondary btn-sm d-none ms-1"
+                        style="white-space: nowrap;" aria-pressed="false"
+                        title="Toggle inverse depth (near/far swap) — this zoom view only">
+                    <i class="bi bi-arrow-left-right"></i> Inverse
+                </button>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center" style="position: relative;">
@@ -1752,22 +1761,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         }
 
         // Map the in-modal depth colormap selector to a Plotly heatmap
-        // trace. 'inverse depth' inverts the grid (1/d) under the turbo
-        // ramp; the rest map to Plotly named colorscales.
-        function modalDepthTrace(grid, cmap) {
+        // trace. `inverse` (orthogonal toggle) inverts the grid (1/d); `cmap`
+        // picks the colorscale. Legacy callers may pass cmap='inverse'.
+        function modalDepthTrace(grid, cmap, inverse) {
             const M = { turbo: 'turbo', viridis: 'Viridis', jet: 'Jet',
                         magma: 'Magma', inferno: 'Inferno', plasma: 'Plasma',
                         gray: 'Greys', normal: 'turbo' };
-            if (cmap === 'inverse') {
-                const z = grid.map(function (row) {
+            const inv = !!inverse || cmap === 'inverse';
+            if (cmap === 'inverse') cmap = 'turbo';
+            let z = grid;
+            if (inv) {
+                z = grid.map(function (row) {
                     return row.map(function (v) {
                         return (typeof v === 'number' && isFinite(v) && Math.abs(v) > 1e-9)
                             ? 1.0 / v : null;
                     });
                 });
-                return { z: z, colorscale: 'turbo' };
             }
-            return { z: grid, colorscale: M[cmap] || 'turbo' };
+            return { z: z, colorscale: M[cmap] || 'turbo' };
         }
 
         function syncVisRotationControls(visType, targetEl, visUrl) {
@@ -1781,6 +1792,77 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
         }
 
+        // --- In-modal depth colormap + inverse, persisted PER FIELD for the
+        // life of one zoom session ----------------------------------------
+        // `_modalDepthModes` maps a field key (the thumb's data-group-id, e.g.
+        // "gt-disparity" or "sub-12-disparity") -> { cmap, inverse }. The key is
+        // sample-independent, so a chosen mode survives up/down navigation
+        // between samples (same column) AND is restored when navigating sideways
+        // back to a field. Reset on modal close.
+        window._modalDepthModes = window._modalDepthModes || {};
+        window._modalDepthField = null;
+        // Resolve (creating a default) the mode object for the active field.
+        window._modalDepthMode = function () {
+            const key = window._modalDepthField;
+            if (!key) return null;
+            if (!window._modalDepthModes[key]) {
+                window._modalDepthModes[key] = { cmap: 'turbo', inverse: false };
+            }
+            return window._modalDepthModes[key];
+        };
+        // Build a depth image URL carrying the given cmap + inverse flag, after
+        // stripping any pre-existing cmap/inverse params.
+        window._modalDepthUrl = function (base, cmap, inverse) {
+            if (!base) return base;
+            let b = base.replace(/[?&]cmap=[^&]*/ig, '').replace(/[?&]inverse=[^&]*/ig, '');
+            b = b.replace(/\?&/, '?').replace(/[?&]$/, '');
+            b += (b.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap || 'turbo');
+            if (inverse) b += '&inverse=1';
+            return b;
+        };
+        // Reflect inverse state on the toggle button.
+        window._setModalInverseBtn = function (btn, on) {
+            if (!btn) return;
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.classList.toggle('active', !!on);
+            btn.classList.toggle('btn-secondary', !!on);
+            btn.classList.toggle('btn-outline-secondary', !on);
+        };
+        // Apply the active field's stored {cmap, inverse} to whatever the zoom
+        // modal is currently showing — the overlay-layer stack (the usual case),
+        // the single static image, or the Plotly heatmap. Re-queries the live
+        // DOM each call so it is safe to invoke on open, on navigation, and on
+        // every control change.
+        window._applyModalDepthMode = function () {
+            const st = window._modalDepthMode() || { cmap: 'turbo', inverse: false };
+            const cmap = st.cmap || 'turbo';
+            const inv = !!st.inverse;
+            let done = false;
+            // Overlay-layer stack: recolour every depth/mask layer (those
+            // carrying a ?cmap param); plain input-image layers are skipped.
+            document.querySelectorAll('#vis-modal-layers img').forEach(function (img) {
+                const src = img.getAttribute('src') || '';
+                if (/[?&]cmap=/i.test(src)) {
+                    img.src = window._modalDepthUrl(src, cmap, inv);
+                    done = true;
+                }
+            });
+            const mImg = document.getElementById('modal-vis-img');
+            const mPlotly = document.getElementById('modal-plotly-div');
+            if (!done && window._modalDepthImgBase && mImg) {
+                const url = window._modalDepthUrl(window._modalDepthImgBase, cmap, inv);
+                mImg.src = url; mImg.setAttribute('data-vis-url', url);
+                mImg.style.display = 'block';
+                if (mPlotly) mPlotly.style.display = 'none';
+                done = true;
+            }
+            if (!done && window._modalDepthGrid && window.Plotly && mPlotly) {
+                const styled = modalDepthTrace(window._modalDepthGrid, cmap, inv);
+                Plotly.restyle('modal-plotly-div',
+                    { z: [styled.z], colorscale: [styled.colorscale] });
+            }
+        };
+
         const visModal = document.getElementById('vis-modal');
         if (visModal) {
             visModal.addEventListener('show.bs.modal', function (event) {
@@ -1793,52 +1875,37 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
             visModal.addEventListener('hidden.bs.modal', function () {
                 clearVisRotationControls();
-                // The in-modal depth colormap is preview-only — hide + reset
-                // it on close so the table cell keeps its own colormap.
+                // The in-modal depth colormap+inverse are preview-only — hide,
+                // reset, and forget the per-field choices on close so the table
+                // cells keep their own colormaps and the next open starts fresh.
                 const sel = document.getElementById('modal-depth-cmap');
                 if (sel) { sel.classList.add('d-none'); sel.value = 'turbo'; }
+                const invBtn = document.getElementById('modal-depth-inverse');
+                if (invBtn) { invBtn.classList.add('d-none'); window._setModalInverseBtn(invBtn, false); }
                 window._modalDepthGrid = null;
                 window._modalDepthImgBase = null;
+                window._modalDepthModes = {};   // per-field {cmap, inverse} — session-scoped
+                window._modalDepthField = null;
             });
 
-            // Recolour the interactive depth heatmap from the in-modal
-            // selector (does NOT touch the table cell's colormap).
+            // Recolour the depth zoom view from the in-modal colormap selector
+            // + inverse toggle (does NOT touch the table cell's colormap). Each
+            // change updates the CURRENT field's stored mode then re-applies it.
             const depthCmapSel = document.getElementById('modal-depth-cmap');
             if (depthCmapSel) {
                 depthCmapSel.addEventListener('change', function () {
-                    const cmap = this.value;
-                    // Recolour via the server `?cmap` route — it handles EVERY
-                    // colormap (turbo/magma/inferno/plasma/normal/inverse), unlike
-                    // Plotly's heatmap colorscale (which silently ignores most).
-                    const swap = function (u) {
-                        if (!u) return u;
-                        const b = u.replace(/[?&]cmap=[^&]*/i, '');
-                        return b + (b.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
-                    };
-                    let done = false;
-                    // The depth zoom view is almost always the overlay-layers
-                    // stack (#vis-modal-layers, one IMG per row thumb). Recolour
-                    // each depth/mask layer (those carrying a ?cmap param) in
-                    // place — input-image layers have no cmap and are skipped.
-                    document.querySelectorAll('#vis-modal-layers img').forEach(function (img) {
-                        const src = img.getAttribute('src') || '';
-                        if (/[?&]cmap=/i.test(src)) { img.src = swap(src); done = true; }
-                    });
-                    // Fallbacks: the single static image, or the Plotly heatmap.
-                    const mImg = document.getElementById('modal-vis-img');
-                    const mPlotly = document.getElementById('modal-plotly-div');
-                    if (!done && window._modalDepthImgBase && mImg) {
-                        const url = swap(window._modalDepthImgBase);
-                        mImg.src = url; mImg.setAttribute('data-vis-url', url);
-                        mImg.style.display = 'block';
-                        if (mPlotly) mPlotly.style.display = 'none';
-                        done = true;
-                    }
-                    if (!done && window._modalDepthGrid && window.Plotly && mPlotly) {
-                        const styled = modalDepthTrace(window._modalDepthGrid, cmap);
-                        Plotly.restyle('modal-plotly-div',
-                            { z: [styled.z], colorscale: [styled.colorscale] });
-                    }
+                    const st = window._modalDepthMode();
+                    if (st) st.cmap = this.value;
+                    window._applyModalDepthMode();
+                });
+            }
+            const depthInvBtn = document.getElementById('modal-depth-inverse');
+            if (depthInvBtn) {
+                depthInvBtn.addEventListener('click', function () {
+                    const st = window._modalDepthMode();
+                    if (st) st.inverse = !st.inverse;
+                    window._setModalInverseBtn(this, !!(st && st.inverse));
+                    window._applyModalDepthMode();
                 });
             }
 
@@ -1902,18 +1969,35 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 || (triggerElement.classList && triggerElement.classList.contains('depth-img'))
                 || !!triggerElement.getAttribute('data-depth-meta-url');
             const _cmapSelOpen = document.getElementById('modal-depth-cmap');
-            if (_cmapSelOpen) {
-                if (_isDepthThumb && visUrl) {
-                    window._modalDepthImgBase = visUrl.replace(/[?&]cmap=[^&]*/i, '');
+            const _invBtnOpen = document.getElementById('modal-depth-inverse');
+            // Identify the FIELD this thumb belongs to (sample-independent) so
+            // its colormap+inverse persist across sample/field navigation.
+            const _fieldKey = triggerElement.getAttribute('data-group-id')
+                || triggerElement.getAttribute('alt') || null;
+            if (_isDepthThumb && visUrl) {
+                window._modalDepthField = _fieldKey;
+                window._modalDepthImgBase = visUrl
+                    .replace(/[?&]cmap=[^&]*/ig, '').replace(/[?&]inverse=[^&]*/ig, '')
+                    .replace(/\?&/, '?').replace(/[?&]$/, '');
+                // Seed this field's mode from the thumb's own URL the first time
+                // we see it; thereafter the stored choice wins.
+                if (!window._modalDepthModes[_fieldKey]) {
                     let _cur = 'turbo';
                     const _mm = /[?&]cmap=([^&]+)/i.exec(visUrl);
-                    if (_mm) _cur = decodeURIComponent(_mm[1]);
-                    _cmapSelOpen.value = _cur;
-                    _cmapSelOpen.classList.remove('d-none');
-                } else {
-                    _cmapSelOpen.classList.add('d-none');
-                    window._modalDepthImgBase = null;
+                    if (_mm) { const c = decodeURIComponent(_mm[1]); if (c !== 'inverse') _cur = c; }
+                    window._modalDepthModes[_fieldKey] = {
+                        cmap: _cur,
+                        inverse: /[?&]inverse=1/i.test(visUrl) || /[?&]cmap=inverse/i.test(visUrl),
+                    };
                 }
+                const _st = window._modalDepthModes[_fieldKey];
+                if (_cmapSelOpen) { _cmapSelOpen.value = _st.cmap; _cmapSelOpen.classList.remove('d-none'); }
+                if (_invBtnOpen) { _invBtnOpen.classList.remove('d-none'); window._setModalInverseBtn(_invBtnOpen, _st.inverse); }
+            } else {
+                window._modalDepthField = null;
+                window._modalDepthImgBase = null;
+                if (_cmapSelOpen) _cmapSelOpen.classList.add('d-none');
+                if (_invBtnOpen) _invBtnOpen.classList.add('d-none');
             }
 
             // Update modal title with sample name
@@ -1949,6 +2033,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     visZoomHandler.reset();
                 }
                 syncVisRotationControls(visType, layersWrap, visUrl);
+                // Layers were just (re)built from the table thumbs' turbo URLs;
+                // re-apply the active field's remembered colormap+inverse so the
+                // choice persists across sample/field navigation.
+                if (_isDepthThumb) window._applyModalDepthMode();
                 return;
             }
 
@@ -1995,14 +2083,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         if (loadingSpinner) loadingSpinner.style.display = 'none';
                         if (modalPlotly) modalPlotly.style.display = 'block';
 
-                        // Stash the raw grid so the in-modal colormap
-                        // selector can restyle (and so 'inverse depth' can
-                        // invert z) without re-fetching.
+                        // Stash the raw grid so the in-modal colormap selector
+                        // + inverse toggle can restyle without re-fetching.
                         window._modalDepthGrid = data.data;
                         const cmapSel = document.getElementById('modal-depth-cmap');
+                        const invBtn = document.getElementById('modal-depth-inverse');
                         if (cmapSel) cmapSel.classList.remove('d-none');
-                        const cmap0 = cmapSel ? cmapSel.value : 'turbo';
-                        const styled = modalDepthTrace(data.data, cmap0);
+                        if (invBtn) invBtn.classList.remove('d-none');
+                        const st0 = window._modalDepthMode() || { cmap: 'turbo', inverse: false };
+                        const styled = modalDepthTrace(data.data, st0.cmap, st0.inverse);
 
                         const plotData = [Object.assign({
                             type: 'heatmap',
@@ -2035,6 +2124,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         if (modalImg && visUrl) {
                             modalImg.style.display = 'block';
                             modalImg.src = visUrl;
+                            // Honour the field's remembered colormap+inverse on
+                            // the static fallback too.
+                            if (_isDepthThumb) window._applyModalDepthMode();
                         } else if (errorContainer) {
                             errorContainer.style.display = 'block';
                             errorContainer.innerHTML = `

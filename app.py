@@ -14793,8 +14793,14 @@ def serve_depth_image(filepath):
         arr = np.where(np.isfinite(arr), arr, 0.0)
 
         cmap = (request.args.get('cmap') or 'turbo').strip().lower()
+        # `inverse` is now an orthogonal toggle (any colormap + inverse). The
+        # legacy `cmap=inverse` pseudo-palette still works: it means turbo +
+        # inverse depth.
+        inverse = (request.args.get('inverse') in ('1', 'true', 'yes')) or cmap == 'inverse'
         if cmap == 'inverse':
-            # Inverse depth (disparity ~ 1/depth): near<->far swap, turbo LUT.
+            cmap = 'turbo'
+        if inverse:
+            # Inverse depth (disparity ~ 1/depth): near<->far swap.
             pos = arr[arr > 1e-6]
             eps = float(pos.min()) if pos.size else 1e-3
             arr = 1.0 / np.clip(arr, eps, None)
@@ -14808,7 +14814,7 @@ def serve_depth_image(filepath):
         if cmap == 'gray':
             rgb = np.stack([gray, gray, gray], axis=-1)
         else:
-            lut = _matplotlib_lut('turbo' if cmap == 'inverse' else cmap)
+            lut = _matplotlib_lut(cmap)
             rgb = lut[gray]
 
         from PIL import Image as _PILImage
@@ -17013,8 +17019,9 @@ def serve_gt_viz(lb_id, col, sample_name):
     # When ?cmap= is supplied (or the file is gray PNG), render via the
     # depth-recolor helper below.
     requested_cmap = (request.args.get('cmap') or '').strip().lower()
-    if magic == b'\x89PNG' and requested_cmap:
-        return _render_depth_png(path, requested_cmap)
+    requested_inv = request.args.get('inverse') in ('1', 'true', 'yes')
+    if magic == b'\x89PNG' and (requested_cmap or requested_inv):
+        return _render_depth_png(path, requested_cmap or 'turbo')
     if magic == b'\x89PNG':
         return send_file(path, mimetype='image/png', max_age=60)
     return send_file(
@@ -17987,9 +17994,24 @@ def _render_depth_png(gray_path, cmap):
             arr = np.asarray(src.convert('L'), dtype=np.uint8)
     except Exception:
         abort(404)
-    if cmap == 'gray':
+    # `inverse` is an orthogonal toggle (any colormap + inverse). The legacy
+    # `cmap=inverse` pseudo-palette still works (= turbo + inverse). On the
+    # already-normalised 0..255 grayscale, inverse depth is a near<->far swap.
+    inverse = (request.args.get('inverse') in ('1', 'true', 'yes')) or cmap == 'inverse'
+    if cmap == 'inverse':
+        cmap = 'turbo'
+    if inverse:
+        arr = 255 - arr
+    if cmap == 'gray' and not inverse:
         # Echo the grayscale PNG verbatim — caller asked for raw depth.
         return send_file(gray_path, mimetype='image/png', max_age=60)
+    if cmap == 'gray':
+        rgb = np.stack([arr, arr, arr], axis=-1)
+        out = Image.fromarray(rgb)
+        buf = io.BytesIO()
+        out.save(buf, format='PNG', optimize=False)
+        buf.seek(0)
+        return send_file(buf, mimetype='image/png', max_age=60)
     if cmap == 'normal':
         # Surface normals from height. The naive `np.gradient * 8` on a
         # 0..1 normalized depth map gives near-flat normals (mostly

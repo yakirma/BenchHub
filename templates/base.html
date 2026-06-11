@@ -1549,8 +1549,13 @@
             handleKeydown(e) {
                 console.log('DEBUG: GalleryModalManager handleKeydown', e.key);
                 if (this.items.length <= 0) return; // Allow 1 item if vertical nav is needed?
-                // Don't intercept if user is typing in an input
-                if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+                // Don't intercept if user is typing in an input or operating a
+                // form control. SELECT matters: the depth-colormap dropdown in
+                // the zoom modal is changed with the arrow keys — without this
+                // guard ArrowUp/Down would ALSO navigate samples and rebuild
+                // the layers, eating the colormap change ("only works on the
+                // second try").
+                if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
 
                 if (e.key === 'ArrowRight') {
                     if (this.items.length > 1) this.navigate(1);
