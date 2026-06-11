@@ -1808,20 +1808,25 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 depthCmapSel.addEventListener('change', function () {
                     const mPlotly = document.getElementById('modal-plotly-div');
                     const mImg = document.getElementById('modal-vis-img');
-                    if (window._modalDepthGrid && window.Plotly && mPlotly
-                            && mPlotly.style.display !== 'none') {
-                        // Interactive heatmap path.
-                        const styled = modalDepthTrace(window._modalDepthGrid, this.value);
-                        Plotly.restyle('modal-plotly-div',
-                            { z: [styled.z], colorscale: [styled.colorscale] });
-                    } else if (window._modalDepthImgBase && mImg) {
-                        // Static `?cmap` image path (materialised / HF-stub LBs);
-                        // the server route recolours all cmaps incl. normal/inverse.
+                    // Prefer the server `?cmap` image route — it recolours EVERY
+                    // colormap (turbo/magma/inferno/plasma/normal/inverse), whereas
+                    // Plotly's heatmap `colorscale` only knows a handful of named
+                    // scales and silently ignores turbo/magma/etc. So on a cmap
+                    // change we switch the interactive Plotly view to the
+                    // server-recoloured image.
+                    if (window._modalDepthImgBase && mImg) {
                         const base = window._modalDepthImgBase;
                         const url = base + (base.indexOf('?') === -1 ? '?' : '&')
                             + 'cmap=' + encodeURIComponent(this.value);
                         mImg.src = url;
                         mImg.setAttribute('data-vis-url', url);
+                        mImg.style.display = 'block';
+                        if (mPlotly) mPlotly.style.display = 'none';
+                    } else if (window._modalDepthGrid && window.Plotly && mPlotly) {
+                        // Fallback: no image base (shouldn't happen for depth cells).
+                        const styled = modalDepthTrace(window._modalDepthGrid, this.value);
+                        Plotly.restyle('modal-plotly-div',
+                            { z: [styled.z], colorscale: [styled.colorscale] });
                     }
                 });
             }
