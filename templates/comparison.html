@@ -1806,25 +1806,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const depthCmapSel = document.getElementById('modal-depth-cmap');
             if (depthCmapSel) {
                 depthCmapSel.addEventListener('change', function () {
-                    const mPlotly = document.getElementById('modal-plotly-div');
+                    const cmap = this.value;
+                    // Recolour via the server `?cmap` route — it handles EVERY
+                    // colormap (turbo/magma/inferno/plasma/normal/inverse), unlike
+                    // Plotly's heatmap colorscale (which silently ignores most).
+                    const swap = function (u) {
+                        if (!u) return u;
+                        const b = u.replace(/[?&]cmap=[^&]*/i, '');
+                        return b + (b.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
+                    };
+                    let done = false;
+                    // The depth zoom view is almost always the overlay-layers
+                    // stack (#vis-modal-layers, one IMG per row thumb). Recolour
+                    // each depth/mask layer (those carrying a ?cmap param) in
+                    // place — input-image layers have no cmap and are skipped.
+                    document.querySelectorAll('#vis-modal-layers img').forEach(function (img) {
+                        const src = img.getAttribute('src') || '';
+                        if (/[?&]cmap=/i.test(src)) { img.src = swap(src); done = true; }
+                    });
+                    // Fallbacks: the single static image, or the Plotly heatmap.
                     const mImg = document.getElementById('modal-vis-img');
-                    // Prefer the server `?cmap` image route — it recolours EVERY
-                    // colormap (turbo/magma/inferno/plasma/normal/inverse), whereas
-                    // Plotly's heatmap `colorscale` only knows a handful of named
-                    // scales and silently ignores turbo/magma/etc. So on a cmap
-                    // change we switch the interactive Plotly view to the
-                    // server-recoloured image.
-                    if (window._modalDepthImgBase && mImg) {
-                        const base = window._modalDepthImgBase;
-                        const url = base + (base.indexOf('?') === -1 ? '?' : '&')
-                            + 'cmap=' + encodeURIComponent(this.value);
-                        mImg.src = url;
-                        mImg.setAttribute('data-vis-url', url);
+                    const mPlotly = document.getElementById('modal-plotly-div');
+                    if (!done && window._modalDepthImgBase && mImg) {
+                        const url = swap(window._modalDepthImgBase);
+                        mImg.src = url; mImg.setAttribute('data-vis-url', url);
                         mImg.style.display = 'block';
                         if (mPlotly) mPlotly.style.display = 'none';
-                    } else if (window._modalDepthGrid && window.Plotly && mPlotly) {
-                        // Fallback: no image base (shouldn't happen for depth cells).
-                        const styled = modalDepthTrace(window._modalDepthGrid, this.value);
+                        done = true;
+                    }
+                    if (!done && window._modalDepthGrid && window.Plotly && mPlotly) {
+                        const styled = modalDepthTrace(window._modalDepthGrid, cmap);
                         Plotly.restyle('modal-plotly-div',
                             { z: [styled.z], colorscale: [styled.colorscale] });
                     }
