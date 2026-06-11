@@ -114,6 +114,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         border-radius: 2px;
     }
 
+    /* Submission name shown directly in headers/cells (legend removed).
+       Truncates with an ellipsis instead of widening the column; the full
+       name is in the title attribute (hover). */
+    .sub-name-cell {
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+        font-weight: 600;
+    }
+    .cmp-status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 4px;
+        vertical-align: middle;
+        background: #f0ad4e; /* processing (amber) */
+        flex: 0 0 auto;
+    }
+    .cmp-status-dot.done { background: #4caf50; }
+    .cmp-status-dot.err  { background: #d9534f; }
+
     /* Mask pixel hover tooltip */
     .mask-hover-tooltip {
         position: fixed;
@@ -701,12 +726,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center">
                                 <div class="card shadow-sm h-100">
                                     <div class="card-header py-1 small bg-body-secondary d-flex align-items-center justify-content-between gap-2">
-                                        <span><strong>Sub{{ loop.index }}:</strong> {{ sub.name }}</span>
+                                        <span class="sub-name-cell" title="{{ sub.name }}">{{ sub.name }}</span>
                                         {% if submissions|length > 1 %}
                                         <input type="checkbox" class="form-check-input agg-viz-select mt-0"
                                                title="Select for side-by-side compare"
                                                data-src="{{ url_for('execute_aggregated_visualization', lv_id=viz.id, submission_id=sub.id) }}"
-                                               data-label="Sub{{ loop.index }}: {{ sub.name }}">
+                                               data-label="{{ sub.name }}">
                                         {% endif %}
                                     </div>
                                     <div class="card-body p-1">
@@ -714,7 +739,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                             class="img-fluid clickable-viz agg-viz-img"
                                             style="height: 200px; object-fit: contain; cursor: pointer;" loading="lazy"
                                             alt="{{ viz.target_name }} - {{ sub.name }}"
-                                            data-sub-name="Sub{{ loop.index }}"
+                                            data-sub-name="{{ sub.name }}"
                                             onclick="aggImgClick(event, this);"
                                             onerror="this.onerror=null; this.src='/static/img/error_placeholder.png';">
                                     </div>
@@ -729,20 +754,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         </div>
         {% endif %}
 
-        {# Frozen region: legend + scrollable table pin together. #}
+        {# Frozen region: scrollable table pins to the top on scroll. The old
+           submission legend was dropped — each submission's name now shows
+           directly in its column headers + metric chart (truncated + hover).
+           Per-submission processing status lives in the .cmp-status-dot in
+           each pred column header. #}
         <div id="cmp-frozen">
-        {% if not all_mirrored %}
-        <div class="mb-3 p-2 bg-body-tertiary border rounded" id="cmp-legend">
-            <strong>Submissions:</strong>
-            {% for sub in submissions %}
-            <span class="badge {{ 'bg-success' if sub.processing_status == 'Processed' else 'bg-warning' }} me-2"
-                id="status-{{ sub.id }}">
-                Sub{{ loop.index }}: {{ sub.processing_status }}
-            </span>
-            <span class="me-2">{{ sub.name }}</span>{% if not loop.last %}, {% endif %}
-            {% endfor %}
-        </div>
-        {% endif %}
         <div class="top-scrollbar-container" id="top-scroll-container">
             <div class="top-scrollbar-content" id="top-scroll-content"></div>
         </div>
@@ -778,7 +795,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% if col_key in submission_has_histogram.get(sub.id, []) %}
                         <th draggable="true" {% set col_width=global_settings.histogram_width %}
                             style="width: {{ col_width }}; min-width: {{ col_width }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ comparison_display_options[col_key].label }})
+                            <span class="cmp-status-dot {{ 'done' if sub.processing_status == 'Processed' else ('err' if sub.processing_status and sub.processing_status.startswith('Error') else '') }}" data-sub-id="{{ sub.id }}" title="{{ sub.processing_status }}"></span><span class="sub-name-cell" title="{{ sub.name }} — {{ comparison_display_options[col_key].label }}">{{ sub.name }}</span>
                             <div class="resizer"></div>
                         </th>
                         {% endif %}
@@ -823,7 +840,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% if col_key in submission_custom_fields.get(sub.id, []) %}
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width or '300px' }}; min-width: {{ comparison_display_options[col_key].default_width or '300px' }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ label }})
+                            <span class="cmp-status-dot {{ 'done' if sub.processing_status == 'Processed' else ('err' if sub.processing_status and sub.processing_status.startswith('Error') else '') }}" data-sub-id="{{ sub.id }}" title="{{ sub.processing_status }}"></span><span class="sub-name-cell" title="{{ sub.name }} — {{ label }}">{{ sub.name }}</span>
                             {% for _b in sub_col_badges.get(col_key, {}).get(sub.id, []) %}<span class="badge text-bg-info ms-1" title="Type parameter">{{ _b }}</span>{% endfor %}
                             {# Colormap selector for a prediction-side depth column (the GT
                                selector only covers the GT column; pred depth is a separate
@@ -860,7 +877,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% for sub in submissions %}
                         <th draggable="true"
                             style="width: {{ comparison_display_options[col_key].default_width }}; min-width: {{ comparison_display_options[col_key].default_width }}; overflow: hidden; text-overflow: ellipsis;">
-                            Sub{{ loop.index }} ({{ comparison_display_options[col_key].label|replace('📊 ', '') }})
+                            <span class="cmp-status-dot {{ 'done' if sub.processing_status == 'Processed' else ('err' if sub.processing_status and sub.processing_status.startswith('Error') else '') }}" data-sub-id="{{ sub.id }}" title="{{ sub.processing_status }}"></span><span class="sub-name-cell" title="{{ sub.name }} — {{ comparison_display_options[col_key].label|replace('📊 ', '') }}">{{ sub.name }}</span>
                             <div class="resizer"></div>
                         </th>
                         {% endfor %}
@@ -985,7 +1002,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                         <tr>
                                             <th></th>
                                             {% if has_gt_nonmetric_stats %}<th>GT</th>{% endif %}
-                                            {% for sub in submissions %}<th>Sub{{ loop.index }}</th>{% endfor %}
+                                            {% for sub in submissions %}<th style="max-width: 90px; overflow: hidden; text-overflow: ellipsis;"><span class="sub-name-cell" style="max-width: 84px; font-weight: 600;" title="{{ sub.name }}">{{ sub.name }}</span></th>{% endfor %}
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -1080,7 +1097,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
-                                    data-sub-name="Sub{{ loop.index }}" data-sample-name="{{ data.sample_name }}"
+                                    data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
                                     alt="{{ comparison_display_options[col_key].label }}">
                             </div>
                         </td>
@@ -1629,6 +1646,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     }
 
                     // Update Status Badge
+                    // Update the per-column status dots (legend was removed).
+                    document.querySelectorAll(`.cmp-status-dot[data-sub-id="${subId}"]`).forEach(function (dot) {
+                        dot.classList.toggle('done', isProcessed);
+                        dot.classList.toggle('err', isError);
+                        dot.setAttribute('title', subData.status);
+                    });
                     const statusBadge = document.getElementById(`status-${subId}`);
                     if (statusBadge) {
                         statusBadge.innerText = `Sub${submissionIds.indexOf(parseInt(subId)) + 1}: ${subData.status}`;
@@ -2224,6 +2247,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     const allMetricsForChart = [...activeMetrics, ...customMetrics];
     console.log('DEBUG comparison.html explicit filter:', { activeMetrics, customMetrics, allMetricsForChart });
 
+    // Truncate Chart.js legend labels (long submission names) with an ellipsis;
+    // the full name stays in dataset.label so the bar tooltips show it in full.
+    // Global (window) so the separate zoom-modal <script> block can use it too.
+    window.ellipsisLegend = function ellipsisLegend(maxLen) {
+        return function (chart) {
+            const def = (Chart.defaults.plugins && Chart.defaults.plugins.legend
+                && Chart.defaults.plugins.legend.labels
+                && Chart.defaults.plugins.legend.labels.generateLabels);
+            let items;
+            if (typeof def === 'function') {
+                items = def(chart);
+            } else {
+                items = (chart.data.datasets || []).map((d, i) => ({
+                    text: d.label, datasetIndex: i, fillStyle: d.backgroundColor,
+                    strokeStyle: d.borderColor || d.backgroundColor, lineWidth: 1,
+                    hidden: !chart.isDatasetVisible(i)
+                }));
+            }
+            items.forEach(it => {
+                if (it.text && it.text.length > maxLen) it.text = it.text.slice(0, maxLen - 1) + '…';
+            });
+            return items;
+        };
+    }
+
     // Overall Metrics Chart
     if (selectedMetrics && selectedMetrics.length > 0 && submissions && submissions.length > 0) {
         window.overallChart = new Chart(document.getElementById('overallMetricsChart').getContext('2d'), {
@@ -2240,7 +2288,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             options: {
                 plugins: {
                     tooltip: { enabled: true },
-                    legend: { display: true, position: 'bottom' }
+                    legend: { display: true, position: 'bottom', labels: { generateLabels: ellipsisLegend(24) } }
                 },
                 scales: {
                     y: { beginAtZero: true, type: 'linear', title: { display: true, text: 'Metric Value' } },
@@ -2473,7 +2521,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         });
 
                         datasets.push({
-                            label: `Sub${subIndex + 1}`,
+                            label: sub.name,
                             data: dataPoints,
                             backgroundColor: chartColors[subIndex % chartColors.length],
                             borderColor: 'transparent',
@@ -2496,7 +2544,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     display: true,
                                     position: 'bottom', // Changed to bottom for better chart space
                                     labels: {
-                                        boxWidth: 10
+                                        boxWidth: 10,
+                                        generateLabels: ellipsisLegend(20)
                                     }
                                 },
                                 tooltip: { enabled: true }
@@ -3572,7 +3621,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     },
                     legend: {
                         display: true, // Show legend for submissions
-                        position: 'top'
+                        position: 'top',
+                        labels: { generateLabels: ellipsisLegend(28) }
                     },
                     tooltip: { enabled: true }
                 },
