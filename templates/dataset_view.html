@@ -1000,6 +1000,23 @@
                     {% endif %}
                     {% else %}
                     {{ dataset_display_options[col_key].label }}
+                    {% endif %}
+                    {% if dataset_display_options.get(col_key) and dataset_display_options[col_key].type == 'depth' %}
+                    <select class="form-select form-select-sm depth-cmap-select d-inline-block ms-1"
+                            style="width: auto; max-width: 140px;"
+                            data-col-key="{{ col_key }}" title="Colormap to apply to the depth map">
+                        <option value="gray">gray</option>
+                        <option value="turbo" selected>turbo</option>
+                        <option value="jet">jet</option>
+                        <option value="viridis">viridis</option>
+                        <option value="magma">magma</option>
+                        <option value="inferno">inferno</option>
+                        <option value="plasma">plasma</option>
+                        <option value="normal">normal map</option>
+                    </select>
+                    <button type="button" class="btn btn-outline-secondary btn-sm depth-inverse-toggle ms-1"
+                            aria-pressed="false" data-col-key="{{ col_key }}"
+                            title="Toggle inverse depth (near/far swap)">Inv</button>
                     {% endif %}<div class="resizer"></div>
                 </th>
                 {% endfor %}
@@ -1150,7 +1167,8 @@
                     {% if field_data.type in (image_render_kinds | default(['image', 'depth', 'mask', 'audio'])) %}
                     {% set _ds_src = url_for('serve_custom_field_image', field_id=field_data.field_id) %}
                     {% set _ds_initial_src = (_ds_src + '?cmap=turbo') if field_data.type == 'depth' else _ds_src %}
-                    <div class="text-center depth-cell" style="position: relative; display: inline-block;">
+                    <div class="text-center depth-cell" data-col-key="{{ col_key }}" data-depth-base="{{ _ds_src }}"
+                         style="position: relative; display: inline-block;">
                         <img src="{{ _ds_initial_src }}"
                             class="border rounded shadow-sm clickable-vis{% if field_data.type == 'depth' %} depth-img{% endif %}{% if field_data.type == 'mask' %} mask-img{% endif %}{% if field_data.type == 'image' %} image-img{% endif %}"
                             style="width: 160px !important; min-width: 160px !important; height: 140px !important; object-fit: contain; cursor: pointer;"
@@ -1399,6 +1417,26 @@
                         Next Sample <i class="bi bi-arrow-down"></i>
                     </button>
                 </div>
+                {# Depth-only: colormap + inverse for this zoom view. Persist
+                   per field for the life of the zoom session; reset on close.
+                   Preview-only. #}
+                <select id="cf-modal-depth-cmap" class="form-select form-select-sm d-none ms-2"
+                        style="width: auto;" title="Colormap (this zoom view only)">
+                    <option value="turbo" selected>turbo</option>
+                    <option value="jet">jet</option>
+                    <option value="viridis">viridis</option>
+                    <option value="magma">magma</option>
+                    <option value="inferno">inferno</option>
+                    <option value="plasma">plasma</option>
+                    <option value="gray">gray</option>
+                    <option value="normal">normal map</option>
+                </select>
+                <button type="button" id="cf-modal-depth-inverse"
+                        class="btn btn-outline-secondary btn-sm d-none ms-1"
+                        style="white-space: nowrap;" aria-pressed="false"
+                        title="Toggle inverse depth (near/far swap) — this zoom view only">
+                    <i class="bi bi-arrow-left-right"></i> Inverse
+                </button>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center" style="position: relative;">
@@ -1879,6 +1917,14 @@
             });
             customFieldModal.addEventListener('hidden.bs.modal', function () {
                 clearCustomFieldRotationControls();
+                // In-modal colormap+inverse are preview-only — hide, reset,
+                // forget the per-field choices so the table keeps its own.
+                const sel = document.getElementById('cf-modal-depth-cmap');
+                if (sel) { sel.classList.add('d-none'); sel.value = 'turbo'; }
+                const invBtn = document.getElementById('cf-modal-depth-inverse');
+                if (invBtn) { invBtn.classList.add('d-none'); window._cfSetInverseBtn(invBtn, false); }
+                window._cfModalDepthModes = {};
+                window._cfModalDepthField = null;
             });
 
             const btnPrev = customFieldModal.querySelector('#btn-prev-custom-sample');
@@ -1887,7 +1933,76 @@
 
             if (btnPrev) btnPrev.onclick = () => triggerNav('ArrowUp');
             if (btnNext) btnNext.onclick = () => triggerNav('ArrowDown');
+
+            const cfCmapSel = document.getElementById('cf-modal-depth-cmap');
+            if (cfCmapSel) cfCmapSel.addEventListener('change', function () {
+                const st = window._cfModalDepthMode();
+                if (st) st.cmap = this.value;
+                window._cfApplyModalDepthMode();
+            });
+            const cfInvBtn = document.getElementById('cf-modal-depth-inverse');
+            if (cfInvBtn) cfInvBtn.addEventListener('click', function () {
+                const st = window._cfModalDepthMode();
+                if (st) st.inverse = !st.inverse;
+                window._cfSetInverseBtn(this, !!(st && st.inverse));
+                window._cfApplyModalDepthMode();
+            });
         }
+
+        // --- Dataset zoom-modal depth colormap+inverse, persisted PER FIELD
+        // for the life of one zoom session (keyed by the thumb's alt=col_key,
+        // sample-independent so it survives up/down + sideways nav). Mirrors
+        // comparison.html. -------------------------------------------------
+        window._cfModalDepthModes = window._cfModalDepthModes || {};
+        window._cfModalDepthField = null;
+        window._cfModalDepthMode = function () {
+            const key = window._cfModalDepthField;
+            if (!key) return null;
+            if (!window._cfModalDepthModes[key]) {
+                window._cfModalDepthModes[key] = { cmap: 'turbo', inverse: false };
+            }
+            return window._cfModalDepthModes[key];
+        };
+        window._cfModalDepthUrl = function (base, cmap, inverse) {
+            if (!base) return base;
+            let b = base.replace(/[?&]cmap=[^&]*/ig, '').replace(/[?&]inverse=[^&]*/ig, '');
+            b = b.replace(/\?&/, '?').replace(/[?&]$/, '');
+            b += (b.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap || 'turbo');
+            if (inverse) b += '&inverse=1';
+            return b;
+        };
+        window._cfSetInverseBtn = function (btn, on) {
+            if (!btn) return;
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.classList.toggle('active', !!on);
+            btn.classList.toggle('btn-secondary', !!on);
+            btn.classList.toggle('btn-outline-secondary', !on);
+        };
+        window._cfApplyModalDepthMode = function () {
+            const st = window._cfModalDepthMode() || { cmap: 'turbo', inverse: false };
+            const cmap = st.cmap || 'turbo';
+            const inv = !!st.inverse;
+            let done = false;
+            document.querySelectorAll('#custom-field-modal-layers img').forEach(function (img) {
+                const src = img.getAttribute('src') || '';
+                if (/[?&]cmap=/i.test(src)) {
+                    img.src = window._cfModalDepthUrl(src, cmap, inv);
+                    done = true;
+                }
+            });
+            const mImg = document.getElementById('modal-custom-field-img');
+            if (!done && mImg && /[?&]cmap=/i.test(mImg.getAttribute('src') || '')) {
+                mImg.src = window._cfModalDepthUrl(mImg.getAttribute('src'), cmap, inv);
+                done = true;
+            }
+            // Keep the in-modal colorbar in step with the chosen palette.
+            const cbar = document.getElementById('modal-depth-colorbar');
+            if (cbar) {
+                cbar.setAttribute('data-cmap', cmap);
+                cbar.setAttribute('data-inverse', inv ? '1' : '0');
+            }
+            if (window._cfUpdateModalColorbar) window._cfUpdateModalColorbar();
+        };
 
         // --- Histogram Modal Button Logic ---
         const histModal = document.getElementById('chart-modal');
@@ -2153,6 +2268,32 @@
                 modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
             }
 
+            // Depth colormap + inverse controls: identify the FIELD (alt =
+            // col_key, sample-independent) so its mode persists across nav,
+            // restore its stored choice into the controls, and show/hide them.
+            const _cfCmapSel = document.getElementById('cf-modal-depth-cmap');
+            const _cfInvBtn = document.getElementById('cf-modal-depth-inverse');
+            const _cfFieldKey = button.getAttribute('alt') || button.getAttribute('data-sample-name') || null;
+            if (visType === 'depth') {
+                window._cfModalDepthField = _cfFieldKey;
+                if (!window._cfModalDepthModes[_cfFieldKey]) {
+                    let _cur = 'turbo';
+                    const _mm = /[?&]cmap=([^&]+)/i.exec(imgUrl || '');
+                    if (_mm) { const c = decodeURIComponent(_mm[1]); if (c !== 'inverse') _cur = c; }
+                    window._cfModalDepthModes[_cfFieldKey] = {
+                        cmap: _cur,
+                        inverse: /[?&]inverse=1/i.test(imgUrl || '') || /[?&]cmap=inverse/i.test(imgUrl || ''),
+                    };
+                }
+                const _st = window._cfModalDepthModes[_cfFieldKey];
+                if (_cfCmapSel) { _cfCmapSel.value = _st.cmap; _cfCmapSel.classList.remove('d-none'); }
+                if (_cfInvBtn) { _cfInvBtn.classList.remove('d-none'); window._cfSetInverseBtn(_cfInvBtn, _st.inverse); }
+            } else {
+                window._cfModalDepthField = null;
+                if (_cfCmapSel) _cfCmapSel.classList.add('d-none');
+                if (_cfInvBtn) _cfInvBtn.classList.add('d-none');
+            }
+
             // Per-thumb-slider mode: the #custom-field-modal-layers
             // stack is the sole display. Hide the legacy base layers
             // (modal-custom-field-img / modal-plotly-div) so two
@@ -2177,6 +2318,10 @@
                     customFieldZoomHandler.reset();
                 }
                 syncCustomFieldRotationControls(visType, layersWrap, imgUrl);
+                // Layers were just (re)built from the table thumbs' turbo
+                // URLs; re-apply the active field's remembered colormap+inverse
+                // so the choice persists across sample/field navigation.
+                if (visType === 'depth') window._cfApplyModalDepthMode();
                 return;
             }
 
@@ -3245,8 +3390,10 @@
         gray:     ['#000000', '#222222', '#444444', '#666666', '#888888', '#aaaaaa', '#cccccc', '#dddddd', '#ffffff'],
         normal:   ['#444488', '#5566aa', '#7788bb', '#8899cc', '#9988bb', '#aa77aa', '#bb6699', '#cc5588', '#dd4477'],
     };
-    function _applyCbarGradient(cbar, cmap) {
-        const stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
+    function _applyCbarGradient(cbar, cmap, inverse) {
+        let stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
+        // Inverse depth swaps near/far, so flip the ramp as a cue.
+        if (inverse) stops = stops.slice().reverse();
         cbar.style.background = 'linear-gradient(to top, ' + stops.join(', ') + ')';
     }
     // Sync the in-modal depth colorbar with whichever layer is
@@ -3268,7 +3415,8 @@
         }
         cbar.style.display = 'block';
         labels.style.display = 'flex';
-        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo',
+                           cbar.getAttribute('data-inverse') === '1');
         const metaUrl = picked.getAttribute('data-depth-meta-url');
         const setLabels = (mn, mx, normalized) => {
             const mid = (mn + mx) / 2;
@@ -3298,7 +3446,8 @@
         const cbar = cell.querySelector('.depth-colorbar');
         const img = cell.querySelector('img.depth-img');
         if (!cbar || !img) return;
-        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+        _applyCbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo',
+                           cbar.getAttribute('data-inverse') === '1');
         const metaUrl = img.getAttribute('data-depth-meta-url');
         const labels = cell.querySelector('.depth-colorbar-labels');
         if (!metaUrl || !labels) return;
@@ -3308,6 +3457,56 @@
             labels.querySelector('.cbar-mid').textContent = _fmtAxisVal((m.min + m.max) / 2);
             labels.querySelector('.cbar-min').textContent = _fmtAxisVal(m.min);
         }).catch(function () {});
+    });
+
+    // Depth-column colormap selector + inverse toggle in the dataset table
+    // header. A change rewrites every .depth-img src in that column via the
+    // server ?cmap=<name>&inverse=1 route. Dataset columns have no sub-id
+    // (one column per field), so cells match on data-col-key alone.
+    function _dsDepthHeaderChoice(colKey) {
+        const sel = document.querySelector('.depth-cmap-select[data-col-key="' + colKey + '"]');
+        const btn = document.querySelector('.depth-inverse-toggle[data-col-key="' + colKey + '"]');
+        return {
+            cmap: (sel && sel.value) || 'turbo',
+            inverse: !!(btn && btn.getAttribute('aria-pressed') === 'true'),
+        };
+    }
+    function _dsRecolorDepthColumn(colKey, cmap, inverse) {
+        document.querySelectorAll('.depth-cell[data-col-key="' + colKey + '"]').forEach(function (cell) {
+            const base = cell.getAttribute('data-depth-base');
+            if (!base) return;
+            let url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
+            if (inverse) url += '&inverse=1';
+            cell.querySelectorAll('img.depth-img').forEach(function (img) {
+                img.src = url;
+                img.setAttribute('data-img-url', url);
+            });
+            const cbar = cell.querySelector('.depth-colorbar');
+            if (cbar) {
+                cbar.setAttribute('data-cmap', cmap);
+                cbar.setAttribute('data-inverse', inverse ? '1' : '0');
+                _applyCbarGradient(cbar, cmap, inverse);
+            }
+        });
+    }
+    document.addEventListener('change', function (ev) {
+        const sel = ev.target;
+        if (!sel || !sel.classList || !sel.classList.contains('depth-cmap-select')) return;
+        const colKey = sel.getAttribute('data-col-key');
+        const choice = _dsDepthHeaderChoice(colKey);
+        _dsRecolorDepthColumn(colKey, sel.value || 'turbo', choice.inverse);
+    });
+    document.addEventListener('click', function (ev) {
+        const btn = ev.target && ev.target.closest && ev.target.closest('.depth-inverse-toggle');
+        if (!btn) return;
+        const on = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.classList.toggle('active', on);
+        btn.classList.toggle('btn-secondary', on);
+        btn.classList.toggle('btn-outline-secondary', !on);
+        const colKey = btn.getAttribute('data-col-key');
+        const choice = _dsDepthHeaderChoice(colKey);
+        _dsRecolorDepthColumn(colKey, choice.cmap, on);
     });
 
     // Pixel hover. Draws the displayed image to a canvas once, then

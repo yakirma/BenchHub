@@ -14793,10 +14793,10 @@ def serve_depth_image(filepath):
             gray = (np.clip(normed, 0.0, 1.0) * 255.0).astype(np.uint8)
             if _cmap == 'gray':
                 rgb = np.stack([gray, gray, gray], axis=-1)
+            elif _cmap == 'normal':
+                rgb = _depth_normal_map(gray)
             else:
-                # 'normal' has no meaningful preview projection here — fall
-                # back to turbo; all other palettes map directly.
-                lut = _matplotlib_lut('turbo' if _cmap in ('', 'normal') else _cmap)
+                lut = _matplotlib_lut(_cmap or 'turbo')
                 rgb = lut[gray]
             out = _PIL.fromarray(rgb, mode='RGB')
             buf = io.BytesIO()
@@ -14847,6 +14847,8 @@ def serve_depth_image(filepath):
 
         if cmap == 'gray':
             rgb = np.stack([gray, gray, gray], axis=-1)
+        elif cmap == 'normal':
+            rgb = _depth_normal_map(gray)
         else:
             lut = _matplotlib_lut(cmap)
             rgb = lut[gray]
@@ -18017,6 +18019,36 @@ def _matplotlib_lut(name):
     return lut
 
 
+def _depth_normal_map(gray):
+    """Surface-normal RGB (uint8 H×W×3) from a normalised 0..255 grayscale
+    depth/height map. Light Gaussian smooth → 3×3 Sobel gradient → tangent-
+    space normals, auto-scaled so the 98th-percentile magnitude lands ~1 so
+    surface orientation is actually visible regardless of how rough the depth
+    is. Shared by every depth render path (gray-PNG, raw .npz, preview JPG) so
+    the 'normal map' palette behaves identically wherever it's selected."""
+    from scipy.ndimage import gaussian_filter
+    z = np.asarray(gray, dtype=np.float32) / 255.0
+    z = gaussian_filter(z, sigma=1.0)
+    gx = np.zeros_like(z)
+    gy = np.zeros_like(z)
+    gx[:, 1:-1] = (z[:, 2:] - z[:, :-2]) * 0.5
+    gy[1:-1, :] = (z[2:, :] - z[:-2, :]) * 0.5
+    mag = np.sqrt(gx * gx + gy * gy)
+    p98 = float(np.percentile(mag, 98)) or 1e-6
+    scale = 1.0 / max(p98, 1e-3)
+    nx = -gx * scale
+    ny = gy * scale  # +Y points UP in tangent-space convention
+    nz = np.ones_like(z) * 0.5  # base flatness
+    length = np.sqrt(nx * nx + ny * ny + nz * nz)
+    length[length == 0] = 1.0
+    nx /= length; ny /= length; nz /= length
+    return np.stack([
+        np.clip(((nx + 1.0) * 127.5), 0, 255).astype(np.uint8),
+        np.clip(((ny + 1.0) * 127.5), 0, 255).astype(np.uint8),
+        np.clip(((nz + 1.0) * 127.5), 0, 255).astype(np.uint8),
+    ], axis=-1)
+
+
 def _render_depth_png(gray_path, cmap):
     """Load a grayscale depth PNG from `gray_path`, apply the requested
     colormap (or normal-map projection) on the fly, and return a Flask
@@ -18047,45 +18079,7 @@ def _render_depth_png(gray_path, cmap):
         buf.seek(0)
         return send_file(buf, mimetype='image/png', max_age=60)
     if cmap == 'normal':
-        # Surface normals from height. The naive `np.gradient * 8` on a
-        # 0..1 normalized depth map gives near-flat normals (mostly
-        # (0,0,1) → purple); we want enough z-axis tilt that surface
-        # orientation is actually visible.
-        #
-        # Approach:
-        # 1. Light Gaussian smooth to suppress single-pixel noise.
-        # 2. 3x3 Sobel for the gradient (better than np.gradient for
-        #    visualizing surface orientation — central-difference is
-        #    too soft on sharp edges).
-        # 3. Auto-scale the gradient so the 98th-percentile of the
-        #    magnitude lands at ~1.0. Keeps the normal map well-
-        #    saturated regardless of how "rough" the depth is.
-        from scipy.ndimage import gaussian_filter
-        z = arr.astype(np.float32) / 255.0
-        z = gaussian_filter(z, sigma=1.0)
-        # Sobel kernels via convolution. scipy.signal.convolve2d would
-        # add another import; we use simple np slicing instead.
-        gx = np.zeros_like(z)
-        gy = np.zeros_like(z)
-        gx[:, 1:-1] = (z[:, 2:] - z[:, :-2]) * 0.5
-        gy[1:-1, :] = (z[2:, :] - z[:-2, :]) * 0.5
-        # Auto-scale to land the 98th-percentile magnitude near 1.
-        mag = np.sqrt(gx * gx + gy * gy)
-        p98 = float(np.percentile(mag, 98)) or 1e-6
-        scale = 1.0 / max(p98, 1e-3)
-        nx = -gx * scale
-        ny = gy * scale  # +Y points UP in tangent-space convention
-        nz = np.ones_like(z) * 0.5  # base flatness; clamp later
-        length = np.sqrt(nx * nx + ny * ny + nz * nz)
-        length[length == 0] = 1.0
-        nx /= length; ny /= length; nz /= length
-        # Map [-1, 1] → [0, 255] in standard tangent-space normal-map
-        # encoding (X=right, Y=up, Z=out → RGB).
-        rgb = np.stack([
-            np.clip(((nx + 1.0) * 127.5), 0, 255).astype(np.uint8),
-            np.clip(((ny + 1.0) * 127.5), 0, 255).astype(np.uint8),
-            np.clip(((nz + 1.0) * 127.5), 0, 255).astype(np.uint8),
-        ], axis=-1)
+        rgb = _depth_normal_map(arr)
     else:
         lut = _matplotlib_lut(cmap)
         rgb = lut[arr]

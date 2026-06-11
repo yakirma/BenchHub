@@ -809,8 +809,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <option value="inferno">inferno</option>
                                 <option value="plasma">plasma</option>
                                 <option value="normal">normal map</option>
-                                <option value="inverse">inverse depth</option>
                             </select>
+                            <button type="button" class="btn btn-outline-secondary btn-sm depth-inverse-toggle ms-1"
+                                    draggable="false" aria-pressed="false"
+                                    onmousedown="event.stopPropagation();"
+                                    data-col-key="{{ col_key }}"
+                                    title="Toggle inverse depth (near/far swap)">Inv</button>
                             {% endif %}
                             <div class="resizer"></div>
                         </th>
@@ -838,8 +842,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 <option value="inferno">inferno</option>
                                 <option value="plasma">plasma</option>
                                 <option value="normal">normal map</option>
-                                <option value="inverse">inverse depth</option>
                             </select>
+                            <button type="button" class="btn btn-outline-secondary btn-sm depth-inverse-toggle ms-1"
+                                    draggable="false" aria-pressed="false"
+                                    onmousedown="event.stopPropagation();"
+                                    data-col-key="{{ col_key }}" data-sub-id="{{ sub.id }}"
+                                    title="Toggle inverse depth (near/far swap)">Inv</button>
                             {% endif %}
                             <div class="resizer"></div>
                         </th>
@@ -3626,31 +3634,36 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         });
     }
 
-    // Depth-column colormap selector. The cached image is a grayscale
-    // PNG; the server-side route /api/gt_viz/... accepts ?cmap=<name>
-    // and returns a recolored PNG. Each depth column has its own
-    // selector in the header; changing it rewrites every .depth-img
-    // src in that column.
-    // Event delegation so the listener still works if the column
-    // header is re-rendered by the drag-and-drop reorder logic.
-    document.addEventListener('change', function (ev) {
-        const sel = ev.target;
-        if (!sel || !sel.classList || !sel.classList.contains('depth-cmap-select')) return;
-        const colKey = sel.getAttribute('data-col-key');
-        const subId = sel.getAttribute('data-sub-id');
-        const cmap = sel.value || '';
-        // Only recolour depth columns. The cell selector is gated on
-        // matching col_key so we don't smear the same query param onto
-        // a sibling image_image column. Pred selectors also carry a
-        // data-sub-id so changing one submission's colormap only
-        // rewrites that submission's cells (GT has no sub-id → whole
-        // GT column).
+    // Depth-column colormap selector + inverse toggle. The cached image
+    // is a grayscale PNG (or reverse-turbo'd preview JPG); the server
+    // route accepts ?cmap=<name>&inverse=1 and returns a recoloured PNG.
+    // Each depth column has its own selector + Inv button in the header;
+    // a change rewrites every .depth-img src in that column. Pred
+    // controls carry a data-sub-id so one submission's choice doesn't
+    // recolour the others (GT has no sub-id → whole GT column).
+    // Find the colormap + inverse currently chosen for a (colKey, subId)
+    // pair by reading its header controls.
+    function _depthHeaderChoice(colKey, subId) {
+        let sSel = '.depth-cmap-select[data-col-key="' + colKey + '"]';
+        let bSel = '.depth-inverse-toggle[data-col-key="' + colKey + '"]';
+        if (subId) { sSel += '[data-sub-id="' + subId + '"]'; bSel += '[data-sub-id="' + subId + '"]'; }
+        else { sSel += ':not([data-sub-id])'; bSel += ':not([data-sub-id])'; }
+        const sel = document.querySelector(sSel);
+        const btn = document.querySelector(bSel);
+        return {
+            cmap: (sel && sel.value) || 'turbo',
+            inverse: !!(btn && btn.getAttribute('aria-pressed') === 'true'),
+        };
+    }
+    function recolorDepthColumn(colKey, subId, cmap, inverse) {
         let cellSel = '.depth-cell[data-col-key="' + colKey + '"]';
         if (subId) cellSel += '[data-sub-id="' + subId + '"]';
+        else cellSel += ':not([data-sub-id])';
         document.querySelectorAll(cellSel).forEach(function (cell) {
             const base = cell.getAttribute('data-depth-base');
             if (!base) return;
-            const url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
+            let url = base + (base.indexOf('?') === -1 ? '?' : '&') + 'cmap=' + encodeURIComponent(cmap);
+            if (inverse) url += '&inverse=1';
             cell.querySelectorAll('img.depth-img').forEach(function (img) {
                 img.src = url;
                 img.setAttribute('data-vis-url', url);
@@ -3658,9 +3671,34 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const cbar = cell.querySelector('.depth-colorbar');
             if (cbar) {
                 cbar.setAttribute('data-cmap', cmap);
-                applyColorbarGradient(cbar, cmap);
+                cbar.setAttribute('data-inverse', inverse ? '1' : '0');
+                applyColorbarGradient(cbar, cmap, inverse);
             }
         });
+    }
+    // Event delegation so the listeners survive column re-render (drag
+    // reorder). One handler for the colormap <select>, one for the Inv
+    // button.
+    document.addEventListener('change', function (ev) {
+        const sel = ev.target;
+        if (!sel || !sel.classList || !sel.classList.contains('depth-cmap-select')) return;
+        const colKey = sel.getAttribute('data-col-key');
+        const subId = sel.getAttribute('data-sub-id');
+        const choice = _depthHeaderChoice(colKey, subId);
+        recolorDepthColumn(colKey, subId, sel.value || 'turbo', choice.inverse);
+    });
+    document.addEventListener('click', function (ev) {
+        const btn = ev.target && ev.target.closest && ev.target.closest('.depth-inverse-toggle');
+        if (!btn) return;
+        const on = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.classList.toggle('active', on);
+        btn.classList.toggle('btn-secondary', on);
+        btn.classList.toggle('btn-outline-secondary', !on);
+        const colKey = btn.getAttribute('data-col-key');
+        const subId = btn.getAttribute('data-sub-id');
+        const choice = _depthHeaderChoice(colKey, subId);
+        recolorDepthColumn(colKey, subId, choice.cmap, on);
     });
 
     // ----- Depth colorbar (sibling of the IMG, not baked into it) -----
@@ -3677,10 +3715,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         gray:     ['#000000', '#222222', '#444444', '#666666', '#888888', '#aaaaaa', '#cccccc', '#dddddd', '#ffffff'],
         normal:   ['#444488', '#5566aa', '#7788bb', '#8899cc', '#9988bb', '#aa77aa', '#bb6699', '#cc5588', '#dd4477'],
     };
-    function applyColorbarGradient(cbar, cmap) {
-        const stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
+    function applyColorbarGradient(cbar, cmap, inverse) {
+        let stops = CMAP_STOPS[cmap] || CMAP_STOPS.turbo;
         // CSS gradient stacks bottom→top, so we reverse for the
-        // visual convention (max at top, min at bottom).
+        // visual convention (max at top, min at bottom). Inverse depth
+        // swaps near/far, so flip the ramp as a cue.
+        if (inverse) stops = stops.slice().reverse();
         const css = 'linear-gradient(to top, ' + stops.join(', ') + ')';
         cbar.style.background = css;
     }
@@ -3699,7 +3739,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const cbar = cell.querySelector('.depth-colorbar');
             const img = cell.querySelector('img.depth-img');
             if (!cbar || !img) return;
-            applyColorbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo');
+            applyColorbarGradient(cbar, cbar.getAttribute('data-cmap') || 'turbo',
+                                  cbar.getAttribute('data-inverse') === '1');
             const metaUrl = img.getAttribute('data-depth-meta-url');
             const labels = cell.querySelector('.depth-colorbar-labels');
             if (!metaUrl || !labels || labels.dataset.loaded) return;
