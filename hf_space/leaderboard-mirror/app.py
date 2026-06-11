@@ -38,6 +38,42 @@ def _label(e):
     return f"{e['name']} · {e.get('n_verified', 0)} subs"
 
 
+def _aggregate_ranks(verified, cols):
+    """Mean per-metric rank for each verified row (index -> float). Best = 1
+    per metric (honouring sort_direction); ties get the average rank; a
+    missing/non-numeric value takes the worst rank (= N). Lower is better.
+    Mirrors the main site's Aggregate Rank so the two agree."""
+    n = len(verified)
+    if not n or not cols:
+        return {}
+    totals = [0.0] * n
+    counts = [0] * n
+    for c in cols:
+        mid = str(c.get("metric_id"))
+        higher = (c.get("sort_direction") or "higher_is_better") != "lower_is_better"
+        scored, missing = [], []
+        for i, r in enumerate(verified):
+            v = (r.get("scores") or {}).get(mid)
+            (scored if isinstance(v, (int, float)) else missing).append((i, v))
+        if not scored:
+            continue
+        scored.sort(key=lambda t: t[1], reverse=higher)
+        k = 0
+        while k < len(scored):
+            j = k
+            while j + 1 < len(scored) and scored[j + 1][1] == scored[k][1]:
+                j += 1
+            avg_rank = (k + j) / 2.0 + 1.0
+            for t in range(k, j + 1):
+                totals[scored[t][0]] += avg_rank
+                counts[scored[t][0]] += 1
+            k = j + 1
+        for i, _ in missing:
+            totals[i] += n
+            counts[i] += 1
+    return {i: totals[i] / counts[i] for i in range(n) if counts[i]}
+
+
 def _standings(lb_id):
     if lb_id is None:
         return gr.update(value=pd.DataFrame()), "_No leaderboards match this domain/search._"
@@ -45,12 +81,23 @@ def _standings(lb_id):
     cols = data.get("columns", [])
     verified = data.get("verified", [])
     metric_labels = [c["label"] for c in cols]
-    headers = ["Rank", "Submission", "Author"] + metric_labels + ["Date"]
+    AGG = "Agg. Rank"
+    headers = ["Rank", "Submission", "Author", AGG] + metric_labels + ["Date"]
+
+    # Aggregate Rank: each submission's MEAN rank across all metric columns
+    # (best = 1 per metric, honouring its sort_direction; ties get the average
+    # rank; a missing value takes the worst rank). Lower is better — the same
+    # definition as the main site, computed here so the mirror needs no extra
+    # data. It's the default ordering.
+    agg = _aggregate_ranks(verified, cols)
+
+    order = sorted(range(len(verified)), key=lambda i: agg.get(i, float("inf")))
 
     # Native cell values: metric columns stay numeric (right-aligned + green-
     # styled below); only the Submission column is a markdown link to the model.
     rows = []
-    for r in verified:
+    for pos, i in enumerate(order, start=1):
+        r = verified[i]
         name = r.get("name", "")
         link = r.get("link")
         sub = f"[{name}]({link})" if link else name
@@ -58,13 +105,17 @@ def _standings(lb_id):
         a_url = r.get("author_url")
         author_cell = f"[{author}]({a_url})" if a_url else author
         scores = [r["scores"].get(str(c["metric_id"])) for c in cols]
-        rows.append([r.get("rank"), sub, author_cell, *scores,
+        agg_val = round(agg[i], 2) if i in agg else None
+        rows.append([pos, sub, author_cell, agg_val, *scores,
                      (r.get("created") or "")[:10]])
     df = pd.DataFrame(rows, columns=headers)
 
     # BenchHub green heatmap on metric cells (full-cell, via pandas Styler):
     # best in column = vivid green, worst = pale, respecting sort_direction.
+    # The Agg. Rank column joins the heatmap as lower-is-better.
     dir_by = {c["label"]: (c.get("sort_direction") or "higher_is_better") for c in cols}
+    dir_by[AGG] = "lower_is_better"
+    heat_cols = ([AGG] + metric_labels) if not df.empty else []
 
     def _green(series):
         nums = pd.to_numeric(series, errors="coerce")
@@ -83,15 +134,15 @@ def _standings(lb_id):
         return out
 
     value = df
-    if metric_labels and not df.empty:
+    if heat_cols:
         try:
-            value = df.style.apply(_green, subset=metric_labels, axis=0)
+            value = df.style.apply(_green, subset=heat_cols, axis=0)
         except Exception:
             value = df
 
     # Per-column datatype so numbers render as numbers (the original look) while
     # the Submission column renders its markdown link.
-    datatype = ["number", "markdown", "markdown"] + ["number"] * len(metric_labels) + ["str"]
+    datatype = ["number", "markdown", "markdown", "number"] + ["number"] * len(metric_labels) + ["str"]
 
     submit = data.get("submit_url", f"{SITE}/leaderboard/{lb_id}")
     view = data.get("url", f"{SITE}/leaderboard/{lb_id}")
