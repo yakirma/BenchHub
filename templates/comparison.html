@@ -2032,15 +2032,32 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
 
             // Update modal title with the FIELD NAME (the column this thumb
-            // belongs to — otherwise the zoom view only conveys the dtype via
-            // the image) + the sample name.
+            // belongs to) + WHICH submission (or GT) it is + the sample name —
+            // otherwise the zoom view only conveys the dtype via the image and
+            // doesn't say whose prediction it is.
             const modalTitleSpan = visModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
                 const _esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
                 const _fieldName = triggerElement.getAttribute('alt') || '';
+                // Resolve GT vs a specific submission from data-group-id
+                // (gt-<col> / sub-<id>-<col>); viz thumbs carry data-sub-name.
+                let _who = triggerElement.getAttribute('data-sub-name') || '';
+                if (!_who) {
+                    const _g = triggerElement.getAttribute('data-group-id') || '';
+                    if (_g.indexOf('gt-') === 0) {
+                        _who = 'GT';
+                    } else {
+                        const _m = /^sub-(\d+)-/.exec(_g);
+                        if (_m && typeof submissions !== 'undefined' && submissions) {
+                            const _s = submissions.find(x => String(x.id) === _m[1]);
+                            if (_s) _who = _s.name;
+                        }
+                    }
+                }
                 let _html = '';
-                if (_fieldName) _html += `<span class="fw-semibold text-body" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
-                if (sampleName) _html += `${_fieldName ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
+                if (_who) _html += `<span class="fw-semibold text-body" title="${_esc(_who)}">${_esc(_who)}</span>`;
+                if (_fieldName) _html += `${_who ? ' · ' : ''}<span class="${_who ? 'text-muted' : 'fw-semibold text-body'}" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
+                if (sampleName) _html += `${(_who || _fieldName) ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
                 modalTitleSpan.innerHTML = _html;
             }
 
