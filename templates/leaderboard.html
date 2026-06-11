@@ -1450,6 +1450,7 @@ background-color: transparent;
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'alpha-down' or 'alpha-up' }} sort-indicator"></i>
                                 {% endif %}
                             </th>
+                            {% if show_agg_rank %}
                             <th scope="col" style="width: 84px; cursor: pointer;"
                                 data-lb-column="aggregate_rank" draggable="true" onclick="changeSort('__aggrank__')"
                                 title="Aggregate Rank (default order) — mean of this submission's rank across every metric (lower is better). Click to sort by it / return to the default order."
@@ -1465,6 +1466,7 @@ background-color: transparent;
                                 <i class="bi bi-arrow-down-up text-muted aggrank-hint" style="opacity: .4; font-size: .8em;"></i>
                                 {% endif %}
                             </th>
+                            {% endif %}
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
                                 data-lb-column="date_uploaded" draggable="true" onclick="changeSort('date_uploaded')"
                                 {% if sort_metric == 'date_uploaded' %}data-sort-order="{{ sort_order }}"{% endif %}>
@@ -1619,10 +1621,12 @@ background-color: transparent;
                                     {% endif %}
                                 </div>
                             </td>
+                            {% if show_agg_rank %}
                             {% set _ar = aggregate_ranks.get(submission.id) %}
                             <td data-lb-column="aggregate_rank" class="text-center" data-sort-value="{{ _ar if _ar is not none else '' }}">
                                 {% if _ar is not none %}<span class="fw-bold" title="Mean rank across {{ all_metrics|length }} metric(s) — lower is better">{{ '%.2f'|format(_ar) }}</span>{% else %}<span class="text-muted">—</span>{% endif %}
                             </td>
+                            {% endif %}
                             <td data-lb-column="date_uploaded">{{ submission.upload_date.strftime('%Y-%m-%d %H:%M') }}
                             </td>
                             <td data-lb-column="description" style="max-width: 200px;"

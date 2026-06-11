@@ -266,7 +266,12 @@
         <div class="text-end flex-shrink-0">
             <div class="small {{ 'text-dark opacity-75' if _box_color else 'text-body-secondary' }}">{{ sub.upload_date.strftime('%Y-%m-%d %H:%M') if sub.upload_date else '—' }}</div>
             {% set _st = sub.processing_status or 'Pending' %}
-            <span class="badge rounded-pill {{ 'text-bg-success' if _st == 'Processed' else ('text-bg-danger' if _st.startswith('Error') else 'text-bg-secondary') }}">{{ _st }}</span>
+            {# Short label only — the full status (e.g. "Processing: Metric 6/13"
+               or a long SQL error) overflows the narrow rail box; show it on
+               hover instead, and cap + ellipsis as a belt-and-suspenders. #}
+            {% set _st_short = 'Processed' if _st == 'Processed' else ('Error' if _st.startswith('Error') else ('Processing' if _st.startswith('Processing') else _st)) %}
+            <span class="badge rounded-pill d-inline-block text-truncate align-bottom {{ 'text-bg-success' if _st == 'Processed' else ('text-bg-danger' if _st.startswith('Error') else 'text-bg-secondary') }}"
+                  style="max-width: 8rem;" title="{{ _st }}">{{ _st_short }}</span>
         </div>
     </a>
     {% endmacro %}

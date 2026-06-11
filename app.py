@@ -10314,13 +10314,30 @@ def leaderboard_view(leaderboard_id):
     # best-first by the leaderboard's FIRST metric. Direction follows
     # that metric's own sort_direction (lower_is_better → ascending,
     # else descending) so the top row is the best submission.
+    # Aggregate Rank only makes sense across MULTIPLE metrics — with a single
+    # metric it's identical to sorting by that metric, so hide the column and
+    # don't default to it.
+    show_agg_rank = len(all_metrics) > 1
     if not _sort_metric_explicit and all_metrics:
-        # Default ordering: Aggregate Rank — each submission's mean rank
-        # across ALL metrics (lower is better). Beats sorting by the single
-        # first metric, which ignores every other column.
-        sort_metric = '__aggrank__'
-        if not _sort_order_explicit:
-            sort_order = 'asc'
+        if show_agg_rank:
+            # Default ordering: Aggregate Rank — each submission's mean rank
+            # across ALL metrics (lower is better). Beats sorting by the single
+            # first metric, which ignores every other column.
+            sort_metric = '__aggrank__'
+            if not _sort_order_explicit:
+                sort_order = 'asc'
+        else:
+            # Single metric → best-first by it.
+            sort_metric = all_metrics[0]
+            if not _sort_order_explicit:
+                _lm0 = leaderboard_metrics_map.get(sort_metric)
+                _direction = getattr(_lm0, 'sort_direction', None) or 'higher_is_better'
+                sort_order = 'asc' if _direction == 'lower_is_better' else 'desc'
+    # Stale/explicit ?sort_metric=__aggrank__ on a single-metric board → fall
+    # back to the metric so the hidden column isn't the active sort.
+    if sort_metric == '__aggrank__' and not show_agg_rank:
+        sort_metric = all_metrics[0] if all_metrics else ''
+        sort_order = 'asc' if sort_metric and (getattr(leaderboard_metrics_map.get(sort_metric), 'sort_direction', None) == 'lower_is_better') else 'desc'
 
     metrics_ranges = {}
     metrics_sorted = {}
@@ -10650,6 +10667,7 @@ def leaderboard_view(leaderboard_id):
                            metrics_ranges=metrics_ranges,
                            metrics_sorted=metrics_sorted,
                            aggregate_ranks=aggregate_ranks,
+                           show_agg_rank=show_agg_rank,
                             dynamic_values=calculated_dynamic_values,
                             metric_to_lm=leaderboard_metrics_map,
                             metric_labels=metric_labels,
