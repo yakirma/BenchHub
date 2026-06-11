@@ -651,6 +651,18 @@ def _load_gt_array(cf, upload_folder):
         if cf.data_type == 'image':
             from PIL import Image as _PILImage
             return np.asarray(_PILImage.open(full).convert('RGB'))
+        if cf.data_type == 'mask':
+            # Segmentation masks are single-channel class-id maps — must NOT
+            # be read as RGB (that gives an (H,W,3) array that breaks bh.Mask
+            # + every IoU comparison). Mirror bh.Mask.decode's mode handling.
+            from PIL import Image as _PILImage
+            img = _PILImage.open(full)
+            if img.mode == 'I;16':
+                return np.asarray(img, dtype=np.uint16)
+            if img.mode in ('L', 'P', 'I'):
+                return np.asarray(img)
+            a = np.asarray(img)
+            return a[..., 0] if a.ndim == 3 else a
     except Exception as e:
         print(f"DEBUG: _load_gt_array failed for {cf.name}: {e}")
     return None
@@ -805,7 +817,7 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                 parsed = cf.value_text
             _stash_typed(context, f"gt_{cf.name}", cf, parsed)
             _stash_typed(context, cf.name, cf, parsed)
-        elif cf.data_type in ('image', 'depth'):
+        elif cf.data_type in ('image', 'depth', 'mask'):
             arr = _load_gt_array(cf, upload_folder)
             if arr is None and pointer_resolver is not None and getattr(cf, 'source_column', None):
                 # Pointer-mode CustomField: no on-disk file, just a
@@ -916,6 +928,17 @@ def get_metric_context(sample, sub=None, submission_folder=None,
                         parsed = cf.value_text
                     _stash_typed(context, f"sub_{cf.name}", cf, parsed)
                     _stash_typed(context, cf.name, cf, parsed)
+                elif cf.data_type == 'mask':
+                    # Segmentation-mask predictions: load the single-channel
+                    # class-id array + typed-wrap so iou_mask gets a real
+                    # bh.Mask instead of the untyped (H,W,3) RGB array the
+                    # folder-loader fallback produced (which broke scoring).
+                    # Scoped to 'mask' only — depth/image preds keep their
+                    # existing (folder-loader) path to avoid changing their
+                    # already-working scores.
+                    arr = _load_gt_array(cf, upload_folder)
+                    _stash_typed(context, f"sub_{cf.name}", cf, arr)
+                    _stash_typed(context, cf.name, cf, arr)
                 elif cf.data_type not in DTYPES and cf.data_type != 'metric':
                     # Registered-kind prediction: carry raw bytes + decode hook
                     # (same RegisteredBlob the GT side emits).
