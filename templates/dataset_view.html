@@ -1822,10 +1822,16 @@
             const sampleName = img.getAttribute('data-sample-name');
             const modality = img.getAttribute('alt') || 'Image'; // Use alt as modality identifier
 
-            // Update modal title with sample name
+            // Update modal title with the FIELD NAME (column / viz name) + the
+            // sample name, so the zoom view names the field, not just its type.
             const modalTitleSpan = visModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
-                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+                const _esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                const _fieldName = img.getAttribute('alt') || '';
+                let _html = '';
+                if (_fieldName) _html += `<span class="fw-semibold text-body" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
+                if (sampleName) _html += `${_fieldName ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
+                modalTitleSpan.innerHTML = _html;
             }
 
             const modalImg = visModal.querySelector('#modal-vis-img');
@@ -2262,10 +2268,17 @@
             const visType = button.getAttribute('data-vis-type');
             const sampleName = button.getAttribute('data-sample-name');
 
-            // Update modal title with sample name
+            // Update modal title with the FIELD NAME (the column this thumb
+            // belongs to — otherwise the zoom view only conveys the dtype) +
+            // the sample name.
             const modalTitleSpan = customFieldModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
-                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+                const _esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                const _fieldName = button.getAttribute('alt') || '';
+                let _html = '';
+                if (_fieldName) _html += `<span class="fw-semibold text-body" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
+                if (sampleName) _html += `${_fieldName ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
+                modalTitleSpan.innerHTML = _html;
             }
 
             // Depth colormap + inverse controls: identify the FIELD (alt =

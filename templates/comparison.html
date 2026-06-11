@@ -2031,10 +2031,17 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (_invBtnOpen) _invBtnOpen.classList.add('d-none');
             }
 
-            // Update modal title with sample name
+            // Update modal title with the FIELD NAME (the column this thumb
+            // belongs to — otherwise the zoom view only conveys the dtype via
+            // the image) + the sample name.
             const modalTitleSpan = visModal.querySelector('.modal-sample-name');
             if (modalTitleSpan) {
-                modalTitleSpan.textContent = sampleName ? `(Sample: ${sampleName})` : '';
+                const _esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                const _fieldName = triggerElement.getAttribute('alt') || '';
+                let _html = '';
+                if (_fieldName) _html += `<span class="fw-semibold text-body" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
+                if (sampleName) _html += `${_fieldName ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
+                modalTitleSpan.innerHTML = _html;
             }
 
             // Per-thumb-slider mode: the #vis-modal-layers stack is the
