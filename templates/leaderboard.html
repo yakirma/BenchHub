@@ -1452,11 +1452,17 @@ background-color: transparent;
                             </th>
                             <th scope="col" style="width: 84px; cursor: pointer;"
                                 data-lb-column="aggregate_rank" draggable="true" onclick="changeSort('__aggrank__')"
-                                title="Aggregate Rank — mean of this submission's rank across every metric (lower is better)"
+                                title="Aggregate Rank (default order) — mean of this submission's rank across every metric (lower is better). Click to sort by it / return to the default order."
                                 {% if sort_metric == '__aggrank__' %}data-sort-order="{{ sort_order }}"{% endif %}>
                                 Agg. Rank
                                 {% if sort_metric == '__aggrank__' %}
                                 <i class="bi bi-sort-{{ sort_order == 'asc' and 'numeric-up' or 'numeric-down' }} sort-indicator"></i>
+                                {% else %}
+                                {# Persistent faint affordance so it stays obviously clickable
+                                   (= how you return to the default order) even when another
+                                   column is the active sort. Not a .sort-indicator, so the
+                                   client-side sort JS leaves it in place. #}
+                                <i class="bi bi-arrow-down-up text-muted aggrank-hint" style="opacity: .4; font-size: .8em;"></i>
                                 {% endif %}
                             </th>
                             <th scope="col" style="width: {{ global_settings.config_width }}; cursor: pointer;"
@@ -2569,6 +2575,11 @@ print(sub.submit(
         let th = document.querySelector(
             `#leaderboard-table thead th[data-lb-column="${_col}"]`
         );
+        // The Agg. Rank header carries a persistent faint affordance when it
+        // is NOT the active sort; hide it while it IS active (the directional
+        // .sort-indicator below takes its place), show it otherwise.
+        const hint = document.querySelector('.aggrank-hint');
+        if (hint) hint.style.display = (key === '__aggrank__') ? 'none' : '';
         if (!th) return;
         const icon = document.createElement('i');
         const updown = order === 'asc' ? 'down' : 'up';
