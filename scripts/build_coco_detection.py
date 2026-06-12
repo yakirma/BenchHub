@@ -48,9 +48,9 @@ def map50(gt, pred):
         return d if isinstance(d, dict) else {}
     g = unwrap(gt); p = unwrap(pred)
     gboxes = np.asarray(g.get('boxes') or [], dtype=float).reshape(-1, 4)
-    glabels = list(g.get('labels') or [])
+    glabels = [str(x).strip().lower() for x in (g.get('labels') or [])]
     pboxes = np.asarray(p.get('boxes') or [], dtype=float).reshape(-1, 4)
-    plabels = list(p.get('labels') or [])
+    plabels = [str(x).strip().lower() for x in (p.get('labels') or [])]
     pscores = list(p.get('scores') or [1.0] * len(pboxes))
     if len(glabels) == 0:
         return float('nan')
