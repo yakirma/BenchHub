@@ -267,19 +267,22 @@ def get_column_priority(key, column_type=None, is_dataset_field=False):
     if key == 'per_sample_metrics' or column_type == 'metric': return 10
     if key == 'per_source_stats' or column_type == 'stats': return 20
     if key in ('dataset_tags', 'tags'): return 30
-    # Leaderboard visualisations split by role so they sit with their band:
-    #   GT-side viz (gtviz_) at the end of the GT block (110),
-    #   pred-side viz (viz_) at the end of the pred block (210).
-    # A viz is GT-side when none of its arg_mappings reference a sub_ field —
-    # comparison_view emits gtviz_ for those (single column) and viz_ for the
-    # rest (one column per submission).
-    if key.startswith('gtviz_'): return 110
-    if key.startswith('viz_'): return 210
 
     # --- data fields: GT block (100s) before pred block (200s) ---
     _MOD = {'text': 0, 'image': 1, 'mask': 2, 'depth': 3, 'audio': 4,
             'sequence': 5, 'json': 6, 'histogram': 7, 'chart': 7,
             'scalar': 8, 'label': 9, 'label_list': 9}
+    # Leaderboard visualisations render an image, so they sort at the image
+    # position within their role band (right after the raw image field, LEFT
+    # of json/text/scalar columns) rather than at the far right of the band:
+    #   GT-side viz (gtviz_) in the GT block, pred-side viz (viz_) in the pred
+    #   block. A viz is GT-side when none of its arg_mappings reference a sub_
+    #   field — comparison_view emits gtviz_ for those (single column) and
+    #   viz_ for the rest (one column per submission). Ties with the raw image
+    #   field (also _MOD['image']) break on insertion order (data fields are
+    #   registered before viz), so the overlay lands just after the image.
+    if key.startswith('gtviz_'): return 100 + _MOD['image']
+    if key.startswith('viz_'): return 200 + _MOD['image']
     # Role: explicit gt_/known keys win, else the dataset-field flag.
     if key in ('gt_config', 'gt_histogram', 'signal_shape'):
         is_gt = True
