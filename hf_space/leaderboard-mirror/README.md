@@ -23,6 +23,9 @@ tags:
   - audio-classification
   - automatic-speech-recognition
   - speech-recognition
+  - question-answering
+  - named-entity-recognition
+  - token-classification
 datasets:
   - scene_parse_150
   - ashraq/esc50
@@ -44,7 +47,8 @@ the same eval set:
 - **Vision** — Image Classification, Semantic Segmentation (mIoU), Object
   Detection (mAP), Monocular & **Stereo** Depth Estimation, Image Captioning
 - **Audio** — Audio Classification (ESC-50), Automatic Speech Recognition (WER)
-- **NLP** — Text Classification, Visual Question Answering
+- **NLP** — Text Classification, Extractive Question Answering (SQuAD),
+  Named-Entity Recognition (CoNLL-2003), Visual Question Answering
 
 ## Submit your model
 Every **"Submit"** button here deep-links to that leaderboard's submission page
