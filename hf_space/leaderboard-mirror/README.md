@@ -1,29 +1,58 @@
 ---
-title: BenchHub Leaderboards (Mirror)
+title: BenchHub Leaderboards
 emoji: 🏆
-colorFrom: indigo
-colorTo: gray
+colorFrom: purple
+colorTo: indigo
 sdk: gradio
 sdk_version: 5.9.1
 python_version: "3.12"
 app_file: app.py
-pinned: false
+pinned: true
 hf_oauth: false
+short_description: Live ML leaderboards — vision, audio, NLP. Submit free.
+tags:
+  - leaderboard
+  - benchmark
+  - evaluation
+  - model-evaluation
+  - computer-vision
+  - object-detection
+  - image-segmentation
+  - depth-estimation
+  - stereo
+  - audio-classification
+  - automatic-speech-recognition
+  - speech-recognition
 datasets:
-  - uoft-cs/cifar10
-  - uoft-cs/cifar100
+  - scene_parse_150
+  - ashraq/esc50
+  - openslr/librispeech_asr
+  - rafaelpadilla/coco2017
 ---
 
-# BenchHub Leaderboards — read-only mirror
+# 🏆 BenchHub Leaderboards
 
 A read-only mirror of **public** leaderboard standings from
-**[runbenchhub.com](https://runbenchhub.com)**, the source of truth.
+**[runbenchhub.com](https://runbenchhub.com)** — an open, multi-modal model
+benchmarking platform. Browse the standings here; **run your own model and
+submit on BenchHub** (free).
 
-- **View** results here; **submit** on BenchHub — every "Submit" button links
-  back to the leaderboard's submission page on runbenchhub.com.
-- This Space contains **no** ground-truth samples, **no** predictions, and
-  **no** submission UI. It reads a derived standings dataset
-  (`HF_RESULTS_REPO`, default `benchhub/leaderboards`) that BenchHub publishes.
+## What's benchmarked
+Live boards across a growing set of domains, each with real models scored on
+the same eval set:
 
-To point at a different standings dataset repo, set the `HF_RESULTS_REPO` Space
-variable. The dataset repo is public, so the Space needs no token.
+- **Vision** — Image Classification, Semantic Segmentation (mIoU), Object
+  Detection (mAP), Monocular & **Stereo** Depth Estimation, Image Captioning
+- **Audio** — Audio Classification (ESC-50), Automatic Speech Recognition (WER)
+- **NLP** — Text Classification, Visual Question Answering
+
+## Submit your model
+Every **"Submit"** button here deep-links to that leaderboard's submission page
+on BenchHub. Submitting is free — sign in with **GitHub, Google, or 🤗 Hugging
+Face**, run the one-line client on your predictions, and see where you rank.
+
+> This Space holds **no** ground-truth samples, predictions, or submission UI —
+> it reads a derived standings dataset (`HF_RESULTS_REPO`) that BenchHub
+> publishes. The full interactive experience (per-sample explorer, GT
+> visualizations, model comparison) lives on
+> **[runbenchhub.com](https://runbenchhub.com)**.

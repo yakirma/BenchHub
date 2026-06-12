@@ -161,13 +161,18 @@ def _standings(lb_id):
 
     submit = data.get("submit_url", f"{SITE}/leaderboard/{lb_id}")
     view = data.get("url", f"{SITE}/leaderboard/{lb_id}")
+    n = len(verified)
     links = (
         f"### {data.get('name', '')}\n"
-        f"<span style='color:#888'>{data.get('category') or 'Uncategorized'}</span>\n\n"
-        f"<a href='{submit}' target='_blank' rel='noopener'>"
-        f"🚀 Submit your model on BenchHub →</a>  ·  "
-        f"<a href='{view}' target='_blank' rel='noopener'>View on BenchHub</a>\n\n"
-        f"<sub>Read-only mirror — submissions run on BenchHub. No upload here by design.</sub>"
+        f"<span style='color:#888'>{data.get('category') or 'Uncategorized'} · "
+        f"{n} submission{'s' if n != 1 else ''}</span>\n\n"
+        f"<a href='{submit}' target='_blank' rel='noopener' "
+        f"style='font-weight:600;font-size:1.05em'>🚀 Submit your model & climb this board →</a>"
+        f"  ·  <a href='{view}' target='_blank' rel='noopener'>View full board on BenchHub</a>\n\n"
+        f"<sub>Free — sign in with GitHub, Google, or 🤗 Hugging Face, then run the "
+        f"one-line client on your predictions. Read-only mirror; the interactive "
+        f"explorer + ground-truth viz live on "
+        f"<a href='{SITE}' target='_blank' rel='noopener'>runbenchhub.com</a>.</sub>"
     )
     return gr.update(value=value, datatype=datatype), links
 
