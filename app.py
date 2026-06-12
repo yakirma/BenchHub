@@ -4747,6 +4747,37 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
                 leaderboard_id=lv.leaderboard_id,
             )
 
+        # File-backed image/depth args arrive as relative PATHS, but the
+        # hardened viz sandbox has no filesystem access (--read-only,
+        # --network=none, no uploads mount). Convert path args to typed
+        # bh.<Kind> instances so they cross to the sandbox as bytes; inline
+        # kinds (json/scalar/label/text) keep their string/dict value. Only
+        # touches strings that resolve to a real upload file, so label/scalar
+        # viz args (e.g. confusion_matrix) are unaffected.
+        def _viz_path_to_typed(v):
+            if not isinstance(v, str):
+                return v
+            try:
+                full = v if os.path.isabs(v) else os.path.join(app.config['UPLOAD_FOLDER'], v)
+                if not os.path.isfile(full):
+                    return v
+            except (ValueError, OSError):
+                return v
+            ext = full.rsplit('.', 1)[-1].lower() if '.' in full else ''
+            try:
+                from benchhub.types import Image as _BHImage, Depth as _BHDepth
+                from PIL import Image as _PILImage
+                if ext in ('png', 'jpg', 'jpeg', 'bmp', 'tiff', 'webp'):
+                    return _BHImage(np.asarray(_PILImage.open(full).convert('RGB')))
+                if ext == 'npz':
+                    with np.load(full) as _d:
+                        _arr = _d['depth'] if 'depth' in _d else _d[next(iter(_d.keys()))]
+                    return _BHDepth(np.asarray(_arr))
+            except Exception:
+                return v
+            return v
+        kwargs = {k: _viz_path_to_typed(v) for k, v in kwargs.items()}
+
         # Find the function
         import re
         match = re.search(r'def\s+(\w+)\s*\(', gv.python_code)
