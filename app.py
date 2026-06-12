@@ -225,6 +225,20 @@ oauth.register(
     client_kwargs={'scope': 'openid email profile'},
 )
 
+# Hugging Face OIDC — lowest-friction sign-in for the HF audience (the mirror
+# Space funnels here). Register an OAuth app at
+# https://huggingface.co/settings/applications with redirect URI
+# `<site>/oauth/callback/huggingface` + scopes openid/profile/email, then set
+# HF_CLIENT_ID + HF_CLIENT_SECRET in .env. Inert (button hidden, route 503s)
+# until those are present.
+oauth.register(
+    name='huggingface',
+    client_id=os.environ.get('HF_CLIENT_ID'),
+    client_secret=os.environ.get('HF_CLIENT_SECRET'),
+    server_metadata_url='https://huggingface.co/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid profile email'},
+)
+
 
 # Helper to determine column priority for sorting
 def get_column_priority(key, column_type=None, is_dataset_field=False):
@@ -2207,7 +2221,10 @@ def _path_size_bytes(path):
 
 @app.route('/login')
 def login():
-    return render_template('login.html', next=request.args.get('next', ''))
+    return render_template(
+        'login.html', next=request.args.get('next', ''),
+        hf_enabled=bool(os.environ.get('HF_CLIENT_ID') and os.environ.get('HF_CLIENT_SECRET')),
+    )
 
 
 @app.route('/login/github')
@@ -2360,6 +2377,78 @@ def oauth_callback_google():
     else:
         user.email = email
         user.display_name = profile.get('name') or user.display_name
+        user.avatar_url = profile.get('picture') or user.avatar_url
+    user.last_login_at = datetime.utcnow()
+    if (user.email or '').strip().lower() in _admin_emails() and not user.is_admin:
+        user.is_admin = True
+    db.session.commit()
+
+    session['user_id'] = user.id
+    flash(f"Logged in as {user.display_name}.", "success")
+    return redirect(session.pop('oauth_next', None) or url_for('home'))
+
+
+@app.route('/login/huggingface')
+def login_huggingface():
+    """OIDC-flow login via Hugging Face. Configure with HF_CLIENT_ID +
+    HF_CLIENT_SECRET. Redirect URI on the HF OAuth app:
+    <site>/oauth/callback/huggingface."""
+    if not os.environ.get('HF_CLIENT_ID') or not os.environ.get('HF_CLIENT_SECRET'):
+        return ("Hugging Face OAuth not configured: set HF_CLIENT_ID and "
+                "HF_CLIENT_SECRET."), 503
+    session['oauth_next'] = request.args.get('next') or url_for('home')
+    redirect_uri = url_for('oauth_callback_huggingface', _external=True)
+    return oauth.huggingface.authorize_redirect(redirect_uri)
+
+
+@app.route('/oauth/callback/huggingface')
+def oauth_callback_huggingface():
+    try:
+        token = oauth.huggingface.authorize_access_token()
+    except Exception as e:
+        flash(f"Hugging Face login failed: {e}", "danger")
+        return redirect(url_for('login'))
+    profile = (token.get('userinfo') if isinstance(token, dict) else None) or {}
+    if not profile:
+        try:
+            profile = oauth.huggingface.userinfo(token=token)
+        except Exception:
+            profile = {}
+    oauth_sub = str(profile.get('sub') or '')
+    username = profile.get('preferred_username') or profile.get('name')
+    # HF may withhold email (privacy); fall back to a noreply address keyed on
+    # the username so the User.email UNIQUE/NOT-NULL contract still holds.
+    email = profile.get('email') or (
+        f"{username}@users.noreply.huggingface.co" if username else None)
+    if not oauth_sub or not email:
+        flash("Hugging Face login succeeded but no profile was returned.", "warning")
+        return redirect(url_for('login'))
+
+    user = User.query.filter_by(oauth_provider='huggingface', oauth_sub=oauth_sub).first()
+    if user is None:
+        # Same-email → same-account merge (mirrors the Google path).
+        existing = User.query.filter(func.lower(User.email) == email.lower()).first()
+        if existing is not None:
+            existing.oauth_provider = 'huggingface'
+            existing.oauth_sub = oauth_sub
+            existing.display_name = profile.get('name') or username or existing.display_name
+            existing.avatar_url = profile.get('picture') or existing.avatar_url
+            user = existing
+        else:
+            if _signup_blocked(email):
+                flash(_SIGNUP_CLOSED_MSG, "warning")
+                return redirect(url_for('login'))
+            user = User(
+                email=email,
+                display_name=profile.get('name') or username or email.split('@')[0],
+                avatar_url=profile.get('picture'),
+                oauth_provider='huggingface',
+                oauth_sub=oauth_sub,
+            )
+            db.session.add(user)
+    else:
+        user.email = email
+        user.display_name = profile.get('name') or username or user.display_name
         user.avatar_url = profile.get('picture') or user.avatar_url
     user.last_login_at = datetime.utcnow()
     if (user.email or '').strip().lower() in _admin_emails() and not user.is_admin:

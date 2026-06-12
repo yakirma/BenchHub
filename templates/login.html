@@ -27,6 +27,14 @@
                 </svg>
                 Continue with Google
             </a>
+            {% if hf_enabled %}
+            <a href="{{ url_for('login_huggingface', next=next) }}"
+                class="btn w-100 d-flex align-items-center justify-content-center mt-2"
+                style="background:#FFD21E; color:#222; border:1px solid #e6bd00;">
+                <span class="me-2" style="font-size:1.15rem; line-height:1;">🤗</span>
+                Continue with Hugging Face
+            </a>
+            {% endif %}
 
             <div class="d-flex align-items-center my-3 text-muted small">
                 <hr class="flex-grow-1"><span class="px-2">or</span><hr class="flex-grow-1">
