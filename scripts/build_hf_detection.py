@@ -41,19 +41,23 @@ def build_staging(staging: Path):
     (staging / IMG).mkdir(parents=True, exist_ok=True)
     (staging / OBJ).mkdir(parents=True, exist_ok=True)
     cfg = os.environ.get('DET_CONFIG', 'full')
+    load = (lambda sp: load_dataset(REPO, split=sp, streaming=True)) if cfg in ('', 'none') \
+        else (lambda sp: load_dataset(REPO, cfg, split=sp, streaming=True))
     try:
-        ds = load_dataset(REPO, cfg, split=SPLIT, streaming=True)
+        ds = load(SPLIT)
     except Exception:
-        ds = load_dataset(REPO, cfg, split='validation', streaming=True)
+        ds = load('validation' if SPLIT != 'validation' else 'train')
     names = ds.features['objects'].feature['category'].names
     out = []
     for i, row in enumerate(itertools.islice(ds, N)):
         img = row['image'].convert('RGB')
         o = row['objects']
+        # Most COCO-style repos use xywh; some (detection-datasets/*) use xyxy.
+        xyxy = os.environ.get('DET_BBOX_FORMAT', 'xywh') == 'xyxy'
         boxes, labels = [], []
         for bb, cat in zip(o['bbox'], o['category']):
-            x, y, w, h = [float(t) for t in bb]
-            boxes.append([x, y, x + w, y + h])
+            a, b, c, d = [float(t) for t in bb]
+            boxes.append([a, b, c, d] if xyxy else [a, b, a + c, b + d])
             labels.append(names[int(cat)])
         name = f'd_{i:06d}'
         img.save(staging / IMG / f'{name}.png')
