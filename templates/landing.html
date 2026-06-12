@@ -4,7 +4,7 @@
 
 {# SEO override. Title is the hero pitch; description matches the sub-headline. #}
 {% set meta_title = 'BenchHub — Build, run, and share ML benchmarks' %}
-{% set meta_description = 'Open-source benchmarking platform: explore curated datasets, define a leaderboard, upload predictions, see how your model ranks. No credit card.' %}
+{% set meta_description = 'Open-source benchmarking platform: explore curated datasets, define a leaderboard, upload predictions, see how your model ranks. Totally free.' %}
 
 {% block flash_messages %}{% endblock %}
 
@@ -120,7 +120,7 @@
                 <p class="hero-sub mb-4">
                     Browse {{ '{:,}'.format(stats.samples) if stats.samples else 'thousands of' }} real samples across
                     {{ stats.datasets }} curated datasets — images, masks, depth maps and more.
-                    Pick a leaderboard, upload predictions, see how you rank. Open-source. No credit card.
+                    Pick a leaderboard, upload predictions, see how you rank. Open-source and totally free.
                 </p>
 
                 {# Hero search → the leaderboard catalog. #}
