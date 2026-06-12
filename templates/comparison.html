@@ -872,6 +872,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% endfor %}
 
 
+                        {% elif col_key.startswith('gtviz_') %}
+                        {# GT-side visualization: one shared column (a GT field) #}
+                        <th draggable="true"
+                            style="width: {{ comparison_display_options[col_key].default_width }}; min-width: {{ comparison_display_options[col_key].default_width }}; overflow: hidden; text-overflow: ellipsis;">
+                            {{ comparison_display_options[col_key].label }}<div class="resizer"></div>
+                        </th>
+
                         {% elif col_key.startswith('viz_') %}
                         {# Visualization Columns (Per-Submission) #}
                         {% for sub in submissions %}
@@ -1084,6 +1091,21 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {# Metric columns removed as requested #}
 
 
+
+                        {# GT-side visualization: one shared cell (no submission) #}
+                        {% elif col_key.startswith('gtviz_') %}
+                        {% set viz_id = comparison_display_options[col_key].viz_id %}
+                        <td>
+                            <div class="text-center">
+                                <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
+                                    class="border rounded shadow-sm clickable-vis"
+                                    style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
+                                    loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
+                                    data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
+                                    alt="{{ comparison_display_options[col_key].label }}">
+                            </div>
+                        </td>
 
                         {# Visualization Columns #}
                         {% elif col_key.startswith('viz_') %}

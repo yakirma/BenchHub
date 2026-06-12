@@ -267,8 +267,14 @@ def get_column_priority(key, column_type=None, is_dataset_field=False):
     if key == 'per_sample_metrics' or column_type == 'metric': return 10
     if key == 'per_source_stats' or column_type == 'stats': return 20
     if key in ('dataset_tags', 'tags'): return 30
-    # Leaderboard visualisations: far right.
-    if key.startswith('viz_'): return 900
+    # Leaderboard visualisations split by role so they sit with their band:
+    #   GT-side viz (gtviz_) at the end of the GT block (110),
+    #   pred-side viz (viz_) at the end of the pred block (210).
+    # A viz is GT-side when none of its arg_mappings reference a sub_ field —
+    # comparison_view emits gtviz_ for those (single column) and viz_ for the
+    # rest (one column per submission).
+    if key.startswith('gtviz_'): return 110
+    if key.startswith('viz_'): return 210
 
     # --- data fields: GT block (100s) before pred block (200s) ---
     _MOD = {'text': 0, 'image': 1, 'mask': 2, 'depth': 3, 'audio': 4,
@@ -14489,10 +14495,24 @@ def comparison_view(leaderboard_id):
     visualization_configs = {}
     for lv in leaderboard_viz_list:
         viz_name = lv.target_name or lv.global_visualization.name
+        # A viz is GT-side (one shared column, treated as a GT field) when none
+        # of its arg_mappings reference a submission (`sub_`) field; otherwise
+        # it is a prediction viz (one column per submission). This keeps e.g. a
+        # detection board to a single "GT detections" overlay plus a
+        # "Predicted detections" overlay per model, instead of repeating the GT
+        # overlay for every submission.
+        try:
+            _am = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
+        except Exception:
+            _am = {}
+        is_gt_side = not any(
+            isinstance(v, str) and v.startswith('sub_') for v in _am.values()
+        )
         visualization_configs[viz_name] = {
             'id': lv.id,
             'is_aggregated': lv.global_visualization.is_aggregated,
             'global_viz_id': lv.global_visualization.id,
+            'is_gt_side': is_gt_side,
         }
     
     # Aggregated metrics only appear in the summary chart/table, never
@@ -14708,10 +14728,14 @@ def comparison_view(leaderboard_id):
     # If dynamic 'histogram_*' is found, we can alias it or just rely on new key.
     # Let's just add the dynamic ones.
 
-    # Add per-sample visualizations as display columns
+    # Add per-sample visualizations as display columns. GT-side viz get a
+    # `gtviz_` key (rendered once, as a GT field); prediction viz keep the
+    # `viz_` key (rendered once per submission). get_column_priority places
+    # gtviz_ at the end of the GT block and viz_ at the end of the pred block.
     for viz_name, viz_config in visualization_configs.items():
         if not viz_config['is_aggregated']:  # Only per-sample visualizations are columns
-            available_display_options[f'viz_{viz_name}'] = {
+            prefix = 'gtviz_' if viz_config.get('is_gt_side') else 'viz_'
+            available_display_options[f'{prefix}{viz_name}'] = {
                 'label': f'📊 {viz_name}',
                 'type': 'visualization',
                 'default_width': '250px',
