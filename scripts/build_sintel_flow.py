@@ -161,10 +161,16 @@ def main():
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
         gm = GlobalMetric.query.filter_by(name='epe').first()
+        # input_kinds=depth×4 forces the compact typed (npz) sandbox transport;
+        # the primitive path JSON-encodes the dense flow arrays (~3 MB/arg) and
+        # OOMs the memory-capped container (and can't carry NaN cleanly).
+        _ik = json.dumps(["depth", "depth", "depth", "depth"])
         if gm is None:
             gm = GlobalMetric(name='epe', python_code=EPE_CODE.strip(), owner_user_id=2,
-                              visibility='public', is_aggregated=False)
+                              visibility='public', is_aggregated=False, input_kinds=_ik)
             db.session.add(gm); db.session.commit()
+        elif not gm.input_kinds:
+            gm.input_kinds = _ik; db.session.commit()
         lb_name = f'{DS_NAME}_benchmark'
         lb = Leaderboard.query.filter_by(name=lb_name).first()
         if lb is None:
