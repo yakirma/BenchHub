@@ -30,10 +30,18 @@ sys.path.insert(0, '/home/ymatri/Git/BenchHub')
 os.environ.setdefault('BENCHHUB_DATA_DIR', os.path.expanduser('~/.dtofbenchmarking'))
 os.environ['BENCHHUB_AUTO_MIGRATE'] = '0'
 
-DS_NAME = 'KITTI-2015-flow'
+YEAR = os.environ.get('KITTI_YEAR', '2015')
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 200
-ZIP_URL = 'https://s3.eu-central-1.amazonaws.com/avg-kitti/data_scene_flow.zip'
-CACHE_ZIP = os.path.expanduser('~/.dtofbenchmarking/_cache_data_scene_flow.zip')
+if YEAR == '2012':
+    DS_NAME = 'KITTI-2012-flow'
+    ZIP_URL = 'https://s3.eu-central-1.amazonaws.com/avg-kitti/data_stereo_flow.zip'
+    CACHE_ZIP = os.path.expanduser('~/.dtofbenchmarking/_cache_data_stereo_flow.zip')
+    IMG_DIR = 'colored_0'           # KITTI-2012 frames live under colored_0/
+else:
+    DS_NAME = 'KITTI-2015-flow'
+    ZIP_URL = 'https://s3.eu-central-1.amazonaws.com/avg-kitti/data_scene_flow.zip'
+    CACHE_ZIP = os.path.expanduser('~/.dtofbenchmarking/_cache_data_scene_flow.zip')
+    IMG_DIR = 'image_2'             # KITTI-2015 frames live under image_2/
 
 # Valid-aware metrics shared with the Sintel boards (Sintel GT is all-finite, so
 # the mask is a no-op there). epe is overwritten in place to the masked version.
@@ -137,8 +145,8 @@ def build_staging(staging: Path):
         (staging / d).mkdir(parents=True, exist_ok=True)
     out = []
     for sid in ids[:N]:
-        img1 = f'training/image_2/{sid}_10.png'
-        img2 = f'training/image_2/{sid}_11.png'
+        img1 = f'training/{IMG_DIR}/{sid}_10.png'
+        img2 = f'training/{IMG_DIR}/{sid}_11.png'
         gt = f'training/flow_occ/{sid}_10.png'
         if img1 not in names or img2 not in names or gt not in names:
             continue
