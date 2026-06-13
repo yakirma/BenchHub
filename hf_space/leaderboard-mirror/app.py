@@ -215,9 +215,9 @@ def _choices(entries, area, sub, query):
 
 
 def build():
-    with gr.Blocks(title="BenchHub Leaderboards (mirror)", head=HEAD,
+    with gr.Blocks(title="BenchHub Leaderboards", head=HEAD,
                    theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 🏆 BenchHub Leaderboards — read-only mirror")
+        gr.Markdown("# 🏆 BenchHub Leaderboards")
         gr.Markdown(
             f"Live boards & model submission at **[runbenchhub.com]({SITE})**. "
             f"Mirrors *public leaderboard standings only* — no ground-truth data, "
