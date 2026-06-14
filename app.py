@@ -3497,8 +3497,19 @@ def _dataset_thumb_url(ds):
             .all())
     by_kind = {dt: cid for dt, cid in rows}
     for kind in _THUMB_KIND_PRIORITY:
-        if kind in by_kind:
-            return _thumb_url_for(kind, by_kind[kind])
+        cid = by_kind.get(kind)
+        if cid is None:
+            continue
+        # File-backed kinds: verify the file is actually on disk; skip to the
+        # next kind if missing (e.g. KITTI-2015 flow lost its input frames, so
+        # the card falls back from `image` to the `depth` flow field instead of
+        # showing a broken/black tile). Text kinds render from value_text.
+        if kind in ('image', 'mask', 'depth', 'sequence', 'audio'):
+            cf = db.session.get(CustomField, cid)
+            vt = cf.value_text if cf else None
+            if not vt or not os.path.isfile(os.path.join(app.config['UPLOAD_FOLDER'], vt)):
+                continue
+        return _thumb_url_for(kind, cid)
     return None
 
 
@@ -15567,12 +15578,27 @@ def datasets_list():
     _by_ds = {}
     for _did, _kind, _cfid in _thumb_rows:
         _by_ds.setdefault(_did, {})[_kind] = _cfid
+    # value_text for all candidate CFs, to verify file-backed picks exist on
+    # disk (skip a missing file's kind, like KITTI-2015's lost input frames).
+    _all_cids = [cid for kinds in _by_ds.values() for cid in kinds.values()]
+    _vt_map = dict(
+        db.session.query(CustomField.id, CustomField.value_text)
+        .filter(CustomField.id.in_(_all_cids)).all()
+    ) if _all_cids else {}
+    _UP = app.config['UPLOAD_FOLDER']
+    _file_kinds = {'image', 'mask', 'depth', 'sequence', 'audio'}
     dataset_thumbs = {}
     for _did, _kinds in _by_ds.items():
         for _k in _THUMB_KIND_PRIORITY:
-            if _k in _kinds:
-                dataset_thumbs[_did] = _thumb_url_for(_k, _kinds[_k])
-                break
+            _cid = _kinds.get(_k)
+            if _cid is None:
+                continue
+            if _k in _file_kinds:
+                _vt = _vt_map.get(_cid)
+                if not _vt or not os.path.isfile(os.path.join(_UP, _vt)):
+                    continue
+            dataset_thumbs[_did] = _thumb_url_for(_k, _cid)
+            break
 
     # HF-attached datasets. These don't live as Dataset rows — they're
     # referenced by Attachment rows pointing at huggingface.co. Group by
@@ -17733,6 +17759,46 @@ def api_viz(cf_id):
     return Response(body, content_type=mime)
 
 
+def _render_waveform_png(audio_path, out_path, width=256, height=128):
+    """Render a min/max-envelope waveform PNG (violet on dark, matching the
+    import-time waveform style) for a raw audio file, and cache it at out_path."""
+    import soundfile as sf
+    from PIL import Image as _PIL, ImageDraw
+    data, _sr = sf.read(audio_path, dtype='float32', always_2d=False)
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    if data.size == 0:
+        data = np.zeros(1, np.float32)
+    peak = float(np.max(np.abs(data))) or 1.0
+    data = data / peak
+    img = _PIL.new('RGB', (width, height), (26, 22, 30))
+    dr = ImageDraw.Draw(img)
+    mid = height / 2.0
+    edges = np.linspace(0, data.size, width + 1).astype(int)
+    for c in range(width):
+        a, b = edges[c], edges[c + 1]
+        if b <= a:
+            continue
+        seg = data[a:b]
+        y_hi = mid - float(seg.max()) * mid * 0.95
+        y_lo = mid - float(seg.min()) * mid * 0.95
+        dr.line([(c, y_hi), (c, y_lo)], fill=(124, 58, 237), width=1)
+    img.save(out_path, format='PNG')
+
+
+def _serve_audio_waveform(audio_path):
+    """Serve a waveform PNG for a raw audio file (rendered + cached as a
+    `.waveform.png` sidecar). Falls back to 404 if decoding fails."""
+    png_path = audio_path + '.waveform.png'
+    if not os.path.isfile(png_path):
+        try:
+            _render_waveform_png(audio_path, png_path)
+        except Exception:
+            return "waveform render failed", 404
+    return send_file(png_path)
+
+
 @app.route('/custom_field_image/<int:field_id>')
 def serve_custom_field_image(field_id):
     """Serve a custom field image or depth map"""
@@ -17785,6 +17851,15 @@ def serve_custom_field_image(field_id):
 
     if not os.path.exists(image_path):
         return "Image not found", 404
+
+    if custom_field.data_type == 'audio':
+        # Some audio imports stored a waveform PNG as value_text (serve it);
+        # others stored the raw .wav/.mp3/.flac — render a waveform PNG for
+        # those so an <img> shows a waveform instead of a broken/black tile.
+        if os.path.splitext(image_path)[1].lower() not in (
+                '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'):
+            return _serve_audio_waveform(image_path)
+        return send_file(image_path)
 
     if custom_field.data_type == 'mask':
         # `?raw=1` serves the underlying class-index PNG unmodified so
