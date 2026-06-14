@@ -14368,7 +14368,12 @@ def comparison_view(leaderboard_id):
                 sample_info['custom_fields'][cf.name] = {
                     'gt_field_id': cf.id if cf.data_type in ['image', 'depth', 'mask', 'audio', 'sequence'] else None,
                     'gt_scalar_value': cf.value_float if cf.data_type == 'scalar' else None,
-                    'gt_text_value': cf.value_text if cf.data_type in ('text', 'json') else None,
+                    # Don't inline huge json blobs (e.g. point-tracking [N,T,2]
+                    # arrays) into comparisonData — they balloon the HTML and
+                    # aren't human-readable; the visualization shows them.
+                    'gt_text_value': (cf.value_text if cf.data_type in ('text', 'json')
+                                      and (cf.value_text is None or len(cf.value_text) <= 4096)
+                                      else ('[large data — see visualization]' if cf.data_type in ('text', 'json') else None)),
                     'gt_field_type': cf.data_type,
                     'submissions': {},
                     'sub_scalars': {},
@@ -14405,7 +14410,9 @@ def comparison_view(leaderboard_id):
                     elif cf.data_type == 'scalar':
                         entry['sub_scalars'][sub.id] = cf.value_float
                     elif cf.data_type in ['text', 'json']:
-                        entry['sub_texts'][sub.id] = cf.value_text
+                        entry['sub_texts'][sub.id] = (cf.value_text
+                            if cf.value_text is None or len(cf.value_text) <= 4096
+                            else '[large data — see visualization]')
                 
                 # Add submission custom metric fields for this sample
                 if cf.data_type == 'metric' and cf.sample_name == sample.name:
