@@ -14251,9 +14251,9 @@ def comparison_view(leaderboard_id):
         # json, scalar) get their value surfaced alongside the field_id;
         # the template branches on whichever attribute is non-null.
         for cf in sample.custom_fields:
-            if cf.data_type in ['image', 'depth', 'mask', 'audio', 'scalar', 'text', 'json']:
+            if cf.data_type in ['image', 'depth', 'mask', 'audio', 'sequence', 'scalar', 'text', 'json']:
                 sample_info['custom_fields'][cf.name] = {
-                    'gt_field_id': cf.id if cf.data_type in ['image', 'depth', 'mask', 'audio'] else None,
+                    'gt_field_id': cf.id if cf.data_type in ['image', 'depth', 'mask', 'audio', 'sequence'] else None,
                     'gt_scalar_value': cf.value_float if cf.data_type == 'scalar' else None,
                     'gt_text_value': cf.value_text if cf.data_type in ('text', 'json') else None,
                     'gt_field_type': cf.data_type,
