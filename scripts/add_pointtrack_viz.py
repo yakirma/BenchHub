@@ -89,14 +89,15 @@ def main():
         if gv is None:
             gv = GlobalVisualization(
                 name='point_track_overlay',
-                description='Draw point-tracking trajectories (trail + last-visible dot) over the first video frame.',
+                description='Animate point-tracking trajectories (moving dots + trails) over the video.',
                 python_code=VIZ_CODE, is_aggregated=0, accepts_aggregated_inputs=0,
                 input_kinds=json.dumps(['image', 'json', 'json']),
+                viz_mime='video/mp4',   # → rendered as an animated GIF via point_track_anim
                 owner_user_id=None, visibility='public')
             db.session.add(gv); db.session.commit()
             print(f'created point_track_overlay viz id={gv.id}')
         else:
-            gv.python_code = VIZ_CODE; db.session.commit()
+            gv.python_code = VIZ_CODE; gv.viz_mime = 'video/mp4'; db.session.commit()
             print(f'updated point_track_overlay viz id={gv.id}')
 
         for lb_id in lb_ids:

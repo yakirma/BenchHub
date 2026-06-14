@@ -4931,6 +4931,106 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
         traceback.print_exc()
         return create_error_image(str(e)[:50])
 
+
+def _load_sequence_frames(path, upload_folder):
+    """Decode a stored Sequence (.zip of per-frame PNGs) → list of HxWx3 uint8."""
+    import zipfile
+    from PIL import Image as _PI
+    full = path if os.path.isabs(path) else os.path.join(upload_folder, path)
+    frames = []
+    with zipfile.ZipFile(full) as z:
+        for n in sorted(x for x in z.namelist() if not x.endswith('/')):
+            frames.append(np.asarray(_PI.open(io.BytesIO(z.read(n))).convert('RGB')))
+    return frames
+
+
+def _render_track_gif(frames, tracks, occluded, *, max_frames=60, trail=12, fps=8):
+    """Animated point-tracking overlay: each frame shows every point at its
+    position for that frame (dot, hollow when occluded) + a short fading trail.
+    Returns animated-GIF bytes, or None if there's nothing to draw."""
+    import colorsys
+    from PIL import Image as _PI, ImageDraw
+    if isinstance(tracks, str):
+        try: tracks = json.loads(tracks)
+        except Exception: return None
+    if isinstance(occluded, str):
+        try: occluded = json.loads(occluded)
+        except Exception: occluded = None
+    tr = np.asarray(tracks, dtype=float) if tracks is not None else None
+    if tr is None or tr.ndim != 3 or tr.shape[0] == 0 or not frames:
+        return None
+    occ = np.asarray(occluded) if occluded is not None and len(occluded) else None
+    N, T = tr.shape[0], min(tr.shape[1], len(frames))
+    step = max(1, (T + max_frames - 1) // max_frames)
+    cols = [tuple(int(255 * c) for c in colorsys.hsv_to_rgb(n / max(N, 1), 0.95, 1.0))
+            for n in range(N)]
+    out = []
+    for t in range(0, T, step):
+        im = _PI.fromarray(np.ascontiguousarray(frames[t][..., :3]).astype('uint8')).convert('RGB')
+        dr = ImageDraw.Draw(im)
+        for n in range(N):
+            vis = True
+            if occ is not None and occ.ndim == 2 and occ.shape[0] > n and occ.shape[1] > t:
+                vis = not bool(occ[n, t])
+            prev = None
+            for k in range(max(0, t - trail), t + 1):
+                x, y = float(tr[n, k, 0]), float(tr[n, k, 1])
+                if prev is not None:
+                    dr.line([prev, (x, y)], fill=cols[n], width=1)
+                prev = (x, y)
+            x, y = float(tr[n, t, 0]), float(tr[n, t, 1])
+            if vis:
+                dr.ellipse([x - 3, y - 3, x + 3, y + 3], fill=cols[n], outline=(255, 255, 255))
+            else:
+                dr.ellipse([x - 2, y - 2, x + 2, y + 2], outline=cols[n])
+        out.append(im)
+    if not out:
+        return None
+    buf = io.BytesIO()
+    out[0].save(buf, format='GIF', save_all=True, append_images=out[1:],
+                duration=int(1000 / max(fps, 1)), loop=0, disposal=2)
+    return buf.getvalue()
+
+
+@app.route('/point_track_anim/<int:lv_id>/<int:sample_id>')
+@app.route('/point_track_anim/<int:lv_id>/<int:sample_id>/<int:submission_id>')
+def point_track_anim(lv_id, sample_id, submission_id=None):
+    """Render a point-tracking overlay as an animated GIF (trails moving over
+    the video). Built-in (not sandboxed-exec) — safe hardcoded drawing — so it
+    can emit animation the PNG-only viz sandbox can't. Mirrors
+    execute_visualization's arg resolution + caching."""
+    import hashlib
+    lv = LeaderboardVisualization.query.get_or_404(lv_id)
+    sample = Sample.query.get_or_404(sample_id)
+    submission = Submission.query.get(submission_id) if submission_id else None
+    am = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
+    key = f"ptanim_{lv_id}_{sample_id}_{submission_id or 'none'}_{hashlib.md5((lv.arg_mappings or '').encode()).hexdigest()[:8]}"
+    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    cp = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest() + '.gif')
+    if os.path.exists(cp):
+        return send_file(cp, mimetype='image/gif')
+    try:
+        vid = extract_viz_arg_value(sample, submission, am.get('image', 'gt_video'),
+                                    leaderboard_id=lv.leaderboard_id)
+        tracks = extract_viz_arg_value(sample, submission, am.get('tracks'),
+                                       leaderboard_id=lv.leaderboard_id)
+        occ = extract_viz_arg_value(sample, submission, am.get('occluded'),
+                                    leaderboard_id=lv.leaderboard_id)
+        if not isinstance(vid, str):
+            return create_error_image('no video')
+        gif = _render_track_gif(_load_sequence_frames(vid, app.config['UPLOAD_FOLDER']), tracks, occ)
+        if not gif:
+            return create_error_image('no tracks')
+        with open(cp, 'wb') as f:
+            f.write(gif)
+        return send_file(io.BytesIO(gif), mimetype='image/gif')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return create_error_image(str(e)[:50])
+
+
 def _lb_label_vocabs(leaderboard):
     """{field_name: [class names]} for every label / label_list field on
     the LB — GT fields (from dataset field params) + declared pred fields
@@ -14526,6 +14626,9 @@ def comparison_view(leaderboard_id):
             'is_aggregated': lv.global_visualization.is_aggregated,
             'global_viz_id': lv.global_visualization.id,
             'is_gt_side': is_gt_side,
+            # video-mime viz (e.g. point-tracking) render as an animated GIF
+            # served by point_track_anim, not the PNG execute_visualization.
+            'anim': bool((lv.global_visualization.viz_mime or '').startswith('video')),
         }
     
     # Aggregated metrics only appear in the summary chart/table, never
@@ -14752,7 +14855,8 @@ def comparison_view(leaderboard_id):
                 'label': f'📊 {viz_name}',
                 'type': 'visualization',
                 'default_width': '250px',
-                'viz_id': viz_config['id']
+                'viz_id': viz_config['id'],
+                'anim': viz_config.get('anim', False),
             }
 
 
