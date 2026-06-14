@@ -3454,26 +3454,107 @@ def landing():
     return render_template('landing.html', **_landing_data())
 
 
+# Thumbnail modality priority (highest first). Visual kinds render directly;
+# `sequence` shows the clip's first frame; `audio` shows its waveform PNG.
+# The text-ish kinds have no inherent picture, so we render a snippet of their
+# content as an image (serve_text_thumb) — that way EVERY dataset/LB card gets
+# a picture instead of a blank tile.
+_THUMB_VISUAL_KINDS = ('image', 'sequence', 'mask', 'depth', 'audio')
+_THUMB_TEXT_KINDS = ('text', 'json', 'scalar', 'label', 'label_list')
+_THUMB_KIND_PRIORITY = _THUMB_VISUAL_KINDS + _THUMB_TEXT_KINDS
+
+
+def _thumb_url_for(kind, cf_id):
+    """Build the right thumbnail URL for a CustomField of `kind`."""
+    if kind == 'sequence':
+        return url_for('sequence_frame', cf_id=cf_id)
+    if kind in _THUMB_TEXT_KINDS:
+        return url_for('serve_text_thumb', field_id=cf_id)
+    return url_for('serve_custom_field_image', field_id=cf_id)
+
+
 def _dataset_thumb_url(ds):
     """Return a URL for a representative thumbnail of `ds`, or None.
 
-    Modality priority: a real RGB **image** field always wins; for video-only
-    datasets (a `sequence` field, no image) use the clip's first frame; then
-    fall back to mask, then depth. Returns None if the dataset has no
-    visualizable content yet (e.g. metric-only)."""
+    Modality priority (`_THUMB_KIND_PRIORITY`): a real RGB **image** field
+    always wins; video-only datasets use the clip's first frame; then mask,
+    depth, audio (waveform). Datasets with only text/json/scalar/label render a
+    snippet of that content as an image so the card is never blank. Returns
+    None only when the dataset has no samples/fields at all."""
     sample_ids = [s.id for s in Sample.query.filter_by(dataset_id=ds.id).limit(20).all()]
     if not sample_ids:
         return None
-    for kind in ('image', 'sequence', 'mask', 'depth'):
-        cf = (CustomField.query
-              .filter(CustomField.sample_id.in_(sample_ids),
-                      CustomField.data_type == kind)
-              .first())
-        if cf is not None:
-            if kind == 'sequence':
-                return url_for('sequence_frame', cf_id=cf.id)
-            return url_for('serve_custom_field_image', field_id=cf.id)
+    # One query: the first CF id per data_type present on these samples.
+    rows = (db.session.query(CustomField.data_type, func.min(CustomField.id))
+            .filter(CustomField.sample_id.in_(sample_ids),
+                    CustomField.data_type.in_(_THUMB_KIND_PRIORITY))
+            .group_by(CustomField.data_type)
+            .all())
+    by_kind = dict(rows)
+    for kind in _THUMB_KIND_PRIORITY:
+        if kind in by_kind:
+            return _thumb_url_for(kind, by_kind[kind])
     return None
+
+
+def _render_text_thumb_png(text, width=320, height=200):
+    """Render a snippet of `text` as a card-sized PNG (light card with a violet
+    accent bar), so text/json/scalar/label datasets get a representative
+    'picture of text' on their catalog card."""
+    from PIL import Image as _PIL, ImageDraw, ImageFont
+    import textwrap
+    bg, fg, accent = (245, 239, 226), (58, 38, 20), (124, 58, 237)
+    img = _PIL.new('RGB', (width, height), bg)
+    dr = ImageDraw.Draw(img)
+    dr.rectangle([0, 0, 5, height], fill=accent)          # accent left bar
+    font = None
+    for p in ('DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'):
+        try:
+            font = ImageFont.truetype(p, 15); break
+        except Exception:
+            pass
+    if font is None:
+        font = ImageFont.load_default()
+    text = (text or '').strip() or '(empty)'
+    try:
+        avg = dr.textlength('m' * 10, font=font) / 10.0
+    except Exception:
+        avg = 8.0
+    cpl = max(8, int((width - 26) / max(avg, 4.0)))
+    lines = []
+    for para in (text.splitlines() or ['']):
+        lines.extend(textwrap.wrap(para, width=cpl) or [''])
+    try:
+        asc, desc = font.getmetrics(); lh = asc + desc + 4
+    except Exception:
+        lh = 18
+    max_lines = max(1, (height - 20) // lh)
+    cut = lines[:max_lines]
+    if len(lines) > max_lines and cut:
+        cut[-1] = cut[-1][:max(0, cpl - 1)] + '…'
+    y = 12
+    for ln in cut:
+        dr.text((14, y), ln, fill=fg, font=font); y += lh
+    out = io.BytesIO(); img.save(out, format='PNG'); return out.getvalue()
+
+
+@app.route('/text_thumb/<int:field_id>')
+def serve_text_thumb(field_id):
+    """Render a text/json/scalar/label CustomField's content as a PNG card
+    thumbnail (cached). Used by _dataset_thumb_url for non-visual datasets."""
+    cf = CustomField.query.get_or_404(field_id)
+    val = cf.value_text
+    if (val is None or val == '') and getattr(cf, 'value_float', None) is not None:
+        val = cf.value_float
+    if isinstance(val, (dict, list)):
+        try:
+            val = json.dumps(val, ensure_ascii=False)
+        except Exception:
+            val = str(val)
+    s = ('' if val is None else str(val))[:600]
+    resp = send_file(io.BytesIO(_render_text_thumb_png(s)), mimetype='image/png')
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
 
 
 def _submission_primary_scores(submissions):
@@ -15459,31 +15540,31 @@ def datasets_list():
     # Sort datasets by their last associated activity (most recent first)
     datasets.sort(key=lambda x: x.last_associated_activity, reverse=True)
             
-    # Representative thumbnail per dataset (first image, else depth CF),
-    # batched into two grouped-MIN queries instead of the per-dataset
-    # _dataset_thumb_url pass (2 queries EACH) — that pass was ~3s of the
-    # catalog load at ~160 datasets. min(CustomField.id) within a kind ≈
-    # the first sample's field (CFs are created in sample order); image is
-    # preferred over depth, matching _dataset_thumb_url's ordering.
+    # Representative thumbnail per dataset, batched into ONE grouped query
+    # (instead of the per-dataset _dataset_thumb_url pass, 1 query EACH —
+    # ~3s of the catalog load at ~160 datasets). min(CustomField.id) within a
+    # (dataset, kind) ≈ the first sample's field (CFs are created in sample
+    # order); we then pick the highest-priority kind per dataset, mirroring
+    # _dataset_thumb_url's ordering (image > … > audio > text snippet) so every
+    # card gets a picture.
     _thumb_ids = [ds.id for ds in datasets]
-
-    def _thumb_min_cf(kind):
-        return dict(
-            db.session.query(Sample.dataset_id, func.min(CustomField.id))
-            .join(CustomField, CustomField.sample_id == Sample.id)
-            .filter(Sample.dataset_id.in_(_thumb_ids or [0]),
-                    CustomField.data_type == kind)
-            .group_by(Sample.dataset_id)
-            .all()
-        )
-
-    _img_cf = _thumb_min_cf('image')
-    _dep_cf = _thumb_min_cf('depth')
+    _thumb_rows = (
+        db.session.query(Sample.dataset_id, CustomField.data_type, func.min(CustomField.id))
+        .join(CustomField, CustomField.sample_id == Sample.id)
+        .filter(Sample.dataset_id.in_(_thumb_ids or [0]),
+                CustomField.data_type.in_(_THUMB_KIND_PRIORITY))
+        .group_by(Sample.dataset_id, CustomField.data_type)
+        .all()
+    )
+    _by_ds = {}
+    for _did, _kind, _cfid in _thumb_rows:
+        _by_ds.setdefault(_did, {})[_kind] = _cfid
     dataset_thumbs = {}
-    for _did in _thumb_ids:
-        _cf_id = _img_cf.get(_did) or _dep_cf.get(_did)
-        if _cf_id is not None:
-            dataset_thumbs[_did] = url_for('serve_custom_field_image', field_id=_cf_id)
+    for _did, _kinds in _by_ds.items():
+        for _k in _THUMB_KIND_PRIORITY:
+            if _k in _kinds:
+                dataset_thumbs[_did] = _thumb_url_for(_k, _kinds[_k])
+                break
 
     # HF-attached datasets. These don't live as Dataset rows — they're
     # referenced by Attachment rows pointing at huggingface.co. Group by
