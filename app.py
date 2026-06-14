@@ -4806,6 +4806,69 @@ def execute_dataset_visualization(dv_id, sample_id):
         return create_error_image(str(e)[:60])
 
 
+_FLOW_LEGEND_CACHE = {}
+
+
+def _flow_color_wheel_png(size=120):
+    """Render the Middlebury flow colour wheel as an RGBA PNG (transparent
+    outside the disc). Applies the SAME colour assignment as the `flow_color`
+    visualization to a radial flow field (each pixel's offset from centre is
+    treated as its flow vector), so the legend matches the cells exactly:
+    angle on the wheel = flow direction, brightness = magnitude."""
+    import numpy as np
+    from PIL import Image as _PIL
+    half = size / 2.0
+    ys, xs = np.mgrid[0:size, 0:size].astype(np.float32)
+    u = (xs - half + 0.5) / half          # flow vector points radially outward
+    v = (ys - half + 0.5) / half
+    rad = np.sqrt(u * u + v * v)
+    # colour wheel (Baker et al. — identical ordering to flow_color)
+    RY, YG, GC, CB, BM, MR = 15, 6, 4, 11, 13, 6
+    ncols = RY + YG + GC + CB + BM + MR
+    cw = np.zeros((ncols, 3), np.float32)
+    c = 0
+    cw[0:RY, 0] = 255; cw[0:RY, 1] = np.floor(255 * np.arange(RY) / RY); c += RY
+    cw[c:c+YG, 0] = 255 - np.floor(255 * np.arange(YG) / YG); cw[c:c+YG, 1] = 255; c += YG
+    cw[c:c+GC, 1] = 255; cw[c:c+GC, 2] = np.floor(255 * np.arange(GC) / GC); c += GC
+    cw[c:c+CB, 1] = 255 - np.floor(255 * np.arange(CB) / CB); cw[c:c+CB, 2] = 255; c += CB
+    cw[c:c+BM, 2] = 255; cw[c:c+BM, 0] = np.floor(255 * np.arange(BM) / BM); c += BM
+    cw[c:c+MR, 2] = 255 - np.floor(255 * np.arange(MR) / MR); cw[c:c+MR, 0] = 255
+    a = np.arctan2(-v, -u) / np.pi
+    fk = (a + 1.0) / 2.0 * (ncols - 1)
+    k0 = np.floor(fk).astype(np.int32)
+    k1 = (k0 + 1) % ncols
+    f = fk - k0
+    rgb = np.zeros((size, size, 3), np.uint8)
+    rn = np.clip(rad, 0, 1)
+    for i in range(3):
+        ch = cw[:, i]
+        col = ((1 - f) * (ch[k0] / 255.0) + f * (ch[k1] / 255.0))
+        col = 1 - rn * (1 - col)          # brightness toward centre (white = 0 flow)
+        rgb[:, :, i] = np.floor(255 * np.clip(col, 0, 1))
+    alpha = np.where(rad <= 1.0, 255, 0).astype(np.uint8)
+    rgba = np.dstack([rgb, alpha])
+    out = io.BytesIO()
+    _PIL.fromarray(rgba, 'RGBA').save(out, format='PNG')
+    return out.getvalue()
+
+
+@app.route('/flow_legend.png')
+def flow_legend():
+    """Static (data-independent) Middlebury flow colour-wheel legend, cached
+    in-process per size. Used by the flow viz column + zoom modal."""
+    try:
+        size = max(24, min(256, int(request.args.get('size', 120))))
+    except (TypeError, ValueError):
+        size = 120
+    png = _FLOW_LEGEND_CACHE.get(size)
+    if png is None:
+        png = _flow_color_wheel_png(size)
+        _FLOW_LEGEND_CACHE[size] = png
+    resp = send_file(io.BytesIO(png), mimetype='image/png')
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>')
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>/<int:submission_id>')
 def execute_visualization(lv_id, sample_id, submission_id=None):
@@ -14681,6 +14744,10 @@ def comparison_view(leaderboard_id):
             # point_track_anim, not the PNG execute_visualization. (GlobalVisualization
             # has no mime column, so key off the known animated-viz name.)
             'anim': (lv.global_visualization.name or '') == 'point_track_overlay',
+            # Flow viz get a Middlebury colour-wheel legend (direction=hue,
+            # magnitude=brightness) in the cell + zoom modal, mirroring the
+            # depth colorbar. Keyed off the known viz name.
+            'is_flow': (lv.global_visualization.name or '') == 'flow_color',
         }
     
     # Aggregated metrics only appear in the summary chart/table, never
@@ -14909,6 +14976,7 @@ def comparison_view(leaderboard_id):
                 'default_width': '250px',
                 'viz_id': viz_config['id'],
                 'anim': viz_config.get('anim', False),
+                'is_flow': viz_config.get('is_flow', False),
             }
 
 

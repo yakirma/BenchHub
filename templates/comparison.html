@@ -114,6 +114,40 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         border-radius: 2px;
     }
 
+    /* Flow colour-wheel legend — direction=hue, magnitude=brightness.
+       A small fixed wheel pinned to the cell corner (sibling of the IMG,
+       like the depth colorbar) so the reader can match a flow colour to
+       its direction. */
+    .flow-cell {
+        position: relative;
+        display: inline-block;
+    }
+    .flow-legend {
+        position: absolute;
+        bottom: 4px;
+        right: 4px;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.55);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.3);
+        pointer-events: none;
+        z-index: 2;
+    }
+    /* Larger legend inside the zoom modal. */
+    #modal-flow-legend {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 92px;
+        height: 92px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.6);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15), 0 1px 4px rgba(0, 0, 0, 0.35);
+        pointer-events: none;
+        z-index: 5;
+    }
+
     /* Submission name shown directly in headers/cells (legend removed).
        Truncates with an ellipsis instead of widening the column; the full
        name is in the title attribute (hover). */
@@ -1109,13 +1143,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     alt="{{ comparison_display_options[col_key].label }}"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
+                                {% set _is_flow = comparison_display_options[col_key].is_flow %}
+                                <span class="{{ 'flow-cell' if _is_flow else '' }}">
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     class="border rounded shadow-sm clickable-vis"
                                     style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
+                                    {% if _is_flow %}data-flow="1"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
+                                {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
+                                </span>
                                 {% endif %}
                             </div>
                         </td>
@@ -1139,13 +1178,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     alt="{{ comparison_display_options[col_key].label }}"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
+                                {% set _is_flow = comparison_display_options[col_key].is_flow %}
+                                <span class="{{ 'flow-cell' if _is_flow else '' }}">
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     class="border rounded shadow-sm clickable-vis"
                                     style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
+                                    {% if _is_flow %}data-flow="1"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
+                                {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
+                                </span>
                                 {% endif %}
                             </div>
                         </td>
@@ -1436,6 +1480,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <img id="modal-vis-img" src="" class="img-fluid" style="display: none;">
                     <video id="modal-vis-video" class="img-fluid" style="display: none; max-height: 80vh;"
                            autoplay loop muted playsinline></video>
+                    {# Flow colour-wheel legend — shown only for flow viz thumbs
+                       (data-flow="1"). Direction=hue, magnitude=brightness. #}
+                    <img id="modal-flow-legend" src="{{ url_for('flow_legend', size=160) }}"
+                         style="display: none;" title="Flow colour wheel — hue = direction, brightness = magnitude"
+                         alt="flow colour-wheel legend">
+                    <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     {# Per-thumbnail overlay layers go here as IMG
                        elements (one per gallery item, hidden until the
@@ -2042,6 +2092,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             var visType = triggerElement.getAttribute('data-vis-type');
             var apiUrl = triggerElement.getAttribute('data-api-url'); // Get API URL
             const sampleName = triggerElement.getAttribute('data-sample-name');
+
+            // Flow colour-wheel legend: shown only for flow viz thumbs
+            // (data-flow="1"). Set unconditionally each open/navigation so it
+            // clears when moving to a depth/video/other modality.
+            const _flowLegend = document.getElementById('modal-flow-legend');
+            if (_flowLegend) {
+                _flowLegend.style.display =
+                    (triggerElement.getAttribute('data-flow') === '1') ? 'block' : 'none';
+            }
 
             // Depth colormap selector: a depth thumb may render in the modal
             // as an interactive Plotly heatmap (raw grid available) OR fall
