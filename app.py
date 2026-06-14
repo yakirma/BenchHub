@@ -3457,23 +3457,23 @@ def landing():
 def _dataset_thumb_url(ds):
     """Return a URL for a representative thumbnail of `ds`, or None.
 
-    Prefers an `image_*` custom field on any sample (rendered by the
-    existing /custom_field_image endpoint). Falls back to a depth field
-    (which the depth-image endpoint will render to PNG). Returns None
-    if the dataset has no visualizable content yet (e.g. metric-only)."""
+    Modality priority: a real RGB **image** field always wins; for video-only
+    datasets (a `sequence` field, no image) use the clip's first frame; then
+    fall back to mask, then depth. Returns None if the dataset has no
+    visualizable content yet (e.g. metric-only)."""
     sample_ids = [s.id for s in Sample.query.filter_by(dataset_id=ds.id).limit(20).all()]
     if not sample_ids:
         return None
-    cf = (
-        CustomField.query
-        .filter(CustomField.sample_id.in_(sample_ids),
-                CustomField.data_type.in_(('image', 'depth')))
-        .order_by(CustomField.data_type.desc())  # 'image' before 'depth'
-        .first()
-    )
-    if cf is None:
-        return None
-    return url_for('serve_custom_field_image', field_id=cf.id)
+    for kind in ('image', 'sequence', 'mask', 'depth'):
+        cf = (CustomField.query
+              .filter(CustomField.sample_id.in_(sample_ids),
+                      CustomField.data_type == kind)
+              .first())
+        if cf is not None:
+            if kind == 'sequence':
+                return url_for('sequence_frame', cf_id=cf.id)
+            return url_for('serve_custom_field_image', field_id=cf.id)
+    return None
 
 
 def _submission_primary_scores(submissions):
@@ -4930,6 +4930,44 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
         import traceback
         traceback.print_exc()
         return create_error_image(str(e)[:50])
+
+
+@app.route('/sequence_frame/<int:cf_id>')
+def sequence_frame(cf_id):
+    """First frame of a Sequence (video) CustomField as a PNG — used as a
+    catalog card thumbnail for video datasets that have no image field."""
+    import hashlib
+    cf = CustomField.query.get_or_404(cf_id)
+    parent = None
+    if cf.sample_id:
+        s = Sample.query.get(cf.sample_id); parent = s.dataset if s else None
+    elif cf.submission_id:
+        sub = Submission.query.get(cf.submission_id); parent = sub.leaderboard if sub else None
+    elif cf.leaderboard_id:
+        parent = Leaderboard.query.get(cf.leaderboard_id)
+    if not _can_view_parent(g.current_user, parent):
+        abort(404)
+    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    cp = os.path.join(cache_dir, 'seqframe_' + hashlib.md5(f"{cf_id}_{cf.value_text}".encode()).hexdigest() + '.png')
+    if os.path.exists(cp):
+        return send_file(cp, mimetype='image/png')
+    try:
+        frames = _load_sequence_frames(cf.value_text or '', app.config['UPLOAD_FOLDER'])
+    except (FileNotFoundError, Exception):
+        abort(404)
+    if not frames:
+        abort(404)
+    from PIL import Image as _PI
+    buf = io.BytesIO()
+    _PI.fromarray(np.ascontiguousarray(frames[0][..., :3]).astype('uint8')).save(buf, 'PNG')
+    body = buf.getvalue()
+    try:
+        with open(cp, 'wb') as f:
+            f.write(body)
+    except Exception:
+        pass
+    return send_file(io.BytesIO(body), mimetype='image/png')
 
 
 def _load_sequence_frames(path, upload_folder):
