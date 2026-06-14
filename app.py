@@ -17489,6 +17489,23 @@ def api_viz(cf_id):
     if not _can_view_parent(g.current_user, parent):
         abort(404)
 
+    opts = {k: v for k, v in request.args.items()}
+
+    # Cache the rendered output — visualize() is deterministic per CF, and for
+    # Sequence (video) it re-runs ffmpeg over every frame (~1s), which made
+    # comparison pages with a video column slow on every load. CFs are
+    # immutable once created, so key on cf_id + params + query args.
+    import hashlib
+    _MIME_EXT = {'video/mp4': '.mp4', 'image/gif': '.gif', 'image/png': '.png',
+                 'image/jpeg': '.jpg'}
+    key = f"apiviz_{cf_id}_{cf.data_type}_{hashlib.md5((str(cf.data_params) + repr(sorted(opts.items()))).encode()).hexdigest()}"
+    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    base = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest())
+    for ext, mime in {v: k for k, v in _MIME_EXT.items()}.items():
+        if os.path.exists(base + ext):
+            return send_file(base + ext, mimetype=mime)
+
     try:
         inst = _cf_to_typed_instance(cf, app.config['UPLOAD_FOLDER'])
     except FileNotFoundError:
@@ -17499,11 +17516,15 @@ def api_viz(cf_id):
     # Pass query-string args as renderer opts. Subclasses that don't
     # know a given opt just ignore it via **_; we don't want a stray
     # ?foo=bar to 500 the response, so swallow TypeError as a fallback.
-    opts = {k: v for k, v in request.args.items()}
     try:
         body, mime = inst.visualize(**opts)
     except TypeError:
         body, mime = inst.visualize()
+    try:
+        with open(base + _MIME_EXT.get(mime, '.bin'), 'wb') as fh:
+            fh.write(body)
+    except Exception:
+        pass
     return Response(body, content_type=mime)
 
 
