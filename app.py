@@ -3484,13 +3484,18 @@ def _dataset_thumb_url(ds):
     sample_ids = [s.id for s in Sample.query.filter_by(dataset_id=ds.id).limit(20).all()]
     if not sample_ids:
         return None
-    # One query: the first CF id per data_type present on these samples.
+    # First CF id per data_type on these (dataset) samples, in ONE query.
+    # NB: filter on sample_id + submission_id IS NULL (the composite index
+    # `ix_custom_field_sample_id_submission_id`) and pick the kind in Python —
+    # do NOT add `data_type IN (...)`, which lures SQLite onto the data_type
+    # index and full-scans millions of image rows (turned /leaderboards into a
+    # 58s page).
     rows = (db.session.query(CustomField.data_type, func.min(CustomField.id))
             .filter(CustomField.sample_id.in_(sample_ids),
-                    CustomField.data_type.in_(_THUMB_KIND_PRIORITY))
+                    CustomField.submission_id.is_(None))
             .group_by(CustomField.data_type)
             .all())
-    by_kind = dict(rows)
+    by_kind = {dt: cid for dt, cid in rows}
     for kind in _THUMB_KIND_PRIORITY:
         if kind in by_kind:
             return _thumb_url_for(kind, by_kind[kind])
@@ -15548,11 +15553,14 @@ def datasets_list():
     # _dataset_thumb_url's ordering (image > … > audio > text snippet) so every
     # card gets a picture.
     _thumb_ids = [ds.id for ds in datasets]
+    # submission_id IS NULL keeps this to DATASET fields (the bulk of the 8M
+    # custom_field rows are submission predictions) and avoids the data_type
+    # index trap; pick the kind per dataset in Python.
     _thumb_rows = (
         db.session.query(Sample.dataset_id, CustomField.data_type, func.min(CustomField.id))
         .join(CustomField, CustomField.sample_id == Sample.id)
         .filter(Sample.dataset_id.in_(_thumb_ids or [0]),
-                CustomField.data_type.in_(_THUMB_KIND_PRIORITY))
+                CustomField.submission_id.is_(None))
         .group_by(Sample.dataset_id, CustomField.data_type)
         .all()
     )
