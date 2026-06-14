@@ -34,10 +34,17 @@ sys.path.insert(0, '/home/ymatri/Git/BenchHub')
 os.environ.setdefault('BENCHHUB_DATA_DIR', os.path.expanduser('~/.dtofbenchmarking'))
 os.environ['BENCHHUB_AUTO_MIGRATE'] = '0'
 
-DS_NAME = 'TAP-Vid-DAVIS'
-N_VID = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+# TAPVID_SET selects the TAP-Vid dataset (same pkl schema across all): DAVIS
+# (top-level dict) or RGB-Stacking (top-level list of dicts).
+_SET = os.environ.get('TAPVID_SET', 'davis')
+_CFG = {
+    'davis': ('TAP-Vid-DAVIS', '_cache_tapvid_davis.zip', 'd'),
+    'rgb_stacking': ('TAP-Vid-RGB-Stacking', '_cache_tapvid_rgb_stacking.zip', 'rgb'),
+}[_SET]
+DS_NAME, _ZIP, _PFX = _CFG
+N_VID = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
 RES = 256
-CACHE = os.path.expanduser('~/.dtofbenchmarking/_cache_tapvid_davis.zip')
+CACHE = os.path.expanduser(f'~/.dtofbenchmarking/{_ZIP}')
 
 # --- TAP-Vid metrics (pure numpy). Query frame derived from gt_occluded
 #     (first visible frame per point); that frame is excluded from eval. ---
@@ -125,8 +132,10 @@ def build_staging(staging: Path):
     data = pickle.loads(z.read(pkl))
     for d in ('video', 'query_points', 'target_points', 'occluded'):
         (staging / d).mkdir(parents=True, exist_ok=True)
+    items = list(data.items()) if isinstance(data, dict) else list(enumerate(data))
     out = []
-    for vname, d in list(data.items())[:N_VID]:
+    for vid_key, d in items[:N_VID]:
+        vname = vid_key if isinstance(vid_key, str) else f'{_PFX}_{vid_key:03d}'
         video = np.asarray(d['video'])              # [T,H,W,3] uint8
         pts = np.asarray(d['points'], dtype=np.float32)   # [N,T,2] in [0,1] (x,y)
         occ = np.asarray(d['occluded'], dtype=bool)       # [N,T]
