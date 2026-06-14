@@ -4871,6 +4871,16 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
                     with np.load(full) as _d:
                         _arr = _d['depth'] if 'depth' in _d else _d[next(iter(_d.keys()))]
                     return _BHDepth(np.asarray(_arr))
+                if ext == 'zip':
+                    # Sequence (video): hand the viz its FIRST frame as an image
+                    # background (the whole clip is large + the sandbox only
+                    # needs one frame to draw trajectories on).
+                    import zipfile as _zf
+                    with _zf.ZipFile(full) as _z:
+                        _names = sorted(n for n in _z.namelist() if not n.endswith('/'))
+                        if _names:
+                            return _BHImage(np.asarray(
+                                _PILImage.open(io.BytesIO(_z.read(_names[0]))).convert('RGB')))
             except Exception:
                 return v
             return v
