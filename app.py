@@ -4964,25 +4964,28 @@ def _track_overlay_frames(frames, tracks, occluded, *, max_frames=48, trail=12):
     step = max(1, (T + max_frames - 1) // max_frames)
     cols = [tuple(int(255 * c) for c in colorsys.hsv_to_rgb(n / max(N, 1), 0.95, 1.0))
             for n in range(N)]
+    def occluded_at(n, k):
+        return occ is not None and occ.ndim == 2 and occ.shape[0] > n and occ.shape[1] > k and bool(occ[n, k])
     out = []
     for t in range(0, T, step):
         im = _PI.fromarray(np.ascontiguousarray(frames[t][..., :3]).astype('uint8')).convert('RGB')
         dr = ImageDraw.Draw(im)
         for n in range(N):
-            vis = True
-            if occ is not None and occ.ndim == 2 and occ.shape[0] > n and occ.shape[1] > t:
-                vis = not bool(occ[n, t])
+            # Trail through visible frames only — occluded frames carry a (0,0)
+            # placeholder in the GT, so connecting through them draws a spurious
+            # line to the top-left corner. Break the trail at occlusion gaps.
             prev = None
             for k in range(max(0, t - trail), t + 1):
+                if occluded_at(n, k):
+                    prev = None
+                    continue
                 x, y = float(tr[n, k, 0]), float(tr[n, k, 1])
                 if prev is not None:
                     dr.line([prev, (x, y)], fill=cols[n], width=1)
                 prev = (x, y)
-            x, y = float(tr[n, t, 0]), float(tr[n, t, 1])
-            if vis:
+            if not occluded_at(n, t):
+                x, y = float(tr[n, t, 0]), float(tr[n, t, 1])
                 dr.ellipse([x - 3, y - 3, x + 3, y + 3], fill=cols[n], outline=(255, 255, 255))
-            else:
-                dr.ellipse([x - 2, y - 2, x + 2, y + 2], outline=cols[n])
         out.append(im)
     return out or None
 

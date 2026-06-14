@@ -1100,7 +1100,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 {% if comparison_display_options[col_key].anim %}
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     class="border rounded shadow-sm"
-                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
+                                    title="click to zoom (fullscreen)"
+                                    onclick="if(this.requestFullscreen)this.requestFullscreen()"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
@@ -1124,7 +1126,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                 {% if comparison_display_options[col_key].anim %}
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     class="border rounded shadow-sm"
-                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
+                                    title="click to zoom (fullscreen)"
+                                    onclick="if(this.requestFullscreen)this.requestFullscreen()"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
