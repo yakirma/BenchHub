@@ -14626,9 +14626,10 @@ def comparison_view(leaderboard_id):
             'is_aggregated': lv.global_visualization.is_aggregated,
             'global_viz_id': lv.global_visualization.id,
             'is_gt_side': is_gt_side,
-            # video-mime viz (e.g. point-tracking) render as an animated GIF
-            # served by point_track_anim, not the PNG execute_visualization.
-            'anim': bool((lv.global_visualization.viz_mime or '').startswith('video')),
+            # Animated viz (point-tracking) render as an animated GIF served by
+            # point_track_anim, not the PNG execute_visualization. (GlobalVisualization
+            # has no mime column, so key off the known animated-viz name.)
+            'anim': (lv.global_visualization.name or '') == 'point_track_overlay',
         }
     
     # Aggregated metrics only appear in the summary chart/table, never
