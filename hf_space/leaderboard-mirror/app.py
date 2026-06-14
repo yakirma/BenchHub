@@ -88,9 +88,9 @@ def _standings(lb_id):
     # best-first via the (single) rank.
     multi = len(cols) > 1
     if multi:
-        headers = ["Rank", "Submission", "Author", AGG] + metric_labels + ["Date"]
+        headers = ["Rank", "Submission", "Author", AGG] + metric_labels
     else:
-        headers = ["Submission", "Author"] + metric_labels + ["Date"]
+        headers = ["Submission", "Author"] + metric_labels
 
     # Aggregate Rank: each submission's MEAN rank across all metric columns
     # (best = 1 per metric, honouring its sort_direction; ties get the average
@@ -116,10 +116,9 @@ def _standings(lb_id):
         scores = [r["scores"].get(str(c["metric_id"])) for c in cols]
         if multi:
             agg_val = round(agg[i], 2) if i in agg else None
-            rows.append([pos, sub, author_cell, agg_val, *scores,
-                         (r.get("created") or "")[:10]])
+            rows.append([pos, sub, author_cell, agg_val, *scores])
         else:
-            rows.append([sub, author_cell, *scores, (r.get("created") or "")[:10]])
+            rows.append([sub, author_cell, *scores])
     df = pd.DataFrame(rows, columns=headers)
 
     # BenchHub green heatmap on metric cells (full-cell, via pandas Styler):
@@ -155,9 +154,9 @@ def _standings(lb_id):
     # Per-column datatype so numbers render as numbers (the original look) while
     # the Submission column renders its markdown link.
     if multi:
-        datatype = ["number", "markdown", "markdown", "number"] + ["number"] * len(metric_labels) + ["str"]
+        datatype = ["number", "markdown", "markdown", "number"] + ["number"] * len(metric_labels)
     else:
-        datatype = ["markdown", "markdown"] + ["number"] * len(metric_labels) + ["str"]
+        datatype = ["markdown", "markdown"] + ["number"] * len(metric_labels)
 
     submit = data.get("submit_url", f"{SITE}/leaderboard/{lb_id}")
     view = data.get("url", f"{SITE}/leaderboard/{lb_id}")
