@@ -1099,10 +1099,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center">
                                 {% if comparison_display_options[col_key].anim %}
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
-                                    class="border rounded shadow-sm"
+                                    class="border rounded shadow-sm clickable-vis"
                                     style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
-                                    title="click to zoom (fullscreen)"
-                                    onclick="if(this.requestFullscreen)this.requestFullscreen()"
+                                    title="click to zoom" data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    data-video="1"
+                                    data-vis-url="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
+                                    data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
+                                    data-group-id="gt-{{ col_key }}"
+                                    alt="{{ comparison_display_options[col_key].label }}"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
@@ -1125,10 +1129,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             <div class="text-center">
                                 {% if comparison_display_options[col_key].anim %}
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
-                                    class="border rounded shadow-sm"
+                                    class="border rounded shadow-sm clickable-vis"
                                     style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
-                                    title="click to zoom (fullscreen)"
-                                    onclick="if(this.requestFullscreen)this.requestFullscreen()"
+                                    title="click to zoom" data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    data-video="1"
+                                    data-vis-url="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
+                                    data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
+                                    data-group-id="sub-{{ sub.id }}-{{ col_key }}"
+                                    alt="{{ comparison_display_options[col_key].label }}"
                                     autoplay loop muted playsinline preload="none"></video>
                                 {% else %}
                                 <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
@@ -1426,6 +1434,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     style="width: 100%; height: 100%; min-height: 500px; position: relative; display: flex; align-items: center; justify-content: center; flex-direction: column;">
                     <div id="modal-error-container" style="display: none; width: 100%;"></div>
                     <img id="modal-vis-img" src="" class="img-fluid" style="display: none;">
+                    <video id="modal-vis-video" class="img-fluid" style="display: none; max-height: 80vh;"
+                           autoplay loop muted playsinline></video>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     {# Per-thumbnail overlay layers go here as IMG
                        elements (one per gallery item, hidden until the
@@ -1946,6 +1956,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
             visModal.addEventListener('hidden.bs.modal', function () {
                 clearVisRotationControls();
+                const _mv = document.getElementById('modal-vis-video');
+                if (_mv) { try { _mv.pause(); } catch (e) {} _mv.removeAttribute('src'); _mv.style.display = 'none'; }
                 // The in-modal depth colormap+inverse are preview-only — hide,
                 // reset, and forget the per-field choices on close so the table
                 // cells keep their own colormaps and the next open starts fresh.
@@ -2100,6 +2112,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 if (sampleName) _html += `${(_who || _fieldName) ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
                 modalTitleSpan.innerHTML = _html;
             }
+
+            // Video viz (point-tracking): show the <video> and skip the
+            // image/depth/plotly/layers paths. Participates in the gallery so
+            // left/right still browses across modalities.
+            const _modalVideo = visModal.querySelector('#modal-vis-video');
+            const _isVideo = (triggerElement.getAttribute('data-video') === '1')
+                || (visUrl && /point_track_anim/.test(visUrl));
+            if (_isVideo) {
+                clearVisRotationControls();
+                const _img = visModal.querySelector('#modal-vis-img');
+                const _ply = visModal.querySelector('#modal-plotly-div');
+                const _spin = visModal.querySelector('#modal-loading-spinner');
+                const _layers = visModal.querySelector('#vis-modal-layers');
+                if (_img) _img.style.display = 'none';
+                if (_ply) { _ply.style.display = 'none'; _ply.innerHTML = ''; }
+                if (_spin) _spin.style.display = 'none';
+                if (_layers) _layers.innerHTML = '';
+                if (_modalVideo) {
+                    _modalVideo.src = visUrl;
+                    _modalVideo.style.display = 'block';
+                    _modalVideo.play && _modalVideo.play().catch(() => {});
+                }
+                return;
+            }
+            if (_modalVideo) { try { _modalVideo.pause(); } catch (e) {} _modalVideo.removeAttribute('src'); _modalVideo.style.display = 'none'; }
 
             // Per-thumb-slider mode: the #vis-modal-layers stack is the
             // sole display. Its layer IMGs are absolutely positioned and
