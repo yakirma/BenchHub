@@ -1095,16 +1095,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {# GT-side visualization: one shared cell (no submission) #}
                         {% elif col_key.startswith('gtviz_') %}
                         {% set viz_id = comparison_display_options[col_key].viz_id %}
-                        {% set _src = url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) if comparison_display_options[col_key].anim else url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) %}
                         <td>
                             <div class="text-center">
-                                <img src="{{ _src }}"
+                                {% if comparison_display_options[col_key].anim %}
+                                <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
+                                    class="border rounded shadow-sm"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
+                                    autoplay loop muted playsinline preload="none"></video>
+                                {% else %}
+                                <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     class="border rounded shadow-sm clickable-vis"
                                     style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
-                                    data-vis-url="{{ _src }}"
+                                    data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
                                     alt="{{ comparison_display_options[col_key].label }}">
+                                {% endif %}
                             </div>
                         </td>
 
@@ -1113,16 +1119,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
                         {% set viz_id = comparison_display_options[col_key].viz_id %}
                         {% for sub in submissions %}
-                        {% set _src = url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) if comparison_display_options[col_key].anim else url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) %}
                         <td>
                             <div class="text-center">
-                                <img src="{{ _src }}"
+                                {% if comparison_display_options[col_key].anim %}
+                                <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
+                                    class="border rounded shadow-sm"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
+                                    autoplay loop muted playsinline preload="none"></video>
+                                {% else %}
+                                <img src="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     class="border rounded shadow-sm clickable-vis"
                                     style="cursor: pointer; width: 250px; height: 150px; object-fit: contain;"
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
-                                    data-vis-url="{{ _src }}"
+                                    data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
                                     alt="{{ comparison_display_options[col_key].label }}">
+                                {% endif %}
                             </div>
                         </td>
                         {% endfor %}

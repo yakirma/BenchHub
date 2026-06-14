@@ -4944,10 +4944,10 @@ def _load_sequence_frames(path, upload_folder):
     return frames
 
 
-def _render_track_gif(frames, tracks, occluded, *, max_frames=60, trail=12, fps=8):
-    """Animated point-tracking overlay: each frame shows every point at its
-    position for that frame (dot, hollow when occluded) + a short fading trail.
-    Returns animated-GIF bytes, or None if there's nothing to draw."""
+def _track_overlay_frames(frames, tracks, occluded, *, max_frames=48, trail=12):
+    """Build the annotated point-tracking frames: each shows every point at its
+    position for that frame (dot, hollow when occluded) + a short trail. Returns
+    a list of PIL frames, or None if there's nothing to draw."""
     import colorsys
     from PIL import Image as _PI, ImageDraw
     if isinstance(tracks, str):
@@ -4984,22 +4984,19 @@ def _render_track_gif(frames, tracks, occluded, *, max_frames=60, trail=12, fps=
             else:
                 dr.ellipse([x - 2, y - 2, x + 2, y + 2], outline=cols[n])
         out.append(im)
-    if not out:
-        return None
-    buf = io.BytesIO()
-    out[0].save(buf, format='GIF', save_all=True, append_images=out[1:],
-                duration=int(1000 / max(fps, 1)), loop=0, disposal=2)
-    return buf.getvalue()
+    return out or None
 
 
 @app.route('/point_track_anim/<int:lv_id>/<int:sample_id>')
 @app.route('/point_track_anim/<int:lv_id>/<int:sample_id>/<int:submission_id>')
 def point_track_anim(lv_id, sample_id, submission_id=None):
-    """Render a point-tracking overlay as an animated GIF (trails moving over
-    the video). Built-in (not sandboxed-exec) — safe hardcoded drawing — so it
-    can emit animation the PNG-only viz sandbox can't. Mirrors
+    """Render a point-tracking overlay as a short mp4 (trails moving over the
+    video). Built-in (not sandboxed-exec) — safe hardcoded drawing — so it can
+    emit video the PNG-only viz sandbox can't. mp4 (h264) is ~30x smaller than
+    the equivalent GIF, which kept the boards from loading. Mirrors
     execute_visualization's arg resolution + caching."""
     import hashlib
+    from benchhub.types import _frames_to_video
     lv = LeaderboardVisualization.query.get_or_404(lv_id)
     sample = Sample.query.get_or_404(sample_id)
     submission = Submission.query.get(submission_id) if submission_id else None
@@ -5007,9 +5004,10 @@ def point_track_anim(lv_id, sample_id, submission_id=None):
     key = f"ptanim_{lv_id}_{sample_id}_{submission_id or 'none'}_{hashlib.md5((lv.arg_mappings or '').encode()).hexdigest()[:8]}"
     cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
-    cp = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest() + '.gif')
-    if os.path.exists(cp):
-        return send_file(cp, mimetype='image/gif')
+    base = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest())
+    for ext, mime in ((".mp4", "video/mp4"), (".gif", "image/gif")):
+        if os.path.exists(base + ext):
+            return send_file(base + ext, mimetype=mime)
     try:
         vid = extract_viz_arg_value(sample, submission, am.get('image', 'gt_video'),
                                     leaderboard_id=lv.leaderboard_id)
@@ -5019,12 +5017,17 @@ def point_track_anim(lv_id, sample_id, submission_id=None):
                                     leaderboard_id=lv.leaderboard_id)
         if not isinstance(vid, str):
             return create_error_image('no video')
-        gif = _render_track_gif(_load_sequence_frames(vid, app.config['UPLOAD_FOLDER']), tracks, occ)
-        if not gif:
+        pil_frames = _track_overlay_frames(_load_sequence_frames(vid, app.config['UPLOAD_FOLDER']), tracks, occ)
+        if not pil_frames:
             return create_error_image('no tracks')
-        with open(cp, 'wb') as f:
-            f.write(gif)
-        return send_file(io.BytesIO(gif), mimetype='image/gif')
+        png_frames = []
+        for im in pil_frames:
+            b = io.BytesIO(); im.save(b, 'PNG'); png_frames.append(b.getvalue())
+        body, mime = _frames_to_video(png_frames, 8)
+        ext = '.mp4' if 'mp4' in mime else '.gif'
+        with open(base + ext, 'wb') as f:
+            f.write(body)
+        return send_file(io.BytesIO(body), mimetype=mime)
     except Exception as e:
         import traceback
         traceback.print_exc()
