@@ -1719,6 +1719,8 @@ _ROBOTS_TXT = """\
 # not. Aggressive AI-training & scraper crawlers are disallowed outright (they
 # were downloading every sample file).
 
+Sitemap: https://runbenchhub.com/sitemap.xml
+
 User-agent: GPTBot
 Disallow: /
 
@@ -1782,6 +1784,38 @@ Crawl-delay: 10
 @app.route('/robots.txt')
 def robots_txt():
     return Response(_ROBOTS_TXT, mimetype='text/plain')
+
+
+@app.route('/sitemap.xml')
+def sitemap_xml():
+    """XML sitemap of public, indexable pages (catalog + each public
+    leaderboard / dataset) so search engines find the content faster. Only
+    PUBLIC rows (visible_in_list with no viewer) — unlisted/private excluded."""
+    host = (request.host or 'runbenchhub.com').split(':', 1)[0]
+    if host.startswith('www.'):
+        host = host[4:]
+    base = f"{request.scheme}://{host}"
+    rows = [(f"{base}/", 'daily', '1.0'),
+            (f"{base}/leaderboards", 'daily', '0.9'),
+            (f"{base}/datasets", 'daily', '0.9'),
+            (f"{base}/supported_types", 'monthly', '0.4'),
+            (f"{base}/docs", 'monthly', '0.4')]
+    try:
+        for (lid,) in db.session.query(Leaderboard.id).filter(
+                visible_in_list(Leaderboard, None)).all():
+            rows.append((f"{base}/leaderboard/{lid}", 'weekly', '0.7'))
+        for (did,) in db.session.query(Dataset.id).filter(
+                visible_in_list(Dataset, None)).all():
+            rows.append((f"{base}/dataset/{did}", 'weekly', '0.6'))
+    except Exception:
+        pass
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for loc, freq, pri in rows:
+        parts.append(f'<url><loc>{loc}</loc><changefreq>{freq}</changefreq>'
+                     f'<priority>{pri}</priority></url>')
+    parts.append('</urlset>')
+    return Response('\n'.join(parts), mimetype='application/xml')
 
 
 @app.before_request
@@ -2443,9 +2477,18 @@ def _path_size_bytes(path):
 
 @app.route('/login')
 def login():
+    # In-app browsers (Android WebView, Facebook/Instagram/Google-app, …) block
+    # or break Google/GitHub OAuth — Google returns disallowed_useragent. Most
+    # of our ad traffic lands in these, so detect them and nudge toward email
+    # (which works everywhere) or opening in a real browser.
+    ua = request.headers.get('User-Agent', '')
+    is_webview = any(tok in ua for tok in (
+        '; wv)', 'FBAN', 'FBAV', 'Instagram', 'Line/', 'MicroMessenger',
+        'TikTok', 'musical_ly', 'GSA/'))
     return render_template(
         'login.html', next=request.args.get('next', ''),
         hf_enabled=bool(os.environ.get('HF_CLIENT_ID') and os.environ.get('HF_CLIENT_SECRET')),
+        is_webview=is_webview,
     )
 
 
