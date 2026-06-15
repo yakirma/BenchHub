@@ -1482,17 +1482,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     <img id="modal-vis-img" src="" class="img-fluid" style="display: none;">
                     <video id="modal-vis-video" class="img-fluid" style="display: none; max-height: 80vh;"
                            autoplay loop muted playsinline></video>
-                    {# Audio player — shown under the waveform for audio thumbs with raw
-                       audio (data-audio-url). Hides itself if the source 404s (waveform-only). #}
-                    <audio id="modal-vis-audio" controls preload="none"
-                           style="display: none; width: 90%; max-width: 560px; margin-top: .75rem;"
-                           onerror="this.style.display='none';"></audio>
                     {# Flow colour-wheel legend — shown only for flow viz thumbs
                        (data-flow="1"). Direction=hue, magnitude=brightness. #}
                     <img id="modal-flow-legend" src="{{ url_for('flow_legend', size=160) }}"
                          style="display: none;" title="Flow colour wheel — hue = direction, brightness = magnitude"
                          alt="flow colour-wheel legend">
-                    <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     {# Per-thumbnail overlay layers go here as IMG
                        elements (one per gallery item, hidden until the
@@ -1506,6 +1500,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
+                {# Audio player — OUTSIDE the overlay-layer wrapper so it's never
+                   covered. Shown for audio thumbs with raw audio; hides on 404. #}
+                <audio id="modal-vis-audio" controls preload="none"
+                       style="display: none; width: 90%; max-width: 560px; margin: .25rem auto 0;"
+                       onerror="this.style.display='none';"></audio>
                 <!-- Gallery Footer -->
                 <div id="vis-gallery-footer" class="gallery-footer-container"></div>
             </div>

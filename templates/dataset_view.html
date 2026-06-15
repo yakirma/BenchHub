@@ -1449,11 +1449,6 @@
                        gets one IMG in #custom-field-modal-layers; its
                        slider drives that IMG's opacity. #}
                     <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
-                    {# Audio player — shown under the waveform for audio fields with raw
-                       audio (data-audio-url); hides itself if the source 404s. #}
-                    <audio id="modal-cf-audio" controls preload="none"
-                           style="display: none; width: 90%; max-width: 560px; margin-top: .75rem;"
-                           onerror="this.style.display='none';"></audio>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="custom-field-modal-layers"
                          style="position: absolute; inset: 0; pointer-events: none;"></div>
@@ -1480,6 +1475,11 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
+                {# Audio player — OUTSIDE the overlay-layer wrapper so it's never
+                   covered. Shown for audio fields with raw audio; hides on 404. #}
+                <audio id="modal-cf-audio" controls preload="none"
+                       style="display: none; width: 90%; max-width: 560px; margin: .25rem auto 0;"
+                       onerror="this.style.display='none';"></audio>
                 <div id="custom-field-gallery-footer" class="gallery-footer-container"></div>
             </div>
         </div>
