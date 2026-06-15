@@ -1482,7 +1482,7 @@
                          style="width: 100%; display: block; border-radius: 6px; cursor: pointer;">
                     <div id="modal-cf-audio-playhead"
                          style="position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
-                                background: #7c3aed; box-shadow: 0 0 4px #7c3aed; pointer-events: none; display: none;"></div>
+                                background: #e5383b; box-shadow: 0 0 4px #e5383b; pointer-events: none; display: none;"></div>
                 </div>
                 <audio id="modal-cf-audio" controls preload="none"
                        style="display: none; width: 90%; max-width: 640px; margin: .4rem auto 0;"
@@ -2291,6 +2291,8 @@
                 const _au0 = document.getElementById('modal-cf-audio');
                 if (_aw) _aw.style.display = 'none';
                 if (_au0) { try { _au0.pause(); } catch (e) {} _au0.removeAttribute('src'); _au0.style.display = 'none'; }
+                const _cw = document.getElementById('modal-content-wrapper');
+                if (_cw) _cw.style.display = 'flex';
             }
 
             // Update modal title with the FIELD NAME (the column this thumb
@@ -2319,6 +2321,8 @@
                 if (_layers) _layers.innerHTML = '';
                 if (_cmap) _cmap.classList.add('d-none');
                 if (_inv) _inv.classList.add('d-none');
+                const _cw = document.getElementById('modal-content-wrapper');
+                if (_cw) _cw.style.display = 'none';
                 const _wrap = document.getElementById('modal-cf-audio-wrap');
                 const _wave = document.getElementById('modal-cf-audio-wave');
                 const _head = document.getElementById('modal-cf-audio-playhead');

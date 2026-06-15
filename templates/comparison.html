@@ -1508,7 +1508,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                          style="width: 100%; display: block; border-radius: 6px; cursor: pointer;">
                     <div id="modal-audio-playhead"
                          style="position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
-                                background: #7c3aed; box-shadow: 0 0 4px #7c3aed; pointer-events: none; display: none;"></div>
+                                background: #e5383b; box-shadow: 0 0 4px #e5383b; pointer-events: none; display: none;"></div>
                 </div>
                 <audio id="modal-vis-audio" controls preload="none"
                        style="display: none; width: 90%; max-width: 640px; margin: .4rem auto 0;"
@@ -2126,6 +2126,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const _au0 = document.getElementById('modal-vis-audio');
                 if (_aw) _aw.style.display = 'none';
                 if (_au0) { try { _au0.pause(); } catch (e) {} _au0.removeAttribute('src'); _au0.style.display = 'none'; }
+                // Restore the main viewer (audio collapses it — see below).
+                const _cw = document.getElementById('modal-content-wrapper');
+                if (_cw) _cw.style.display = 'flex';
             }
 
             // Depth colormap selector: a depth thumb may render in the modal
@@ -2228,6 +2231,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             // machinery so the playhead aligns with the waveform.
             if (_hasAudio) {
                 clearVisRotationControls();
+                // Collapse the (now-empty) main viewer + hide the depth colormap
+                // controls — the audio thumb carries the depth-img class, so they
+                // were wrongly shown. Audio gets its own compact widget below.
+                const _cw = document.getElementById('modal-content-wrapper');
+                if (_cw) _cw.style.display = 'none';
+                const _cmap = document.getElementById('modal-depth-cmap');
+                const _invb = document.getElementById('modal-depth-inverse');
+                if (_cmap) _cmap.classList.add('d-none');
+                if (_invb) _invb.classList.add('d-none');
                 const _img = visModal.querySelector('#modal-vis-img');
                 const _ply = visModal.querySelector('#modal-plotly-div');
                 const _spin = visModal.querySelector('#modal-loading-spinner');
