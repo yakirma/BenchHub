@@ -70,6 +70,39 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         object-fit: cover;
     }
 
+    /* Point-track videos: native controls inline (play/pause/scrub),
+       with a hover "zoom" button that opens the zoom modal — native
+       controls own the click, so zoom can't piggy-back on it. */
+    .vis-video-wrap {
+        position: relative;
+        display: inline-block;
+        line-height: 0;
+    }
+    .vis-video-wrap .vis-zoom-btn {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        z-index: 3;
+        border: none;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        width: 26px;
+        height: 26px;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: zoom-in;
+        opacity: 0;
+        transition: opacity .15s ease;
+        font-size: .8rem;
+    }
+    .vis-video-wrap:hover .vis-zoom-btn,
+    .vis-video-wrap .vis-zoom-btn:focus {
+        opacity: 1;
+    }
+
     /* Depth colorbar — sibling of the IMG, NOT baked into the
        served PNG, so the image's pixel grid stays exactly aligned
        with any overlay layers stacked on top. */
@@ -1132,16 +1165,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <td>
                             <div class="text-center">
                                 {% if comparison_display_options[col_key].anim %}
+                                <div class="vis-video-wrap">
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
-                                    class="border rounded shadow-sm clickable-vis"
-                                    style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
-                                    title="click to zoom" data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    class="border rounded shadow-sm clickable-vis rowsync-video"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
                                     data-video="1"
                                     data-vis-url="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
                                     data-group-id="gt-{{ col_key }}"
                                     alt="{{ comparison_display_options[col_key].label }}"
-                                    autoplay loop muted playsinline preload="none"></video>
+                                    loop muted playsinline controls preload="metadata"></video>
+                                <button type="button" class="vis-zoom-btn" title="Zoom" aria-label="Zoom"><i class="bi bi-arrows-fullscreen"></i></button>
+                                </div>
                                 {% else %}
                                 {% set _is_flow = comparison_display_options[col_key].is_flow %}
                                 <span class="{{ 'flow-cell' if _is_flow else '' }}">
@@ -1167,16 +1202,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <td>
                             <div class="text-center">
                                 {% if comparison_display_options[col_key].anim %}
+                                <div class="vis-video-wrap">
                                 <video src="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
-                                    class="border rounded shadow-sm clickable-vis"
-                                    style="width: 250px; height: 150px; object-fit: contain; background:#000; cursor: zoom-in;"
-                                    title="click to zoom" data-bs-toggle="modal" data-bs-target="#vis-modal"
+                                    class="border rounded shadow-sm clickable-vis rowsync-video"
+                                    style="width: 250px; height: 150px; object-fit: contain; background:#000;"
                                     data-video="1"
                                     data-vis-url="{{ url_for('point_track_anim', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
                                     data-group-id="sub-{{ sub.id }}-{{ col_key }}"
                                     alt="{{ comparison_display_options[col_key].label }}"
-                                    autoplay loop muted playsinline preload="none"></video>
+                                    loop muted playsinline controls preload="metadata"></video>
+                                <button type="button" class="vis-zoom-btn" title="Zoom" aria-label="Zoom"><i class="bi bi-arrows-fullscreen"></i></button>
+                                </div>
                                 {% else %}
                                 {% set _is_flow = comparison_display_options[col_key].is_flow %}
                                 <span class="{{ 'flow-cell' if _is_flow else '' }}">
@@ -2018,6 +2055,55 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 updateVisGallery(triggerElement);
                 updateVisModalContent(triggerElement);
             });
+
+            // Point-track videos carry native controls (so clicking them
+            // plays/pauses), which means they can't also be the modal trigger.
+            // The hover "zoom" button opens the modal with the sibling <video>
+            // as relatedTarget, so the gallery (built from .clickable-vis) still
+            // indexes it correctly and up/down/left-right navigation works.
+            document.addEventListener('click', function (e) {
+                const btn = e.target.closest('.vis-zoom-btn');
+                if (!btn) return;
+                const wrap = btn.closest('.vis-video-wrap');
+                const vid = wrap && wrap.querySelector('video.clickable-vis');
+                if (!vid) return;
+                bootstrap.Modal.getOrCreateInstance(visModal).show(vid);
+            });
+
+            // Row-sync: play/pause/scrub one point-track video in a sample row
+            // and every other video in the same row (GT + each submission)
+            // follows, so the trackers stay frame-aligned for comparison.
+            // Media events (play/pause/seeked) don't bubble — but they DO reach
+            // a capture-phase listener on the way down, so we register there.
+            let _rowSyncBusy = false;
+            function _syncRow(src, action) {
+                if (_rowSyncBusy) return;
+                const tr = src.closest('tr');
+                if (!tr) return;
+                const peers = tr.querySelectorAll('video.rowsync-video');
+                if (peers.length < 2) return;
+                _rowSyncBusy = true;
+                peers.forEach(function (v) {
+                    if (v === src) return;
+                    try {
+                        if (action === 'play') { if (v.paused) v.play().catch(function () {}); }
+                        else if (action === 'pause') { if (!v.paused) v.pause(); }
+                        else if (action === 'seek') {
+                            if (Math.abs(v.currentTime - src.currentTime) > 0.06) v.currentTime = src.currentTime;
+                        }
+                    } catch (err) {}
+                });
+                // Clear in a macrotask — the peers' own play/pause/seeked events
+                // fire as microtasks during play()/pause(), so they see the flag.
+                setTimeout(function () { _rowSyncBusy = false; }, 0);
+            }
+            ['play', 'pause', 'seeked'].forEach(function (evt) {
+                document.addEventListener(evt, function (e) {
+                    const t = e.target;
+                    if (!t || !t.matches || !t.matches('video.rowsync-video')) return;
+                    _syncRow(t, evt === 'seeked' ? 'seek' : evt);
+                }, true);
+            });
             visModal.addEventListener('hidden.bs.modal', function () {
                 clearVisRotationControls();
                 const _mv = document.getElementById('modal-vis-video');
@@ -2221,6 +2307,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     _modalVideo.src = visUrl;
                     _modalVideo.style.display = 'block';
                     _modalVideo.play && _modalVideo.play().catch(() => {});
+                    // Make the modal video zoomable/pannable (wheel + drag +
+                    // click-to-zoom), like the image viewer. One handler per
+                    // element (it persists for the page), reset on each open/nav.
+                    if (!_modalVideo._zoom) _modalVideo._zoom = new ZoomHandler(_modalVideo);
+                    visZoomHandler = _modalVideo._zoom;
+                    visZoomHandler.reset();
                 }
                 return;
             }
