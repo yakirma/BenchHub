@@ -1784,6 +1784,7 @@ Disallow: /submissions/
 Disallow: /delete_submission
 Disallow: /sample/
 Disallow: /custom_field_image/
+Disallow: /custom_field_audio/
 Disallow: /text_thumb/
 Disallow: /sequence_frame/
 Disallow: /visualization/
@@ -18296,6 +18297,25 @@ def _serve_audio_waveform(audio_path):
         except Exception:
             return "waveform render failed", 404
     return send_file(png_path)
+
+
+@app.route('/custom_field_audio/<int:field_id>')
+def serve_custom_field_audio(field_id):
+    """Serve the RAW audio bytes for an audio CustomField so the zoom modal can
+    play it. 404 when the field stored only a waveform PNG (no raw audio on
+    disk) — the modal then just shows the waveform."""
+    cf = CustomField.query.get_or_404(field_id)
+    if cf.data_type != 'audio' or not cf.value_text:
+        abort(404)
+    _mimes = {'.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac',
+              '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac'}
+    ext = os.path.splitext(cf.value_text)[1].lower()
+    if ext not in _mimes:
+        abort(404)
+    path = os.path.join(app.config['UPLOAD_FOLDER'], cf.value_text)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, mimetype=_mimes[ext], conditional=True)
 
 
 @app.route('/custom_field_image/<int:field_id>')
