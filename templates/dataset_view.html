@@ -1178,6 +1178,7 @@
                             {% if field_data.type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=field_data.field_id) }}"{% endif %}
                             {% if field_data.type == 'mask' %}data-mask-raw-url="{{ _ds_src }}?raw=1"{% endif %}
                             {% if field_data.type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
+                            {% if field_data.type == 'audio' %}data-audio-url="{{ url_for('serve_custom_field_audio', field_id=field_data.field_id) }}"{% endif %}
                             data-sample-name="{{ sample.name }}" data-vis-type="{{ field_data.type }}"
                             alt="{{ col_key }}">
                         {% if field_data.type == 'depth' %}
@@ -1448,6 +1449,11 @@
                        gets one IMG in #custom-field-modal-layers; its
                        slider drives that IMG's opacity. #}
                     <img id="modal-custom-field-img" src="" class="img-fluid" style="display: none;">
+                    {# Audio player — shown under the waveform for audio fields with raw
+                       audio (data-audio-url); hides itself if the source 404s. #}
+                    <audio id="modal-cf-audio" controls preload="none"
+                           style="display: none; width: 90%; max-width: 560px; margin-top: .75rem;"
+                           onerror="this.style.display='none';"></audio>
                     <div id="modal-plotly-div" style="width: 100%; height: 600px; display: none;"></div>
                     <div id="custom-field-modal-layers"
                          style="position: absolute; inset: 0; pointer-events: none;"></div>
@@ -1923,6 +1929,8 @@
             });
             customFieldModal.addEventListener('hidden.bs.modal', function () {
                 clearCustomFieldRotationControls();
+                const _ma = document.getElementById('modal-cf-audio');
+                if (_ma) { try { _ma.pause(); } catch (e) {} _ma.removeAttribute('src'); _ma.style.display = 'none'; }
                 // In-modal colormap+inverse are preview-only — hide, reset,
                 // forget the per-field choices so the table keeps its own.
                 const sel = document.getElementById('cf-modal-depth-cmap');
@@ -2267,6 +2275,22 @@
             const imgUrl = button.getAttribute('data-img-url');
             const visType = button.getAttribute('data-vis-type');
             const sampleName = button.getAttribute('data-sample-name');
+
+            // Audio player: for audio fields with a raw-audio URL, play it under
+            // the waveform (still rendered via the image path). Reset each
+            // open/navigation; hides itself if the source 404s (waveform-only).
+            const _cfAudio = document.getElementById('modal-cf-audio');
+            if (_cfAudio) {
+                const _au = button.getAttribute('data-audio-url');
+                if (visType === 'audio' && _au) {
+                    if (_cfAudio.getAttribute('src') !== _au) _cfAudio.src = _au;
+                    _cfAudio.style.display = 'block';
+                } else {
+                    try { _cfAudio.pause(); } catch (e) {}
+                    _cfAudio.removeAttribute('src');
+                    _cfAudio.style.display = 'none';
+                }
+            }
 
             // Update modal title with the FIELD NAME (the column this thumb
             // belongs to — otherwise the zoom view only conveys the dtype) +
