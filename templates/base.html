@@ -1765,7 +1765,18 @@
                     contentDiv.style.justifyContent = 'center';
                     contentDiv.style.overflow = 'hidden';
 
-                    if (item.thumbSrc) {
+                    if (item.thumbSrc && item.isVideo) {
+                        // Video field: a muted, controls-less <video> shows the
+                        // first frame so the thumb is recognisable (an <img> of a
+                        // video URL renders broken).
+                        const vid = document.createElement('video');
+                        vid.src = item.thumbSrc;
+                        vid.className = 'gallery-thumb-img';
+                        vid.muted = true;
+                        vid.setAttribute('playsinline', '');
+                        vid.preload = 'metadata';
+                        contentDiv.appendChild(vid);
+                    } else if (item.thumbSrc) {
                         const img = document.createElement('img');
                         img.src = item.thumbSrc;
                         img.className = 'gallery-thumb-img';
