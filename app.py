@@ -1225,6 +1225,9 @@ class User(db.Model):
     oauth_sub = db.Column(db.String(120), nullable=False)      # provider's user id
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime)
+    # Last request time (throttled, ~1/min) — powers the admin "who's online"
+    # view. Distinct from last_login_at, which only moves on sign-in.
+    last_seen_at = db.Column(db.DateTime)
     # First-touch acquisition attribution captured at signup (JSON): ad click
     # ids (gclid/gad_campaignid/…), utm_* params, external referrer, landing
     # path, and a derived `source` (google_ads / referral / direct / …).
@@ -1772,11 +1775,40 @@ def load_current_user():
     """Populate g.current_user from session on every request. None if anonymous."""
     user_id = session.get('user_id')
     g.current_user = User.query.get(user_id) if user_id else None
+    # Throttled "last seen" stamp (~once/min per user) so the admin online view
+    # reflects current activity without a DB write on every request.
+    u = g.current_user
+    if u is not None:
+        try:
+            now = datetime.utcnow()
+            if u.last_seen_at is None or (now - u.last_seen_at).total_seconds() > 60:
+                u.last_seen_at = now
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 
 # Jinja filter: drop trailing '.0' on integer-valued floats so scalars
 # imported from int sources (ClassLabel, count metrics) render as ints.
 app.jinja_env.filters['smart_num'] = _smart_num
+
+
+# Kaggle import is hidden by default (the detect/convert path is still rough).
+# Flip BENCHHUB_KAGGLE_IMPORT=1 to bring back the UI links, docs, and routes.
+KAGGLE_IMPORT_ENABLED = os.environ.get('BENCHHUB_KAGGLE_IMPORT', '0') == '1'
+
+
+@app.before_request
+def _gate_kaggle_import():
+    """Block the /import_from_kaggle* routes while the feature is hidden, so a
+    bookmarked/deep link can't reach the (rough) importer. One place covers all
+    7 routes."""
+    if not KAGGLE_IMPORT_ENABLED and request.path.startswith('/import_from_kaggle'):
+        if request.path == '/import_from_kaggle':
+            flash('Kaggle import is temporarily disabled.', 'info')
+            return redirect(url_for('datasets_list'))
+        abort(404)
+    return None
 
 
 @app.context_processor
@@ -1787,6 +1819,11 @@ def inject_current_user():
     return {
         'current_user': user,
         'current_user_is_admin': is_admin(user),
+        'kaggle_import_enabled': KAGGLE_IMPORT_ENABLED,
+        # Social links (navbar). GitHub is known; HF Space URL is env-set
+        # (BENCHHUB_HF_URL) and the link is hidden until provided.
+        'github_url': os.environ.get('BENCHHUB_GITHUB_URL', 'https://github.com/yakirma/BenchHub'),
+        'hf_url': os.environ.get('BENCHHUB_HF_URL', ''),
     }
 
 
@@ -9814,6 +9851,43 @@ def admin_index():
     if not is_admin(g.current_user):
         abort(403)
     return render_template('admin_index.html')
+
+
+@app.route('/admin/online_users')
+@login_required
+def admin_online_users():
+    """Admin view of who's currently active. 'Online' = last_seen_at within the
+    window (default 15 min, ?window=N to change). Also lists everyone with their
+    last-seen / last-login / signup source."""
+    if not is_admin(g.current_user):
+        abort(403)
+    try:
+        window_min = max(1, min(1440, int(request.args.get('window', 15))))
+    except (TypeError, ValueError):
+        window_min = 15
+    now = datetime.utcnow()
+    cutoff = now - timedelta(minutes=window_min)
+    users = User.query.order_by(User.last_seen_at.is_(None), User.last_seen_at.desc()).all()
+    rows = []
+    for u in users:
+        seen = u.last_seen_at
+        src = None
+        if u.signup_attribution:
+            try:
+                src = (json.loads(u.signup_attribution) or {}).get('source')
+            except Exception:
+                src = None
+        rows.append({
+            'user': u,
+            'online': bool(seen and seen >= cutoff),
+            'mins_ago': int((now - seen).total_seconds() // 60) if seen else None,
+            'last_seen': seen,
+            'source': src,
+        })
+    online_count = sum(1 for r in rows if r['online'])
+    return render_template('admin_online_users.html', rows=rows,
+                           online_count=online_count, total_count=len(rows),
+                           window_min=window_min)
 
 
 @app.route('/admin/lb_templates')
@@ -20779,6 +20853,8 @@ def check_and_migrate_db():
                     ("leaderboard",          "hidden_comparison_display_columns", "TEXT"),
                     # First-touch signup acquisition attribution (JSON).
                     ("user",                 "signup_attribution",               "TEXT"),
+                    # Throttled last-request time for the admin "who's online" view.
+                    ("user",                 "last_seen_at",                     "DATETIME"),
                     # Cached Colab submission notebook (self-invalidating).
                     ("leaderboard",          "colab_notebook_cache",             "TEXT"),
                     # Per-submission Colab gist URL (provenance — lets a

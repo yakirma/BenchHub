@@ -8,9 +8,9 @@
         files (RGB <code>.png</code> + packed <code>.npz</code>, per-sequence
         folders, etc.). You declare each modality and point it at its source;
         we decode it to a BenchHub type. For plain tabular datasets use
-        <a href="{{ url_for('admin_import_from_hf') }}">Import from HuggingFace</a> instead,
+        <a href="{{ url_for('admin_import_from_hf') }}">Import from HuggingFace</a> instead{% if kaggle_import_enabled %},
         or <a href="{{ url_for('import_from_kaggle') }}">Import from Kaggle</a> (auto-detects
-        the shape — tabular, ImageFolder, RLE/COCO/VOC/YOLO, paired image/mask).
+        the shape — tabular, ImageFolder, RLE/COCO/VOC/YOLO, paired image/mask){% endif %}.
     </p>
     <form method="post" action="{{ url_for('import_from_files_inspect') }}"
           class="card border-0 shadow-sm">

@@ -204,10 +204,12 @@
                                 </div>
                             </form>
                         </div>
+                        {% if kaggle_import_enabled %}
                         <a class="btn btn-sm btn-outline-primary w-100 mb-2"
                            href="{{ url_for('import_from_kaggle') }}">
                             <i class="bi bi-kaggle me-1"></i>Import from Kaggle
                         </a>
+                        {% endif %}
                         <button class="btn btn-sm btn-outline-secondary w-100"
                                 type="button" data-bs-toggle="collapse"
                                 data-bs-target="#py-snippet-pane">

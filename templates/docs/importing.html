@@ -2,7 +2,7 @@
 
 {% block docs_content %}
 <h1>Importing datasets</h1>
-<p class="lead">Cache any HuggingFace <em>or Kaggle</em> dataset into BenchHub &mdash; tabular,
+<p class="lead">Cache any HuggingFace {% if kaggle_import_enabled %}<em>or Kaggle</em> {% endif %}dataset into BenchHub &mdash; tabular,
     file-tree, or auto-detected &mdash; from one button.</p>
 <hr>
 
@@ -182,6 +182,7 @@ clip  : loader=sequence  pattern=clips/{id}/{frame}.png  (item_kind=image)</code
         <code>&lt;name&gt;_normal</code>).</li>
 </ul>
 
+{% if kaggle_import_enabled %}
 <h2 class="mt-4">Kaggle import</h2>
 <p>Open <code>/import_from_kaggle</code> (linked from <em>Datasets &rarr; Add dataset</em>).
     Search or paste a dataset ref (<code>owner/slug</code>), and BenchHub
@@ -210,6 +211,7 @@ clip  : loader=sequence  pattern=clips/{id}/{frame}.png  (item_kind=image)</code
         redistributable imports default to public. Needs a server-side Kaggle service account
         (<code>KAGGLE_USERNAME</code>/<code>KAGGLE_KEY</code>).</li>
 </ul>
+{% endif %}
 
 <p class="mt-4">See the <a href="{{ url_for('docs', page='tutorials') }}">tutorials</a> for
     complete, repo-specific walkthroughs.</p>
