@@ -1124,6 +1124,10 @@
                         <a href="{{ url_for('leaderboards') }}" class="link-secondary text-decoration-none">Leaderboards</a> ·
                         <a href="{{ url_for('terms') }}" class="link-secondary text-decoration-none">Terms</a> ·
                         <a href="{{ url_for('privacy') }}" class="link-secondary text-decoration-none">Privacy</a>
+                        {% if github_url %}
+                            · <a href="{{ github_url }}/issues" target="_blank" rel="noopener"
+                                 class="link-secondary text-decoration-none">Report a bug</a>
+                        {% endif %}
                         {% if current_user %}
                             · <a href="{{ url_for('api_tokens') }}" class="link-secondary text-decoration-none">API tokens</a>
                         {% endif %}
