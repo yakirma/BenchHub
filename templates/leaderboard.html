@@ -1361,7 +1361,10 @@ background-color: transparent;
                         <i class="bi bi-bar-chart me-1"></i>Compare
                     </button>
 
-                    {# Actions menu: recalc, tag, archive, unarchive. #}
+                    {# Actions menu: recalc, tag, archive, unarchive. Mutating, so
+                       admin / leaderboard-owner only. #}
+                    {% set _can_manage_board = current_user and (current_user_is_admin or current_user.id == leaderboard.owner_user_id) %}
+                    {% if _can_manage_board %}
                     <div class="btn-group">
                         <button type="button" class="btn btn-outline-secondary dropdown-toggle"
                             data-bs-toggle="dropdown" aria-expanded="false">
@@ -1392,6 +1395,7 @@ background-color: transparent;
                             </li>
                         </ul>
                     </div>
+                    {% endif %}
 
                     {# Downloads menu — same submenu as before, now visually
                        siblings of Actions. #}
@@ -1421,12 +1425,15 @@ background-color: transparent;
                     </div>
 
                     {# Delete sits separate — danger-styled, ghost-button
-                       version so it doesn't shout but stays distinct. #}
+                       version so it doesn't shout but stays distinct. Admin /
+                       board-owner only. #}
+                    {% if _can_manage_board %}
                     <button type="submit" name="action" value="delete"
                         class="btn btn-outline-danger"
                         onclick="return confirm('Permanently delete the selected submissions?');">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
+                    {% endif %}
                 </div>
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="show_archived_switch"
@@ -1679,6 +1686,13 @@ background-color: transparent;
                             </td>
                             {% endfor %}
                             <td>
+                                {# Recalc/delete only for users who can perform them — admin,
+                                   the submission's owner, or the leaderboard owner — mirroring
+                                   _can_manage_submission so a button never 403s. #}
+                                {% if current_user and (current_user_is_admin
+                                        or submission.owner_user_id is none
+                                        or submission.owner_user_id == current_user.id
+                                        or current_user.id == leaderboard.owner_user_id) %}
                                 <div class="btn-group" role="group">
                                     <button type="button" class="btn btn-sm btn-outline-warning"
                                         id="recalc-btn-{{ submission.id }}"
@@ -1687,6 +1701,7 @@ background-color: transparent;
                                     <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="deleteSingleSubmission({{ submission.id }})">×</button>
                                 </div>
+                                {% endif %}
                             </td>
                         </tr>
                         {% endfor %}

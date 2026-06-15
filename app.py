@@ -14004,7 +14004,17 @@ def batch_action():
         # Removed session based compare_ids setting for shareability
         compare_ids_str = ','.join(submission_ids)
         return redirect(url_for('comparison_view', leaderboard_id=leaderboard_id, compare_ids=compare_ids_str))
+    # Every remaining action mutates (delete/archive/tag/recalc) — require login
+    # and restrict to submissions the user may manage (admin / submission owner /
+    # leaderboard owner). Without this the endpoint deleted anyone's submissions
+    # for any caller, including anonymous.
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        abort(403)
     submissions = Submission.query.filter(Submission.id.in_(submission_ids)).all()
+    submissions = [s for s in submissions if _can_manage_submission(user, s)]
+    if not submissions:
+        abort(403)
     if action == 'archive':
         for sub in submissions: sub.is_archived = True
     elif action == 'unarchive':
@@ -17624,15 +17634,34 @@ def delete_leaderboard(leaderboard_id):
     db.session.commit()
     return redirect(url_for('datasets_list'))
 
+def _can_manage_submission(user, sub):
+    """Who may delete / archive / recalc a submission: an admin, the
+    submission's owner (or legacy NULL-owner rows), or the owner of the
+    leaderboard it lives on. Single source of truth for the routes below AND
+    the template button gating, so a button never shows for an action that
+    would 403."""
+    if user is None or sub is None:
+        return False
+    if is_admin(user):
+        return True
+    owner = getattr(sub, 'owner_user_id', None)
+    if owner is None or owner == user.id:
+        return True
+    lb = getattr(sub, 'leaderboard', None)
+    return bool(lb is not None and lb.owner_user_id == user.id)
+
+
 @app.route('/delete_submission/<int:submission_id>', methods=['POST'])
 @login_required
-@owner_required(Submission, 'submission_id')
 def delete_submission(submission_id):
     submission = Submission.query.get_or_404(submission_id)
+    if not _can_manage_submission(g.current_user, submission):
+        abort(403)
     shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id)), ignore_errors=True)
+    lb_id = submission.leaderboard_id
     db.session.delete(submission)
     db.session.commit()
-    return redirect(url_for('leaderboard_view', leaderboard_id=submission.leaderboard_id))
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb_id))
 
 @app.route('/api/submission_viz/<int:submission_id>/<path:rel>')
 def serve_submission_viz(submission_id, rel):
@@ -19312,17 +19341,22 @@ def submission_upload_api(leaderboard_id):
             os.remove(temp_zip_path)
 
 @app.route('/api/leaderboard/<int:leaderboard_id>/recalculate_async', methods=['POST'])
+@login_required
 def recalculate_leaderboard_async(leaderboard_id):
     """Trigger async recalculation for submissions."""
     data = request.get_json()
     submission_ids = data.get('submission_ids', [])
     sample_filters = data.get('sample_filters', {})
-    
+
     if not submission_ids:
         return jsonify({'error': 'No submission IDs provided'}), 400
 
     submissions = Submission.query.filter(Submission.id.in_(submission_ids), Submission.leaderboard_id == leaderboard_id).all()
-    
+    # Restrict to submissions the caller may manage (admin / owner / LB owner).
+    submissions = [s for s in submissions if _can_manage_submission(g.current_user, s)]
+    if not submissions:
+        return jsonify({'error': 'Not authorized for these submissions'}), 403
+
     triggered_count = 0
     # Iterate and commit in batches to avoid long locks if many submissions
     for sub in submissions:
