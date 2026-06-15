@@ -69,8 +69,22 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet"
           href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700&family=Fraunces:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-    <link rel="icon"
+    {# Favicon: the inline SVG gives a crisp browser-tab icon, but Google's
+       search-result favicon crawler needs a *fetchable file*, so also declare
+       the PNG + /favicon.ico (regenerated from the current bench logo) and an
+       apple-touch-icon. ?v=2 busts stale browser caches; Google refreshes its
+       own favicon cache on the next crawl (can take a couple of weeks). #}
+    <link rel="icon" type="image/png" sizes="96x96"
+          href="{{ url_for('static', filename='favicon.png') }}?v=2">
+    <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23ffc107' viewBox='0 0 16 16'><path d='M2 3h12v1.5H2zM3 3v3.5h1V3zM12 3v3.5h1V3zM1 7h14v2.2H1zM3 9.2h1.5v5.5H3zM11.5 9.2H13v5.5h-1.5z'/></svg>">
+    <link rel="icon" href="/favicon.ico?v=2" sizes="any">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+    <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"Organization","name":"BenchHub",
+     "url":"{{ url_for('landing', _external=True) }}",
+     "logo":"{{ url_for('static', filename='logo.png', _external=True) }}"}
+    </script>
 
     <style>
         /* ============================================================
