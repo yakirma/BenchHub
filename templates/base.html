@@ -35,6 +35,11 @@
       function gtag(){dataLayer.push(arguments);}
       gtag('js', new Date());
       gtag('config', '{{ ga_measurement_id }}');
+      {% if ga_signin %}
+      {# Fired once on the page after a successful sign-in. Mark `sign_up`
+         (new account) as a key event in GA4 to track signups as a conversion. #}
+      gtag('event', {{ ga_signin.event | tojson }}, {method: {{ ga_signin.method | tojson }}});
+      {% endif %}
     </script>
     {% endif %}
 

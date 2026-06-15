@@ -1911,6 +1911,22 @@ def _signup_attribution_json():
         return None
 
 
+def _flag_ga_signin(user):
+    """Stash a one-time GA4 sign-in event in the session — base.html fires it on
+    the next page render (gtag is client-side). `sign_up` on a user's first
+    login (created ≈ this login), else `login`. Mark `sign_up` as a key event
+    in GA to track signups as a conversion."""
+    try:
+        ca, la = user.created_at, user.last_login_at
+        is_new = bool(ca and la and abs((la - ca).total_seconds()) < 10)
+        session['ga_signin'] = {
+            'event': 'sign_up' if is_new else 'login',
+            'method': user.oauth_provider or 'email',
+        }
+    except Exception:
+        pass
+
+
 @app.before_request
 def load_current_user():
     """Populate g.current_user from session on every request. None if anonymous."""
@@ -1965,6 +1981,9 @@ def inject_current_user():
         # (BENCHHUB_HF_URL) and the link is hidden until provided.
         'github_url': os.environ.get('BENCHHUB_GITHUB_URL', 'https://github.com/yakirma/BenchHub'),
         'hf_url': os.environ.get('BENCHHUB_HF_URL', ''),
+        # One-time GA4 sign-in event (set at login) — popped so it fires once
+        # on the next render. base.html emits the gtag event.
+        'ga_signin': session.pop('ga_signin', None),
     }
 
 
@@ -2587,6 +2606,7 @@ def oauth_callback_github():
     db.session.commit()
 
     session['user_id'] = user.id
+    _flag_ga_signin(user)
     flash(f"Logged in as {user.display_name}.", "success")
     next_url = session.pop('oauth_next', None) or url_for('home')
     return redirect(next_url)
@@ -2662,6 +2682,7 @@ def oauth_callback_google():
     db.session.commit()
 
     session['user_id'] = user.id
+    _flag_ga_signin(user)
     flash(f"Logged in as {user.display_name}.", "success")
     return redirect(session.pop('oauth_next', None) or url_for('home'))
 
@@ -2735,6 +2756,7 @@ def oauth_callback_huggingface():
     db.session.commit()
 
     session['user_id'] = user.id
+    _flag_ga_signin(user)
     flash(f"Logged in as {user.display_name}.", "success")
     return redirect(session.pop('oauth_next', None) or url_for('home'))
 
@@ -2989,6 +3011,7 @@ def login_email_verify_post():
 
     session.pop('email_login_pending', None)
     session['user_id'] = user.id
+    _flag_ga_signin(user)
     flash(f"Logged in as {user.display_name}.", "success")
     return redirect(session.pop('oauth_next', None) or url_for('home'))
 
@@ -3009,6 +3032,7 @@ def login_email_password():
     user.last_login_at = datetime.utcnow()
     db.session.commit()
     session['user_id'] = user.id
+    _flag_ga_signin(user)
     flash(f"Logged in as {user.display_name}.", "success")
     # Open-redirect guard: only allow same-site relative paths.
     return redirect(next_url if next_url.startswith('/') and not next_url.startswith('//')
