@@ -1132,6 +1132,77 @@
             </div>
         </div>
     </footer>
+
+    {# "Help us grow" — a more prominent, dismissible social CTA pinned to the
+       bottom-left corner (the navbar Star/Like links are subtle). Stays hidden
+       per browser once dismissed (localStorage). Only renders links that are
+       configured (github_url always; hf_url when BENCHHUB_HF_URL is set). #}
+    {% if github_url or hf_url %}
+    <div id="bh-grow-card" aria-label="Support BenchHub">
+        <button type="button" id="bh-grow-close" aria-label="Dismiss">&times;</button>
+        <div class="bh-grow-head"><i class="bi bi-heart-fill"></i> Like BenchHub?</div>
+        <div class="bh-grow-sub">Help us grow — it's free &amp; open.</div>
+        <div class="bh-grow-btns">
+            {% if github_url %}
+            <a class="bh-grow-btn" href="{{ github_url }}" target="_blank" rel="noopener">
+                <i class="bi bi-github"></i> Star on GitHub
+            </a>
+            {% endif %}
+            {% if hf_url %}
+            <a class="bh-grow-btn" href="{{ hf_url }}" target="_blank" rel="noopener">
+                <span style="font-size:1.05em;line-height:1;">🤗</span> Like on Hugging Face
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    <style>
+        #bh-grow-card {
+            position: fixed; left: 1rem; bottom: 1rem; z-index: 1035;
+            width: 240px; max-width: calc(100vw - 2rem);
+            background: var(--bh-navbar-bg, #f5efe2);
+            border: 1px solid #e8dfc8; border-left: 4px solid #7c3aed;
+            border-radius: 10px; padding: .85rem .9rem .9rem;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+            color: #3a2614; font-size: .9rem;
+        }
+        #bh-grow-close {
+            position: absolute; top: .2rem; right: .4rem;
+            background: none; border: 0; font-size: 1.2rem; line-height: 1;
+            color: #9a8c73; cursor: pointer; padding: .1rem .3rem;
+        }
+        #bh-grow-close:hover { color: #3a2614; }
+        .bh-grow-head { font-weight: 700; color: #2a1f10; margin-bottom: .1rem; }
+        .bh-grow-head .bi-heart-fill { color: #e0567a; margin-right: .25rem; }
+        .bh-grow-sub { font-size: .8rem; color: #6b5b43; margin-bottom: .6rem; }
+        .bh-grow-btns { display: flex; flex-direction: column; gap: .4rem; }
+        .bh-grow-btn {
+            display: inline-flex; align-items: center; gap: .4rem;
+            padding: .35rem .6rem; border-radius: 6px;
+            background: #fff; border: 1px solid #e8dfc8;
+            color: #3a2614; text-decoration: none; font-weight: 600; font-size: .82rem;
+            transition: border-color .12s, color .12s, transform .12s;
+        }
+        .bh-grow-btn:hover { border-color: #7c3aed; color: #7c3aed; transform: translateY(-1px); }
+        @media (max-width: 575px) {
+            #bh-grow-card { width: 200px; left: .5rem; bottom: .5rem; padding: .7rem .75rem; }
+        }
+    </style>
+    <script>
+        (function () {
+            var card = document.getElementById('bh-grow-card');
+            if (!card) return;
+            try {
+                if (localStorage.getItem('bh_grow_dismissed') === '1') { card.style.display = 'none'; return; }
+            } catch (e) {}
+            var btn = document.getElementById('bh-grow-close');
+            if (btn) btn.addEventListener('click', function () {
+                card.style.display = 'none';
+                try { localStorage.setItem('bh_grow_dismissed', '1'); } catch (e) {}
+            });
+        })();
+    </script>
+    {% endif %}
+
     <!-- Global Confirmation Modal -->
     <div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel"
         aria-hidden="true" style="z-index: 2000;">
