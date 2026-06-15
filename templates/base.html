@@ -1673,7 +1673,25 @@
             }
 
             handleKeydown(e) {
-                console.log('DEBUG: GalleryModalManager handleKeydown', e.key);
+                // Enter / Space → toggle play/pause on the modal's visible
+                // audio/video player (works regardless of focus, except in a
+                // real control so buttons/inputs keep their behaviour). Capture
+                // phase means this beats the media element's native Space.
+                if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+                    const _ae = document.activeElement;
+                    if (_ae && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(_ae.tagName)) return;
+                    let _m = null;
+                    if (this.modalElement) {
+                        this.modalElement.querySelectorAll('audio, video').forEach(function (el) {
+                            if (!_m && el.offsetParent !== null && el.getAttribute('src')) _m = el;
+                        });
+                    }
+                    if (_m) {
+                        e.preventDefault();
+                        if (_m.paused) { _m.play().catch(function () {}); } else { _m.pause(); }
+                    }
+                    return;
+                }
                 if (this.items.length <= 0) return; // Allow 1 item if vertical nav is needed?
                 // Don't intercept if user is typing in an input or operating a
                 // form control. SELECT matters: the depth-colormap dropdown in
