@@ -47,6 +47,43 @@
         </div>
     </form>
 
+    {# ---- Can't import it yourself? → request it -------------------- #}
+    {% if current_user %}
+    <div class="card border-0 shadow-sm mt-3" style="border-left: 4px solid var(--bs-primary) !important;">
+        <div class="card-body py-3">
+            <h2 class="h6 fw-semibold mb-1">
+                <i class="bi bi-hand-thumbs-up text-primary me-1"></i>Can't import it yourself?
+            </h2>
+            <p class="small text-body-secondary mb-2">
+                If a dataset is over your storage quota (but worth adding), or its format is too
+                awkward for the importer to handle, request it instead — an admin will take it on,
+                ranked by votes.
+            </p>
+            <form method="post" action="{{ url_for('add_dataset_request') }}"
+                  class="row g-2 align-items-end">
+                <div class="col-md-6">
+                    <input type="text" name="repo_id" required
+                           class="form-control form-control-sm font-monospace"
+                           placeholder="user/repo or HF URL">
+                </div>
+                <div class="col-md-4">
+                    <input type="text" name="description" maxlength="200"
+                           class="form-control form-control-sm"
+                           placeholder="why it's worth adding (one sentence)">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-sm btn-outline-primary w-100">
+                        <i class="bi bi-plus-lg me-1"></i>Request
+                    </button>
+                </div>
+            </form>
+            <div class="form-text small mt-1">
+                See all requests on the <a href="{{ url_for('datasets_list') }}">datasets page</a>.
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     {# ---- Trending by domain ----------------------------------- #}
     <div class="mt-4">
         <div class="d-flex align-items-baseline gap-2 mb-2">

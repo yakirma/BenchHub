@@ -3533,7 +3533,8 @@ def _category_tree(model, filt):
                 key=lambda x: (-x['count'], x['name']),
             ),
         }
-        for area, v in sorted(tree.items())
+        # Most-populated area first (ties alphabetical) — Vision, NLP, …
+        for area, v in sorted(tree.items(), key=lambda kv: (-kv[1]['count'], kv[0]))
     ]
 
 
@@ -4071,12 +4072,21 @@ def leaderboards():
         {'lb': lb, 'recent': int(r or 0), 'total': int(t or 0), 'users': int(u or 0)}
         for lb, r, t, u in base.limit(60).all()
     ]
-    # Stable secondary sort by category so the template can render
-    # Area > Task headers over contiguous runs. The DB-side sort
-    # (activity / recent / popular) is preserved within each group
-    # because Python's sorted() is stable. Empty/None categories sink
-    # to the bottom via the high sentinel.
-    rows.sort(key=lambda r: (r['lb'].category or '￿').lower())
+    # Stable secondary sort so the template can render Area > Task headers over
+    # contiguous runs: most-populated AREA first (matches the sidebar tree),
+    # then full category within it. The DB-side sort (activity / recent /
+    # popular) is preserved within each task group because sorted() is stable.
+    # Empty/None categories sink to the bottom via the high sentinel.
+    _lb_area_counts = {}
+    for r in rows:
+        _a = (r['lb'].category or '￿').split('/', 1)[0].lower()
+        _lb_area_counts[_a] = _lb_area_counts.get(_a, 0) + 1
+    rows.sort(key=lambda r: (
+        not r['lb'].category,                                              # uncategorized last
+        -_lb_area_counts[(r['lb'].category or '￿').split('/', 1)[0].lower()],
+        (r['lb'].category or '￿').split('/', 1)[0].lower(),
+        (r['lb'].category or '￿').lower(),
+    ))
     # Tag cloud: count of *visible* leaderboards per tag, plus dataset
     # tag counts folded in. Only tags with at least one visible item show.
     visible_lb_filter = visible_in_list(Leaderboard, getattr(g, 'current_user', None))
@@ -15973,10 +15983,14 @@ def datasets_list():
             'sample_count': bucket['sample_count'],
             'name': bucket['hf_repo_id'],
         })
-    # Uncategorized sinks to the bottom; within a category, BH first
-    # then HF (alphabetical on `kind`), tie-broken by name.
+    # Most-populated area first (Vision, NLP, …); Uncategorized last. Within an
+    # area: by task, then BH before HF, tie-broken by name.
+    _area_counts = {}
+    for e in entries:
+        _area_counts[e['area']] = _area_counts.get(e['area'], 0) + 1
     entries.sort(key=lambda e: (
         e['area'] == 'Uncategorized',
+        -_area_counts[e['area']],
         e['area'].lower(),
         (e['task'] or '').lower(),
         e['kind'],
@@ -16009,7 +16023,10 @@ def datasets_list():
                 key=lambda x: (-x['count'], x['name']),
             ),
         }
-        for area, v in sorted(category_tree_dict.items())
+        # Most-populated area first; Uncategorized always last.
+        for area, v in sorted(
+            category_tree_dict.items(),
+            key=lambda kv: (kv[0] == 'Uncategorized', -kv[1]['count'], kv[0]))
     ]
 
     active_category = (request.args.get('category') or '').strip()

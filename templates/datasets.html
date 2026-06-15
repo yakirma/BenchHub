@@ -33,10 +33,14 @@
         </summary>
         <div class="card-body pt-0">
             <p class="small text-body-secondary mb-3">
-                Want a HuggingFace dataset on BenchHub? File a request below;
-                anyone signed in can upvote. Admins triage by vote count.
-                Requests don't appear on your own dataset list — this is a
-                shared wishlist.
+                <strong>Can't import it yourself?</strong> Use this when a dataset is worth
+                adding but you can't cache it — it's over your storage quota, or its format
+                is too awkward for the
+                <a href="{{ url_for('admin_import_from_hf') }}">HuggingFace</a> or
+                <a href="{{ url_for('import_from_files') }}">file</a> importers. File a request
+                and an admin will take it on; anyone signed in can upvote, and admins triage by
+                votes. If you <em>can</em> import it, that's instant — do that instead. Requests
+                are a shared wishlist, separate from your own datasets.
             </p>
 
             {% if current_user %}
