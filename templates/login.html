@@ -52,16 +52,27 @@
             <input type="password" name="password" id="password-login"
                    class="form-control" placeholder="Your password" autocomplete="current-password">
         </div>
-        <button type="submit" class="btn btn-primary w-100 mt-2">
-            <i class="bi bi-box-arrow-in-right me-1"></i>Log in
-        </button>
+        <div class="row g-2 mt-1">
+            <div class="col">
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-box-arrow-in-right me-1"></i>Log in
+                </button>
+            </div>
+            <div class="col">
+                <button type="submit" formaction="{{ url_for('login_email_request') }}"
+                        class="btn btn-outline-primary w-100">
+                    <i class="bi bi-person-plus me-1"></i>Sign up
+                </button>
+            </div>
+        </div>
         <button type="submit" formaction="{{ url_for('login_email_request') }}"
-                class="btn btn-outline-secondary w-100 mt-2">
-            <i class="bi bi-envelope me-1"></i>Email me a one-time code instead
+                class="btn btn-link btn-sm w-100 mt-1 text-decoration-none text-secondary">
+            …or email me a one-time code (no password)
         </button>
         <p class="form-text small mb-0 mt-1">
-            New here or no password yet? Use the one-time code — you can set a password
-            afterwards in account settings.
+            <strong>Log in</strong> if you have an account; <strong>Sign up</strong> to create one —
+            we'll email a 6-digit code to confirm. Pick a password (8+ chars), or leave it blank to
+            use one-time codes.
         </p>
     </form>
 {% endmacro %}
@@ -75,9 +86,9 @@
 <div class="container" style="max-width: 480px;">
     <div class="card shadow-sm mt-5">
         <div class="card-body p-4 p-md-5">
-            <h1 class="h3 mb-3 text-center">Log in to BenchHub</h1>
+            <h1 class="h3 mb-3 text-center">Log in or sign up</h1>
             <p class="text-muted text-center mb-4 small">
-                Sign in to upload datasets, create leaderboards, and submit predictions.
+                Create an account to upload datasets, build leaderboards, and submit predictions.
             </p>
 
             {% if is_webview %}

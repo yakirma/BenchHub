@@ -2903,6 +2903,15 @@ def login_email_request():
         flash("Enter a valid email address.", "warning")
         return redirect(url_for('login', next=next_url))
 
+    # Sign-up with a chosen password: stash its hash now; applied on verify ONLY
+    # when a NEW account is created (never overwrites an existing user's password
+    # — they own the email, but a password change goes through account settings).
+    pw = request.form.get('password') or ''
+    if pw and len(pw) >= 8:
+        session['pending_pw_hash'] = generate_password_hash(pw)
+    else:
+        session.pop('pending_pw_hash', None)
+
     # Invalidate any outstanding codes for this address (one live code).
     EmailLoginCode.query.filter_by(email=email, consumed=False).update(
         {'consumed': True}, synchronize_session=False)
@@ -2990,8 +2999,11 @@ def login_email_verify_post():
         flash("Incorrect code. Please try again.", "danger")
         return redirect(url_for('login_email_verify'))
 
-    # Verified. Upsert the account (email is now proven owned).
+    # Verified. Upsert the account (email is now proven owned). A password
+    # chosen at sign-up is applied ONLY when creating a new account — popped
+    # either way so it never lingers or overwrites an existing user's password.
     row.consumed = True
+    _pending_pw = session.pop('pending_pw_hash', None)
     user = User.query.filter(func.lower(User.email) == email).first()
     if user is None:
         if _signup_blocked(email):
@@ -3003,6 +3015,7 @@ def login_email_verify_post():
             oauth_provider='email',
             oauth_sub=email,
             signup_attribution=_signup_attribution_json(),
+            password_hash=_pending_pw,
         )
         db.session.add(user)
     user.last_login_at = datetime.utcnow()
