@@ -1225,6 +1225,10 @@ class User(db.Model):
     oauth_sub = db.Column(db.String(120), nullable=False)      # provider's user id
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime)
+    # First-touch acquisition attribution captured at signup (JSON): ad click
+    # ids (gclid/gad_campaignid/…), utm_* params, external referrer, landing
+    # path, and a derived `source` (google_ads / referral / direct / …).
+    signup_attribution = db.Column(db.Text, nullable=True)
 
     # Phase 7 quotas. Caps are server-side enforced before disk writes happen
     # (so a malicious user can't fill the volume). Defaults below are the
@@ -1704,6 +1708,63 @@ def canonical_host_redirect():
         target = urlunsplit((request.scheme, host[4:], parts.path, parts.query, ''))
         return redirect(target, code=301)
     return None
+
+
+# Acquisition params we attribute a signup to (Google/Bing/Meta ad click ids +
+# UTM tags). gclid/gad_* are Google Ads auto-tagging.
+_ATTRIBUTION_PARAMS = (
+    'gclid', 'gad_source', 'gad_campaignid', 'wbraid', 'gbraid',
+    'msclkid', 'fbclid',
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+)
+
+
+@app.before_request
+def capture_signup_attribution():
+    """First-touch acquisition capture: on the first request that carries ad/
+    UTM params (or an external referrer), stash them in the session so a later
+    signup can be attributed to its source. Set-once — the first touch wins; a
+    later signup reads session['attribution']. Never short-circuits."""
+    try:
+        if request.method not in ('GET', 'HEAD') or session.get('attribution'):
+            return None
+        present = {k: request.args.get(k)[:200] for k in _ATTRIBUTION_PARAMS
+                   if request.args.get(k)}
+        ref = request.referrer or ''
+        host = (request.host or '').split(':', 1)[0].lower()
+        external_ref = bool(ref) and (host not in ref)
+        if not present and not external_ref:
+            return None  # direct / internal navigation — nothing to attribute
+        attr = dict(present)
+        if external_ref:
+            attr['referrer'] = ref[:300]
+        attr['landing_path'] = request.path[:200]
+        if present.get('gclid') or present.get('gad_source') or present.get('wbraid') or present.get('gbraid'):
+            attr['source'] = 'google_ads'
+        elif present.get('msclkid'):
+            attr['source'] = 'bing_ads'
+        elif present.get('fbclid'):
+            attr['source'] = 'meta_ads'
+        elif present.get('utm_medium'):
+            attr['source'] = present['utm_medium']
+        else:
+            attr['source'] = 'referral'
+        session['attribution'] = attr
+    except Exception:
+        pass
+    return None
+
+
+def _signup_attribution_json():
+    """Serialize the session's captured attribution for a newly-created user.
+    Returns a JSON string ('{"source": "direct"}' when nothing was captured)."""
+    try:
+        attr = dict(session.get('attribution') or {})
+        if not attr:
+            attr = {'source': 'direct'}
+        return json.dumps(attr)[:1000]
+    except Exception:
+        return None
 
 
 @app.before_request
@@ -2325,6 +2386,7 @@ def oauth_callback_github():
                 avatar_url=profile.get('avatar_url'),
                 oauth_provider='github',
                 oauth_sub=oauth_sub,
+                signup_attribution=_signup_attribution_json(),
             )
             db.session.add(user)
     else:
@@ -2403,6 +2465,7 @@ def oauth_callback_google():
                 avatar_url=profile.get('picture'),
                 oauth_provider='google',
                 oauth_sub=oauth_sub,
+                signup_attribution=_signup_attribution_json(),
             )
             db.session.add(user)
     else:
@@ -2475,6 +2538,7 @@ def oauth_callback_huggingface():
                 avatar_url=profile.get('picture'),
                 oauth_provider='huggingface',
                 oauth_sub=oauth_sub,
+                signup_attribution=_signup_attribution_json(),
             )
             db.session.add(user)
     else:
@@ -2731,6 +2795,7 @@ def login_email_verify_post():
             display_name=email.split('@')[0],
             oauth_provider='email',
             oauth_sub=email,
+            signup_attribution=_signup_attribution_json(),
         )
         db.session.add(user)
     user.last_login_at = datetime.utcnow()
@@ -20678,6 +20743,8 @@ def check_and_migrate_db():
                     # user explicitly hid. Empty/NULL = all visible.
                     ("dataset",              "hidden_display_columns",         "TEXT"),
                     ("leaderboard",          "hidden_comparison_display_columns", "TEXT"),
+                    # First-touch signup acquisition attribution (JSON).
+                    ("user",                 "signup_attribution",               "TEXT"),
                     # Cached Colab submission notebook (self-invalidating).
                     ("leaderboard",          "colab_notebook_cache",             "TEXT"),
                     # Per-submission Colab gist URL (provenance — lets a
