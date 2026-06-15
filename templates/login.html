@@ -59,8 +59,8 @@
                 </button>
             </div>
             <div class="col">
-                <button type="submit" formaction="{{ url_for('login_email_request') }}"
-                        class="btn btn-outline-primary w-100">
+                <button type="button" class="btn btn-outline-primary w-100"
+                        data-bs-toggle="modal" data-bs-target="#signup-modal">
                     <i class="bi bi-person-plus me-1"></i>Sign up
                 </button>
             </div>
@@ -123,4 +123,112 @@
         OAuth providers share just your name, email, and avatar.
     </p>
 </div>
+
+{# Sign-up window: email + password (with a live strength meter) → the same
+   one-time-code confirmation (login_email_request stashes the chosen password,
+   applied when the account is created on verify). #}
+<div class="modal fade" id="signup-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-person-plus me-2"></i>Create your account</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <form method="post" action="{{ url_for('login_email_request') }}" id="signup-form">
+                <div class="modal-body">
+                    <input type="hidden" name="next" value="{{ next }}">
+                    <label class="form-label small mb-1" for="su-email">Email</label>
+                    <div class="input-group mb-3">
+                        <span class="input-group-text"><i class="bi bi-envelope"></i></span>
+                        <input type="email" name="email" id="su-email" required class="form-control"
+                               placeholder="you@example.com" autocomplete="email">
+                    </div>
+                    <label class="form-label small mb-1" for="su-pw">Password</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-lock"></i></span>
+                        <input type="password" name="password" id="su-pw" required minlength="8"
+                               class="form-control" placeholder="At least 8 characters" autocomplete="new-password">
+                    </div>
+                    <div class="progress mt-2" style="height: 6px;">
+                        <div id="su-strength-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <div id="su-strength-label" class="form-text small mb-2">&nbsp;</div>
+                    <label class="form-label small mb-1" for="su-pw2">Confirm password</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
+                        <input type="password" id="su-pw2" required class="form-control"
+                               placeholder="Re-enter password" autocomplete="new-password">
+                    </div>
+                    <div id="su-match" class="form-text small">&nbsp;</div>
+                </div>
+                <div class="modal-footer flex-column align-items-stretch">
+                    <button type="submit" id="su-submit" class="btn btn-primary w-100">
+                        <i class="bi bi-person-plus me-1"></i>Create account
+                    </button>
+                    <p class="text-muted small text-center mt-2 mb-0">
+                        We'll email a 6-digit code to confirm it's you.
+                    </p>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+    (function () {
+        const pw = document.getElementById('su-pw');
+        const pw2 = document.getElementById('su-pw2');
+        const bar = document.getElementById('su-strength-bar');
+        const lbl = document.getElementById('su-strength-label');
+        const match = document.getElementById('su-match');
+        const form = document.getElementById('signup-form');
+        const modal = document.getElementById('signup-modal');
+        if (!pw || !form) return;
+        const LEVELS = [
+            { w: 8, c: 'bg-danger', t: '' },
+            { w: 25, c: 'bg-danger', t: 'Weak' },
+            { w: 50, c: 'bg-warning', t: 'Fair' },
+            { w: 75, c: 'bg-info', t: 'Good' },
+            { w: 100, c: 'bg-success', t: 'Strong' },
+        ];
+        function score(p) {
+            if (!p || p.length < 8) return 0;
+            let s = 1;
+            if (p.length >= 12) s++;
+            if (/[a-z]/.test(p) && /[A-Z]/.test(p)) s++;
+            if (/\d/.test(p)) s++;
+            if (/[^A-Za-z0-9]/.test(p)) s++;
+            return Math.min(s, 4);
+        }
+        function update() {
+            const p = pw.value, s = score(p), lv = LEVELS[s];
+            bar.className = 'progress-bar ' + lv.c;
+            bar.style.width = lv.w + '%';
+            if (!p) { lbl.innerHTML = '&nbsp;'; lbl.className = 'form-text small mb-2'; }
+            else if (p.length < 8) { lbl.textContent = 'Too short — use at least 8 characters'; lbl.className = 'form-text small mb-2 text-danger'; }
+            else { lbl.textContent = 'Strength: ' + lv.t; lbl.className = 'form-text small mb-2 text-body-secondary'; }
+            if (pw2.value) {
+                const ok = pw2.value === p;
+                match.textContent = ok ? '✓ Passwords match' : 'Passwords don’t match';
+                match.className = 'form-text small ' + (ok ? 'text-success' : 'text-danger');
+            } else { match.innerHTML = '&nbsp;'; }
+        }
+        pw.addEventListener('input', update);
+        pw2.addEventListener('input', update);
+        form.addEventListener('submit', function (e) {
+            if (pw.value.length < 8) { e.preventDefault(); pw.focus(); }
+            else if (pw.value !== pw2.value) {
+                e.preventDefault();
+                match.textContent = 'Passwords don’t match';
+                match.className = 'form-text small text-danger';
+                pw2.focus();
+            }
+        });
+        // Prefill the email from the main form if the user typed it there.
+        if (modal) modal.addEventListener('show.bs.modal', function () {
+            const main = document.getElementById('email-login');
+            const su = document.getElementById('su-email');
+            if (main && main.value && su && !su.value) su.value = main.value;
+        });
+    })();
+</script>
 {% endblock %}
