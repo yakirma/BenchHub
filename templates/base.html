@@ -1658,11 +1658,16 @@
                 if (this.modalElement) {
                     this.modalElement.addEventListener('shown.bs.modal', () => {
                         console.log('DEBUG: GalleryModalManager shown.bs.modal fired for', this.modalId);
-                        window.addEventListener('keydown', this._boundKeyHandler);
+                        // Capture phase: fire before a focused media element's
+                        // native arrow-key handling (an <audio>/<video> player
+                        // otherwise eats Arrow Up/Down as volume, blocking
+                        // sample navigation). The INPUT/TEXTAREA/SELECT guard in
+                        // handleKeydown still lets real form controls keep keys.
+                        window.addEventListener('keydown', this._boundKeyHandler, true);
                     });
                     this.modalElement.addEventListener('hidden.bs.modal', () => {
                         console.log('DEBUG: GalleryModalManager hidden.bs.modal fired for', this.modalId);
-                        window.removeEventListener('keydown', this._boundKeyHandler);
+                        window.removeEventListener('keydown', this._boundKeyHandler, true);
                     });
                 }
             }
