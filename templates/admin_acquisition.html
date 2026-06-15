@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Acquisition funnel — Admin{% endblock %}
+
+{% block content %}
+<div class="container py-3">
+    <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+        <h1 class="h3 fw-bold mb-0">
+            <i class="bi bi-funnel-fill me-2 text-warning"></i>Acquisition funnel
+        </h1>
+        <a href="{{ url_for('admin_index') }}" class="small text-decoration-none">
+            <i class="bi bi-arrow-left"></i> Back to admin</a>
+    </div>
+
+    {% if not f.parsed %}
+    <div class="alert alert-warning small">The web-server access log isn't readable here, so the
+        traffic funnel is empty. Signups (from the DB) are still accurate below.</div>
+    {% endif %}
+
+    <p class="text-body-secondary small mb-3">
+        Today (UTC), from the web-server log; crawlers excluded. <strong>Ad clicks</strong> = unique
+        visitors arriving with a Google Ads <code>gclid</code>. The split is the story: in-app
+        WebViews (Facebook/Instagram/Google-app browsers) <strong>can't complete Google/GitHub
+        OAuth</strong>, so they stall at the login step.
+    </p>
+
+    {% set wv = f.buckets.webview %}{% set br = f.buckets.browser %}
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th class="text-end">In-app WebView</th>
+                    <th class="text-end">Real browser</th>
+                    <th class="text-end">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><i class="bi bi-cursor me-1 text-primary"></i>Ad clicks (unique visitors)</td>
+                    <td class="text-end">{{ wv.ad_clicks }}</td>
+                    <td class="text-end">{{ br.ad_clicks }}</td>
+                    <td class="text-end fw-semibold">{{ wv.ad_clicks + br.ad_clicks }}</td>
+                </tr>
+                <tr>
+                    <td><i class="bi bi-box-arrow-in-right me-1 text-primary"></i>Login starts (Google/GitHub)</td>
+                    <td class="text-end">{{ wv.login_starts }}</td>
+                    <td class="text-end">{{ br.login_starts }}</td>
+                    <td class="text-end fw-semibold">{{ wv.login_starts + br.login_starts }}</td>
+                </tr>
+                <tr>
+                    <td><i class="bi bi-check2-circle me-1 text-success"></i>Sign-in completions (OAuth callback)</td>
+                    <td class="text-end {{ 'text-danger' if wv.completions == 0 and wv.login_starts > 0 }}">{{ wv.completions }}</td>
+                    <td class="text-end">{{ br.completions }}</td>
+                    <td class="text-end fw-semibold">{{ wv.completions + br.completions }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card border-0 shadow-sm mt-3">
+        <div class="card-body py-3">
+            <h2 class="h6 fw-semibold mb-2">
+                <i class="bi bi-person-plus me-1 text-primary"></i>Signups today: {{ f.signups_today }}
+            </h2>
+            {% if f.by_source %}
+            <div class="d-flex flex-wrap gap-2">
+                {% for src, c in f.by_source %}
+                <span class="badge {{ 'text-bg-warning-subtle text-warning-emphasis' if src == 'google_ads' else 'text-bg-secondary-subtle text-secondary' }} border">
+                    {{ src }}: {{ c }}
+                </span>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="small text-body-secondary mb-0">No new accounts created today (UTC) yet.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <p class="small text-body-secondary mt-3 mb-0">
+        OAuth completions counts both new signups and returning logins. A WebView completions of 0
+        with many login starts means the in-app-browser audience can't sign in — they're nudged to
+        email magic-link login (which works in WebViews). Counts cached ~5&nbsp;min.
+    </p>
+</div>
+{% endblock %}

@@ -1699,6 +1699,16 @@ def inject_settings():
 _BLOCKED_BOT_TOKENS = ('gptbot', 'amazonbot', 'claudebot', 'ccbot', 'bytespider',
                        'dataforseobot', 'omgili', 'diffbot')
 
+# In-app browsers (Android WebView + Facebook/Instagram/Google-app/…) where
+# Google/GitHub OAuth is blocked. Shared by /login (steer to email) and the
+# admin acquisition funnel (bucket traffic by browser type).
+_INAPP_BROWSER_TOKENS = ('; wv)', 'FBAN', 'FBAV', 'Instagram', 'Line/',
+                         'MicroMessenger', 'TikTok', 'musical_ly', 'GSA/')
+
+
+def _is_webview_ua(ua):
+    return bool(ua) and any(tok in ua for tok in _INAPP_BROWSER_TOKENS)
+
 
 @app.before_request
 def block_scraper_bots():
@@ -2481,10 +2491,7 @@ def login():
     # or break Google/GitHub OAuth — Google returns disallowed_useragent. Most
     # of our ad traffic lands in these, so detect them and nudge toward email
     # (which works everywhere) or opening in a real browser.
-    ua = request.headers.get('User-Agent', '')
-    is_webview = any(tok in ua for tok in (
-        '; wv)', 'FBAN', 'FBAV', 'Instagram', 'Line/', 'MicroMessenger',
-        'TikTok', 'musical_ly', 'GSA/'))
+    is_webview = _is_webview_ua(request.headers.get('User-Agent', ''))
     return render_template(
         'login.html', next=request.args.get('next', ''),
         hf_enabled=bool(os.environ.get('HF_CLIENT_ID') and os.environ.get('HF_CLIENT_SECRET')),
@@ -4120,14 +4127,17 @@ def leaderboards():
     # then full category within it. The DB-side sort (activity / recent /
     # popular) is preserved within each task group because sorted() is stable.
     # Empty/None categories sink to the bottom via the high sentinel.
-    _lb_area_counts = {}
+    _lb_area_counts, _lb_cat_counts = {}, {}
     for r in rows:
-        _a = (r['lb'].category or '￿').split('/', 1)[0].lower()
+        _cat = (r['lb'].category or '￿')
+        _a = _cat.split('/', 1)[0].lower()
         _lb_area_counts[_a] = _lb_area_counts.get(_a, 0) + 1
+        _lb_cat_counts[_cat.lower()] = _lb_cat_counts.get(_cat.lower(), 0) + 1
     rows.sort(key=lambda r: (
         not r['lb'].category,                                              # uncategorized last
         -_lb_area_counts[(r['lb'].category or '￿').split('/', 1)[0].lower()],
         (r['lb'].category or '￿').split('/', 1)[0].lower(),
+        -_lb_cat_counts[(r['lb'].category or '￿').lower()],               # bigger task first
         (r['lb'].category or '￿').lower(),
     ))
     # Tag cloud: count of *visible* leaderboards per tag, plus dataset
@@ -10034,6 +10044,76 @@ def admin_online_users():
     return render_template('admin_online_users.html', rows=rows,
                            online_count=online_count, total_count=len(rows),
                            window_min=window_min)
+
+
+_funnel_cache = {'ts': 0.0, 'data': None}
+_FUNNEL_LINE = re.compile(
+    r'^(\S+) \S+ \S+ \[[^\]]+\] "(?:GET|POST|HEAD) (\S+)[^"]*" (\d+) \S+ "[^"]*" "([^"]*)"')
+
+
+def _acquisition_funnel():
+    """Parse today's nginx access log into an ad→login→signup funnel, split by
+    in-app WebView vs real browser (the key conversion divide). Cached 5 min —
+    the log can be tens of MB. Bots excluded. Returns per-bucket counts +
+    today's DB signups by source."""
+    import time as _time
+    now = _time.time()
+    if _funnel_cache['data'] is not None and now - _funnel_cache['ts'] < 300:
+        return _funnel_cache['data']
+    buckets = {'webview': {'ad_ips': set(), 'login_starts': 0, 'completions': 0},
+               'browser': {'ad_ips': set(), 'login_starts': 0, 'completions': 0}}
+    log_path = '/var/log/nginx/access.log'
+    parsed = True
+    try:
+        with open(log_path, 'r', errors='ignore') as fh:
+            for line in fh:
+                m = _FUNNEL_LINE.match(line)
+                if not m:
+                    continue
+                ip, path, _status, ua = m.groups()
+                ual = ua.lower()
+                if ('bot' in ual or 'spider' in ual or 'crawl' in ual
+                        or any(t in ual for t in _BLOCKED_BOT_TOKENS)):
+                    continue  # exclude crawlers from the human funnel
+                b = buckets['webview'] if _is_webview_ua(ua) else buckets['browser']
+                if 'gclid=' in path:
+                    b['ad_ips'].add(ip)
+                if path.startswith('/login/google') or path.startswith('/login/github'):
+                    b['login_starts'] += 1
+                elif path.startswith('/oauth/callback/'):
+                    b['completions'] += 1
+    except FileNotFoundError:
+        parsed = False
+    out = {k: {'ad_clicks': len(v['ad_ips']),
+               'login_starts': v['login_starts'],
+               'completions': v['completions']} for k, v in buckets.items()}
+    # Today's signups (UTC) by source, from the DB (ground truth).
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    signups, by_source = 0, {}
+    for u in User.query.filter(User.created_at >= today).all():
+        signups += 1
+        src = 'direct'
+        if u.signup_attribution:
+            try:
+                src = (json.loads(u.signup_attribution) or {}).get('source') or 'direct'
+            except Exception:
+                src = 'direct'
+        by_source[src] = by_source.get(src, 0) + 1
+    data = {'buckets': out, 'signups_today': signups,
+            'by_source': sorted(by_source.items(), key=lambda kv: -kv[1]),
+            'parsed': parsed}
+    _funnel_cache.update(ts=now, data=data)
+    return data
+
+
+@app.route('/admin/acquisition')
+@login_required
+def admin_acquisition():
+    """Ad → login → signup funnel, split by in-app WebView vs real browser, so
+    the WebView conversion collapse is visible at a glance (today, UTC)."""
+    if not is_admin(g.current_user):
+        abort(403)
+    return render_template('admin_acquisition.html', f=_acquisition_funnel())
 
 
 @app.route('/admin/lb_templates')
@@ -16026,15 +16106,18 @@ def datasets_list():
             'sample_count': bucket['sample_count'],
             'name': bucket['hf_repo_id'],
         })
-    # Most-populated area first (Vision, NLP, …); Uncategorized last. Within an
-    # area: by task, then BH before HF, tie-broken by name.
-    _area_counts = {}
+    # Most-populated area first (Vision, NLP, …), then most-populated TASK within
+    # each area; Uncategorized last; then BH before HF, tie-broken by name.
+    _area_counts, _task_counts = {}, {}
     for e in entries:
         _area_counts[e['area']] = _area_counts.get(e['area'], 0) + 1
+        _tk = (e['area'], e['task'] or '')
+        _task_counts[_tk] = _task_counts.get(_tk, 0) + 1
     entries.sort(key=lambda e: (
         e['area'] == 'Uncategorized',
         -_area_counts[e['area']],
         e['area'].lower(),
+        -_task_counts[(e['area'], e['task'] or '')],
         (e['task'] or '').lower(),
         e['kind'],
         e['name'].lower(),
