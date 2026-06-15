@@ -1500,10 +1500,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
-                {# Audio player — OUTSIDE the overlay-layer wrapper so it's never
-                   covered. Shown for audio thumbs with raw audio; hides on 404. #}
+                {# Audio: the waveform with a moving playhead (click to seek) + the
+                   player. OUTSIDE the overlay-layer wrapper so nothing covers it.
+                   Shown for audio thumbs with raw audio; hidden otherwise. #}
+                <div id="modal-audio-wrap" style="display: none; position: relative; width: 90%; max-width: 640px; margin: .5rem auto 0;">
+                    <img id="modal-audio-wave" src="" alt="waveform"
+                         style="width: 100%; display: block; border-radius: 6px; cursor: pointer;">
+                    <div id="modal-audio-playhead"
+                         style="position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
+                                background: #7c3aed; box-shadow: 0 0 4px #7c3aed; pointer-events: none; display: none;"></div>
+                </div>
                 <audio id="modal-vis-audio" controls preload="none"
-                       style="display: none; width: 90%; max-width: 560px; margin: .25rem auto 0;"
+                       style="display: none; width: 90%; max-width: 640px; margin: .4rem auto 0;"
                        onerror="this.style.display='none';"></audio>
                 <!-- Gallery Footer -->
                 <div id="vis-gallery-footer" class="gallery-footer-container"></div>
@@ -2110,20 +2118,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     (triggerElement.getAttribute('data-flow') === '1') ? 'block' : 'none';
             }
 
-            // Audio player: for audio thumbs with a raw-audio URL, play it under
-            // the waveform (which still renders via the normal image path). Reset
-            // on every open/navigation; hides itself if the source 404s.
-            const _audioEl = document.getElementById('modal-vis-audio');
-            if (_audioEl) {
-                const _au = triggerElement.getAttribute('data-audio-url');
-                if (visType === 'audio' && _au) {
-                    if (_audioEl.getAttribute('src') !== _au) _audioEl.src = _au;
-                    _audioEl.style.display = 'block';
-                } else {
-                    try { _audioEl.pause(); } catch (e) {}
-                    _audioEl.removeAttribute('src');
-                    _audioEl.style.display = 'none';
-                }
+            // Audio widget (waveform + moving playhead + player) is set up by the
+            // dedicated audio branch below; hide+pause it for every other thumb.
+            const _hasAudio = (visType === 'audio') && !!triggerElement.getAttribute('data-audio-url');
+            if (!_hasAudio) {
+                const _aw = document.getElementById('modal-audio-wrap');
+                const _au0 = document.getElementById('modal-vis-audio');
+                if (_aw) _aw.style.display = 'none';
+                if (_au0) { try { _au0.pause(); } catch (e) {} _au0.removeAttribute('src'); _au0.style.display = 'none'; }
             }
 
             // Depth colormap selector: a depth thumb may render in the modal
@@ -2220,6 +2222,44 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 return;
             }
             if (_modalVideo) { try { _modalVideo.pause(); } catch (e) {} _modalVideo.removeAttribute('src'); _modalVideo.style.display = 'none'; }
+
+            // Audio: dedicated waveform + moving playhead (click to seek) + the
+            // <audio> player. Own display path — skips the image/overlay-layer
+            // machinery so the playhead aligns with the waveform.
+            if (_hasAudio) {
+                clearVisRotationControls();
+                const _img = visModal.querySelector('#modal-vis-img');
+                const _ply = visModal.querySelector('#modal-plotly-div');
+                const _spin = visModal.querySelector('#modal-loading-spinner');
+                const _layers = visModal.querySelector('#vis-modal-layers');
+                if (_img) _img.style.display = 'none';
+                if (_ply) { _ply.style.display = 'none'; _ply.innerHTML = ''; }
+                if (_spin) _spin.style.display = 'none';
+                if (_layers) _layers.innerHTML = '';
+                const _wrap = document.getElementById('modal-audio-wrap');
+                const _wave = document.getElementById('modal-audio-wave');
+                const _head = document.getElementById('modal-audio-playhead');
+                const _au = document.getElementById('modal-vis-audio');
+                const _auUrl = triggerElement.getAttribute('data-audio-url');
+                if (_wave) _wave.src = visUrl;            // the waveform PNG
+                if (_head) { _head.style.left = '0%'; _head.style.display = 'none'; }
+                if (_wrap) _wrap.style.display = 'block';
+                if (_au) {
+                    if (_au.getAttribute('src') !== _auUrl) _au.src = _auUrl;
+                    _au.style.display = 'block';
+                    _au.ontimeupdate = function () {
+                        if (_head && _au.duration) _head.style.left = (_au.currentTime / _au.duration * 100) + '%';
+                    };
+                    _au.onplay = function () { if (_head) _head.style.display = 'block'; };
+                    _au.onloadedmetadata = function () { if (_head) _head.style.left = '0%'; };
+                }
+                if (_wave && _au) _wave.onclick = function (ev) {
+                    if (!_au.duration) return;
+                    const r = _wave.getBoundingClientRect();
+                    _au.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * _au.duration;
+                };
+                return;
+            }
 
             // Per-thumb-slider mode: the #vis-modal-layers stack is the
             // sole display. Its layer IMGs are absolutely positioned and
