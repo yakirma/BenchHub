@@ -1475,10 +1475,17 @@
                         <span class="visually-hidden">Loading...</span>
                     </div>
                 </div>
-                {# Audio player — OUTSIDE the overlay-layer wrapper so it's never
-                   covered. Shown for audio fields with raw audio; hides on 404. #}
+                {# Audio: waveform with a moving playhead (click to seek) + the player.
+                   OUTSIDE the overlay-layer wrapper so nothing covers it. #}
+                <div id="modal-cf-audio-wrap" style="display: none; position: relative; width: 90%; max-width: 640px; margin: .5rem auto 0;">
+                    <img id="modal-cf-audio-wave" src="" alt="waveform"
+                         style="width: 100%; display: block; border-radius: 6px; cursor: pointer;">
+                    <div id="modal-cf-audio-playhead"
+                         style="position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
+                                background: #7c3aed; box-shadow: 0 0 4px #7c3aed; pointer-events: none; display: none;"></div>
+                </div>
                 <audio id="modal-cf-audio" controls preload="none"
-                       style="display: none; width: 90%; max-width: 560px; margin: .25rem auto 0;"
+                       style="display: none; width: 90%; max-width: 640px; margin: .4rem auto 0;"
                        onerror="this.style.display='none';"></audio>
                 <div id="custom-field-gallery-footer" class="gallery-footer-container"></div>
             </div>
@@ -2276,20 +2283,14 @@
             const visType = button.getAttribute('data-vis-type');
             const sampleName = button.getAttribute('data-sample-name');
 
-            // Audio player: for audio fields with a raw-audio URL, play it under
-            // the waveform (still rendered via the image path). Reset each
-            // open/navigation; hides itself if the source 404s (waveform-only).
-            const _cfAudio = document.getElementById('modal-cf-audio');
-            if (_cfAudio) {
-                const _au = button.getAttribute('data-audio-url');
-                if (visType === 'audio' && _au) {
-                    if (_cfAudio.getAttribute('src') !== _au) _cfAudio.src = _au;
-                    _cfAudio.style.display = 'block';
-                } else {
-                    try { _cfAudio.pause(); } catch (e) {}
-                    _cfAudio.removeAttribute('src');
-                    _cfAudio.style.display = 'none';
-                }
+            // Audio widget (waveform + moving playhead + player) is set up by the
+            // dedicated audio branch below; hide+pause it for every other field.
+            const _cfHasAudio = (visType === 'audio') && !!button.getAttribute('data-audio-url');
+            if (!_cfHasAudio) {
+                const _aw = document.getElementById('modal-cf-audio-wrap');
+                const _au0 = document.getElementById('modal-cf-audio');
+                if (_aw) _aw.style.display = 'none';
+                if (_au0) { try { _au0.pause(); } catch (e) {} _au0.removeAttribute('src'); _au0.style.display = 'none'; }
             }
 
             // Update modal title with the FIELD NAME (the column this thumb
@@ -2303,6 +2304,44 @@
                 if (_fieldName) _html += `<span class="fw-semibold text-body" title="${_esc(_fieldName)}">${_esc(_fieldName)}</span>`;
                 if (sampleName) _html += `${_fieldName ? ' · ' : ''}<span class="text-muted">Sample: ${_esc(sampleName)}</span>`;
                 modalTitleSpan.innerHTML = _html;
+            }
+
+            // Audio: dedicated waveform + moving playhead (click to seek) + player.
+            // Own display path — skips the image/overlay-layer + depth machinery.
+            if (_cfHasAudio) {
+                const _img = document.getElementById('modal-custom-field-img');
+                const _ply = document.getElementById('modal-plotly-div');
+                const _layers = document.getElementById('custom-field-modal-layers');
+                const _cmap = document.getElementById('cf-modal-depth-cmap');
+                const _inv = document.getElementById('cf-modal-depth-inverse');
+                if (_img) _img.style.display = 'none';
+                if (_ply) { _ply.style.display = 'none'; _ply.innerHTML = ''; }
+                if (_layers) _layers.innerHTML = '';
+                if (_cmap) _cmap.classList.add('d-none');
+                if (_inv) _inv.classList.add('d-none');
+                const _wrap = document.getElementById('modal-cf-audio-wrap');
+                const _wave = document.getElementById('modal-cf-audio-wave');
+                const _head = document.getElementById('modal-cf-audio-playhead');
+                const _au = document.getElementById('modal-cf-audio');
+                const _auUrl = button.getAttribute('data-audio-url');
+                if (_wave) _wave.src = imgUrl;            // the waveform PNG
+                if (_head) { _head.style.left = '0%'; _head.style.display = 'none'; }
+                if (_wrap) _wrap.style.display = 'block';
+                if (_au) {
+                    if (_au.getAttribute('src') !== _auUrl) _au.src = _auUrl;
+                    _au.style.display = 'block';
+                    _au.ontimeupdate = function () {
+                        if (_head && _au.duration) _head.style.left = (_au.currentTime / _au.duration * 100) + '%';
+                    };
+                    _au.onplay = function () { if (_head) _head.style.display = 'block'; };
+                    _au.onloadedmetadata = function () { if (_head) _head.style.left = '0%'; };
+                }
+                if (_wave && _au) _wave.onclick = function (ev) {
+                    if (!_au.duration) return;
+                    const r = _wave.getBoundingClientRect();
+                    _au.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * _au.duration;
+                };
+                return;
             }
 
             // Depth colormap + inverse controls: identify the FIELD (alt =
