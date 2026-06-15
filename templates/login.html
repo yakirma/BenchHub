@@ -35,20 +35,33 @@
 {% endmacro %}
 
 {% macro email_form() %}
-    <form method="post" action="{{ url_for('login_email_request') }}">
+    {# One form, two submit buttons: "Log in" verifies email+password; the
+       second posts the same email to the one-time-code flow (no password
+       needed — for new users or anyone who hasn't set one). #}
+    <form method="post" action="{{ url_for('login_email_password') }}">
         <input type="hidden" name="next" value="{{ next }}">
-        <label for="email-login" class="form-label small mb-1">Sign in or sign up with email</label>
-        <div class="input-group">
+        <label for="email-login" class="form-label small mb-1">Email</label>
+        <div class="input-group mb-2">
             <span class="input-group-text"><i class="bi bi-envelope"></i></span>
             <input type="email" name="email" id="email-login" required
-                   class="form-control" placeholder="you@example.com"
-                   autocomplete="email">
+                   class="form-control" placeholder="you@example.com" autocomplete="email">
+        </div>
+        <label for="password-login" class="form-label small mb-1">Password</label>
+        <div class="input-group">
+            <span class="input-group-text"><i class="bi bi-lock"></i></span>
+            <input type="password" name="password" id="password-login"
+                   class="form-control" placeholder="Your password" autocomplete="current-password">
         </div>
         <button type="submit" class="btn btn-primary w-100 mt-2">
-            Email me a sign-in code
+            <i class="bi bi-box-arrow-in-right me-1"></i>Log in
         </button>
-        <p class="form-text small mb-0">
-            No password needed — we'll send a 6-digit verification code.
+        <button type="submit" formaction="{{ url_for('login_email_request') }}"
+                class="btn btn-outline-secondary w-100 mt-2">
+            <i class="bi bi-envelope me-1"></i>Email me a one-time code instead
+        </button>
+        <p class="form-text small mb-0 mt-1">
+            New here or no password yet? Use the one-time code — you can set a password
+            afterwards in account settings.
         </p>
     </form>
 {% endmacro %}
@@ -95,8 +108,8 @@
     </div>
 
     <p class="text-muted text-center small mt-4">
-        BenchHub doesn't store passwords. OAuth handlers only receive
-        your name, email, and avatar.
+        Passwords are stored only as a salted hash, and only if you set one.
+        OAuth providers share just your name, email, and avatar.
     </p>
 </div>
 {% endblock %}

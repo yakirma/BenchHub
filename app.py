@@ -132,6 +132,7 @@ app.secret_key = os.environ.get('SECRET_KEY') or 'supersecretkey'  # Override in
 # redirect_uri ends up http://, GitHub rejects it as "not associated with
 # this application."
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import generate_password_hash, check_password_hash
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # basedir = os.path.abspath(os.path.dirname(__file__)) # No longer used for data
 user_home = os.path.expanduser("~")
@@ -1228,6 +1229,9 @@ class User(db.Model):
     # Last request time (throttled, ~1/min) — powers the admin "who's online"
     # view. Distinct from last_login_at, which only moves on sign-in.
     last_seen_at = db.Column(db.DateTime)
+    # Optional password (salted hash via werkzeug). NULL = no password set
+    # (the user signs in via OAuth or the email one-time code only).
+    password_hash = db.Column(db.String(255), nullable=True)
     # First-touch acquisition attribution captured at signup (JSON): ad click
     # ids (gclid/gad_campaignid/…), utm_* params, external referrer, landing
     # path, and a derived `source` (google_ads / referral / direct / …).
@@ -2989,6 +2993,50 @@ def login_email_verify_post():
     return redirect(session.pop('oauth_next', None) or url_for('home'))
 
 
+@app.route('/login/email/password', methods=['POST'])
+def login_email_password():
+    """Email + password sign-in for users who've set a password (in account
+    settings). Generic error — never reveals whether the email exists. Users
+    without a password use the one-time code instead."""
+    email = (request.form.get('email') or '').strip().lower()
+    password = request.form.get('password') or ''
+    next_url = (request.form.get('next') or '').strip()
+    user = User.query.filter(func.lower(User.email) == email).first() if email else None
+    if (user is None or not user.password_hash
+            or not check_password_hash(user.password_hash, password)):
+        flash("Invalid email or password — or use a one-time code instead.", "danger")
+        return redirect(url_for('login', next=next_url))
+    user.last_login_at = datetime.utcnow()
+    db.session.commit()
+    session['user_id'] = user.id
+    flash(f"Logged in as {user.display_name}.", "success")
+    # Open-redirect guard: only allow same-site relative paths.
+    return redirect(next_url if next_url.startswith('/') and not next_url.startswith('//')
+                    else url_for('home'))
+
+
+@app.route('/settings/account/password', methods=['POST'])
+@login_required
+def set_account_password():
+    """Set or change the signed-in user's password. Requires the current
+    password to change an existing one; first-set needs only the session."""
+    u = g.current_user
+    current = request.form.get('current_password') or ''
+    new = request.form.get('new_password') or ''
+    confirm = request.form.get('confirm_password') or ''
+    if u.password_hash and not check_password_hash(u.password_hash, current):
+        flash("Current password is incorrect.", "danger")
+    elif len(new) < 8:
+        flash("Password must be at least 8 characters.", "warning")
+    elif new != confirm:
+        flash("The two passwords don't match.", "warning")
+    else:
+        u.password_hash = generate_password_hash(new)
+        db.session.commit()
+        flash("Password saved — you can now sign in with your email and password.", "success")
+    return redirect(url_for('account_settings'))
+
+
 # ===================== Settings: API tokens (Phase 8) =====================
 
 @app.route('/settings/api_tokens', methods=['GET'])
@@ -3389,7 +3437,8 @@ def account_settings():
         }
 
     quota = {'public': _bucket('public'), 'private': _bucket('private')}
-    return render_template('account_settings.html', quota=quota)
+    return render_template('account_settings.html', quota=quota,
+                           has_password=bool(u.password_hash))
 
 
 @app.route('/settings/hf_token', methods=['GET', 'POST'])
@@ -21091,6 +21140,8 @@ def check_and_migrate_db():
                     ("user",                 "signup_attribution",               "TEXT"),
                     # Throttled last-request time for the admin "who's online" view.
                     ("user",                 "last_seen_at",                     "DATETIME"),
+                    # Optional password (werkzeug salted hash); NULL = none set.
+                    ("user",                 "password_hash",                    "VARCHAR(255)"),
                     # Cached Colab submission notebook (self-invalidating).
                     ("leaderboard",          "colab_notebook_cache",             "TEXT"),
                     # Per-submission Colab gist URL (provenance — lets a
