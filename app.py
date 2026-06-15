@@ -1691,6 +1691,99 @@ def inject_settings():
 
 # ===================== Authentication routes =====================
 
+# Aggressive AI-training / scraper crawlers that were hammering the box (GPTBot
+# ~21k/day + Amazonbot ~10k/day, downloading every /sample/<id>/download +
+# thumbnail). They honor robots.txt, but that's re-read only ~daily — so
+# hard-403 them now too. Lowercase-substring match; chosen to never hit
+# Googlebot / Bingbot or real browsers.
+_BLOCKED_BOT_TOKENS = ('gptbot', 'amazonbot', 'claudebot', 'ccbot', 'bytespider',
+                       'dataforseobot', 'omgili', 'diffbot')
+
+
+@app.before_request
+def block_scraper_bots():
+    """403 known scraper/training bots before any work (cheap UA check). They
+    may still read /robots.txt to learn the policy. Registered first so it
+    short-circuits the rest of the request."""
+    if request.path == '/robots.txt':
+        return None
+    ua = (request.headers.get('User-Agent') or '').lower()
+    if ua and any(tok in ua for tok in _BLOCKED_BOT_TOKENS):
+        return Response('Automated crawling of BenchHub is not permitted. See /robots.txt\n',
+                        status=403, mimetype='text/plain')
+    return None
+
+
+_ROBOTS_TXT = """\
+# BenchHub — public catalog is crawlable; auth/admin/downloads/render/API are
+# not. Aggressive AI-training & scraper crawlers are disallowed outright (they
+# were downloading every sample file).
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: OAI-SearchBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: DataForSeoBot
+Disallow: /
+
+User-agent: Diffbot
+Disallow: /
+
+User-agent: Omgilibot
+Disallow: /
+
+# Everyone else (incl. Googlebot, Bingbot): index public pages, skip the rest.
+User-agent: *
+Disallow: /login
+Disallow: /oauth
+Disallow: /admin
+Disallow: /settings
+Disallow: /account
+Disallow: /api/
+Disallow: /submission/
+Disallow: /submissions/
+Disallow: /delete_submission
+Disallow: /sample/
+Disallow: /custom_field_image/
+Disallow: /text_thumb/
+Disallow: /sequence_frame/
+Disallow: /visualization/
+Disallow: /comparison/
+Disallow: /import_from_
+Disallow: /edit_leaderboard
+Disallow: /create_lb
+Crawl-delay: 10
+"""
+
+
+@app.route('/robots.txt')
+def robots_txt():
+    return Response(_ROBOTS_TXT, mimetype='text/plain')
+
+
 @app.before_request
 def canonical_host_redirect():
     """Force www.<domain> -> apex on a single canonical host (GET/HEAD).
