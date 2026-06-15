@@ -1685,6 +1685,28 @@ def inject_settings():
 # ===================== Authentication routes =====================
 
 @app.before_request
+def canonical_host_redirect():
+    """Force www.<domain> -> apex on a single canonical host (GET/HEAD).
+
+    OAuth (Google/GitHub) requires the redirect_uri host to exactly match the
+    one registered, and the OAuth state cookie is host-scoped — so a visitor who
+    starts sign-in on www.runbenchhub.com (apex is the registered host) silently
+    fails to return. Canonicalising here, before any per-request work, puts every
+    visitor on the apex host for the whole flow (and de-duplicates GA's
+    www-vs-apex host reporting). Registered first so it runs before the rest.
+    """
+    if request.method not in ('GET', 'HEAD'):
+        return None
+    host = (request.host or '').split(':', 1)[0].lower()
+    if host.startswith('www.') and len(host) > 4:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(request.url)
+        target = urlunsplit((request.scheme, host[4:], parts.path, parts.query, ''))
+        return redirect(target, code=301)
+    return None
+
+
+@app.before_request
 def load_current_user():
     """Populate g.current_user from session on every request. None if anonymous."""
     user_id = session.get('user_id')
