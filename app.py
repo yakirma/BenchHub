@@ -2623,7 +2623,10 @@ def login_google():
                 "GOOGLE_CLIENT_SECRET (env vars or Fly secrets)."), 503
     session['oauth_next'] = request.args.get('next') or url_for('home')
     redirect_uri = url_for('oauth_callback_google', _external=True)
-    return oauth.google.authorize_redirect(redirect_uri)
+    # prompt=select_account → always show Google's account chooser instead of
+    # silently reusing the one signed-in session (lets users pick which account
+    # / switch accounts on a shared machine).
+    return oauth.google.authorize_redirect(redirect_uri, prompt='select_account')
 
 
 @app.route('/oauth/callback/google')
