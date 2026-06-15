@@ -99,43 +99,51 @@ def test_distinguishable_name_real_global_metric_object_raises():
 # ---------------------------------------------------------------------------
 
 
+# Current layout (see get_column_priority docstring): fixed framing columns
+# name(0) → metric(10) → stats(20) → tags(30); then data fields keyed by role
+# (GT=100s, pred=200s) + modality (text0 image1 mask2 depth3 audio4 sequence5
+# json6 hist7 scalar8 label9). gt_config/signal_shape are GT-json (106),
+# config is pred-json (206), gt_histogram GT-hist (107), histogram pred-hist
+# (207); an unmatched key is pred-block, default modality 20 → 220.
 @pytest.mark.parametrize(
     "key,kwargs,expected",
     [
         # Metadata
         ("sample_name", {}, 0),
-        # Tags
-        ("dataset_tags", {}, 5),
-        ("tags", {}, 5),
-        # Charts / stats
-        ("per_source_stats", {}, 12),
-        # Config / signal shape
-        ("gt_config", {}, 30),
-        ("signal_shape", {}, 30),
-        ("config", {}, 31),
-        # Histograms
-        ("gt_histogram", {}, 40),
-        ("histogram", {}, 41),
-        ("histogram_filtered", {}, 41),
-        # Unknown key falls through to 100
-        ("zzz", {}, 100),
+        # Tags (right of stats now)
+        ("dataset_tags", {}, 30),
+        ("tags", {}, 30),
+        # Stats (left of tags + all data fields)
+        ("per_source_stats", {}, 20),
+        # Config / signal shape → GT-block json
+        ("gt_config", {}, 106),
+        ("signal_shape", {}, 106),
+        ("config", {}, 206),
+        # Histograms → hist modality in their role block
+        ("gt_histogram", {}, 107),
+        ("histogram", {}, 207),
+        ("histogram_filtered", {}, 207),
+        # Unknown key → pred block, default modality
+        ("zzz", {}, 220),
     ],
 )
 def test_column_priority_named_keys(key, kwargs, expected):
     assert get_column_priority(key, **kwargs) == expected
 
 
+# Data fields by role + modality: GT block = 100 + modality, pred block =
+# 200 + modality (image=1, depth=3, json=6, scalar=8).
 @pytest.mark.parametrize(
     "column_type,is_dataset_field,expected",
     [
-        ("json", True, 35),
-        ("json", False, 36),
-        ("image", True, 50),
-        ("image", False, 51),
-        ("depth", True, 50),
-        ("depth", False, 51),
-        ("scalar", True, 60),
-        ("scalar", False, 61),
+        ("json", True, 106),
+        ("json", False, 206),
+        ("image", True, 101),
+        ("image", False, 201),
+        ("depth", True, 103),
+        ("depth", False, 203),
+        ("scalar", True, 108),
+        ("scalar", False, 208),
     ],
 )
 def test_column_priority_typed_fields(column_type, is_dataset_field, expected):
@@ -152,12 +160,15 @@ def test_column_priority_named_key_beats_column_type():
 
 
 def test_column_priority_orders_groups_correctly():
-    # Verify the documented ordering: name < tags < stats < config < histograms < images < scalars
+    # Documented ordering: sample_name → metric chart → stats → tags →
+    # GT data fields → pred data fields. Within a role block, modality order
+    # places image before json/histogram/scalar.
     name = get_column_priority("sample_name")
-    tags = get_column_priority("tags")
+    metric = get_column_priority("per_sample_metrics")
     stats = get_column_priority("per_source_stats")
-    config = get_column_priority("gt_config")
-    hist = get_column_priority("gt_histogram")
-    image = get_column_priority("any", column_type="image", is_dataset_field=True)
-    scalar = get_column_priority("any", column_type="scalar", is_dataset_field=True)
-    assert name < tags < stats < config < hist < image < scalar
+    tags = get_column_priority("tags")
+    gt_image = get_column_priority("any", column_type="image", is_dataset_field=True)
+    gt_scalar = get_column_priority("any", column_type="scalar", is_dataset_field=True)
+    pred_image = get_column_priority("any", column_type="image", is_dataset_field=False)
+    # Framing columns precede every data field; GT block precedes pred block.
+    assert name < metric < stats < tags < gt_image < gt_scalar < pred_image

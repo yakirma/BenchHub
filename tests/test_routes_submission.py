@@ -116,11 +116,11 @@ def test_recalculate_forwards_sample_filters(auth_client, project, submissions):
 # ---------------------------------------------------------------------------
 
 
-def test_batch_action_archive(client, project, leaderboard_with_samples, submissions):
+def test_batch_action_archive(auth_client, project, leaderboard_with_samples, submissions):
     proj_name = project.name
     sub_ids = [str(s.id) for s in submissions]
 
-    resp = client.post(
+    resp = auth_client.post(
         "/submissions/batch_action",
         data={
             "action": "archive",
@@ -135,12 +135,12 @@ def test_batch_action_archive(client, project, leaderboard_with_samples, submiss
     assert all(statuses.values())
 
 
-def test_batch_action_unarchive(client, project, leaderboard_with_samples, submissions):
+def test_batch_action_unarchive(auth_client, project, leaderboard_with_samples, submissions):
     for s in submissions:
         s.is_archived = True
     db.session.commit()
 
-    resp = client.post(
+    resp = auth_client.post(
         "/submissions/batch_action",
         data={
             "action": "unarchive",
@@ -154,11 +154,11 @@ def test_batch_action_unarchive(client, project, leaderboard_with_samples, submi
     assert all(not s.is_archived for s in Submission.query.all())
 
 
-def test_batch_action_delete(client, project, leaderboard_with_samples, submissions):
+def test_batch_action_delete(auth_client, project, leaderboard_with_samples, submissions):
     proj_name = project.name
     sub_ids = [str(s.id) for s in submissions[:2]]  # delete first two
 
-    resp = client.post(
+    resp = auth_client.post(
         "/submissions/batch_action",
         data={
             "action": "delete",
@@ -174,12 +174,12 @@ def test_batch_action_delete(client, project, leaderboard_with_samples, submissi
 
 
 def test_batch_action_add_tags_creates_and_links(
-    client, project, leaderboard_with_samples, submissions
+    auth_client, project, leaderboard_with_samples, submissions
 ):
     proj_name = project.name
     sub_ids = [str(s.id) for s in submissions]
 
-    resp = client.post(
+    resp = auth_client.post(
         "/submissions/batch_action",
         data={
             "action": "add_tags",
@@ -197,13 +197,13 @@ def test_batch_action_add_tags_creates_and_links(
 
 
 def test_batch_action_recalculate_dispatches_sequential_task(
-    client, project, leaderboard_with_samples, submissions
+    auth_client, project, leaderboard_with_samples, submissions
 ):
     proj_name = project.name
     sub_ids = [str(s.id) for s in submissions]
 
     with patch("tasks.process_submissions_batch_sequential.delay") as task_mock:
-        resp = client.post(
+        resp = auth_client.post(
             "/submissions/batch_action",
             data={
                 "action": "recalculate",

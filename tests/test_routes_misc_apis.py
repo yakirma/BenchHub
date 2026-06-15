@@ -53,12 +53,12 @@ def lb_with_subs(db_session, client):
 # ---------------------------------------------------------------------------
 
 
-def test_recalculate_async_dispatches_one_task_per_submission(client, lb_with_subs):
+def test_recalculate_async_dispatches_one_task_per_submission(auth_client, lb_with_subs):
     lb_id = lb_with_subs["lb"].id
     sub_ids = [s.id for s in lb_with_subs["subs"]]
 
     with patch("tasks.process_submission.delay") as task_mock:
-        resp = client.post(
+        resp = auth_client.post(
             f"/api/leaderboard/{lb_id}/recalculate_async",
             data=json.dumps({"submission_ids": sub_ids}),
             content_type="application/json",
@@ -71,10 +71,10 @@ def test_recalculate_async_dispatches_one_task_per_submission(client, lb_with_su
     assert task_mock.call_count == 2
 
 
-def test_recalculate_async_400_with_no_ids(client, lb_with_subs):
+def test_recalculate_async_400_with_no_ids(auth_client, lb_with_subs):
     lb_id = lb_with_subs["lb"].id
 
-    resp = client.post(
+    resp = auth_client.post(
         f"/api/leaderboard/{lb_id}/recalculate_async",
         data=json.dumps({"submission_ids": []}),
         content_type="application/json",
@@ -83,7 +83,7 @@ def test_recalculate_async_400_with_no_ids(client, lb_with_subs):
 
 
 def test_recalculate_async_only_dispatches_for_matching_leaderboard(
-    client, lb_with_subs
+    auth_client, lb_with_subs
 ):
     """Submissions on a different leaderboard must not be triggered even if
     their IDs are passed in the payload."""
@@ -104,7 +104,7 @@ def test_recalculate_async_only_dispatches_for_matching_leaderboard(
     payload_ids = [s.id for s in lb_with_subs["subs"]] + [other_sub.id]
 
     with patch("tasks.process_submission.delay") as task_mock:
-        resp = client.post(
+        resp = auth_client.post(
             f"/api/leaderboard/{lb_id}/recalculate_async",
             data=json.dumps({"submission_ids": payload_ids}),
             content_type="application/json",

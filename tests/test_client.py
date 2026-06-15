@@ -81,7 +81,8 @@ def test_builder_manifest_minimal_round_trip():
     pred = manifest["predictions"][0]
     assert pred["name"] == "depth_pred"
     assert pred["kind"] == "depth"
-    assert pred["params"] == {"unit": "meters"}
+    # Depth carries an `is_inverse` flag (near/far swap) alongside `unit`.
+    assert pred["params"] == {"unit": "meters", "is_inverse": False}
 
 
 def test_builder_manifest_empty_raises():

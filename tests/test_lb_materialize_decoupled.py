@@ -74,7 +74,8 @@ def test_materialize_for_lb_writes_lb_scoped_gt_and_uses_lb_params(
     assert calls[0]["config_name"] == "core"
     assert calls[0]["sample_cap"] == 2
     assert calls[0]["shard_cap"] == -1
-    assert calls[0]["sampling"] == "random"
+    # LB-level 'random' maps to the HF materializer's 'uniform' strategy name.
+    assert calls[0]["sampling"] == "uniform"
     assert calls[0]["seed"] == 123
     assert calls[0]["sample_name_from"] == "image_id"
 

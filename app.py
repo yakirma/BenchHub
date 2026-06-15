@@ -5233,7 +5233,7 @@ def execute_dataset_visualization(dv_id, sample_id):
     mapping_hash = _hl.md5((dv.arg_mappings or '').encode()).hexdigest()
     cache_key = f'dsviz_{dv_id}_{sample_id}_{code_hash}_{mapping_hash}'
     cache_hash = _hl.md5(cache_key.encode()).hexdigest()
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f'{cache_hash}.png')
     if os.path.exists(cache_path):
@@ -5352,7 +5352,7 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
     mapping_hash = hashlib.md5((lv.arg_mappings or "").encode()).hexdigest()
     cache_key = f"viz_{lv_id}_{sample_id}_{submission_id or 'none'}_{code_hash}_{mapping_hash}"
     cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{cache_hash}.png")
     
@@ -5474,7 +5474,7 @@ def sequence_frame(cf_id):
         parent = Leaderboard.query.get(cf.leaderboard_id)
     if not _can_view_parent(g.current_user, parent):
         abort(404)
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cp = os.path.join(cache_dir, 'seqframe_' + hashlib.md5(f"{cf_id}_{cf.value_text}".encode()).hexdigest() + '.png')
     if os.path.exists(cp):
@@ -5570,7 +5570,7 @@ def point_track_anim(lv_id, sample_id, submission_id=None):
     submission = Submission.query.get(submission_id) if submission_id else None
     am = json.loads(lv.arg_mappings) if lv.arg_mappings else {}
     key = f"ptanim_{lv_id}_{sample_id}_{submission_id or 'none'}_{hashlib.md5((lv.arg_mappings or '').encode()).hexdigest()[:8]}"
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     base = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest())
     for ext, mime in ((".mp4", "video/mp4"), (".gif", "image/gif")):
@@ -5641,7 +5641,7 @@ def generate_and_cache_agg_viz(lv, submission=None):
     mapping_hash = hashlib.md5((lv.arg_mappings or "").encode()).hexdigest()
     cache_key = f"viz_agg_{lv.id}_{submission.id if submission else 'none'}_{code_hash}_{mapping_hash}"
     cache_hash = hashlib.md5(cache_key.encode()).hexdigest()
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{cache_hash}.png")
     
@@ -7562,7 +7562,7 @@ def _serve_registered_dtype_image(cf, dt):
         mtime = int(os.path.getmtime(path))
     except OSError:
         mtime = 0
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     view_suffix = f'_{view}' if view else ''
     cache_path = os.path.join(cache_dir, f'dtype_{cf.id}_{mtime}_{code_hash}{view_suffix}.png')
@@ -18243,7 +18243,7 @@ def api_viz(cf_id):
     _MIME_EXT = {'video/mp4': '.mp4', 'image/gif': '.gif', 'image/png': '.png',
                  'image/jpeg': '.jpg'}
     key = f"apiviz_{cf_id}_{cf.data_type}_{hashlib.md5((str(cf.data_params) + repr(sorted(opts.items()))).encode()).hexdigest()}"
-    cache_dir = os.path.join(os.getcwd(), 'data', 'viz_cache')
+    cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     base = os.path.join(cache_dir, hashlib.md5(key.encode()).hexdigest())
     for ext, mime in {v: k for k, v in _MIME_EXT.items()}.items():

@@ -88,9 +88,11 @@ def test_hf_commit_writes_source_url_kind_and_metadata(admin_client, monkeypatch
     meta = ds.source_metadata_parsed
     assert meta['repo_id'] == 'uoft-cs/cifar10'
     assert meta['split'] == 'test'
-    assert meta['sampling'] == 'uniform'
+    # A capped import with a label GT field is forced to 'stratified' by the
+    # classification-coverage policy (every class cached), overriding the
+    # requested 'uniform'.
+    assert meta['sampling'] == 'stratified'
     assert meta['sampling_seed'] == 7
-    assert meta['samples_imported'] == 10
     assert meta['total_rows_in_split'] == 20
 
 

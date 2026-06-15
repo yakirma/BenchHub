@@ -23,6 +23,13 @@ os.environ["BENCHHUB_DATA_DIR"] = _TEST_DATA_DIR
 _TEST_CACHE_DIR = os.path.join(_TEST_DATA_DIR, "client_cache")
 os.environ["BENCHHUB_CACHE_DIR"] = _TEST_CACHE_DIR
 
+# Isolate the /api/viz render cache too. In prod it lives at
+# <cwd>/data/viz_cache and is keyed on cf_id (monotonic there); under tests
+# the per-test DB reset reuses cf ids, so a prior test's cached render would
+# be served for a different CF with the same id. Point it at the test data dir
+# and wipe per test (db_session) so each test renders fresh.
+_TEST_VIZ_CACHE_DIR = os.path.join(_TEST_DATA_DIR, "viz_cache")
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -39,6 +46,7 @@ def app():
     flask_app.config.update(
         TESTING=True,
         WTF_CSRF_ENABLED=False,
+        VIZ_CACHE_DIR=_TEST_VIZ_CACHE_DIR,
     )
 
     # The app sets old-style Celery keys (CELERY_BROKER_URL etc.) via
@@ -80,6 +88,8 @@ def db_session(app):
     # Drop the client input cache so bulk-archive tests don't see a
     # stale extraction from a prior test reusing the same LB id.
     shutil.rmtree(_TEST_CACHE_DIR, ignore_errors=True)
+    # Same for the /api/viz render cache (keyed on cf_id, which resets here).
+    shutil.rmtree(_TEST_VIZ_CACHE_DIR, ignore_errors=True)
 
     yield db.session
 
