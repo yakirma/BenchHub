@@ -770,10 +770,9 @@
 
 <div class="mb-3">
     <form method="get" action="{{ url_for('dataset_view', dataset_id=dataset.id) }}">
-        {# Tag filters — collapsible <details>, default closed.
-           Sits above the sample-name search since it's the heavier /
-           less-common control; users default to text search. #}
-        <details class="card border-0 shadow-sm mb-3 collapsible-card">
+        {# Tag filters — hidden per request. Kept in the DOM (display:none) so
+           the tag-chip JS still binds to its inputs without erroring. #}
+        <details class="card border-0 shadow-sm mb-3 collapsible-card" style="display:none;">
             <summary class="card-body py-2 d-flex align-items-center gap-2 user-select-none">
                 <i class="bi bi-chevron-right collapsible-chev"></i>
                 <span class="small fw-semibold text-body-emphasis">

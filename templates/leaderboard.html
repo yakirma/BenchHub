@@ -1128,8 +1128,10 @@ background-color: transparent;
                 <input type="hidden" name="sort_order" value="{{ sort_order }}">
                 <input type="hidden" name="show_archived" value="{{ show_archived }}">
 
-                <!-- Row 1: Submission Tag Filters -->
-                <div class="mb-3 p-2 bg-body-tertiary border rounded">
+                <!-- Row 1: Submission Tag Filters — hidden per request. Kept in
+                     the DOM (display:none) so the filter form + its tag-chip JS
+                     still bind and submit empty defaults. -->
+                <div class="mb-3 p-2 bg-body-tertiary border rounded" style="display:none;">
                     <strong>Submission Tag Filters:</strong>
                     <div class="d-flex align-items-center mt-2 flex-wrap">
                         <!-- Include Types -->
@@ -1202,8 +1204,8 @@ background-color: transparent;
                     </div>
                 </div>
 
-                <!-- Row 2: Sample Filters -->
-                <div class="mb-3 p-2 bg-body-tertiary border rounded">
+                <!-- Row 2: Sample Filters — hidden per request (kept in DOM). -->
+                <div class="mb-3 p-2 bg-body-tertiary border rounded" style="display:none;">
                     <strong>Sample Filters (for metrics calculation):</strong>
                     <div class="d-flex align-items-center mt-2 flex-wrap">
                         <!-- Include Sample Tags -->

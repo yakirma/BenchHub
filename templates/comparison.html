@@ -1082,7 +1082,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         {% set stat_fields = (display_scalars + display_labels)|sort %}
                         <td>
                             <div style="max-height: 250px; overflow-y: auto;">
-                                <table class="table table-sm mb-0 small" style="font-size: 0.85em;">
+                                <table class="table table-sm mb-0 small stats-heatmap" style="font-size: 0.85em;">
                                     <thead>
                                         <tr>
                                             <th></th>
@@ -4599,6 +4599,55 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
             bootstrap.Modal.getOrCreateInstance(document.getElementById('agg-compare-modal')).show();
         });
+    })();
+</script>
+
+<script>
+    // Contrast-enhancing background shading for the merged Stats column.
+    // Per row: numeric stats get a violet intensity scaled to their magnitude
+    // within the row (faint = low, strong = high) so differences between GT and
+    // submissions pop at a glance — a neutral sequential shade, not a good/bad
+    // judgement. Label rows (when a GT column exists) shade each prediction
+    // green if it matches the GT label, red if it doesn't.
+    (function () {
+        function colorStatsTables(root) {
+            (root || document).querySelectorAll('table.stats-heatmap').forEach(function (tbl) {
+                const headers = Array.from(tbl.querySelectorAll('thead th'));
+                const hasGT = headers.length > 1 && headers[1].textContent.trim() === 'GT';
+                tbl.querySelectorAll('tbody tr').forEach(function (tr) {
+                    const cells = Array.from(tr.children).slice(1);   // drop the row label
+                    const parsed = cells.map(function (td) {
+                        const t = (td.textContent || '').trim();
+                        if (!t || t === '-') return { n: null, t: '' };
+                        const v = parseFloat(t.replace(/,/g, ''));
+                        return { n: (isFinite(v) && /^-?\d/.test(t)) ? v : null, t: t };
+                    });
+                    const nums = parsed.filter(function (p) { return p.n !== null; }).map(function (p) { return p.n; });
+                    if (nums.length >= 2) {
+                        const mn = Math.min.apply(null, nums), mx = Math.max.apply(null, nums), span = mx - mn;
+                        cells.forEach(function (td, i) {
+                            if (parsed[i].n === null) return;
+                            const t = span > 0 ? (parsed[i].n - mn) / span : 0.5;
+                            td.style.backgroundColor = 'rgba(124,58,237,' + (0.08 + 0.32 * t).toFixed(3) + ')';
+                        });
+                    } else if (hasGT && cells.length >= 2 && parsed[0].t && parsed[0].t !== '-') {
+                        const gt = parsed[0].t;
+                        cells.forEach(function (td, i) {
+                            if (i === 0) return;
+                            const tx = parsed[i].t;
+                            if (!tx || tx === '-') return;
+                            td.style.backgroundColor = (tx === gt) ? 'rgba(34,197,94,0.20)' : 'rgba(239,68,68,0.16)';
+                        });
+                    }
+                });
+            });
+        }
+        window._colorStatsTables = colorStatsTables;
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function () { colorStatsTables(); });
+        } else {
+            colorStatsTables();
+        }
     })();
 </script>
 {% endblock %}
