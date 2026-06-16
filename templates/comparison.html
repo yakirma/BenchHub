@@ -3631,7 +3631,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
                     // So valid flow:
                     window.updateVisGallery(targetItem);
-                    window.updateVisModalContent(targetItem);
+                    if (window._visSxsActive && window._visSel && window._visSel.size >= 2) {
+                        // Side-by-side compare: keep the selected columns and
+                        // re-render them for the new sample row, rather than
+                        // dropping back to the single viewer. The column indices
+                        // map 1:1 across rows (identical column layout).
+                        _renderVisSxs();
+                    } else {
+                        window.updateVisModalContent(targetItem);
+                    }
                 }
             }
         },
@@ -3868,6 +3876,14 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     function _renderVisSxs() {
         const g = window.visGallery;
         if (!g) return;
+        // When re-rendering an already-active side-by-side view (e.g. browsing
+        // up/down between samples), keep the current zoom/pan so the same region
+        // stays in view across samples. A fresh entry starts at 1×.
+        let _keepZoom = null;
+        if (window._visSxsActive && window._visMultiZoom) {
+            const z = window._visMultiZoom;
+            _keepZoom = { scale: z.scale, pointX: z.pointX, pointY: z.pointY };
+        }
         const sel = Array.from(window._visSel)
             .filter(i => i >= 0 && i < g.items.length)
             .sort((a, b) => a - b);
@@ -3935,13 +3951,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         sxs.style.display = 'flex';
         window._visSxsActive = true;
         if (!window._visMultiZoom) window._visMultiZoom = new MultiZoom(sxs);
-        window._visMultiZoom.setMedias(medias);
+        window._visMultiZoom.setMedias(medias);   // resets to 1×
+        if (_keepZoom) {
+            const z = window._visMultiZoom;
+            z.scale = _keepZoom.scale; z.pointX = _keepZoom.pointX; z.pointY = _keepZoom.pointY;
+            z.apply();
+        }
         _visUpdateFooterMarks();
 
         const titleSpan = modal && modal.querySelector('.modal-sample-name');
         if (titleSpan) {
+            // Surface the current sample name so up/down navigation (which keeps
+            // the selection) shows which sample is on screen.
+            const _firstEl = g.items[sel[0]] && g.items[sel[0]].element;
+            const _sn = (_firstEl && _firstEl.getAttribute('data-sample-name')) || '';
+            const _esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
             titleSpan.innerHTML = '<span class="fw-semibold text-body">Side-by-side compare</span>'
-                + ' · <span class="text-muted">' + sel.length + ' fields</span>';
+                + ' · <span class="text-muted">' + sel.length + ' fields</span>'
+                + (_sn ? ' · <span class="text-muted">Sample: ' + _esc(_sn) + '</span>' : '');
         }
     }
 
