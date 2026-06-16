@@ -3729,8 +3729,42 @@ def _landing_gallery(n=12):
                 'thumb': url_for('serve_custom_field_image', **kw),
                 'dataset_id': ds_id, 'label': ds_name, 'kind': dt,
             })
-            if len(ds_used) >= 3:
+            # Only one depth tile — the other two slots go to detection + flow
+            # visualizations below (more modality variety than 3 depth maps).
+            if len(ds_used) >= (1 if dt == 'depth' else 3):
                 break
+
+    # --- visualization tiles: image+bboxes (detection) and optical flow ---
+    # Both render via execute_visualization (a static PNG of the GT overlay),
+    # so they slot in as ordinary image tiles.
+    def _viz_tile(name_like, kind, suffix):
+        row = (
+            db.session.query(LeaderboardVisualization.id,
+                             leaderboard_datasets.c.dataset_id, Dataset.name)
+            .join(Leaderboard, LeaderboardVisualization.leaderboard_id == Leaderboard.id)
+            .join(GlobalVisualization,
+                  LeaderboardVisualization.global_visualization_id == GlobalVisualization.id)
+            .join(leaderboard_datasets,
+                  leaderboard_datasets.c.leaderboard_id == Leaderboard.id)
+            .join(Dataset, Dataset.id == leaderboard_datasets.c.dataset_id)
+            .filter(pub_lb, GlobalVisualization.name.ilike(name_like))
+            .order_by(LeaderboardVisualization.id).first()
+        )
+        if not row:
+            return None
+        lv_id, ds_id, ds_name = row
+        sid = db.session.query(func.min(Sample.id)).filter(Sample.dataset_id == ds_id).scalar()
+        if not sid:
+            return None
+        return {'kind': kind,
+                'thumb': url_for('execute_visualization', lv_id=lv_id, sample_id=sid),
+                'dataset_id': ds_id, 'label': ds_name + suffix}
+
+    for name_like, kind, suffix in (('%detection%', 'bboxes', ' · detection'),
+                                    ('%flow%', 'flow', ' · optical flow')):
+        tile = _viz_tile(name_like, kind, suffix)
+        if tile:
+            out.append(tile)
 
     # --- point-track visualization video ---
     lv_row = (
