@@ -3692,24 +3692,34 @@ def _category_tree(model, filt):
 
 
 def _landing_gallery(n=12):
-    """Up to `n` modality-diverse decoded sample thumbnails from public
-    datasets — the visual hook on the landing page. Plain dicts only
-    (cache-safe): {thumb, dataset_id, label, kind}."""
+    """Modality-diverse decoded samples for the landing 'See the data' hook.
+    Plain dicts only (cache-safe). Still tiles (image/mask/depth) plus a
+    point-track visualization video, a playable audio clip, and an NLP text
+    snippet — so the gallery shows the breadth of supported modalities."""
     pub = or_(Dataset.visibility == 'public', Dataset.owner_user_id.is_(None))
+    pub_lb = or_(Leaderboard.visibility == 'public', Leaderboard.owner_user_id.is_(None))
+    uf = app.config['UPLOAD_FOLDER']
     out = []
+
+    def _file_ok(vt):
+        return bool(vt) and os.path.isfile(os.path.join(uf, vt))
+
+    # --- still tiles: image / mask / depth ---
     for dt in ('image', 'mask', 'depth'):
-        rows = (
-            db.session.query(CustomField.id, Sample.dataset_id, Dataset.name)
-            .join(Sample, CustomField.sample_id == Sample.id)
-            .join(Dataset, Sample.dataset_id == Dataset.id)
-            .filter(pub, CustomField.data_type == dt)
-            .order_by(CustomField.id.desc())
-            .limit(60)
-            .all()
-        )
+        q = (db.session.query(CustomField.id, CustomField.value_text,
+                              Sample.dataset_id, Dataset.name)
+             .join(Sample, CustomField.sample_id == Sample.id)
+             .join(Dataset, Sample.dataset_id == Dataset.id)
+             .filter(pub, CustomField.data_type == dt))
+        if dt == 'depth':
+            # Flow datasets store flow components (flow_u/flow_v) as the `depth`
+            # kind; the v-component is ~all-zero and renders as a blank map.
+            # Exclude flow-named fields so no empty tile shows.
+            q = q.filter(~CustomField.name.ilike('%flow%'))
+        rows = q.order_by(CustomField.id.desc()).limit(80).all()
         ds_used = set()
-        for cf_id, ds_id, ds_name in rows:
-            if ds_id in ds_used:
+        for cf_id, vt, ds_id, ds_name in rows:
+            if ds_id in ds_used or not _file_ok(vt):
                 continue
             ds_used.add(ds_id)
             kw = {'field_id': cf_id}
@@ -3719,9 +3729,66 @@ def _landing_gallery(n=12):
                 'thumb': url_for('serve_custom_field_image', **kw),
                 'dataset_id': ds_id, 'label': ds_name, 'kind': dt,
             })
-            if len(ds_used) >= 4:
+            if len(ds_used) >= 3:
                 break
-    return out[:n]
+
+    # --- point-track visualization video ---
+    lv_row = (
+        db.session.query(LeaderboardVisualization.id,
+                         leaderboard_datasets.c.dataset_id, Dataset.name)
+        .join(Leaderboard, LeaderboardVisualization.leaderboard_id == Leaderboard.id)
+        .join(GlobalVisualization,
+              LeaderboardVisualization.global_visualization_id == GlobalVisualization.id)
+        .join(leaderboard_datasets,
+              leaderboard_datasets.c.leaderboard_id == Leaderboard.id)
+        .join(Dataset, Dataset.id == leaderboard_datasets.c.dataset_id)
+        .filter(pub_lb, GlobalVisualization.name.ilike('%point_track%'))
+        .order_by(LeaderboardVisualization.id).first()
+    )
+    if lv_row:
+        lv_id, ds_id, ds_name = lv_row
+        sid = (db.session.query(func.min(Sample.id))
+               .filter(Sample.dataset_id == ds_id).scalar())
+        if sid:
+            out.append({
+                'kind': 'video',
+                'video_url': url_for('point_track_anim', lv_id=lv_id, sample_id=sid),
+                'dataset_id': ds_id, 'label': ds_name + ' · point tracking',
+            })
+
+    # --- playable audio clip ---
+    arows = (db.session.query(CustomField.id, CustomField.value_text,
+                              Sample.dataset_id, Dataset.name)
+             .join(Sample, CustomField.sample_id == Sample.id)
+             .join(Dataset, Sample.dataset_id == Dataset.id)
+             .filter(pub, CustomField.data_type == 'audio')
+             .order_by(CustomField.id.desc()).limit(40).all())
+    for cf_id, vt, ds_id, ds_name in arows:
+        if not _file_ok(vt) or not (vt or '').lower().endswith(('.wav', '.mp3', '.flac', '.ogg', '.m4a')):
+            continue
+        out.append({
+            'kind': 'audio',
+            'audio_url': url_for('serve_custom_field_audio', field_id=cf_id),
+            'poster': url_for('serve_custom_field_image', field_id=cf_id),  # waveform PNG
+            'dataset_id': ds_id, 'label': ds_name,
+        })
+        break
+
+    # --- NLP text snippet ---
+    trows = (db.session.query(CustomField.value_text, Sample.dataset_id, Dataset.name)
+             .join(Sample, CustomField.sample_id == Sample.id)
+             .join(Dataset, Sample.dataset_id == Dataset.id)
+             .filter(pub, CustomField.data_type == 'text',
+                     func.length(CustomField.value_text) > 40)
+             .order_by(CustomField.id.desc()).limit(20).all())
+    for vt, ds_id, ds_name in trows:
+        out.append({
+            'kind': 'text', 'text': (vt or '')[:240],
+            'dataset_id': ds_id, 'label': ds_name,
+        })
+        break
+
+    return out
 
 
 _landing_cache = {'ts': 0.0, 'data': None}

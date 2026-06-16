@@ -77,6 +77,21 @@
         opacity: 0; transition: opacity .15s ease; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .gallery-tile:hover .gallery-cap { opacity: 1; }
+    /* Video tile: clip fills the square. */
+    .gallery-media-el { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+    /* Audio tile: waveform poster + an overlaid player pinned to the bottom. */
+    .gallery-audio-tile { background-size: contain; background-repeat: no-repeat; background-position: center 38%;
+        background-color: #0f1020; }
+    .gallery-audio { position: absolute; left: 6px; right: 6px; bottom: 6px; width: calc(100% - 12px);
+        height: 30px; z-index: 3; }
+    .gallery-kind-link { text-decoration: none; }
+    .gallery-cap-static { opacity: 1; }
+    /* Text tile: snippet of NLP content on a warm card. */
+    .gallery-text-tile { background: linear-gradient(135deg, #f6f0e3, #e9dfc8); }
+    .gallery-text-body { position: absolute; inset: 1.5rem .6rem 1.6rem; overflow: hidden; color: #3a2614;
+        font-size: 0.62rem; line-height: 1.3;
+        display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; }
+    .gallery-text-tile .gallery-cap { background: linear-gradient(transparent, rgba(58,38,20,0.75)); }
 
     /* Domain cards */
     .domain-card {
@@ -190,12 +205,36 @@
     </div>
     <div class="gallery-grid">
         {% for g in gallery %}
+        {% if g.kind == 'video' %}
+        {# Point-tracking visualization clip — autoplays, click to explore. #}
+        <a class="gallery-tile" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}" title="{{ g.label }}">
+            <video class="gallery-media-el" src="{{ g.video_url }}" autoplay loop muted playsinline preload="metadata"></video>
+            <span class="gallery-kind">video</span>
+            <span class="gallery-cap">{{ g.label }}</span>
+        </a>
+        {% elif g.kind == 'audio' %}
+        {# Playable audio clip over its waveform. Not a link (so the player
+           controls work cleanly); the corner badge links to the dataset. #}
+        <div class="gallery-tile gallery-audio-tile" style="background-image: url('{{ g.poster }}');" title="{{ g.label }}">
+            <a class="gallery-kind gallery-kind-link" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}">audio ↗</a>
+            <span class="gallery-cap gallery-cap-static">{{ g.label }}</span>
+            <audio class="gallery-audio" controls preload="none" src="{{ g.audio_url }}"></audio>
+        </div>
+        {% elif g.kind == 'text' %}
+        {# NLP text snippet. #}
+        <a class="gallery-tile gallery-text-tile" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}" title="{{ g.label }}">
+            <span class="gallery-kind">text</span>
+            <span class="gallery-text-body">{{ g.text }}</span>
+            <span class="gallery-cap gallery-cap-static">{{ g.label }}</span>
+        </a>
+        {% else %}
         <a class="gallery-tile" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}"
            style="background-image: url('{{ g.thumb }}');" title="{{ g.label }}"
            onclick="if(window.gtag){gtag('event','select_content',{content_type:'gallery',item_id:g.dataset_id|string});}">
             <span class="gallery-kind">{{ g.kind }}</span>
             <span class="gallery-cap">{{ g.label }}</span>
         </a>
+        {% endif %}
         {% endfor %}
     </div>
 </section>
