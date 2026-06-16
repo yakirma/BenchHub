@@ -3926,6 +3926,14 @@ def landing():
     return render_template('landing.html', **_landing_data())
 
 
+@app.route('/landing')
+def landing_preview():
+    """Temporary: render the landing page even when signed in, so it can be
+    previewed/QA'd without logging out. (`/` redirects signed-in users to
+    their dashboard.)"""
+    return render_template('landing.html', **_landing_data())
+
+
 # Thumbnail modality priority (highest first). Visual kinds render directly;
 # `sequence` shows the clip's first frame; `audio` shows its waveform PNG.
 # The text-ish kinds have no inherent picture, so we render a snippet of their
