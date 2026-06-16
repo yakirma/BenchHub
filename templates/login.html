@@ -127,6 +127,18 @@
             <form method="post" action="{{ url_for('login_email_request') }}" id="signup-form">
                 <div class="modal-body">
                     <input type="hidden" name="next" value="{{ next }}">
+                    <div class="row g-2 mb-3">
+                        <div class="col">
+                            <label class="form-label small mb-1" for="su-first">First name</label>
+                            <input type="text" name="first_name" id="su-first" required
+                                   class="form-control" placeholder="John" autocomplete="given-name">
+                        </div>
+                        <div class="col">
+                            <label class="form-label small mb-1" for="su-last">Last name</label>
+                            <input type="text" name="last_name" id="su-last" required
+                                   class="form-control" placeholder="Smith" autocomplete="family-name">
+                        </div>
+                    </div>
                     <label class="form-label small mb-1" for="su-email">Email</label>
                     <div class="input-group mb-3">
                         <span class="input-group-text"><i class="bi bi-envelope"></i></span>

@@ -2928,6 +2928,17 @@ def login_email_request():
     else:
         session.pop('pending_pw_hash', None)
 
+    # Sign-up form supplies first + last name (required there); stash the full
+    # name now and apply it as the display name on verify when a NEW account is
+    # created. The passwordless code-login path sends no name, so clear any
+    # stale value rather than reuse it.
+    first = (request.form.get('first_name') or '').strip()
+    last = (request.form.get('last_name') or '').strip()
+    if first and last:
+        session['pending_full_name'] = f"{first} {last}"
+    else:
+        session.pop('pending_full_name', None)
+
     # Invalidate any outstanding codes for this address (one live code).
     EmailLoginCode.query.filter_by(email=email, consumed=False).update(
         {'consumed': True}, synchronize_session=False)
@@ -3020,6 +3031,7 @@ def login_email_verify_post():
     # either way so it never lingers or overwrites an existing user's password.
     row.consumed = True
     _pending_pw = session.pop('pending_pw_hash', None)
+    _pending_name = session.pop('pending_full_name', None)
     user = User.query.filter(func.lower(User.email) == email).first()
     if user is None:
         if _signup_blocked(email):
@@ -3027,7 +3039,7 @@ def login_email_verify_post():
             return redirect(url_for('login'))
         user = User(
             email=email,
-            display_name=email.split('@')[0],
+            display_name=_pending_name or email.split('@')[0],
             oauth_provider='email',
             oauth_sub=email,
             signup_attribution=_signup_attribution_json(),
