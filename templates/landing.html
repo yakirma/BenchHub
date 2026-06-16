@@ -216,7 +216,10 @@
         {# Playable audio clip over its waveform. Not a link (so the player
            controls work cleanly); the corner badge links to the dataset. #}
         <div class="gallery-tile gallery-audio-tile" style="background-image: url('{{ g.poster }}');" title="{{ g.label }}">
-            <a class="gallery-kind gallery-kind-link" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}">audio ↗</a>
+            {# Whole tile links to the dataset; the audio player sits above this
+               stretched-link (higher z-index) so it stays playable. #}
+            <a class="stretched-link" href="{{ url_for('dataset_view', dataset_id=g.dataset_id) }}" aria-label="{{ g.label }}"></a>
+            <span class="gallery-kind">audio</span>
             <span class="gallery-cap gallery-cap-static">{{ g.label }}</span>
             <audio class="gallery-audio" controls preload="none" src="{{ g.audio_url }}"></audio>
         </div>
