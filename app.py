@@ -424,6 +424,19 @@ leaderboard_datasets = db.Table('leaderboard_datasets',
 )
 
 # Models
+class LeaderboardFollow(db.Model):
+    """A user following a leaderboard they don't own. Followed boards surface
+    on the user's /home dashboard alongside their own, badged 'Followed'."""
+    __tablename__ = 'leaderboard_follow'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    leaderboard_id = db.Column(db.Integer, db.ForeignKey('leaderboard.id'), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'leaderboard_id', name='uq_lb_follow'),
+    )
+
+
 class Tag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), unique=True, nullable=False)
@@ -4042,7 +4055,21 @@ def home():
         .limit(24)
         .all()
     )
-    leaderboards = public_lbs + personal_lbs  # legacy template var
+    # Leaderboards the user follows but doesn't own — surfaced on the
+    # dashboard badged "Followed". Restrict to still-visible boards (a now-
+    # private board the user doesn't own shouldn't leak onto their home).
+    followed_lbs = (
+        Leaderboard.query
+        .join(LeaderboardFollow, LeaderboardFollow.leaderboard_id == Leaderboard.id)
+        .filter(LeaderboardFollow.user_id == user.id,
+                Leaderboard.owner_user_id != user.id,
+                Leaderboard.visibility.in_(['public', 'unlisted']))
+        .order_by(LeaderboardFollow.created_at.desc())
+        .limit(24)
+        .all()
+    )
+    followed_lb_ids = {lb.id for lb in followed_lbs}
+    leaderboards = public_lbs + personal_lbs + followed_lbs  # legacy template var
 
     dataset_thumbs = {ds.id: _dataset_thumb_url(ds) for ds in datasets}
     # Leaderboards-using-this-dataset count for the dataset cards' trophy
@@ -4092,6 +4119,7 @@ def home():
         leaderboards=leaderboards,
         public_lbs=public_lbs,
         personal_lbs=personal_lbs,
+        followed_lb_ids=followed_lb_ids,
         dataset_thumbs=dataset_thumbs,
         dataset_lb_counts=dataset_lb_counts,
         leaderboard_thumbs=leaderboard_thumbs,
@@ -4100,6 +4128,36 @@ def home():
         public_submission_scores=public_submission_scores,
         user_submission_scores=user_submission_scores,
     )
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/follow', methods=['POST'])
+@login_required
+def follow_leaderboard(leaderboard_id):
+    """Follow a leaderboard so it shows on the follower's /home dashboard.
+    No-op for your own boards (they already appear there)."""
+    lb = Leaderboard.query.get_or_404(leaderboard_id)
+    if lb.owner_user_id != g.current_user.id:
+        exists = LeaderboardFollow.query.filter_by(
+            user_id=g.current_user.id, leaderboard_id=lb.id).first()
+        if not exists:
+            db.session.add(LeaderboardFollow(
+                user_id=g.current_user.id, leaderboard_id=lb.id))
+            db.session.commit()
+            flash(f'Following "{lb.name}" — it now appears on your home dashboard.', 'success')
+    return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=lb.id))
+
+
+@app.route('/leaderboard/<int:leaderboard_id>/unfollow', methods=['POST'])
+@login_required
+def unfollow_leaderboard(leaderboard_id):
+    """Stop following a leaderboard."""
+    f = LeaderboardFollow.query.filter_by(
+        user_id=g.current_user.id, leaderboard_id=leaderboard_id).first()
+    if f:
+        db.session.delete(f)
+        db.session.commit()
+        flash('Unfollowed.', 'info')
+    return redirect(request.referrer or url_for('leaderboard_view', leaderboard_id=leaderboard_id))
 
 
 @app.route('/explore')
@@ -11571,8 +11629,12 @@ def leaderboard_view(leaderboard_id):
     # the page surfaces status + a retry button when failed.
     materialization = leaderboard.materialization
     eval_summary = _lb_eval_summary(leaderboard)
+    is_following = bool(
+        g.current_user and LeaderboardFollow.query.filter_by(
+            user_id=g.current_user.id, leaderboard_id=leaderboard_id).first())
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
+                           is_following=is_following,
                            materialization=materialization,
                            eval_summary=eval_summary,
                            dataset_thumbs=dataset_thumbs,
@@ -20764,6 +20826,29 @@ def check_and_migrate_db():
                     conn.commit()
                 except Exception as e:
                     print(f"Migration error (dataset_request): {e}")
+
+                # --- LeaderboardFollow table (users follow LBs they don't own) ---
+                try:
+                    cursor.execute(
+                        "CREATE TABLE IF NOT EXISTS leaderboard_follow ("
+                        "  id INTEGER PRIMARY KEY,"
+                        "  user_id INTEGER NOT NULL REFERENCES user(id),"
+                        "  leaderboard_id INTEGER NOT NULL REFERENCES leaderboard(id),"
+                        "  created_at DATETIME NOT NULL,"
+                        "  UNIQUE(user_id, leaderboard_id)"
+                        ")"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_leaderboard_follow_user_id "
+                        "ON leaderboard_follow (user_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_leaderboard_follow_leaderboard_id "
+                        "ON leaderboard_follow (leaderboard_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (leaderboard_follow): {e}")
 
                 # --- DatasetVisualization table ---
                 try:

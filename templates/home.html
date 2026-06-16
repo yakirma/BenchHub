@@ -3,8 +3,8 @@
 
 {% block title %}Home — BenchHub{% endblock %}
 
-{% set meta_title = 'Your dashboard — BenchHub' %}
-{% set meta_description = 'Your datasets, leaderboards, and recent activity on BenchHub.' %}
+{% set meta_title = 'My dashboard — BenchHub' %}
+{% set meta_description = 'My datasets, leaderboards, and recent activity on BenchHub.' %}
 
 {% block flash_messages %}{% endblock %}
 
@@ -25,7 +25,7 @@
                 </span>
                 {% endif %}
             </h1>
-            <p class="text-body-secondary mb-0">Your datasets and leaderboards, most recent first.</p>
+            <p class="text-body-secondary mb-0">My datasets and leaderboards, most recent first.</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="{{ url_for('datasets_list') }}" class="btn btn-outline-primary">
@@ -50,7 +50,7 @@
     <section class="mb-5" id="home-datasets-section">
         <div class="d-flex align-items-baseline gap-2 mb-3">
             <h2 class="h5 fw-semibold mb-0">
-                <i class="bi bi-database me-2 text-info"></i>Your datasets
+                <i class="bi bi-database me-2 text-info"></i>My datasets
             </h2>
             <span class="text-body-secondary small">({{ datasets|length }})</span>
         </div>
@@ -191,6 +191,17 @@
                           title="Imported from Papers With Code">PWC</span>
                     {% endif %}
                 </div>
+                {# Followed boards (not owned by the viewer) get an explicit
+                   marker so they're distinguishable from one's own work. #}
+                {% if followed_lb_ids and lb.id in followed_lb_ids %}
+                <div class="mb-1" style="position: relative; z-index: 2;">
+                    <span class="badge text-bg-info-subtle text-info-emphasis border"
+                          style="font-size: 0.62rem;"
+                          title="You follow this leaderboard — you don't own it">
+                        <i class="bi bi-bookmark-star-fill me-1"></i>Followed
+                    </span>
+                </div>
+                {% endif %}
                 {% if lb.category %}
                 <div class="small text-body-secondary mb-1 text-truncate"
                      title="{{ lb.category }}">{{ lb.category }}</div>
@@ -286,7 +297,7 @@
             <section class="mb-5">
                 <div class="d-flex align-items-baseline gap-2 mb-3">
                     <h2 class="h5 fw-semibold mb-0">
-                        <i class="bi bi-trophy me-2 text-warning"></i>Your leaderboards
+                        <i class="bi bi-trophy me-2 text-warning"></i>My leaderboards
                     </h2>
                     <span class="text-body-secondary small">({{ leaderboards|length }})</span>
                 </div>
@@ -324,7 +335,7 @@
                 </div>
                 <div class="mb-4">
                     <h2 class="h6 fw-semibold mb-2">
-                        <i class="bi bi-person-up me-2 text-warning"></i>Your latest submissions
+                        <i class="bi bi-person-up me-2 text-warning"></i>My latest submissions
                     </h2>
                     {% if recent_user_submissions %}
                     <div class="list-group shadow-sm small">

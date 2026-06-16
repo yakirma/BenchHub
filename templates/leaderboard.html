@@ -682,6 +682,24 @@ background-color: transparent;
            toolbar — keeps the top row focused on navigation. #}
         <a href="{{ url_for('edit_leaderboard', leaderboard_id=leaderboard.id) }}"
             class="btn btn-outline-primary">Settings</a>
+        {# Follow: surfaces this board on the follower's /home dashboard.
+           Only for signed-in users who don't own it (owners see it on
+           /home already). #}
+        {% if current_user and leaderboard.owner_user_id != current_user.id %}
+        {% if is_following %}
+        <form method="post" action="{{ url_for('unfollow_leaderboard', leaderboard_id=leaderboard.id) }}" class="d-inline">
+            <button type="submit" class="btn btn-info" title="Following — click to unfollow">
+                <i class="bi bi-bookmark-star-fill me-1"></i>Following
+            </button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ url_for('follow_leaderboard', leaderboard_id=leaderboard.id) }}" class="d-inline">
+            <button type="submit" class="btn btn-outline-info" title="Follow to see this on your home dashboard">
+                <i class="bi bi-bookmark-star me-1"></i>Follow
+            </button>
+        </form>
+        {% endif %}
+        {% endif %}
         {# Owner/admin Delete action. Lives here too because the
            Settings page wasn't obvious — users were hitting "I
            can't erase my lb" when the button was buried two clicks
