@@ -704,8 +704,11 @@
                         <tbody>
                             {% for lv in leaderboard.leaderboard_visualizations %}
                             <tr>
-                                <td><strong>{{ lv.target_name if lv.target_name else lv.global_visualization.name
-                                        }}</strong></td>
+                                <td><strong>{{ lv.target_name if lv.target_name else lv.global_visualization.name }}</strong>
+                                    {% if lv.target_name and lv.target_name != lv.global_visualization.name %}
+                                    <br><small class="text-muted">{{ lv.global_visualization.name }}</small>
+                                    {% endif %}
+                                </td>
                                 <td>
                                     {% if lv.global_visualization.is_aggregated %}
                                     <span
