@@ -17801,6 +17801,10 @@ def dataset_view(dataset_id):
     return render_template('dataset_view.html',
                            known_categories=known_categories,
                            dataset=dataset,
+                           # Thumbnail for the "Leaderboards using this dataset"
+                           # cards — every such LB uses this dataset, so its own
+                           # thumbnail is a representative image for all of them.
+                           lb_card_thumb=_dataset_thumb_url(dataset),
                            image_render_kinds=image_render_kinds,
                            paginated_samples=paginated_samples, 
                            samples_data_for_charts=samples_data_for_charts, 
