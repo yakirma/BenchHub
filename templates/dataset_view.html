@@ -205,7 +205,9 @@
     {% endif %}
 </div>
 
-{% if dataset.leaderboards %}
+{# `dataset.leaderboards` is a dynamic relationship (AppenderQuery) — always
+   truthy, so test .count() to actually reach the empty-state branch below. #}
+{% if dataset.leaderboards.count() %}
 {# Same card shape as the home page — thumb placeholder, name + owner
    avatar, category + tags, stats row at bottom. Stretched-link makes
    the whole card clickable. #}
