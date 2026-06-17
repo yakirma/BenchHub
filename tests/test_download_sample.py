@@ -40,7 +40,7 @@ def _zip_names(resp):
     return set(zipfile.ZipFile(io.BytesIO(resp.data)).namelist())
 
 
-def test_download_sample_includes_every_kind(client, db_session, tmp_path, monkeypatch):
+def test_download_sample_includes_every_kind(auth_client, db_session, tmp_path, monkeypatch):
     """One CustomField per supported kind; every one must appear in
     the resulting ZIP under `ground_truth/<field>/<sample>.<ext>` (or
     the file's original basename for file-backed kinds)."""
@@ -79,7 +79,7 @@ def test_download_sample_includes_every_kind(client, db_session, tmp_path, monke
                                data_type='text',  value_text=text_rel))
     db.session.commit()
 
-    names = _zip_names(client.get(f'/sample/{sample.id}/download'))
+    names = _zip_names(auth_client.get(f'/sample/{sample.id}/download'))
 
     # Inline kinds land under .txt / .json next to the sample name.
     assert 'ground_truth/accuracy/s001.txt' in names
@@ -97,7 +97,7 @@ def test_download_sample_includes_every_kind(client, db_session, tmp_path, monke
     assert 'ground_truth/notes/s001.txt'           in names
 
 
-def test_download_sample_skips_metric_bookkeeping(client, db_session, tmp_path, monkeypatch):
+def test_download_sample_skips_metric_bookkeeping(auth_client, db_session, tmp_path, monkeypatch):
     """Per-sample metric outputs (`lm_<id>` and any data_type='metric'
     row) are bookkeeping written by the engine — they shouldn't
     pollute a user-facing sample dump."""
@@ -110,13 +110,13 @@ def test_download_sample_skips_metric_bookkeeping(client, db_session, tmp_path, 
                                data_type='scalar', value_float=1.0))
     db.session.commit()
 
-    names = _zip_names(client.get(f'/sample/{sample.id}/download'))
+    names = _zip_names(auth_client.get(f'/sample/{sample.id}/download'))
     assert 'ground_truth/keep_me/s001.txt' in names
     assert not any('lm_42' in n for n in names)
     assert not any('precomputed' in n for n in names)
 
 
-def test_download_sample_handles_missing_file_backed_payload(client, db_session, tmp_path, monkeypatch):
+def test_download_sample_handles_missing_file_backed_payload(auth_client, db_session, tmp_path, monkeypatch):
     """If a file-backed CustomField's underlying file went missing
     (manual deletion, volume issue), the bundle must still build —
     just without that field. Other rows on the sample still come
@@ -129,12 +129,12 @@ def test_download_sample_handles_missing_file_backed_payload(client, db_session,
                                data_type='scalar', value_float=0.42))
     db.session.commit()
 
-    names = _zip_names(client.get(f'/sample/{sample.id}/download'))
+    names = _zip_names(auth_client.get(f'/sample/{sample.id}/download'))
     assert 'ground_truth/score/s001.txt' in names
     assert not any(n.startswith('ground_truth/image/') for n in names)
 
 
-def test_download_sample_materialized_prefers_full_res(client, db_session, tmp_path, monkeypatch):
+def test_download_sample_materialized_prefers_full_res(auth_client, db_session, tmp_path, monkeypatch):
     """With ?lb=<id>, file-backed fields are pulled from the LB's
     materialised dir (full-res) rather than the preview tier."""
     from app import Leaderboard
@@ -157,12 +157,20 @@ def test_download_sample_materialized_prefers_full_res(client, db_session, tmp_p
     full.write_bytes(b'FULL_RESOLUTION_BYTES')
 
     # Preview download → preview bytes.
-    z_prev = zipfile.ZipFile(io.BytesIO(client.get(
+    z_prev = zipfile.ZipFile(io.BytesIO(auth_client.get(
         f'/sample/{sample.id}/download').data))
     assert z_prev.read('ground_truth/image/s001.jpg') == b'PREVIEW'
 
     # Materialised download → full-res bytes.
-    resp = client.get(f'/sample/{sample.id}/download?lb={lb.id}')
+    resp = auth_client.get(f'/sample/{sample.id}/download?lb={lb.id}')
     assert resp.headers['Content-Disposition'].count('materialized') == 1
     z_mat = zipfile.ZipFile(io.BytesIO(resp.data))
     assert z_mat.read('ground_truth/image/s001.jpg') == b'FULL_RESOLUTION_BYTES'
+
+
+def test_download_sample_requires_auth(client, db_session):
+    """Anonymous data download is blocked (redirect to login). The auth gate
+    runs before the row lookup, so any id is denied without a session/token."""
+    r = client.get('/sample/123456/download')
+    assert r.status_code in (302, 401)        # redirect to login (browser) / 401
+    assert b'PK\x03\x04' not in r.data        # not a ZIP payload

@@ -2428,6 +2428,33 @@ def require_api_token(view):
     return wrapped
 
 
+def _data_download_authed():
+    """True if the request is authenticated for downloading raw data —
+    either a signed-in cookie session OR a valid API token. Lets the
+    benchhub-client (Bearer token) keep fetching inputs while blocking
+    anonymous bulk scraping of dataset files. Populates g.current_user
+    from the token when present so downstream owner/quota checks work."""
+    if getattr(g, 'current_user', None):
+        return True
+    token = _bearer_token_from_request()
+    if token:
+        user, _ = _resolve_api_token(token)
+        if user is not None:
+            g.current_user = user
+            return True
+    return False
+
+
+def _deny_data_download():
+    """Response for an unauthenticated data-download attempt: 401 for API
+    callers (Authorization header present or an /api/ path), else redirect a
+    browser to the login page."""
+    if _bearer_token_from_request() or request.path.startswith('/api/'):
+        return jsonify({'error': 'Sign in or provide an API token to download data.'}), 401
+    flash("Please sign in to download data.", "warning")
+    return redirect(url_for('login', next=request.full_path))
+
+
 @app.route('/api/whoami')
 @require_api_token
 def api_whoami():
@@ -8236,6 +8263,10 @@ def api_leaderboard_inputs_archive(leaderboard_id):
         bearer = _bearer_token_from_request()
         if bearer:
             user, _ = _resolve_api_token(bearer)
+    # Require sign-in (or API token) to download raw input data — anonymous
+    # browsing stays free, but bulk data export needs an account.
+    if user is None:
+        return _deny_data_download()
     if not _can_view_parent(user, lb):
         abort(404)
 
@@ -18750,6 +18781,10 @@ def serve_custom_field_json(field_id):
 
 @app.route('/sample/<int:sample_id>/download')
 def download_sample(sample_id):
+    # Require sign-in (or an API token) to download raw sample data — blocks
+    # anonymous bulk scraping while keeping the benchhub-client working.
+    if not _data_download_authed():
+        return _deny_data_download()
     sample = Sample.query.get_or_404(sample_id)
     # Optional submission IDs to include in the zip
     submission_ids = request.args.getlist('submission_id', type=int)

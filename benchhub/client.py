@@ -1202,7 +1202,10 @@ class FlaskTestClientTransport:
         return payload if isinstance(payload, dict) else {}
 
     def fetch_bytes(self, url: str, token: str | None = None) -> bytes:
-        resp = self.test_client.get(url)
+        # Forward the token (mirrors the real requests transport) so auth-gated
+        # data endpoints accept the in-process test client too.
+        resp = self.test_client.get(
+            url, headers=({"Authorization": f"Bearer {token}"} if token else {}))
         if resp.status_code >= 400:
             raise BenchHubAPIError(resp.status_code,
                                     {"error": resp.data.decode("utf-8", "replace")})
@@ -1211,7 +1214,8 @@ class FlaskTestClientTransport:
     def download_inputs_archive(self, leaderboard_id: int, dest_path: str,
                                 token: str | None = None) -> None:
         resp = self.test_client.get(
-            f"/api/leaderboard/{leaderboard_id}/inputs.zip"
+            f"/api/leaderboard/{leaderboard_id}/inputs.zip",
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
         )
         if resp.status_code >= 400:
             raise BenchHubAPIError(
