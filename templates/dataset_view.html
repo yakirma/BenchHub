@@ -259,7 +259,8 @@
     {% endfor %}
 </div>
 {% else %}
-<p class="text-body-secondary small mb-2">No leaderboards yet — be the first.</p>
+<p class="text-body-secondary small mb-2">No leaderboards yet — be the first.
+    <a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-mortarboard me-1"></i>See the tutorial</a> to set one up.</p>
 {% endif %}
 
 {# --- Source provenance (HF imports) ----------------------------- #}

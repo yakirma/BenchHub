@@ -145,6 +145,9 @@
             <a href="{{ url_for('datasets_list') }}" class="btn btn-primary btn-sm">
                 <i class="bi bi-plus-circle me-1"></i>Upload your first dataset
             </a>
+            <div class="small mt-2">
+                <a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-mortarboard me-1"></i>New here? Follow the tutorial</a>
+            </div>
         </div>
         {% endif %}
     </section>
@@ -311,7 +314,9 @@
                 {% else %}
                 <div class="text-center py-5 text-body-secondary border rounded">
                     <i class="bi bi-trophy display-5 d-block mb-2 opacity-50"></i>
-                    <p class="mb-0">No leaderboards yet — pick a dataset to start one.</p>
+                    <p class="mb-1">No leaderboards yet — pick a dataset to start one.</p>
+                    <a href="{{ url_for('docs', page='tutorials') }}" class="small">
+                        <i class="bi bi-mortarboard me-1"></i>New here? Follow the tutorial</a>
                 </div>
                 {% endif %}
             </section>

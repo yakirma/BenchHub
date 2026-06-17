@@ -142,6 +142,12 @@
            title="Create a new leaderboard from a BenchHub or HuggingFace dataset">
             <i class="bi bi-plus-lg me-1"></i>New leaderboard
         </a>
+        {% else %}
+        {# Anonymous visitors: point them at the tutorials instead of a create button. #}
+        <a href="{{ url_for('docs', page='tutorials') }}" class="btn btn-outline-secondary"
+           title="New to BenchHub? Learn how leaderboards and submissions work.">
+            <i class="bi bi-mortarboard me-1"></i>New here? Tutorials
+        </a>
         {% endif %}
     </div>
 
