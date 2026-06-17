@@ -164,6 +164,10 @@
                         <i class="bi bi-speedometer2 me-2"></i>Your dashboard
                     </a>
                     {% endif %}
+                    <a href="{{ url_for('docs', page='tutorials') }}" class="btn btn-outline-secondary hero-cta-secondary"
+                       onclick="if(window.gtag){gtag('event','select_content',{content_type:'cta',item_id:'tutorials'});}">
+                        <i class="bi bi-mortarboard me-2"></i>Tutorials
+                    </a>
                 </div>
 
                 <!-- Stats strip -->
