@@ -6,21 +6,88 @@
     pick the shape that matches your data.</p>
 <hr>
 
-<div class="alert alert-light border">
-    <strong>Every benchmark on BenchHub is the same four moves:</strong> bring data in
-    &rarr; define the prediction contract &rarr; bind a metric &rarr; submit &amp; compare.
-    The data source changes; the shape doesn't. ML benchmarking is usually a pile of
-    one-off glue &mdash; every benchmark invents its own data layout, its own scoring
-    script, its own submission format, and hands you back a single number with no insight
-    into where your model fails. BenchHub's fix is one idea: declare the data contract once,
-    and make it <em>typed</em>. Once the dataset, the client, and the metric engine agree
-    on each field's <em>kind</em>, decode, render, score, and compare all fall out of that
-    single decision. A <em>kind</em> is the declared type of a field &mdash; <code>image</code>,
-    <code>depth</code>, <code>label</code>, &hellip; &mdash; that both sides agree on. If that
-    sounds abstract, read <a href="{{ url_for('docs', page='concepts') }}">Core
-    Concepts</a> first &mdash; it builds the object model (kind &rarr; field &rarr; sample
-    &rarr; dataset &rarr; leaderboard &rarr; submission &rarr; metric) smallest to largest,
-    so the tutorials below name things you already understand.
+<style>
+    .bh-flow { display: flex; align-items: stretch; gap: .4rem; flex-wrap: wrap; }
+    .bh-flow .bh-step {
+        flex: 1 1 0; min-width: 132px;
+        display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+        text-align: center; gap: .3rem; padding: .85rem .55rem;
+        background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color);
+        border-top: 3px solid var(--bs-primary); border-radius: .6rem;
+        font-weight: 600; font-size: .82rem; line-height: 1.25;
+    }
+    .bh-flow .bh-step-num {
+        font-size: .68rem; font-weight: 700; color: var(--bs-primary);
+        background: rgba(124, 58, 237, .12); border-radius: 999px; padding: .05rem .55rem;
+    }
+    .bh-flow .bh-step-ico { font-size: 1.35rem; color: var(--bs-primary); }
+    .bh-flow .bh-flow-arrow { align-self: center; color: var(--bs-primary); opacity: .55; font-size: 1.05rem; }
+    .bh-chain { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .35rem; }
+    .bh-chain .bh-node {
+        background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color);
+        border-radius: 999px; padding: .1rem .6rem;
+        font-family: var(--bs-font-monospace); font-size: .8rem;
+    }
+    .bh-chain i { color: var(--bs-primary); opacity: .55; }
+    @media (max-width: 575px) {
+        .bh-flow { flex-direction: column; }
+        .bh-flow .bh-flow-arrow { transform: rotate(90deg); }
+    }
+</style>
+
+<p class="mb-2">Every benchmark on BenchHub is the same <strong>four moves</strong> &mdash; the
+    data source changes, the shape doesn't:</p>
+
+<div class="bh-flow mb-4">
+    <div class="bh-step">
+        <span class="bh-step-num">1</span>
+        <i class="bi bi-box-arrow-in-down bh-step-ico"></i>
+        <span>Bring data in</span>
+    </div>
+    <i class="bi bi-arrow-right bh-flow-arrow"></i>
+    <div class="bh-step">
+        <span class="bh-step-num">2</span>
+        <i class="bi bi-file-earmark-text bh-step-ico"></i>
+        <span>Define the prediction contract</span>
+    </div>
+    <i class="bi bi-arrow-right bh-flow-arrow"></i>
+    <div class="bh-step">
+        <span class="bh-step-num">3</span>
+        <i class="bi bi-calculator bh-step-ico"></i>
+        <span>Bind a metric</span>
+    </div>
+    <i class="bi bi-arrow-right bh-flow-arrow"></i>
+    <div class="bh-step">
+        <span class="bh-step-num">4</span>
+        <i class="bi bi-bar-chart-line bh-step-ico"></i>
+        <span>Submit &amp; compare</span>
+    </div>
+</div>
+
+<div class="alert alert-light border d-flex gap-3 align-items-start">
+    <i class="bi bi-lightbulb-fill fs-4 text-primary flex-shrink-0"></i>
+    <div>
+        <strong>Why &ldquo;typed&rdquo;?</strong> ML benchmarking is usually a pile of one-off
+        glue &mdash; every benchmark invents its own data layout, scoring script, and submission
+        format, and hands you back a single number with no insight into where your model fails.
+        BenchHub's fix is one idea: <strong>declare the data contract once, and make it typed</strong>.
+        Once the dataset, the client, and the metric engine agree on each field's <em>kind</em>
+        &mdash; its declared type (<code>image</code>, <code>depth</code>, <code>label</code>,
+        &hellip;) &mdash; decode, render, score, and compare all fall out of that single decision.
+    </div>
+</div>
+
+<p class="small text-body-secondary mb-2">New to these ideas?
+    <a href="{{ url_for('docs', page='concepts') }}">Core Concepts</a> builds the object model
+    smallest to largest, so the tutorials below name things you already understand:</p>
+<div class="bh-chain mb-1">
+    <span class="bh-node">kind</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">field</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">sample</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">dataset</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">leaderboard</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">submission</span><i class="bi bi-arrow-right"></i>
+    <span class="bh-node">metric</span>
 </div>
 
 <div class="p-3 bg-body-tertiary rounded-3 mb-4">
