@@ -55,7 +55,10 @@ def test_submission_script_route_returns_python(client, db_session):
     assert r.mimetype.startswith('text/x-python')
     body = r.data.decode('utf-8')
     assert 'BENCHHUB_API_TOKEN' in body
-    assert f'LEADERBOARD_ID: int = {lb.id}' in body
+    # References the board by its semantic <owner>/<slug> handle, not a raw id.
+    assert 'lb = client.leaderboard(' in body
+    assert lb.slug and lb.slug in body
+    assert 'lb.iter_samples()' in body
     assert 'bh.Client' in body
     # No `token="YOUR_API_TOKEN"` placeholder — env var is the contract.
     assert 'YOUR_API_TOKEN' not in body
@@ -87,7 +90,8 @@ def test_submission_notebook_route_returns_ipynb_json(client, db_session):
     assert 'BENCHHUB_API_TOKEN' in all_src
     assert 'google.colab' in all_src
     assert 'userdata' in all_src
-    assert f'LEADERBOARD_ID: int = {lb.id}' in all_src
+    assert 'lb = client.leaderboard(' in all_src
+    assert lb.slug and lb.slug in all_src
 
 
 def test_lb_page_renders_submit_action_buttons(client, db_session):

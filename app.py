@@ -1041,6 +1041,12 @@ class MetricResult(db.Model):
 class Leaderboard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
+    # Stable, URL-safe handle used by the client (`<owner>/<slug>`) and for
+    # pretty links. Unique per owner namespace (owner_user_id, slug);
+    # owner-less boards live under the reserved "community" handle. Auto-
+    # derived from `name` on insert (see _lb_before_insert) + backfilled in
+    # check_and_migrate_db. Integer ids keep working everywhere.
+    slug = db.Column(db.String(80), nullable=True, index=True)
     dataset_id = db.Column(db.Integer, db.ForeignKey('dataset.id'), nullable=True) # Deprecated: migration to leaderboard_datasets
     upload_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     summary_metrics = db.Column(db.String(200), nullable=False) # are, l1, l2 etc.
@@ -1234,6 +1240,10 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     display_name = db.Column(db.String(120))
+    # Public handle used in client leaderboard refs (`<username>/<slug>`) and
+    # as a resolvable owner namespace. Auto-generated on insert
+    # (_user_before_insert) + backfilled; unique (enforced via migration index).
+    username = db.Column(db.String(40), unique=True, nullable=True, index=True)
     avatar_url = db.Column(db.String(500))
     oauth_provider = db.Column(db.String(20), nullable=False)  # 'github', later 'google'
     oauth_sub = db.Column(db.String(120), nullable=False)      # provider's user id
@@ -1307,6 +1317,137 @@ class User(db.Model):
     __table_args__ = (
         db.UniqueConstraint('oauth_provider', 'oauth_sub', name='uq_user_oauth_identity'),
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic leaderboard handles — `<owner>/<slug>`
+#
+# The client identifies a leaderboard by a human-readable handle instead of a
+# raw integer id (e.g. "john-smith/ade20k-scene-parse-150"). `owner` is the
+# board owner's username, or the reserved "community" handle for owner-less
+# (imported) boards; `slug` is auto-derived from the board name and unique
+# within an owner's namespace. Integer ids still resolve everywhere, so old
+# links and scripts keep working.
+# ---------------------------------------------------------------------------
+COMMUNITY_HANDLE = 'community'
+# Handles a user may not claim — they're route prefixes or the community ns.
+RESERVED_HANDLES = {
+    'community', 'admin', 'api', 'docs', 'static', 'leaderboard', 'leaderboards',
+    'dataset', 'datasets', 'user', 'users', 'u', 'settings', 'home', 'login',
+    'logout', 'oauth', 'metrics', 'visualizations', 'me', 'public', 'private',
+    'submit', 'submission', 'submissions', 'create_leaderboard', 'landing',
+}
+
+
+def _slugify(text, maxlen=70):
+    """Lowercase, hyphenate, strip to a URL-safe slug. Never empty."""
+    s = re.sub(r'[^a-z0-9]+', '-', (text or '').strip().lower())
+    s = re.sub(r'-{2,}', '-', s).strip('-')
+    if len(s) > maxlen:
+        s = s[:maxlen].rstrip('-')
+    return s or 'item'
+
+
+def _username_taken(connection, username):
+    return connection.execute(
+        db.text("SELECT 1 FROM user WHERE username = :u LIMIT 1"),
+        {"u": username}).first() is not None
+
+
+def _generate_username(connection, display_name, email):
+    """Pick a unique handle from the display name, falling back to the email
+    local-part when the display name has no usable (ASCII) characters."""
+    base = _slugify(display_name, maxlen=30)
+    if base == 'item':  # _slugify's empty-result sentinel (e.g. a non-ASCII name)
+        base = _slugify((email or '').split('@')[0], maxlen=30)
+    if base in RESERVED_HANDLES:
+        base = f"{base}-user"
+    cand, n = base, 2
+    while _username_taken(connection, cand):
+        cand, n = f"{base}-{n}", n + 1
+    return cand
+
+
+def _lb_slug_taken(connection, slug, owner_user_id):
+    if owner_user_id is None:
+        return connection.execute(
+            db.text("SELECT 1 FROM leaderboard WHERE slug = :s "
+                    "AND owner_user_id IS NULL LIMIT 1"), {"s": slug}).first() is not None
+    return connection.execute(
+        db.text("SELECT 1 FROM leaderboard WHERE slug = :s "
+                "AND owner_user_id = :o LIMIT 1"),
+        {"s": slug, "o": owner_user_id}).first() is not None
+
+
+def _generate_lb_slug(connection, name, owner_user_id):
+    """Pick a slug from the board name, unique within the owner namespace."""
+    base = _slugify(name, maxlen=70)
+    cand, n = base, 2
+    while _lb_slug_taken(connection, cand, owner_user_id):
+        cand, n = f"{base}-{n}", n + 1
+    return cand
+
+
+@event.listens_for(User, 'before_insert')
+def _user_before_insert(mapper, connection, target):
+    if not getattr(target, 'username', None):
+        try:
+            target.username = _generate_username(
+                connection, target.display_name, target.email)
+        except Exception:
+            pass  # never block a signup on handle generation
+
+
+@event.listens_for(Leaderboard, 'before_insert')
+def _lb_before_insert(mapper, connection, target):
+    if not getattr(target, 'slug', None) and getattr(target, 'name', None):
+        try:
+            target.slug = _generate_lb_slug(
+                connection, target.name, target.owner_user_id)
+        except Exception:
+            pass  # never block LB creation on slug generation
+
+
+def _lb_owner_handle(lb):
+    """The owner's username, or the community handle for owner-less boards."""
+    if lb is None or lb.owner_user_id is None:
+        return COMMUNITY_HANDLE
+    owner = User.query.get(lb.owner_user_id)
+    return owner.username if (owner and owner.username) else COMMUNITY_HANDLE
+
+
+def _lb_client_ref(lb):
+    """The `<owner>/<slug>` handle for a board (falls back to its id)."""
+    if lb is None:
+        return None
+    return f"{_lb_owner_handle(lb)}/{lb.slug}" if lb.slug else str(lb.id)
+
+
+def _resolve_lb_ref(ref):
+    """Resolve a leaderboard reference to a Leaderboard (or None). Accepts an
+    integer id, a "<owner>/<slug>" handle, or a bare unambiguous slug."""
+    ref = (ref or '').strip()
+    if not ref:
+        return None
+    if ref.isdigit():
+        return Leaderboard.query.get(int(ref))
+    if '/' in ref:
+        owner_h, _, slug = ref.partition('/')
+        owner_h, slug = owner_h.strip().lower(), slug.strip()
+        if not slug:
+            return None
+        if owner_h in (COMMUNITY_HANDLE, '_'):
+            return Leaderboard.query.filter_by(slug=slug, owner_user_id=None).first()
+        owner = User.query.filter_by(username=owner_h).first()
+        if owner is None:
+            return None
+        return Leaderboard.query.filter_by(slug=slug, owner_user_id=owner.id).first()
+    # bare slug: prefer a community board, else accept a single unambiguous hit
+    lb = Leaderboard.query.filter_by(slug=ref, owner_user_id=None).first()
+    if lb is not None:
+        return lb
+    matches = Leaderboard.query.filter_by(slug=ref).limit(2).all()
+    return matches[0] if len(matches) == 1 else None
 
 
 class EmailLoginCode(db.Model):
@@ -10907,7 +11048,7 @@ from typing import Any
 import numpy as np
 import benchhub as bh
 
-LEADERBOARD_ID: int = {lb.id}
+LEADERBOARD: str = {_lb_client_ref(lb)!r}   # this board's handle (id {lb.id} works too)
 BASE_URL: str = {(_get_base_url() or 'https://runbenchhub.com')!r}
 
 if not os.environ.get('BENCHHUB_API_TOKEN'):
@@ -10917,11 +11058,12 @@ if not os.environ.get('BENCHHUB_API_TOKEN'):
     )
 
 client: bh.Client = bh.Client(base_url=BASE_URL)
-contract: list[dict[str, Any]] = client.leaderboard_contract(LEADERBOARD_ID)
-print(f"LB {{LEADERBOARD_ID}} pred contract: {{contract}}")
+lb = client.leaderboard(LEADERBOARD)                    # resolve the handle once
+contract: list[dict[str, Any]] = lb.contract()
+print(f"{{LEADERBOARD}} pred contract: {{contract}}")
 
 # Samples come from the BenchHub server — no need to maintain a local
-# copy of the dataset. `client.iter_samples(LB_ID)` yields
+# copy of the dataset. `lb.iter_samples()` yields
 # (sample_name, inputs_dict) for every sample on the LB's bound
 # dataset (or its materialised subset, if any). Each input field
 # arrives decoded: image / mask → PIL.Image, depth → PIL.Image of the
@@ -10952,10 +11094,10 @@ def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     )
 # ===========================================================================
 
-sub = client.submission(LEADERBOARD_ID)
+sub = lb.submission()
 sample_name: str
 inputs: dict[str, Any]
-for sample_name, inputs in client.iter_samples(LEADERBOARD_ID):
+for sample_name, inputs in lb.iter_samples():
     predictions: dict[str, Any] = my_model(inputs)
     # The generated bh.<Kind>(...) calls below match the LB's current
     # contract — wrap your `predictions` values into the typed objects
@@ -11241,6 +11383,19 @@ def leaderboard_open_in_colab(leaderboard_id):
         lb.colab_gist_id = new_path
         db.session.commit()
     return redirect(f'https://colab.research.google.com/gist/{new_path}')
+
+
+@app.route('/leaderboard/<owner_handle>/<lb_slug>')
+def leaderboard_view_by_ref(owner_handle, lb_slug):
+    """Resolve a `<owner>/<slug>` board handle to its canonical id URL. The
+    two-segment shape never collides with the single-segment int route or the
+    `<int:id>/<action>` routes (those have a static second segment)."""
+    lb = _resolve_lb_ref(f"{owner_handle}/{lb_slug}")
+    # Gate here too so a private board's existence isn't leaked by a 302-vs-404
+    # (the redirect target enforces visibility as well).
+    if lb is None or not _can_view_parent(getattr(g, 'current_user', None), lb):
+        abort(404)
+    return redirect(url_for('leaderboard_view', leaderboard_id=lb.id))
 
 
 @app.route('/leaderboard/<int:leaderboard_id>')
@@ -11778,6 +11933,7 @@ def leaderboard_view(leaderboard_id):
             user_id=g.current_user.id, leaderboard_id=leaderboard_id).first())
     return render_template('leaderboard.html',
                            leaderboard=leaderboard,
+                           client_ref=_lb_client_ref(leaderboard),
                            is_following=is_following,
                            materialization=materialization,
                            eval_summary=eval_summary,
@@ -19095,6 +19251,33 @@ def get_leaderboard_info_api(leaderboard_id):
         }
     })
 
+@app.route('/api/leaderboard/resolve', methods=['GET'])
+def api_resolve_leaderboard():
+    """Resolve a leaderboard reference (`?ref=`) — an integer id, an
+    `<owner>/<slug>` handle, or a bare unambiguous slug — to its id and
+    canonical handle. Lets the client turn a human handle into the id the
+    rest of the API uses, so callers never hardcode a raw number."""
+    ref = request.args.get('ref', '')
+    lb = _resolve_lb_ref(ref)
+    # Visibility-gated like the contract endpoint: private/unlisted boards 404
+    # to non-owners (don't leak existence). Bearer-authed clients resolve their
+    # own private boards. Accept cookie auth or an Authorization: Bearer token.
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if lb is None or not _can_view_parent(user, lb):
+        return jsonify({'error': f'Leaderboard "{ref}" not found'}), 404
+    return jsonify({
+        'id': lb.id,
+        'name': lb.name,
+        'slug': lb.slug,
+        'owner': _lb_owner_handle(lb),
+        'ref': _lb_client_ref(lb),
+    })
+
+
 @app.route('/api/leaderboard/by_name/<leaderboard_name>/info', methods=['GET'])
 def get_leaderboard_info_by_name_api(leaderboard_name):
     leaderboard = Leaderboard.query.filter_by(name=leaderboard_name).first()
@@ -21215,6 +21398,89 @@ def check_and_migrate_db():
                     conn.close()
                 except Exception as e:
                     print(f"Migration error dropping custom_field.field_type: {e}")
+
+                # --- 3e. Semantic handles: user.username + leaderboard.slug ---
+                # The client identifies a leaderboard by `<owner>/<slug>`
+                # instead of a raw id. Add the columns, backfill existing rows
+                # (slugify name / display_name with -2, -3 suffixes on
+                # collision within a namespace), and add the uniqueness
+                # indexes. Idempotent: skipped once every row is populated.
+                try:
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+
+                    def _mig_slugify(text, maxlen=70):
+                        s = re.sub(r'[^a-z0-9]+', '-', (text or '').strip().lower())
+                        s = re.sub(r'-{2,}', '-', s).strip('-')
+                        if len(s) > maxlen:
+                            s = s[:maxlen].rstrip('-')
+                        return s or 'item'
+
+                    # user.username
+                    cursor.execute("PRAGMA table_info(user)")
+                    user_cols = {row[1] for row in cursor.fetchall()}
+                    if 'username' not in user_cols:
+                        print("Migrating DB: Adding 'username' to 'user'...")
+                        cursor.execute("ALTER TABLE user ADD COLUMN username VARCHAR(40) DEFAULT NULL")
+                        conn.commit()
+                    # backfill any NULL usernames
+                    cursor.execute("SELECT id, display_name, email FROM user WHERE username IS NULL OR username = ''")
+                    rows = cursor.fetchall()
+                    if rows:
+                        cursor.execute("SELECT username FROM user WHERE username IS NOT NULL AND username != ''")
+                        taken = {r[0] for r in cursor.fetchall()}
+                        for uid, dname, email in rows:
+                            base = _mig_slugify(dname, 30)
+                            if base == 'item':  # non-ASCII / empty name → email local-part
+                                base = _mig_slugify((email or '').split('@')[0], 30)
+                            if base in RESERVED_HANDLES:
+                                base = f"{base}-user"
+                            cand, n = base, 2
+                            while cand in taken:
+                                cand, n = f"{base}-{n}", n + 1
+                            taken.add(cand)
+                            cursor.execute("UPDATE user SET username = ? WHERE id = ?", (cand, uid))
+                        conn.commit()
+                        print(f"Migrating DB: backfilled username on {len(rows)} user rows.")
+
+                    # leaderboard.slug
+                    cursor.execute("PRAGMA table_info(leaderboard)")
+                    lb_cols = {row[1] for row in cursor.fetchall()}
+                    if 'slug' not in lb_cols:
+                        print("Migrating DB: Adding 'slug' to 'leaderboard'...")
+                        cursor.execute("ALTER TABLE leaderboard ADD COLUMN slug VARCHAR(80) DEFAULT NULL")
+                        conn.commit()
+                    cursor.execute("SELECT id, name, owner_user_id FROM leaderboard WHERE slug IS NULL OR slug = ''")
+                    lb_rows = cursor.fetchall()
+                    if lb_rows:
+                        # seed per-namespace taken sets from existing slugs
+                        taken_by_owner = {}
+                        cursor.execute("SELECT owner_user_id, slug FROM leaderboard WHERE slug IS NOT NULL AND slug != ''")
+                        for owner_id, slug in cursor.fetchall():
+                            taken_by_owner.setdefault(owner_id, set()).add(slug)
+                        for lb_id, lb_name, owner_id in lb_rows:
+                            ns = taken_by_owner.setdefault(owner_id, set())
+                            base = _mig_slugify(lb_name, 70)
+                            cand, n = base, 2
+                            while cand in ns:
+                                cand, n = f"{base}-{n}", n + 1
+                            ns.add(cand)
+                            cursor.execute("UPDATE leaderboard SET slug = ? WHERE id = ?", (cand, lb_id))
+                        conn.commit()
+                        print(f"Migrating DB: backfilled slug on {len(lb_rows)} leaderboard rows.")
+
+                    # uniqueness indexes (username global; slug per owner).
+                    # COALESCE(owner_user_id, -1) folds all owner-less ("community")
+                    # boards into one namespace so SQLite — which treats NULLs as
+                    # distinct in a plain composite index — actually enforces slug
+                    # uniqueness for them too. (-1 is safe: real ids are positive.)
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_user_username ON user (username) WHERE username IS NOT NULL")
+                    cursor.execute("DROP INDEX IF EXISTS uq_leaderboard_owner_slug")
+                    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_leaderboard_owner_slug ON leaderboard (COALESCE(owner_user_id, -1), slug) WHERE slug IS NOT NULL")
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    print(f"Migration error (username/slug handles): {e}")
 
                 # --- 4. LeaderboardMetric Aggregation Columns ---
                 conn = sqlite3.connect(db_path)

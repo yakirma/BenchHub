@@ -355,6 +355,23 @@ background-color: transparent;
                 {% endif %}
             </h1>
 
+            {% if client_ref %}
+            {# The semantic handle the benchhub-client uses to reference this
+               board — `<owner>/<slug>` — so scripts never hardcode a raw id. #}
+            <div class="d-flex align-items-center gap-2 mb-2 small text-body-secondary">
+                <span><i class="bi bi-terminal me-1"></i>Client handle:</span>
+                <code id="lb-client-ref" class="user-select-all">{{ client_ref }}</code>
+                <button type="button" class="btn btn-sm btn-link p-0 align-baseline text-decoration-none"
+                        title="Copy handle"
+                        onclick="navigator.clipboard.writeText('{{ client_ref }}');
+                                 this.querySelector('i').className='bi bi-check2';
+                                 setTimeout(()=>{this.querySelector('i').className='bi bi-clipboard';},1200);">
+                    <i class="bi bi-clipboard"></i>
+                </button>
+                <span class="text-body-tertiary">— <code>client.leaderboard("{{ client_ref }}")</code></span>
+            </div>
+            {% endif %}
+
             {# Materialization status panel — collapsible. Shows
                status + a live progress bar (polled by JS) when the
                worker is running, plus an Edit form to re-materialize
@@ -2004,6 +2021,7 @@ export BENCHHUB_API_TOKEN=&lt;your token&gt;
 from typing import Any
 import benchhub as bh
 client: bh.Client = bh.Client()                         # reads $BENCHHUB_API_TOKEN
+lb = client.leaderboard("{{ client_ref }}")             # this board, by handle
 
 def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     # `inputs` is a dict keyed by the dataset's role=input fields.
@@ -2014,10 +2032,10 @@ def my_model(inputs: dict[str, Any]) -> dict[str, Any]:
     # pred fields below.
     raise NotImplementedError("Plug in your model.")
 
-sub = client.submission(lb_id={{ leaderboard.id }})
+sub = lb.submission()
 sample_name: str
 inputs: dict[str, Any]
-for sample_name, inputs in client.iter_samples({{ leaderboard.id }}):
+for sample_name, inputs in lb.iter_samples():
     predictions: dict[str, Any] = my_model(inputs)
     sub.predict(sample_name,
 {%- for line in submission_predict_lines %}

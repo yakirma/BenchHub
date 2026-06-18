@@ -17,16 +17,31 @@
 <h2 class="mt-4">Python client</h2>
 <pre><code class="language-python">import benchhub as bh
 client = bh.Client(token="&lt;your-api-token&gt;", base_url="https://runbenchhub.com")
-#                  ^ or $BENCHHUB_API_TOKEN          ^ or $BENCHHUB_BASE_URL (default)</code></pre>
+#                  ^ or $BENCHHUB_API_TOKEN          ^ or $BENCHHUB_BASE_URL (default)
+lb = client.leaderboard("alice/cifar10-1k")   # reference a board by handle (an id works too)</code></pre>
 
 <h4 class="mt-3"><code>Client</code></h4>
+<p class="small text-body-secondary">A <code>ref</code> is a board's <code>&lt;owner&gt;/&lt;slug&gt;</code>
+    handle (shown on the board page as <em>&ldquo;Client handle&rdquo;</em>), a bare unambiguous
+    slug, or an integer id &mdash; all interchangeable.</p>
 <table class="table table-sm">
     <tbody>
-        <tr><td><code>iter_samples(lb_id, *, force_download=False)</code></td><td>Yield <code>(sample_name, inputs)</code>; inputs are decoded <code>bh.&lt;Kind&gt;</code> instances. File-backed inputs are bulk-downloaded once and cached.</td></tr>
-        <tr><td><code>leaderboard_contract(lb_id)</code></td><td>The prediction contract: a list of <code>{name, kind, params, role}</code>.</td></tr>
-        <tr><td><code>submission(lb_id, name=None, *, description=None, link=None)</code></td><td>Open a <code>SubmissionBuilder</code>.</td></tr>
-        <tr><td><code>submission_exists(lb_id, name)</code></td><td>Whether a submission of that name already exists.</td></tr>
+        <tr><td><code>leaderboard(ref)</code></td><td><strong>Recommended entry point.</strong> Resolve a board and return a <code>LeaderboardHandle</code> whose methods carry the id for you.</td></tr>
+        <tr><td><code>iter_samples(ref, *, force_download=False)</code></td><td>Yield <code>(sample_name, inputs)</code>; inputs are decoded <code>bh.&lt;Kind&gt;</code> instances. File-backed inputs are bulk-downloaded once and cached.</td></tr>
+        <tr><td><code>leaderboard_contract(ref)</code></td><td>The prediction contract: a list of <code>{name, kind, params, role}</code>.</td></tr>
+        <tr><td><code>submission(ref, name=None, *, description=None, link=None)</code></td><td>Open a <code>SubmissionBuilder</code>.</td></tr>
+        <tr><td><code>submission_exists(ref, name)</code></td><td>Whether a submission of that name already exists.</td></tr>
         <tr><td><code>create_dataset(name, *, visibility="public")</code></td><td>Open a <code>BHDatasetCreator</code>.</td></tr>
+    </tbody>
+</table>
+
+<h4 class="mt-3"><code>LeaderboardHandle</code> <span class="small text-body-secondary">(from <code>client.leaderboard(ref)</code>)</span></h4>
+<table class="table table-sm">
+    <tbody>
+        <tr><td><code>.id</code> / <code>.ref</code> / <code>.name</code> / <code>.slug</code> / <code>.owner</code></td><td>The resolved board's id, <code>&lt;owner&gt;/&lt;slug&gt;</code> handle, and metadata.</td></tr>
+        <tr><td><code>.iter_samples(*, force_download=False)</code></td><td>Same as <code>Client.iter_samples</code>, no id needed.</td></tr>
+        <tr><td><code>.submission(name=None, *, description=None, link=None)</code></td><td>Open a <code>SubmissionBuilder</code> for this board.</td></tr>
+        <tr><td><code>.contract()</code> / <code>.submissions()</code> / <code>.submission_exists(name)</code></td><td>The board's contract, its submissions, and a name-exists check.</td></tr>
     </tbody>
 </table>
 
@@ -60,6 +75,7 @@ ds.create()</code></pre>
 <h5 class="mt-3">Leaderboard data</h5>
 <table class="table table-sm">
     <tbody>
+        <tr><td><code>GET /api/leaderboard/resolve?ref=&lt;owner/slug&gt;</code></td><td>Resolve a handle (or id) to <code>{id, name, slug, owner, ref}</code>. What <code>client.leaderboard()</code> calls.</td></tr>
         <tr><td><code>GET /api/leaderboard/&lt;id&gt;/info</code></td><td>Metadata. Also <code>/api/leaderboard/by_name/&lt;name&gt;/info</code>.</td></tr>
         <tr><td><code>GET /api/leaderboard/&lt;id&gt;/contract</code></td><td>The prediction contract.</td></tr>
         <tr><td><code>GET /api/leaderboard/&lt;id&gt;/samples</code></td><td>Per-sample inputs (inline values + URLs for file-backed fields) + a cache token.</td></tr>

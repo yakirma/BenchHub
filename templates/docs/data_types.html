@@ -207,10 +207,11 @@ def decode(blob, params):                               # what your metrics rece
     extension. Fetch the leaderboard contract first so the client knows that extension:</p>
 <pre><code class="language-python">import benchhub as bh
 client = bh.Client()                       # reads BENCHHUB_API_TOKEN
-sub = client.submission(LB_ID, name="my-model")
+lb = client.leaderboard("alice/brain-mri")  # the handle from the board page
+sub = lb.submission(name="my-model")
 sub.fetch_contract()                        # learns vec_pred -> ".nii.gz", etc.
 
-for sample_name, inputs in client.iter_samples(LB_ID):
+for sample_name, inputs in lb.iter_samples():
     out_bytes = my_model(inputs)            # YOU serialize to the kind's format
     sub.predict(sample_name, volume_pred=bh.RawPrediction("volume", out_bytes))
     # or from a file you already wrote:

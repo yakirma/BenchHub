@@ -27,6 +27,7 @@ from benchhub.client import (
     BHDatasetCreator,
     Client,
     FlaskTestClientTransport,
+    LeaderboardHandle,
     RawPrediction,
     SubmissionBuilder,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "CocoDetections",
     "get_type",
     "Client",
+    "LeaderboardHandle",
     "SubmissionBuilder",
     "RawPrediction",
     "BHDatasetCreator",

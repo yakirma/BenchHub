@@ -70,7 +70,8 @@
 <p>The contract is <strong>frozen once verified submissions exist</strong> &mdash;
     changing a kind afterwards would re-interpret existing predictions through the wrong
     decoder. Delete those submissions to unlock it. Submitters can read the live contract
-    with <code>client.leaderboard_contract(lb_id)</code>.</p>
+    with <code>client.leaderboard("&lt;owner&gt;/&lt;slug&gt;").contract()</code> &mdash; using the
+    board's <em>Client handle</em> (an integer id still works too).</p>
 
 <h3 class="mt-4">Binding metrics</h3>
 <p>A metric from the library is bound to a leaderboard with:</p>

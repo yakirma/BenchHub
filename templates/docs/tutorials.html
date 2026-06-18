@@ -141,10 +141,11 @@
         <a href="/settings/api_tokens">API tokens</a>, then:
         <pre><code class="language-python">import benchhub as bh
 client = bh.Client(token="&lt;your-api-token&gt;")
-LB = 7   # the number in /leaderboard/7
+# The board's handle, shown on its page as "Client handle" (an id still works too):
+lb = client.leaderboard("alice/cifar10-1k")
 
-sub = client.submission(LB, name="my-classifier")
-for name, inputs in client.iter_samples(LB):
+sub = lb.submission(name="my-classifier")
+for name, inputs in lb.iter_samples():
     x = inputs["image"].array        # (32,32,3) uint8
     sub.predict(name, label_pred=bh.Label(int(my_model(x))))
 sub.submit(description="baseline CNN")</code></pre></li>
@@ -197,13 +198,13 @@ def accuracy(gt: bh.Label, pred: bh.Label):
 <pre><code class="language-python">import os, benchhub as bh
 
 client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
-LB = 7                                      # the number in /leaderboard/7
+lb = client.leaderboard("alice/cifar10-1k")  # the handle from the board page (an id works too)
 
 # Inspect what the leaderboard expects:
-print(client.leaderboard_contract(LB))     # [{name, kind, params, role}, ...]
+print(lb.contract())                       # [{name, kind, params, role}, ...]
 
-sub = client.submission(LB, name="run-2026-06", link="https://github.com/me/model")
-for name, inputs in client.iter_samples(LB):
+sub = lb.submission(name="run-2026-06", link="https://github.com/me/model")
+for name, inputs in lb.iter_samples():
     pred = my_model(inputs)                 # use inputs["&lt;field&gt;"]
     sub.predict(name, label_pred=bh.Label(int(pred)))
 print(sub.submit())</code></pre>
@@ -242,7 +243,9 @@ depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes
         <strong>rmse_depth</strong> (<code>gt&rarr;depth</code>,
         <code>pred&rarr;depth_pred</code>).</li>
     <li><strong>Submit.</strong>
-        <pre><code class="language-python">for name, inputs in client.iter_samples(LB):
+        <pre><code class="language-python">lb = client.leaderboard("alice/rgbd-depth")   # the board's handle
+sub = lb.submission(name="my-depth-model")
+for name, inputs in lb.iter_samples():
     rgb = inputs["image"].array
     sub.predict(name, depth_pred=bh.Depth(my_depth_model(rgb), unit="meters"))
 sub.submit()</code></pre></li>
@@ -277,7 +280,9 @@ label : loader=token  token=label                kind=label  role=gt</code></pre
     <li><strong>Predicting a sequence.</strong> A <code>sequence</code> can also be a
         prediction kind. Give the leaderboard a pred field <code>clip_pred</code>
         (kind <code>sequence</code>), then read each clip and submit one back:
-        <pre><code class="language-python">for name, inputs in client.iter_samples(LB):
+        <pre><code class="language-python">lb = client.leaderboard("you/your-clip-board")   # the board's handle
+sub = lb.submission(name="my-frame-model")
+for name, inputs in lb.iter_samples():
     clip = inputs["clip"]                                    # clip is iterable
     out = [bh.Image(my_frame_model(f.array)) for f in clip]
     sub.predict(name, clip_pred=bh.Sequence(out, item_kind="image", fps=10))

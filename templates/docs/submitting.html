@@ -17,16 +17,20 @@
 client = bh.Client(token="&lt;your-api-token&gt;")        # or rely on $BENCHHUB_API_TOKEN</code></pre>
 
 <h3 class="mt-4">2. The submission loop</h3>
-<p>The whole flow is: iterate the leaderboard's samples, run your model on each one's
-    inputs, stage a typed prediction, then submit.</p>
+<p>Reference a leaderboard by its <strong>handle</strong> &mdash; the
+    <code>&lt;owner&gt;/&lt;slug&gt;</code> shown on the board page as
+    <em>&ldquo;Client handle&rdquo;</em> &mdash; via <code>client.leaderboard(...)</code>.
+    The whole flow is then: iterate the board's samples, run your model on each one's
+    inputs, stage a typed prediction, then submit. (An integer id still works anywhere a
+    handle does.)</p>
 <pre><code class="language-python">import benchhub as bh
 import numpy as np
 
-LB_ID = 42
 client = bh.Client(token="&lt;your-api-token&gt;")
-sub = client.submission(LB_ID, name="my-model-v1")
+lb = client.leaderboard("alice/cifar10-1k")    # the handle from the board page
+sub = lb.submission(name="my-model-v1")
 
-for sample_name, inputs in client.iter_samples(LB_ID):
+for sample_name, inputs in lb.iter_samples():
     image = inputs["image"].array          # a decoded bh.Image -> (H,W,3) uint8
     pred = my_model(image)                 # your code; returns a class index, say
     sub.predict(sample_name, label_pred=bh.Label(int(pred)))
@@ -36,7 +40,7 @@ result = sub.submit(description="ResNet-50, 50 epochs",
 print(result)                             # -> {'submission_id': ..., ...}</code></pre>
 
 <h3 class="mt-4">3. Reading inputs &mdash; <code>iter_samples</code></h3>
-<p><code>client.iter_samples(leaderboard_id)</code> yields
+<p><code>lb.iter_samples()</code> (equivalently <code>client.iter_samples(ref)</code>) yields
     <code>(sample_name, inputs)</code> for every sample in the leaderboard's materialized
     subset. <code>inputs</code> is a dict keyed by input-field name; each value is an
     <strong>already-decoded</strong> typed instance:</p>
@@ -72,7 +76,7 @@ sub.predict(name, clip_pred=bh.Sequence(frames, item_kind="image", fps=10))</cod
 
 <h3 class="mt-4">5. Matching the contract</h3>
 <p>To see exactly what a leaderboard expects, fetch its contract:</p>
-<pre><code class="language-python">contract = client.leaderboard_contract(LB_ID)
+<pre><code class="language-python">contract = lb.contract()    # or client.leaderboard_contract(ref)
 # -> [{"name": "label_pred", "kind": "label", "params": {...}, "role": "pred"}, ...]</code></pre>
 <p>Every <code>pred</code> field in the contract must be produced for every sample. For
     spatial predictions some leaderboards require the prediction's shape to match an input

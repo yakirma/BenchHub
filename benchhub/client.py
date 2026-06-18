@@ -135,6 +135,24 @@ class _RequestsTransport:
             raise BenchHubAPIError(resp.status_code, body)
         return resp.json()
 
+    def resolve_leaderboard(self, ref: str,
+                            token: str | None = None) -> dict:
+        """Resolve a leaderboard handle (`<owner>/<slug>`, a bare slug, or
+        an id) to `{id, name, slug, owner, ref}`."""
+        import requests
+        resp = requests.get(
+            f"{self.base_url}/api/leaderboard/resolve",
+            params={"ref": ref},
+            headers=({"Authorization": f"Bearer {token}"} if token else {}),
+        )
+        if resp.status_code >= 400:
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {"error": resp.text}
+            raise BenchHubAPIError(resp.status_code, payload)
+        return resp.json()
+
     def get_leaderboard_contract(self, leaderboard_id: int,
                                  token: str | None = None) -> list[dict]:
         """Fetch the LB's pred wire-contract. Token optional — the
@@ -261,47 +279,83 @@ class Client:
             or _DEFAULT_BASE_URL
         ).rstrip("/")
         self.transport = transport or _RequestsTransport(self.base_url)
+        self._ref_cache: dict[str, int] = {}
 
-    def submission(self, leaderboard_id: int, name: str | None = None,
+    def _resolve_ref(self, ref) -> int:
+        """Turn a leaderboard reference into its integer id. Integers (and
+        numeric strings) pass straight through; an `<owner>/<slug>` handle or
+        a bare slug is resolved via the server once and cached."""
+        if isinstance(ref, int):
+            return ref
+        s = str(ref).strip()
+        if s.isdigit():
+            return int(s)
+        if s in self._ref_cache:
+            return self._ref_cache[s]
+        info = self.transport.resolve_leaderboard(s, token=self.token or None)
+        lb_id = int(info["id"])
+        self._ref_cache[s] = lb_id
+        return lb_id
+
+    def leaderboard(self, ref) -> "LeaderboardHandle":
+        """Look up a leaderboard by handle and return an object whose methods
+        need no id — the recommended, readable entry point:
+
+            lb = client.leaderboard("john-smith/ade20k-scene-parse-150")
+            print(lb.contract())
+            for name, inputs in lb.iter_samples():
+                sub = lb.submission("my-model")
+                sub.predict(name, label_pred=bh.Label(...))
+            sub.submit()
+
+        `ref` may be a `<owner>/<slug>` handle, a bare unambiguous slug, or
+        an integer id (which still works everywhere for back-compat)."""
+        info = self.transport.resolve_leaderboard(
+            str(ref).strip(), token=self.token or None)
+        self._ref_cache[str(ref).strip()] = int(info["id"])
+        return LeaderboardHandle(self, info)
+
+    def submission(self, leaderboard_id, name: str | None = None,
                    *, description: str | None = None,
                    link: str | None = None) -> "SubmissionBuilder":
         """Open a new in-memory builder. Call `.predict()` per sample,
         then `.submit()` to send the whole package.
 
+        `leaderboard_id` accepts an id or an `<owner>/<slug>` handle.
         `description` is a free-text blurb shown in the leaderboard's
         submission table (full text on hover). `link` is an optional
         http(s) URL the submission name will hyperlink to (e.g. a repo
         or model card). Both can also be passed at `.submit()` time."""
-        return SubmissionBuilder(self, leaderboard_id, name,
+        return SubmissionBuilder(self, self._resolve_ref(leaderboard_id), name,
                                  description=description, link=link)
 
-    def leaderboard_contract(self, leaderboard_id: int) -> list[dict]:
+    def leaderboard_contract(self, leaderboard_id) -> list[dict]:
         """Fetch the LB's pred wire-contract (kinds + params, including
         any `shape_match` constraints). Hand the result to
         `SubmissionBuilder.set_contract()` so client-side validation
         catches shape mismatches before any ZIP upload."""
         return self.transport.get_leaderboard_contract(
-            leaderboard_id, token=self.token or None,
+            self._resolve_ref(leaderboard_id), token=self.token or None,
         )
 
-    def list_submissions(self, leaderboard_id: int) -> list[dict]:
+    def list_submissions(self, leaderboard_id) -> list[dict]:
         """Return the leaderboard's submissions as a list of
         `{id, name, upload_date}` dicts (most recent first)."""
         payload = self.transport.get_leaderboard_submissions(
-            leaderboard_id, token=self.token or None,
+            self._resolve_ref(leaderboard_id), token=self.token or None,
         )
         return payload.get("submissions", [])
 
-    def submission_exists(self, leaderboard_id: int, name: str) -> bool:
+    def submission_exists(self, leaderboard_id, name: str) -> bool:
         """True if a submission named exactly `name` already exists on
         the leaderboard. Handy to guard a submit() against clobbering or
         duplicating a previous run:
 
-            if client.submission_exists(lb_id, "resnet50-v1"):
+            if client.submission_exists(lb_ref, "resnet50-v1"):
                 raise SystemExit("already submitted — pick a new name")
         """
         payload = self.transport.get_leaderboard_submissions(
-            leaderboard_id, name=name, token=self.token or None,
+            self._resolve_ref(leaderboard_id), name=name, token=self.token or None,
         )
         return int(payload.get("count", 0)) > 0
 
@@ -394,7 +448,7 @@ class Client:
             index[fname] = bucket
         return index
 
-    def iter_samples(self, leaderboard_id: int, *, force_download: bool = False):
+    def iter_samples(self, leaderboard_id, *, force_download: bool = False):
         """Yield `(sample_name, inputs_dict)` for every sample on the
         leaderboard's bound dataset (or its materialised subset, if
         any). The dict is keyed by input-field name; values are
@@ -421,7 +475,10 @@ class Client:
         Designed for the generated submission notebook: the user
         plugs in their model, calls `sub.predict(name, …)`. No
         torchvision / HF datasets dependency.
+
+        `leaderboard_id` accepts an id or an `<owner>/<slug>` handle.
         """
+        leaderboard_id = self._resolve_ref(leaderboard_id)
         payload = self.transport.get_leaderboard_samples(
             leaderboard_id, token=self.token or None,
         )
@@ -614,6 +671,46 @@ class Client:
         return self.transport.post_dataset_zip(
             zip_bytes, self.token, visibility=visibility,
         )
+
+
+class LeaderboardHandle:
+    """A resolved leaderboard, returned by `Client.leaderboard(ref)`. Its
+    methods mirror the id-taking `Client` methods but carry the id for you,
+    so a script reads in terms of a human handle, never a raw number:
+
+        lb = client.leaderboard("john-smith/ade20k-scene-parse-150")
+        lb.id        # the numeric id, if you ever need it
+        lb.ref       # "john-smith/ade20k-scene-parse-150"
+    """
+
+    def __init__(self, client: "Client", info: dict):
+        self._client = client
+        self.id = int(info["id"])
+        self.name = info.get("name")
+        self.slug = info.get("slug")
+        self.owner = info.get("owner")
+        self.ref = info.get("ref") or str(self.id)
+
+    def __repr__(self) -> str:
+        return f"<Leaderboard {self.ref!r} (id={self.id})>"
+
+    def submission(self, name: str | None = None, *,
+                   description: str | None = None,
+                   link: str | None = None) -> "SubmissionBuilder":
+        return self._client.submission(
+            self.id, name, description=description, link=link)
+
+    def iter_samples(self, *, force_download: bool = False):
+        return self._client.iter_samples(self.id, force_download=force_download)
+
+    def contract(self) -> list[dict]:
+        return self._client.leaderboard_contract(self.id)
+
+    def submissions(self) -> list[dict]:
+        return self._client.list_submissions(self.id)
+
+    def submission_exists(self, name: str) -> bool:
+        return self._client.submission_exists(self.id, name)
 
 
 class RawPrediction:
@@ -1173,6 +1270,18 @@ class FlaskTestClientTransport:
         if resp.status_code >= 400:
             raise BenchHubAPIError(resp.status_code, payload or {})
         return payload if isinstance(payload, list) else []
+
+    def resolve_leaderboard(self, ref: str,
+                            token: str | None = None) -> dict:
+        from urllib.parse import quote
+        resp = self.test_client.get(f"/api/leaderboard/resolve?ref={quote(str(ref))}")
+        try:
+            payload = resp.get_json()
+        except Exception:
+            payload = {"error": resp.data.decode("utf-8", "replace")}
+        if resp.status_code >= 400:
+            raise BenchHubAPIError(resp.status_code, payload or {})
+        return payload if isinstance(payload, dict) else {}
 
     def get_leaderboard_samples(self, leaderboard_id: int,
                                 token: str | None = None) -> dict:
