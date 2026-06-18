@@ -464,9 +464,11 @@
                                 <td>
                                     {% set mappings = lm.arg_mappings|from_json %}
                                     {% for arg, field in mappings.items() %}
+                                    {# Show metric-dependency targets by display name (metric_labels
+                                       maps lm_<id> -> alias); data fields render unchanged. #}
                                     <span
                                         class="badge bg-info-subtle text-info-emphasis border border-info-subtle me-1 mb-1 font-monospace"
-                                        style="font-size: 0.75rem;">{{ arg }} &rarr; {{ field
+                                        style="font-size: 0.75rem;">{{ arg }} &rarr; {{ metric_labels.get(field, field) if metric_labels else field
                                         }}</span>
                                     {% endfor %}
                                 </td>
@@ -1201,7 +1203,8 @@
                 </select>
             </div>
             <div class="col-4">
-                <input type="text" class="form-control form-control-sm field-input" name="field_name[]" placeholder="Folder/Field Name" value="${values.field || ''}" required list="dataset-fields-list">
+                <input type="text" class="form-control form-control-sm field-input" name="field_name[]" placeholder="Folder/Field Name" value="${values.field || ''}" list="dataset-fields-list">
+                <select class="form-select form-select-sm field-metric-select d-none" name="field_name[]" disabled></select>
             </div>
             <div class="col-1">
                 <button type="button" class="btn btn-sm btn-outline-danger remove-mapping">&times;</button>
@@ -1211,42 +1214,58 @@
 
         // Initial setup for the new row's source select logic
         const select = row.querySelector('select[name="source[]"]');
-        const input = row.querySelector('input[name="field_name[]"]');
+        const input = row.querySelector('input.field-input');
+        const msel = row.querySelector('select.field-metric-select');
 
-        // Helper to update list Source
-        const updateList = () => {
-            // input.value = ''; // Don't clear value on simple edits/init, only on manual change? 
-            // Actually clearing value is annoying if you just switch types to check. 
-            // BUT if you switch from Scalar to Dataset, the value "10" is invalid.
-            // Let's keep it but maybe we need to be smarter. For now, keep clearing behavior on manual change unless it's initial load.
+        // Metric dependencies are picked from a <select> showing the metric's
+        // DISPLAY name (its option text); the stored value stays the internal
+        // `lm_<id>` key the engine resolves — so wiring reads by display name
+        // while the backend is unchanged. Options are mirrored from the
+        // server-rendered datalists (value=lm_<id>, label=display name).
+        const buildMetricOptions = (datalistId, selected) => {
+            const dl = document.getElementById(datalistId);
+            let html = '<option value="">— choose metric —</option>';
+            if (dl) dl.querySelectorAll('option').forEach(o => {
+                const v = o.value, lbl = o.getAttribute('label') || o.value;
+                html += `<option value="${v}"${v === selected ? ' selected' : ''}>${lbl}</option>`;
+            });
+            return html;
+        };
 
-            input.removeAttribute('list');
-            input.placeholder = "Folder/Field Name";
-
-            if (select.value === 'gt') input.setAttribute('list', 'dataset-fields-list');
-            else if (select.value === 'sub') input.setAttribute('list', 'submission-fields-list');
-            else if (select.value === 'metric') input.setAttribute('list', 'per-sample-metrics-list');
-            else if (select.value === 'agg_metric') input.setAttribute('list', 'aggregated-metrics-list');
-            else if (select.value === 'scalar') {
-                input.placeholder = "Value (e.g. 10, 0.5)";
+        // Swap the field control to match the source: a <select> of metrics
+        // (by display name) for dependencies, else the folder/field text input.
+        const updateList = (curField) => {
+            const src = select.value;
+            const isMetric = (src === 'metric' || src === 'agg_metric');
+            if (isMetric) {
+                msel.innerHTML = buildMetricOptions(
+                    src === 'metric' ? 'per-sample-metrics-list' : 'aggregated-metrics-list',
+                    curField || '');
+                msel.classList.remove('d-none'); msel.disabled = false; msel.required = true;
+                input.classList.add('d-none'); input.disabled = true; input.required = false;
+                input.removeAttribute('list');
+            } else {
+                input.classList.remove('d-none'); input.disabled = false; input.required = true;
+                msel.classList.add('d-none'); msel.disabled = true; msel.required = false;
+                input.removeAttribute('list');
+                input.placeholder = 'Folder/Field Name';
+                if (src === 'gt') input.setAttribute('list', 'dataset-fields-list');
+                else if (src === 'sub') input.setAttribute('list', 'submission-fields-list');
+                else if (src === 'scalar') input.placeholder = 'Value (e.g. 10, 0.5)';
+                input.value = curField || '';
             }
         };
 
-        // Run once to set initial state based on value
+        // Run once to set initial state based on value.
         if (values.source) {
             select.value = values.source;
-            updateList();
-            input.value = values.field || ''; // Restore value
+            updateList(values.field || '');
         } else {
-            // Default is GT
-            updateList();
+            updateList('');   // default GT
         }
 
-        // Add change listener
-        select.addEventListener('change', () => {
-            input.value = ''; // Clear on manual type change
-            updateList();
-        });
+        // On source change, clear the field and rebuild the right control.
+        select.addEventListener('change', () => updateList(''));
 
         setupRemoveButtons();
     }
