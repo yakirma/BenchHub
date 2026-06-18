@@ -181,7 +181,9 @@
                     ] %}
                     {% for value, label, raw in _stats %}{% if raw %}
                     <div class="col-auto stat-tile">
-                        <div class="stat-num">{{ value }}</div>
+                        {# data-count-to drives the count-up animation; the
+                           server-rendered value stays as the no-JS fallback. #}
+                        <div class="stat-num" data-count-to="{{ raw }}">{{ value }}</div>
                         <div class="stat-label">{{ label }}</div>
                     </div>
                     {% if not loop.last %}<div class="col-auto d-none d-sm-block text-body-secondary opacity-25">•</div>{% endif %}
@@ -196,6 +198,30 @@
         </div>
     </div>
 </section>
+
+<script>
+    // Count the hero stats up from 0 on load. Honours reduced-motion (leaves
+    // the final value). The server-rendered text is the no-JS fallback.
+    (function () {
+        const els = document.querySelectorAll('.stat-num[data-count-to]');
+        if (!els.length) return;
+        if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+        const DUR = 1200;
+        els.forEach(function (el) {
+            const target = parseInt(el.getAttribute('data-count-to'), 10) || 0;
+            if (target <= 0) return;
+            const t0 = performance.now();
+            el.textContent = '0';
+            (function step(now) {
+                const p = Math.min(1, (now - t0) / DUR);
+                const eased = 1 - Math.pow(1 - p, 3);   // ease-out cubic
+                el.textContent = Math.round(eased * target).toLocaleString();
+                if (p < 1) requestAnimationFrame(step);
+                else el.textContent = target.toLocaleString();
+            })(t0);
+        });
+    })();
+</script>
 
 <!-- ===================== Sample gallery (the visual hook) ===================== -->
 {% if gallery %}
