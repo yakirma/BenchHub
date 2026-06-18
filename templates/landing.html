@@ -150,9 +150,9 @@
                 </form>
 
                 <div class="d-flex flex-wrap gap-3 justify-content-center">
-                    <a href="{{ url_for('datasets_list') }}" class="btn btn-primary hero-cta-primary"
-                       onclick="if(window.gtag){gtag('event','select_content',{content_type:'cta',item_id:'explore_datasets'});}">
-                        <i class="bi bi-images me-2"></i>Explore datasets
+                    <a href="{{ url_for('leaderboards') }}" class="btn btn-primary hero-cta-primary"
+                       onclick="if(window.gtag){gtag('event','select_content',{content_type:'cta',item_id:'explore_leaderboards'});}">
+                        <i class="bi bi-trophy me-2"></i>Explore Leaderboards
                     </a>
                     {% if not current_user %}
                     <a href="{{ url_for('login') }}" class="btn btn-outline-secondary hero-cta-secondary"
