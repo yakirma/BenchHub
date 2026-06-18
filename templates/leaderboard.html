@@ -1610,8 +1610,17 @@ background-color: transparent;
                                     </ul>
                                 </div>
                             </td>
-                            <td><input class="form-check-input submission-checkbox" type="checkbox"
-                                    name="submission_ids" value="{{ submission.id }}"></td>
+                            <td class="text-nowrap">
+                                <input class="form-check-input submission-checkbox" type="checkbox"
+                                    name="submission_ids" value="{{ submission.id }}">
+                                {# Quick-compare this single submission (same bar-chart logo as the
+                                   batch Compare button), next to its select box. #}
+                                <a href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, compare_ids=submission.id) }}"
+                                   class="btn btn-sm btn-link text-primary p-0 ms-2 align-middle"
+                                   title="Compare this submission's samples" aria-label="Compare">
+                                    <i class="bi bi-bar-chart"></i>
+                                </a>
+                            </td>
                             <td data-lb-column="name" style="max-width: calc({{ global_settings.name_width }} + {{ global_settings.tags_width }});" title="{{ submission.name }}{% if submission.link %} → {{ submission.link }}{% endif %}">
                                 <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                                     {% if submission.link %}
