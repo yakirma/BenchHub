@@ -1160,7 +1160,9 @@
        bottom-left corner (the navbar Star/Like links are subtle). Stays hidden
        per browser once dismissed (localStorage). Only renders links that are
        configured (github_url always; hf_url when BENCHHUB_HF_URL is set). #}
-    {% if github_url or hf_url %}
+    {# Floating "star on GitHub" nudge hidden per request — flip to
+       `github_url or hf_url` to bring the bottom-left card back. #}
+    {% if false %}
     <div id="bh-grow-card" aria-label="Support BenchHub">
         <button type="button" id="bh-grow-close" aria-label="Dismiss">&times;</button>
         <div class="bh-grow-head"><i class="bi bi-heart-fill"></i> Like BenchHub?</div>
