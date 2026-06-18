@@ -154,8 +154,12 @@
     {# Anonymous-only signup nudge — this catalog is the top post-landing page,
        so capture intent here without gating the browsing itself. #}
     {% if not current_user %}
+    {# Sticky so the signup CTA stays visible while scrolling the catalog.
+       top:70px clears the fixed navbar; opaque backdrop (gradient over body
+       bg) keeps it readable as cards scroll behind. #}
     <div class="alert d-flex align-items-center gap-2 shadow-sm border-0 mb-4" role="alert"
-         style="background: linear-gradient(120deg, rgba(124,58,237,0.12), rgba(255,0,138,0.06));">
+         style="background: linear-gradient(120deg, rgba(124,58,237,0.12), rgba(255,0,138,0.06)), var(--bs-body-bg);
+                position: sticky; top: 70px; z-index: 1020;">
         <i class="bi bi-trophy-fill fs-5 text-primary"></i>
         <div class="flex-grow-1 small text-body">
             <strong>Browsing is free.</strong>
