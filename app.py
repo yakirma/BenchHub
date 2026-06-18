@@ -3675,6 +3675,35 @@ def account_settings():
                            has_password=bool(u.password_hash))
 
 
+@app.route('/settings/account/username', methods=['POST'])
+@login_required
+def update_username():
+    """Let a user pick their public handle — the `<owner>` half of their
+    leaderboard handles. Slugified, reserved-word-screened, unique."""
+    u = g.current_user
+    raw = (request.form.get('username') or '').strip()
+    if not raw or not re.search(r'[A-Za-z0-9]', raw):
+        flash("Enter a username using letters, numbers, or hyphens.", "warning")
+        return redirect(url_for('account_settings'))
+    new = _slugify(raw, maxlen=40)
+    if new == u.username:
+        flash("That's already your username.", "info")
+        return redirect(url_for('account_settings'))
+    if new in RESERVED_HANDLES:
+        flash(f"'{new}' is reserved — please pick another username.", "warning")
+        return redirect(url_for('account_settings'))
+    if User.query.filter(User.username == new, User.id != u.id).first() is not None:
+        flash(f"'{new}' is already taken — please pick another username.", "warning")
+        return redirect(url_for('account_settings'))
+    old = u.username
+    u.username = new
+    db.session.commit()
+    flash(f"Username updated to '{new}'. Your leaderboard handles are now "
+          f"{new}/<board>" + (f" — old {old}/… links no longer resolve." if old else "."),
+          "success")
+    return redirect(url_for('account_settings'))
+
+
 @app.route('/settings/hf_token', methods=['GET', 'POST'])
 @login_required
 def hf_token_settings():

@@ -163,6 +163,32 @@ def test_client_handle_end_to_end(client, db_session):
     assert result['samples'] == 1
 
 
+def test_update_username_changes_handle(auth_client, logged_in_user, db_session):
+    lb = _mk_lb('My Eval', owner_user_id=logged_in_user.id)
+    r = auth_client.post('/settings/account/username',
+                         data={'username': 'Cool Handle'})  # slugified server-side
+    assert r.status_code in (302, 303)
+    db.session.refresh(logged_in_user)
+    db.session.refresh(lb)
+    assert logged_in_user.username == 'cool-handle'
+    assert _lb_client_ref(lb) == 'cool-handle/my-eval'
+
+
+def test_update_username_rejects_taken_and_reserved(auth_client, logged_in_user, db_session):
+    other = _mk_user('other@x.io', 'Other Person', 'u-other')
+    other.username = 'taken-name'
+    db.session.commit()
+    before = logged_in_user.username
+
+    auth_client.post('/settings/account/username', data={'username': 'taken-name'})
+    db.session.refresh(logged_in_user)
+    assert logged_in_user.username == before  # unchanged — name was taken
+
+    auth_client.post('/settings/account/username', data={'username': 'admin'})
+    db.session.refresh(logged_in_user)
+    assert logged_in_user.username == before  # unchanged — reserved
+
+
 def test_flat_methods_accept_handle_string(client, db_session):
     u = _mk_user('f@x.io', 'Flat User', 'u-f')
     ds = Dataset(name='flat_ds', visibility='public')

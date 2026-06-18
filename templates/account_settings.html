@@ -26,6 +26,37 @@
         </div>
     </div>
 
+    {# ---- Username / public handle ---- #}
+    <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body p-4">
+            <h2 class="h6 fw-semibold text-uppercase text-body-secondary mb-3">Username</h2>
+            <p class="small text-body-secondary mb-3">
+                Your public handle &mdash; the <code>&lt;owner&gt;</code> in your leaderboard
+                handles, e.g. <code>{{ current_user.username or 'you' }}/my-board</code>, which the
+                <a href="{{ url_for('docs', page='submitting') }}">client</a> uses to reference your
+                boards. Lowercase letters, numbers, and hyphens.
+            </p>
+            <form method="POST" action="{{ url_for('update_username') }}" class="row g-2">
+                <div class="col-md-8">
+                    <input type="text" name="username" class="form-control form-control-sm font-monospace"
+                           value="{{ current_user.username or '' }}"
+                           pattern="[A-Za-z0-9][A-Za-z0-9\-]*" maxlength="40"
+                           placeholder="your-handle" required>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-sm btn-primary w-100">
+                        <i class="bi bi-at me-1"></i>Update username
+                    </button>
+                </div>
+            </form>
+            <p class="small text-body-tertiary mb-0 mt-2">
+                <i class="bi bi-info-circle me-1"></i>Changing this changes your leaderboard
+                handles &mdash; old <code>{{ current_user.username or 'name' }}/&hellip;</code>
+                links stop resolving.
+            </p>
+        </div>
+    </div>
+
     {# ---- Storage quotas (split buckets) ---- #}
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body p-4">
