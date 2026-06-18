@@ -14,7 +14,7 @@
     can be overridden with <code>BENCHHUB_BASE_URL</code>).</p>
 <pre><code class="language-python">import benchhub as bh
 
-client = bh.Client(token="bh_xxx")        # or rely on $BENCHHUB_API_TOKEN</code></pre>
+client = bh.Client(token="&lt;your-api-token&gt;")        # or rely on $BENCHHUB_API_TOKEN</code></pre>
 
 <h3 class="mt-4">2. The submission loop</h3>
 <p>The whole flow is: iterate the leaderboard's samples, run your model on each one's
@@ -23,7 +23,7 @@ client = bh.Client(token="bh_xxx")        # or rely on $BENCHHUB_API_TOKEN</code
 import numpy as np
 
 LB_ID = 42
-client = bh.Client(token="bh_xxx")
+client = bh.Client(token="&lt;your-api-token&gt;")
 sub = client.submission(LB_ID, name="my-model-v1")
 
 for sample_name, inputs in client.iter_samples(LB_ID):

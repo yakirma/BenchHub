@@ -4,8 +4,10 @@
 <div class="mb-4">
     <h1 class="display-5 fw-bold">BenchHub documentation</h1>
     <p class="lead text-muted">
-        Cache a dataset, declare what a prediction looks like, submit your model's
-        outputs, and see how it ranks &mdash; with a sample-by-sample comparison.
+        ML benchmarking is a pile of one-off glue &mdash; every benchmark reinvents its data
+        layout, scoring, and submission format, and hands you back a single number with no
+        insight into where your model fails. BenchHub's fix is one idea: declare the data
+        contract once, and make it <strong>typed</strong>.
     </p>
 </div>
 
@@ -15,31 +17,60 @@
     <div class="col-md-7">
         <h3>What is BenchHub?</h3>
         <p>
-            BenchHub is an open benchmarking platform. You bring a <strong>dataset</strong>
-            (often pulled straight from HuggingFace), turn it into a
-            <strong>leaderboard</strong> with a clear prediction contract, and let anyone
-            submit their model's predictions to be scored by metrics you choose. Every
-            submission is ranked on the leaderboard and can be opened in a deep
-            <strong>comparison view</strong> that lines up ground truth and predictions
-            for each sample.
+            BenchHub is an open benchmarking platform &mdash; a web app plus a Python package
+            (<code>benchhub-client</code>, imported as <code>import benchhub as bh</code>). You
+            bring a <strong>dataset</strong>, turn it into a <strong>leaderboard</strong> with a
+            clear typed prediction contract, and let anyone submit a model's predictions to be
+            scored by metrics you choose. Every submission is ranked, and any of them can be
+            opened in a deep <strong>comparison view</strong> that lines up ground truth against
+            each prediction, sample by sample.
         </p>
-        <p>What makes it work end to end is a <strong>strict typed contract</strong>: every
-            field of data has a <em>kind</em> (image, depth, mask, label, a video
-            sequence, &hellip;) that both sides agree on, so the dataset, the
-            <code>benchhub-client</code>, and the metric engine all speak the same
-            language.</p>
+        <p>
+            That comparison view is the payoff. Images, masks, depth colormaps, video sequences,
+            confusion matrices, and per-sample metric charts all sit side by side &mdash; ground
+            truth (the correct answer held server-side that a prediction is scored against) next to
+            each prediction &mdash; so a leaderboard stops being a single number and becomes an
+            inspection tool. You see <em>where</em> a model wins or loses, not just its aggregate
+            score.
+        </p>
     </div>
     <div class="col-md-5">
         <div class="p-4 bg-body-tertiary rounded-3">
             <h5 class="mb-3"><i class="bi bi-rocket-takeoff me-2"></i>Start here</h5>
             <ul class="list-unstyled mb-0">
-                <li class="mb-2"><a href="{{ url_for('docs', page='concepts') }}" class="text-decoration-none fw-semibold">Core concepts &rarr;</a><br><span class="small text-muted">datasets, fields &amp; roles, leaderboards, materialization, submissions</span></li>
-                <li class="mb-2"><a href="{{ url_for('docs', page='importing') }}" class="text-decoration-none fw-semibold">Import a dataset &rarr;</a><br><span class="small text-muted">from any HuggingFace repo</span></li>
-                <li class="mb-2"><a href="{{ url_for('docs', page='submitting') }}" class="text-decoration-none fw-semibold">Submit predictions &rarr;</a><br><span class="small text-muted">with the Python client</span></li>
-                <li><a href="{{ url_for('docs', page='tutorials') }}" class="text-decoration-none fw-semibold">Tutorials &rarr;</a><br><span class="small text-muted">full worked examples</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='concepts') }}" class="text-decoration-none fw-semibold">Core concepts &rarr;</a><br><span class="small text-muted">kinds, fields &amp; roles, datasets, leaderboards, submissions, metrics</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='tutorials') }}" class="text-decoration-none fw-semibold">A first tutorial &rarr;</a><br><span class="small text-muted">build a dataset, score it, read the comparison view</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='importing') }}" class="text-decoration-none fw-semibold">Import a dataset &rarr;</a><br><span class="small text-muted">from HuggingFace, or build one in Python</span></li>
+                <li><a href="{{ url_for('docs', page='submitting') }}" class="text-decoration-none fw-semibold">Submit predictions &rarr;</a><br><span class="small text-muted">with the Python client</span></li>
             </ul>
         </div>
     </div>
+</div>
+
+<h3 class="mt-5">The one big idea: a typed contract</h3>
+<p>
+    BenchHub makes the data contract explicit and typed, once.
+</p>
+<p>
+    Every piece of data &mdash; a dataset field, a leaderboard input, a prediction &mdash; carries
+    a declared <em>kind</em>: <code>image</code>, <code>mask</code>, <code>depth</code>,
+    <code>audio</code>, <code>text</code>, <code>bboxes</code>, <code>label</code>,
+    <code>scalar</code>, <code>json</code>, <code>sequence</code> (an ordered clip of frames that
+    renders as an mp4), and more &mdash; and you can register your own. Because the dataset, the
+    client, and the metric engine all <strong>agree on the kind</strong>, the platform never has
+    to guess: decode, render, colormap, score, and compare all fall out of that single decision.
+    If both sides agree a field is a depth map in meters, it is handled the same way every time
+    &mdash; across datasets, models, and metrics.
+</p>
+<div class="alert alert-light border">
+    <strong>Everything downstream is a consequence.</strong> Two-tier storage keeps a cheap
+    preview of every sample so you browse a whole dataset without paying for full-resolution
+    bytes. Per-leaderboard materialization pulls full-res bytes only for the subset a benchmark
+    scores on, charged to its owner, so cost stays proportional to use. A hardened Docker sandbox
+    runs all user-supplied metric and visualization code, so anyone can contribute scoring without
+    being trusted. The typed contract is the spine; the rest follows. The authoritative kind list
+    lives on the <a href="{{ url_for('docs', page='data_types') }}" class="alert-link">Data
+    Types</a> page.
 </div>
 
 <h3 class="mt-5">The end-to-end flow</h3>
@@ -50,9 +81,9 @@
             <div class="card-body">
                 <div class="badge text-bg-primary mb-2">1</div>
                 <h6 class="fw-bold"><i class="bi bi-cloud-arrow-down me-1"></i>Import a dataset</h6>
-                <p class="small mb-0">Pull a HuggingFace repo. Tabular datasets are inferred
-                    automatically; file-tree repos (paired files, packed archives, video
-                    clips) are mapped field by field. Stored as a lightweight preview.</p>
+                <p class="small mb-0">Pull a HuggingFace repo (tabular or file-tree), or build a
+                    dataset directly in Python with the client &mdash; no HuggingFace needed.
+                    Either way it caches as a lightweight preview.</p>
             </div>
         </div>
     </div>
@@ -73,8 +104,9 @@
                 <div class="badge text-bg-primary mb-2">3</div>
                 <h6 class="fw-bold"><i class="bi bi-calculator me-1"></i>Add metrics</h6>
                 <p class="small mb-0">Attach scoring functions (Python) and visualizations.
-                    Metrics run per-sample and pool into the leaderboard score; outputs can
-                    chain into one another.</p>
+                    Metrics run per-sample and are pooled &mdash; averaged or otherwise
+                    aggregated &mdash; into the leaderboard score; outputs can chain into one
+                    another.</p>
             </div>
         </div>
     </div>
@@ -91,6 +123,45 @@
     </div>
 </div>
 
+<h3 class="mt-5">Ways to bring data in</h3>
+<p>A dataset is a collection of samples and typed fields. There are two ways to create one
+    &mdash; HuggingFace is one path among them, not the definition:</p>
+<div class="row g-3 my-2">
+    <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <h6 class="fw-bold"><i class="bi bi-box-arrow-in-down me-1"></i>Import from HuggingFace</h6>
+                <p class="small mb-2"><strong>Tabular</strong> datasets (parquet schema) are
+                    read directly and their kinds auto-inferred. A
+                    <strong>file-tree mapper</strong> handles repos that aren't tabular &mdash;
+                    paired files, packed <code>.npz</code> archives, video clips &mdash; mapped
+                    field by field, with an automatic handoff when a repo isn't tabular.</p>
+                <p class="small text-muted mb-0">(A Kaggle importer exists behind a feature flag.)
+                    See <a href="{{ url_for('docs', page='importing') }}">Importing</a>.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <h6 class="fw-bold"><i class="bi bi-code-slash me-1"></i>Build it in Python</h6>
+                <p class="small mb-2">Construct a dataset directly with the client &mdash; no
+                    HuggingFace at all. Declare fields and their kinds, then add samples:</p>
+                <pre class="mb-0"><code class="language-python">import benchhub as bh
+
+client = bh.Client()  # reads $BENCHHUB_API_TOKEN
+ds = client.create_dataset("my-data")
+ds.add_field("image", kind="image", role="input")
+ds.add_field("label", kind="label", role="gt")
+ds.add_sample("000", image=..., label=...)
+print(ds.create())</code></pre>
+            </div>
+        </div>
+    </div>
+</div>
+<p class="small text-muted">Either way the dataset caches as the preview tier and defaults to
+    <strong>private</strong> &mdash; you publish when you're ready.</p>
+
 <h3 class="mt-5">Signing in</h3>
 <p>BenchHub never stores passwords. You can sign in three ways &mdash; all create your
     account on first use:</p>
@@ -103,32 +174,29 @@
     See the <a href="{{ url_for('docs', page='user_guide') }}">User Guide</a> for
     accounts, quotas, and visibility.</p>
 
-<h3 class="mt-5">What you can do</h3>
-<div class="row g-3">
-    <div class="col-md-6">
-        <ul class="mb-0">
-            <li><strong>Browse</strong> the public catalog of leaderboards and datasets,
-                with per-card stats (datasets, contributors, submissions).</li>
-            <li><strong>Import</strong> datasets from HuggingFace &mdash; tabular or
-                file-tree, with a draft you never lose.</li>
-            <li><strong>Materialize</strong> a chosen sample subset at full resolution per
-                leaderboard, on your storage quota.</li>
-        </ul>
-    </div>
-    <div class="col-md-6">
-        <ul class="mb-0">
-            <li><strong>Author metrics &amp; visualizations</strong> in Python, kept in a
-                reusable library with public/private visibility.</li>
-            <li><strong>Submit</strong> predictions programmatically and re-score on demand.</li>
-            <li><strong>Compare</strong> submissions sample-by-sample, including video
-                sequences, depth colormaps, and confusion matrices.</li>
-        </ul>
-    </div>
-</div>
-
 <div class="alert alert-info mt-5">
-    <i class="bi bi-info-circle me-2"></i>
-    New here? Read <a href="{{ url_for('docs', page='concepts') }}" class="alert-link">Core
-    Concepts</a> next, then jump into a <a href="{{ url_for('docs', page='tutorials') }}" class="alert-link">tutorial</a>.
+    <h6 class="fw-bold"><i class="bi bi-signpost-2 me-2"></i>How to read these docs</h6>
+    <p class="mb-2">Start with this <strong>Overview</strong> to see the whole loop in one
+        picture: bring a dataset, define a leaderboard with a typed prediction contract, submit
+        predictions, get scored, and inspect the comparison view.</p>
+    <p class="mb-2">Then read <a href="{{ url_for('docs', page='concepts') }}" class="alert-link">Core
+        Concepts</a>, which builds the object model smallest to largest &mdash; kind, field (name
+        + kind + role), sample, dataset, leaderboard, submission, metric &mdash; plus the field
+        roles (input, ground truth, and pred &mdash; the field the submitter produces) that let
+        one dataset be used many ways, so the rest of the docs name things you already
+        understand.</p>
+    <p class="mb-2">Next, work through a
+        <a href="{{ url_for('docs', page='tutorials') }}" class="alert-link">first tutorial</a>
+        end to end: build a small dataset, create a leaderboard, submit with the client, and read
+        the comparison view.</p>
+    <p class="mb-0">Only then reach for the
+        <a href="{{ url_for('docs', page='importing') }}" class="alert-link">import recipes</a>
+        (HuggingFace and the file-tree mapper) and the
+        <a href="{{ url_for('docs', page='metrics') }}" class="alert-link">metrics</a> and
+        <a href="{{ url_for('docs', page='visualizations') }}" class="alert-link">visualizations</a>
+        guides, pulling in the
+        <a href="{{ url_for('docs', page='data_types') }}" class="alert-link">Data Types</a>
+        reference for the authoritative kind list &mdash; they are variations on a flow you now
+        know, not new concepts.</p>
 </div>
 {% endblock %}

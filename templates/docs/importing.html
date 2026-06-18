@@ -2,9 +2,25 @@
 
 {% block docs_content %}
 <h1>Importing datasets</h1>
-<p class="lead">Cache any HuggingFace {% if kaggle_import_enabled %}<em>or Kaggle</em> {% endif %}dataset into BenchHub &mdash; tabular,
-    file-tree, or auto-detected &mdash; from one button.</p>
+<p class="lead">Importing is one way to get a dataset into BenchHub &mdash; cache any
+    HuggingFace {% if kaggle_import_enabled %}<em>or Kaggle</em> {% endif %}dataset from one
+    button. You can also build one directly in Python with the
+    <a href="{{ url_for('docs', page='submitting') }}">client</a>.</p>
 <hr>
+
+<div class="alert alert-info">
+    <strong>Importing isn&rsquo;t the only path in.</strong> BenchHub&rsquo;s spine is a
+    <em>typed contract</em>: every field carries a declared kind, so the platform decodes,
+    renders, and scores without guessing. An import just <em>fills</em> that contract from an
+    existing repo. If you&rsquo;d rather assemble samples yourself, the client&rsquo;s
+    <code>create_dataset</code> / <code>add_field</code> / <code>add_sample</code> build the
+    same typed dataset in a few lines &mdash; see the
+    <a href="{{ url_for('docs', page='tutorials') }}">tutorials</a> and
+    <a href="{{ url_for('docs', page='submitting') }}">submitting with the client</a>.
+    New to these terms? See
+    <a href="{{ url_for('docs', page='concepts') }}">Core Concepts</a> for typed contract,
+    fields, kinds, and roles.
+</div>
 
 <h3>One button, two paths</h3>
 <p>From <a href="/datasets"><strong>Datasets</strong></a> &rarr; <em>Add a dataset</em>,
@@ -14,8 +30,11 @@
     <strong>automatically</strong> to the file-tree mapper. You can also switch to the
     mapper yourself from the preview (&ldquo;file-tree importer&rdquo; link) if the
     inferred mapping looks wrong.</p>
-<p>Either way, the dataset is cached as the lightweight <strong>preview tier</strong> and
-    defaults to <strong>private</strong> &mdash; publish it when you're ready.</p>
+<p>Either way, the dataset is cached as the lightweight <strong>preview tier</strong> (small
+    thumbnails, not full-resolution bytes) and defaults to <strong>private</strong> &mdash;
+    publish it when you're ready. A dataset is the raw material for a
+    <a href="{{ url_for('docs', page='concepts') }}">leaderboard</a>, whose comparison view
+    lets you inspect predictions sample by sample.</p>
 
 <div class="alert alert-light border">
     <strong>Limits &amp; safety.</strong> An import caches the full split (no row cap) but

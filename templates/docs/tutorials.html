@@ -6,41 +6,75 @@
     pick the shape that matches your data.</p>
 <hr>
 
+<div class="alert alert-light border">
+    <strong>Every benchmark on BenchHub is the same four moves:</strong> bring data in
+    &rarr; define the prediction contract &rarr; bind a metric &rarr; submit &amp; compare.
+    The data source changes; the shape doesn't. ML benchmarking is usually a pile of
+    one-off glue &mdash; every benchmark invents its own data layout, its own scoring
+    script, its own submission format, and hands you back a single number with no insight
+    into where your model fails. BenchHub's fix is one idea: declare the data contract once,
+    and make it <em>typed</em>. Once the dataset, the client, and the metric engine agree
+    on each field's <em>kind</em>, decode, render, score, and compare all fall out of that
+    single decision. A <em>kind</em> is the declared type of a field &mdash; <code>image</code>,
+    <code>depth</code>, <code>label</code>, &hellip; &mdash; that both sides agree on. If that
+    sounds abstract, read <a href="{{ url_for('docs', page='concepts') }}">Core
+    Concepts</a> first &mdash; it builds the object model (kind &rarr; field &rarr; sample
+    &rarr; dataset &rarr; leaderboard &rarr; submission &rarr; metric) smallest to largest,
+    so the tutorials below name things you already understand.
+</div>
+
 <div class="p-3 bg-body-tertiary rounded-3 mb-4">
     <strong>Scenarios</strong>
-    <ol class="mb-0 mt-2">
+    <p class="small text-body-secondary mb-2 mt-1">Concept &amp; simplest path first;
+        authoring next; data-layout recipes last.</p>
+    <strong class="small">Start here</strong>
+    <ol class="mb-2 mt-1">
         <li><a href="#t1">Tabular dataset &rarr; leaderboard &rarr; first submission</a></li>
-        <li><a href="#t2">File-tree: paired RGB + depth</a></li>
-        <li><a href="#t3">Folder-as-label image classification</a></li>
-        <li><a href="#t4">A video / clip (sequence) benchmark</a></li>
-        <li><a href="#t5">Write a metric + a confusion-matrix visualization</a></li>
-        <li><a href="#t6">Submit from a script or Colab (reusable loop)</a></li>
+    </ol>
+    <strong class="small">Author scoring &amp; views</strong>
+    <ol class="mb-2 mt-1" start="2">
+        <li><a href="#t2">Write a metric + a confusion-matrix visualization</a></li>
+        <li><a href="#t3">Submit from a script or Colab (reusable loop)</a></li>
+    </ol>
+    <strong class="small">Bring your own data layout</strong>
+    <ol class="mb-0 mt-1" start="4">
+        <li><a href="#t4">File-tree: paired RGB + depth</a></li>
+        <li><a href="#t5">Folder-as-label image classification</a></li>
+        <li><a href="#t6">A video / clip (sequence) benchmark</a></li>
         <li><a href="#t7">Build a dataset in Python (no HuggingFace)</a></li>
         <li><a href="#t8">Variants &amp; splits</a></li>
     </ol>
 </div>
 
 <!-- ============================================================ -->
-<h2 id="t1" class="mt-5">1 &middot; Tabular dataset &rarr; leaderboard &rarr; first submission</h2>
+<h2 class="mt-5">Start here</h2>
+<p>The canonical shape of every benchmark, walked end to end once. The same four moves apply
+    no matter where the data comes from &mdash; a HuggingFace import, a file tree, or a
+    dataset you build in Python. Learn it here; the rest of the page is variations on it.</p>
+
+<h3 id="t1" class="mt-4">1 &middot; Tabular dataset &rarr; leaderboard &rarr; first submission</h3>
 <p>The fastest path: a HuggingFace dataset with columns (image + label), scored by accuracy.</p>
 <ol>
     <li><strong>Import.</strong> Datasets &rarr; <em>Add a dataset</em>, paste e.g.
         <code>uoft-cs/cifar10</code>, click <strong>Fetch &amp; preview</strong>. Confirm
         the inferred kinds (an <code>image</code> column and a <code>label</code> column),
         pick the <code>test</code> split, leave <em>max samples</em> at your taste, and
-        commit. The dataset caches as a preview.</li>
+        commit. The dataset caches as a <em>preview</em> &mdash; a tiny thumbnail-resolution
+        copy used for browsing.</li>
     <li><strong>Create a leaderboard.</strong> Open the dataset &rarr; <strong>Create
         leaderboard</strong>. Roles: <code>image = input</code>,
-        <code>label = gt</code>. Prediction field: <code>label_pred</code>
+        <code>label = gt</code> (the <em>ground truth (GT)</em> &mdash; the held-aside answer
+        a prediction is scored against). Prediction field: <code>label_pred</code>
         (kind <code>label</code>). Sample selection: 1,000 samples, stratified by
         <code>label</code>. Metric: <strong>accuracy</strong>, mapped
         <code>gt&rarr;label</code>, <code>pred&rarr;label_pred</code>. Create &mdash;
-        materialization runs in the background.</li>
+        <em>materialization</em> (downloading the full-resolution bytes for the samples this
+        leaderboard scores on) runs in the background.</li>
     <li><strong>Submit.</strong> Grab a token from
         <a href="/settings/api_tokens">API tokens</a>, then:
         <pre><code class="language-python">import benchhub as bh
-client = bh.Client(token="bh_xxx")
-LB = 7   # your leaderboard id (in the URL)
+client = bh.Client(token="&lt;your-api-token&gt;")
+LB = 7   # the number in /leaderboard/7
 
 sub = client.submission(LB, name="my-classifier")
 for name, inputs in client.iter_samples(LB):
@@ -50,9 +84,78 @@ sub.submit(description="baseline CNN")</code></pre></li>
     <li><strong>Compare.</strong> Your submission appears on the leaderboard with its
         accuracy + rank. Open the comparison view to see per-sample predictions vs GT.</li>
 </ol>
+<div class="alert alert-success">
+    <strong>Why the comparison view matters.</strong> The leaderboard gives you one number;
+    the comparison view lines up the GT against each model's prediction, sample by sample. So
+    you don't just learn <em>that</em> a model scored 0.84 &mdash; you see exactly which
+    samples it got wrong, and how. That's where the score turns into insight about where your
+    model fails.
+</div>
+<div class="alert alert-info">
+    <strong>This is the whole loop.</strong> Bring data in (the import), declare the
+    prediction contract (<code>label_pred</code>, kind <code>label</code>), bind a metric
+    (<code>accuracy</code>), submit &amp; compare. Every other tutorial swaps out one piece
+    &mdash; a different data layout, a custom metric, a different kind &mdash; without
+    changing the shape.
+</div>
 
 <!-- ============================================================ -->
-<h2 id="t2" class="mt-5">2 &middot; File-tree: paired RGB + depth</h2>
+<h2 class="mt-5">Author scoring &amp; views</h2>
+<p>How the score and the comparison view get their behavior: you write the metric and the
+    visualization as Python, bind them to a leaderboard, and re-score without re-uploading.
+    All user-supplied code runs in a hardened sandbox, so anyone can contribute scoring
+    without being trusted.</p>
+
+<h3 id="t2" class="mt-4">2 &middot; Write a metric + a confusion-matrix visualization</h3>
+<ol>
+    <li><strong>Metric.</strong> On the <a href="/metrics">Metrics</a> page, author your own
+        accuracy from scratch (the built-in <code>accuracy</code> does the same thing):
+        <pre><code class="language-python">import benchhub as bh
+
+def accuracy(gt: bh.Label, pred: bh.Label):
+    return 1.0 if pred.value == gt.value else 0.0</code></pre>
+        Bind it to your leaderboard with <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>, pooling = mean, higher-is-better.</li>
+    <li><strong>Visualization.</strong> A <code>confusion_matrix</code> aggregated viz ships
+        ready to bind &mdash; map <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>; its axes show class names automatically. Or
+        write your own (see <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a>).</li>
+    <li><strong>Re-score.</strong> Existing submissions don't need re-uploading &mdash; hit
+        the recompute (&#8635;) button on the leaderboard to apply the new metric.</li>
+</ol>
+
+<h3 id="t3" class="mt-4">3 &middot; Submit from a script or Colab (reusable loop)</h3>
+<p>The submission loop is the same everywhere &mdash; iterate, run your model, predict,
+    submit:</p>
+<pre><code class="language-python">import os, benchhub as bh
+
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
+LB = 7                                      # the number in /leaderboard/7
+
+# Inspect what the leaderboard expects:
+print(client.leaderboard_contract(LB))     # [{name, kind, params, role}, ...]
+
+sub = client.submission(LB, name="run-2026-06", link="https://github.com/me/model")
+for name, inputs in client.iter_samples(LB):
+    pred = my_model(inputs)                 # use inputs["&lt;field&gt;"]
+    sub.predict(name, label_pred=bh.Label(int(pred)))
+print(sub.submit())</code></pre>
+<p>Inputs are downloaded once and cached on disk
+    (<code>~/.cache/benchhub/</code>, or <code>$BENCHHUB_CACHE_DIR</code>), so re-runs are
+    offline. Pass <code>force_download=True</code> to <code>iter_samples</code> to
+    re-fetch. See <a href="{{ url_for('docs', page='submitting') }}">Submitting</a> for the
+    full client reference.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Bring your own data layout</h2>
+<p>Real datasets rarely arrive as a clean table. These recipes cover the common non-tabular
+    shapes &mdash; paired files, folder-as-label, video clips, in-memory data, and
+    path-encoded variants. The file-tree mapper handles the HuggingFace ones; the client
+    handles data you already have. Either way the dataset caches as the preview tier and
+    defaults to <strong>private</strong> &mdash; you publish when ready &mdash; and from
+    there it's the Tutorial&nbsp;1 loop again.</p>
+
+<h3 id="t4" class="mt-4">4 &middot; File-tree: paired RGB + depth</h3>
 <p>A repo laid out as <code>train/&lt;seq&gt;/&lt;frame&gt;.png</code> for RGB plus one
     packed <code>depth.npz</code> per sequence. Not tabular &mdash; use the file-tree
     mapper.</p>
@@ -78,8 +181,7 @@ depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes
 sub.submit()</code></pre></li>
 </ol>
 
-<!-- ============================================================ -->
-<h2 id="t3" class="mt-5">3 &middot; Folder-as-label image classification</h2>
+<h3 id="t5" class="mt-4">5 &middot; Folder-as-label image classification</h3>
 <p>A repo where the <em>folder name is the class</em>:
     <code>Alex_Brush/000.png</code>, <code>Cookie/001.png</code>, &hellip;</p>
 <ol>
@@ -97,8 +199,7 @@ label : loader=token  token=label                kind=label  role=gt</code></pre
         bind <strong>accuracy</strong>. Submit as in tutorial&nbsp;1.</li>
 </ol>
 
-<!-- ============================================================ -->
-<h2 id="t4" class="mt-5">4 &middot; A video / clip (sequence) benchmark</h2>
+<h3 id="t6" class="mt-4">6 &middot; A video / clip (sequence) benchmark</h3>
 <p>Each sample is a clip of frames &mdash; e.g. <code>clips/&lt;id&gt;/&lt;frame&gt;.png</code>.</p>
 <ol>
     <li><strong>Map a sequence field.</strong>
@@ -107,59 +208,20 @@ label : loader=token  token=label                kind=label  role=gt</code></pre
         becomes one sample whose frames are gathered into a clip. In the dataset and
         comparison views the clip renders as an <strong>mp4</strong>.</li>
     <li><strong>Predicting a sequence.</strong> A <code>sequence</code> can also be a
-        prediction kind. Read the clip and submit one back:
-        <pre><code class="language-python">for name, clip in ((n, i["clip"]) for n, i in client.iter_samples(LB)):
-    out = [bh.Image(my_frame_model(f.array)) for f in clip]   # clip is iterable
+        prediction kind. Give the leaderboard a pred field <code>clip_pred</code>
+        (kind <code>sequence</code>), then read each clip and submit one back:
+        <pre><code class="language-python">for name, inputs in client.iter_samples(LB):
+    clip = inputs["clip"]                                    # clip is iterable
+    out = [bh.Image(my_frame_model(f.array)) for f in clip]
     sub.predict(name, clip_pred=bh.Sequence(out, item_kind="image", fps=10))
 sub.submit()</code></pre></li>
 </ol>
 
-<!-- ============================================================ -->
-<h2 id="t5" class="mt-5">5 &middot; Write a metric + a confusion-matrix visualization</h2>
-<ol>
-    <li><strong>Metric.</strong> On the <a href="/metrics">Metrics</a> page, add:
-        <pre><code class="language-python">import benchhub as bh
-
-def top1(gt: bh.Label, pred: bh.LabelList):
-    return 1.0 if pred.values[0] == gt.value else 0.0</code></pre>
-        Bind it to your leaderboard with <code>gt&rarr;label</code>,
-        <code>pred&rarr;label_pred</code>, pooling = mean, higher-is-better.</li>
-    <li><strong>Visualization.</strong> A <code>confusion_matrix</code> aggregated viz ships
-        ready to bind &mdash; map <code>gt&rarr;label</code>,
-        <code>pred&rarr;label_pred</code>; its axes show class names automatically. Or
-        write your own (see <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a>).</li>
-    <li><strong>Re-score.</strong> Existing submissions don't need re-uploading &mdash; hit
-        the recompute (&#8635;) button on the leaderboard to apply the new metric.</li>
-</ol>
-
-<!-- ============================================================ -->
-<h2 id="t6" class="mt-5">6 &middot; Submit from a script or Colab (reusable loop)</h2>
-<p>The submission loop is the same everywhere &mdash; iterate, run your model, predict,
-    submit:</p>
-<pre><code class="language-python">import os, benchhub as bh
-
-client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
-LB = 42
-
-# Inspect what the leaderboard expects:
-print(client.leaderboard_contract(LB))     # [{name, kind, params, role}, ...]
-
-sub = client.submission(LB, name="run-2026-06", link="https://github.com/me/model")
-for name, inputs in client.iter_samples(LB):
-    pred = my_model(inputs)                 # use inputs["&lt;field&gt;"]
-    sub.predict(name, label_pred=bh.Label(int(pred)))
-print(sub.submit())</code></pre>
-<p>Inputs are downloaded once and cached on disk
-    (<code>~/.cache/benchhub/</code>, or <code>$BENCHHUB_CACHE_DIR</code>), so re-runs are
-    offline. Pass <code>force_download=True</code> to <code>iter_samples</code> to
-    re-fetch.</p>
-
-<!-- ============================================================ -->
-<h2 id="t7" class="mt-5">7 &middot; Build a dataset in Python (no HuggingFace)</h2>
+<h3 id="t7" class="mt-4">7 &middot; Build a dataset in Python (no HuggingFace)</h3>
 <p>Have data already in memory or on disk? Skip the importer and push a typed dataset
     directly:</p>
 <pre><code class="language-python">import benchhub as bh
-client = bh.Client(token="bh_xxx")
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
 
 ds = client.create_dataset("my-eval", visibility="private")
 ds.add_field("image", kind="image", role="input")
@@ -169,8 +231,7 @@ for name, img, ans in load_my_data():
 print(ds.create())</code></pre>
 <p>Then create a leaderboard on it exactly like an imported dataset.</p>
 
-<!-- ============================================================ -->
-<h2 id="t8" class="mt-5">8 &middot; Variants &amp; splits</h2>
+<h3 id="t8" class="mt-4">8 &middot; Variants &amp; splits</h3>
 <p>When a file-tree repo encodes a quality or split in the path, e.g.
     <code>train/&lt;seq&gt;/{quality}/&lt;id&gt;.png</code>:</p>
 <ul>
