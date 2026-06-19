@@ -154,6 +154,46 @@ def test_login_github_redirects_to_provider(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# In-app browser (WebView) OAuth block — Google/GitHub deny OAuth there, so the
+# start routes must bounce back to /login instead of dead-ending on the provider.
+# ---------------------------------------------------------------------------
+
+_IG_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+          "AppleWebKit/605.1.15 Instagram 300.0.0.0")
+
+
+def test_login_google_in_webview_redirects_back_to_login(client, monkeypatch):
+    # Even with creds present, a WebView UA must NOT be sent to Google.
+    for k in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+        monkeypatch.setenv(k, "x")
+    with patch('app.oauth.google.authorize_redirect') as redirect_mock:
+        resp = client.get("/login/google?next=/datasets",
+                          headers={"User-Agent": _IG_UA})
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+    assert "google.com" not in resp.headers["Location"]
+    assert "/datasets" in resp.headers["Location"]   # next preserved
+    redirect_mock.assert_not_called()                # never hit the provider
+
+
+def test_login_github_in_webview_redirects_back_to_login(client, monkeypatch):
+    for k, v in GITHUB_CREDS.items():
+        monkeypatch.setenv(k, v)
+    with patch('app.oauth.github.authorize_redirect') as redirect_mock:
+        resp = client.get("/login/github", headers={"User-Agent": _IG_UA})
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
+    redirect_mock.assert_not_called()
+
+
+def test_login_page_in_webview_leads_with_email(client):
+    resp = client.get("/login", headers={"User-Agent": _IG_UA})
+    assert resp.status_code == 200
+    assert b"in-app browser" in resp.data        # the webview-aware banner
+    assert b"Copy link" in resp.data             # open-in-browser helper
+
+
+# ---------------------------------------------------------------------------
 # /oauth/callback/github → user upsert + session
 # ---------------------------------------------------------------------------
 

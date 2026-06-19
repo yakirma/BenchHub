@@ -1860,12 +1860,28 @@ _BLOCKED_BOT_TOKENS = ('gptbot', 'amazonbot', 'claudebot', 'ccbot', 'bytespider'
 # In-app browsers (Android WebView + Facebook/Instagram/Google-app/…) where
 # Google/GitHub OAuth is blocked. Shared by /login (steer to email) and the
 # admin acquisition funnel (bucket traffic by browser type).
-_INAPP_BROWSER_TOKENS = ('; wv)', 'FBAN', 'FBAV', 'Instagram', 'Line/',
-                         'MicroMessenger', 'TikTok', 'musical_ly', 'GSA/')
+_INAPP_BROWSER_TOKENS = ('; wv)', 'FBAN', 'FBAV', 'FB_IAB', 'FB4A', 'Instagram',
+                         'Line/', 'MicroMessenger', 'TikTok', 'musical_ly', 'GSA/',
+                         'LinkedInApp', 'Snapchat', 'Pinterest', 'Twitter',
+                         'KAKAOTALK', 'Reddit', 'OkHttp')
 
 
 def _is_webview_ua(ua):
     return bool(ua) and any(tok in ua for tok in _INAPP_BROWSER_TOKENS)
+
+
+def _webview_oauth_block(provider):
+    """If the request comes from an in-app browser (where Google/GitHub OAuth
+    is blocked and dead-ends on the provider's `disallowed_useragent` page),
+    bounce back to /login with a clear nudge to email sign-in instead of
+    redirecting into the provider. Returns a Response to short-circuit the
+    OAuth-start route, or None to proceed normally."""
+    if _is_webview_ua(request.headers.get('User-Agent', '')):
+        flash(f"{provider} blocks sign-in inside in-app browsers (Instagram, "
+              "Facebook, LinkedIn, …). Use a one-time email code below, or "
+              "open BenchHub in your browser.", "warning")
+        return redirect(url_for('login', next=request.args.get('next', '')))
+    return None
 
 
 @app.before_request
@@ -2706,6 +2722,9 @@ def login():
 
 @app.route('/login/github')
 def login_github():
+    _blocked = _webview_oauth_block('GitHub')
+    if _blocked is not None:
+        return _blocked
     if not os.environ.get('GITHUB_CLIENT_ID') or not os.environ.get('GITHUB_CLIENT_SECRET'):
         # Most common dev mistake — make it loud rather than crashing in Authlib.
         return ("GitHub OAuth not configured: set GITHUB_CLIENT_ID and "
@@ -2799,6 +2818,9 @@ def login_google():
     """OIDC-flow login via Google. Configure with GOOGLE_CLIENT_ID +
     GOOGLE_CLIENT_SECRET (Fly secrets in prod). Authorized redirect
     URI on the Google Cloud Console: <site>/oauth/callback/google."""
+    _blocked = _webview_oauth_block('Google')
+    if _blocked is not None:
+        return _blocked
     if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
         return ("Google OAuth not configured: set GOOGLE_CLIENT_ID and "
                 "GOOGLE_CLIENT_SECRET (env vars or Fly secrets)."), 503
@@ -2877,6 +2899,9 @@ def login_huggingface():
     """OIDC-flow login via Hugging Face. Configure with HF_CLIENT_ID +
     HF_CLIENT_SECRET. Redirect URI on the HF OAuth app:
     <site>/oauth/callback/huggingface."""
+    _blocked = _webview_oauth_block('Hugging Face')
+    if _blocked is not None:
+        return _blocked
     if not os.environ.get('HF_CLIENT_ID') or not os.environ.get('HF_CLIENT_SECRET'):
         return ("Hugging Face OAuth not configured: set HF_CLIENT_ID and "
                 "HF_CLIENT_SECRET."), 503

@@ -92,9 +92,22 @@
             <div class="alert alert-warning small py-2 px-3 mb-3">
                 <i class="bi bi-exclamation-triangle me-1"></i>
                 You're in an in-app browser — <strong>email sign-in works best here.</strong>
-                Google &amp; GitHub usually won't work in in-app browsers; to use them, open
-                this page in your browser (tap <i class="bi bi-three-dots-vertical"></i> /
-                <i class="bi bi-box-arrow-up"></i> → &ldquo;Open in browser&rdquo;).
+                Google &amp; GitHub won't work in in-app browsers; to use them, open this
+                page in your real browser:
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    <a id="wv-open-chrome" class="btn btn-sm btn-outline-dark"
+                       href="intent://{{ request.host }}{{ request.full_path|trim('?') }}#Intent;scheme=https;package=com.android.chrome;end">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>Open in Chrome (Android)
+                    </a>
+                    <button type="button" id="wv-copy-link" class="btn btn-sm btn-outline-dark"
+                            onclick="navigator.clipboard.writeText(window.location.href);
+                                     this.innerHTML='&lt;i class=&quot;bi bi-check2 me-1&quot;&gt;&lt;/i&gt;Link copied — paste in your browser';">
+                        <i class="bi bi-clipboard me-1"></i>Copy link
+                    </button>
+                </div>
+                <span class="d-block mt-2 text-body-secondary">On iPhone: tap
+                    <i class="bi bi-three-dots"></i> / <i class="bi bi-box-arrow-up"></i> →
+                    &ldquo;Open in Safari&rdquo;.</span>
             </div>
             {{ email_form() }}
             {{ divider('other ways to sign in') }}
