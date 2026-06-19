@@ -1,0 +1,205 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+
+<h1>Bring your own data layout</h1>
+<p class="lead">Real datasets rarely arrive as a clean table &mdash; they're trees of paired
+    files, packed arrays, folders that <em>are</em> the label, or clips of frames. These four
+    recipes map each of those shapes onto BenchHub's typed contract so the rest of the loop
+    &mdash; submit, score, compare &mdash; works unchanged.</p>
+<hr>
+
+<h2 class="mt-4">The file-tree mapper</h2>
+<p>BenchHub's importer infers columns automatically for <em>tabular</em> HuggingFace repos. But
+    plenty of datasets aren't tabular: they're a directory tree where structure lives in the
+    <em>paths</em> &mdash; paired files (an RGB next to its depth map), arrays packed into one
+    <code>.npz</code>, a folder name that encodes the class, frames grouped into clips. For those,
+    the <strong>file-tree mapper</strong> takes over.</p>
+<p>You don't pick it manually. On a non-tabular repo, <strong>Fetch &amp; preview</strong>
+    detects there's no flat schema and <strong>hands off to the file-tree mapper automatically</strong>.
+    The mapper lists the tree, surfaces the distinct path levels, and lets you declare one
+    <em>field</em> per row &mdash; each row says how to pull that field out of the tree:</p>
+
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <strong>Per-field anatomy</strong> &mdash; every mapper row carries:
+        <ul class="mb-0 mt-2">
+            <li><strong>loader</strong> &mdash; how the bytes are read. One of:
+                <ul class="mb-1">
+                    <li><code>file</code> &mdash; one file per sample (an image, an audio clip).</li>
+                    <li><code>npz</code> &mdash; an array inside a <code>.npz</code> archive,
+                        addressed by <code>key</code>; can be <code>shared</code> across samples
+                        and sliced along an <code>axis</code>.</li>
+                    <li><code>token</code> &mdash; a value lifted straight out of the path (a
+                        folder name becoming a label), no file read at all.</li>
+                    <li><code>sequence</code> &mdash; many files gathered into one ordered clip.</li>
+                </ul>
+            </li>
+            <li><strong>pattern</strong> &mdash; the path template, with <code>{tokens}</code>
+                naming the parts that vary. The token that identifies the <em>sample</em> ties
+                a field's files to the same row across the dataset.</li>
+            <li><strong>kind</strong> &mdash; the field's declared type
+                (<code>image</code>, <code>depth</code>, <code>label</code>, <code>sequence</code>,
+                &hellip;); see <a href="{{ url_for('docs', page='data_types') }}">Data types</a>.</li>
+            <li><strong>role</strong> &mdash; the <em>field</em> role: <code>input</code>
+                (conditioning handed to the submitter, never predicted) or <code>gt</code> (the
+                held-aside answer a prediction is scored against). Get this right: a field marked
+                <code>input</code> won't appear as a prediction target. (Don't confuse this with the
+                mapper's <em>path-level types</em> &mdash; <code>id</code> / <code>property</code> /
+                <code>token</code> &mdash; which describe how a path segment is read, not what a
+                field is for.)</li>
+        </ul>
+    </div>
+</div>
+
+<p><strong>The index rule:</strong> the first <code>file</code> field enumerates the samples
+    &mdash; each distinct <code>{id}</code> it matches is one sample, and every other field is
+    pulled in alignment to that row.</p>
+
+<p>After you map the fields and create the board, the <strong>submission loop is identical to
+    every other tutorial</strong> &mdash; iterate samples, run your model, predict, submit. Two
+    of the recipes below show the loop because the prediction kind is interesting
+    (<code>depth</code>, <code>sequence</code>); for the full reusable loop and the Colab path,
+    see <a href="{{ url_for('docs', page='tutorial_submit_local') }}">Submit from a script</a>
+    and <a href="{{ url_for('docs', page='tutorial_submit_colab') }}">Submit from Colab</a>.</p>
+
+<div class="alert alert-info">
+    Imported datasets cache as the lightweight <strong>preview</strong> tier (thumbnail-resolution,
+    for browsing) and default to <strong>private</strong>. Full-resolution bytes only land when a
+    leaderboard <em>materializes</em> the subset it scores on. You publish when ready.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Paired RGB + depth (file tree)</h2>
+<p>A repo laid out as <code>train/&lt;seq&gt;/normal/&lt;frame&gt;.png</code> for the RGB frames
+    (the <code>normal/</code> level is the quality variant), plus one packed <code>depth.npz</code>
+    per sequence holding every frame's depth map. This is the canonical
+    paired-files-plus-packed-array shape, and it's <em>not</em> tabular &mdash; the file-tree
+    mapper handles it.</p>
+<ol>
+    <li><strong>Inspect.</strong> Paste the repo id and click <strong>Fetch &amp; preview</strong>.
+        Because there's no flat schema, it hands off to the file-tree mapper, which lists the
+        tree and the path levels it found.</li>
+    <li><strong>Map fields.</strong>
+        <pre><code class="language-text">image : loader=file  pattern=train/{seq}/normal/{id}.png   role=input  kind=image
+depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes  axis=0
+        role=gt  kind=depth</code></pre>
+        The RGB row reads one <code>.png</code> per sample. The depth row points every sample at
+        the <em>same</em> archive (<code>shared=yes</code>): all frames are stacked along
+        <code>axis=0</code> under the <code>depth</code> key, and BenchHub slices it so frame N
+        aligns to the Nth image in sorted filename order. This is why packed arrays don't need
+        one file per sample &mdash; one <code>.npz</code> fans out across the sequence.</li>
+    <li><strong>Decode preview.</strong> Click a sample and confirm the depth frame actually
+        lines up with image 0 before committing &mdash; a wrong <code>axis</code> or sort order
+        is the one thing that silently misaligns paired data.</li>
+    <li><strong>Leaderboard + metric.</strong> Create a leaderboard with <code>image=input</code>,
+        <code>depth=gt</code>, a prediction field <code>depth_pred</code> (kind <code>depth</code>),
+        and bind <strong>rmse_depth</strong> mapped <code>gt&rarr;depth</code>,
+        <code>pred&rarr;depth_pred</code>.</li>
+    <li><strong>Submit.</strong> Depth is <code>role=gt</code>, held server-side &mdash; you never
+        see it. The only input is the image, which arrives as a decoded <code>bh.Image</code>
+        instance; read its pixels with <code>.array</code> and predict the depth:
+        <pre><code class="language-python">import benchhub as bh
+client = bh.Client()   # reads $BENCHHUB_API_TOKEN
+
+lb = client.leaderboard("alice/rgbd-depth")   # the board's handle
+sub = lb.submission(name="my-depth-model")
+for name, inputs in lb.iter_samples():
+    rgb = inputs["image"].array
+    sub.predict(name, depth_pred=bh.Depth(my_depth_model(rgb), unit="meters"))
+sub.submit()</code></pre></li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Folder-as-label classification</h2>
+<p>A repo where the <em>folder name is the class</em> &mdash; <code>Alex_Brush/000.png</code>,
+    <code>Cookie/001.png</code>, &hellip; The label never appears in a file; it lives in the path.
+    The <code>token</code> loader exists for exactly this.</p>
+<ol>
+    <li><strong>Describe the structure.</strong> In the mapper, the &ldquo;describe the
+        structure&rdquo; panel shows two path levels, each with a <em>path-level type</em>
+        (distinct from a field's <code>input</code>/<code>gt</code> role): the class folder
+        (default <code>property</code>) and the filename (<code>id</code>). Click
+        <strong>Generate fields from structure</strong> and the mapper writes both rows for you.</li>
+    <li>It produces:
+        <pre><code class="language-text">image : loader=file   pattern={label}/{id}.png   kind=image  role=input
+label : loader=token  token=label                kind=label  role=gt</code></pre>
+        The image row reads each file as before. The <code>token</code> loader reads no bytes at
+        all &mdash; it turns each folder name into a label and builds the class vocabulary across
+        the whole dataset, so the UI shows <code>Cookie</code> rather than a bare index.</li>
+    <li><strong>Leaderboard.</strong> The image is <code>role=input</code> and the label is
+        <code>role=gt</code>. Add a prediction field <code>label_pred</code> (kind
+        <code>label</code>); bind <strong>accuracy</strong> mapped <code>gt&rarr;label</code>,
+        <code>pred&rarr;label_pred</code>.</li>
+    <li><strong>Submit.</strong> The loop is the
+        <a href="{{ url_for('docs', page='tutorial_first_submission') }}">first-submission</a>
+        loop verbatim &mdash; iterate, classify <code>inputs["image"].array</code>, predict
+        <code>label_pred=bh.Label(&hellip;)</code>, submit.</li>
+</ol>
+<div class="alert alert-light border">
+    Folder-as-label is the most common &ldquo;ImageFolder&rdquo; layout in the wild. The
+    <code>token</code> loader generalizes past labels: any path segment you want surfaced as a
+    typed field &mdash; a split name, a category, a source &mdash; can ride the same row.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Video / clip (sequence) benchmark</h2>
+<p>Each sample is a <em>clip</em> &mdash; many frames that belong together &mdash; e.g.
+    <code>clips/&lt;id&gt;/&lt;frame&gt;.png</code>. The <code>sequence</code> loader gathers the
+    frames into one ordered unit per sample.</p>
+<ol>
+    <li><strong>Map a sequence field.</strong>
+        <pre><code class="language-text">clip : loader=sequence  pattern=clips/{id}/{frame}.png   kind=sequence  role=input</code></pre>
+        The <code>{frame}</code> token marks the per-frame part; the <code>{id}</code> token
+        identifies the sample. So each distinct <code>{id}</code> becomes one sample, and all its
+        frames are gathered into a clip in sorted frame order. In the dataset and comparison views
+        the clip renders as an <strong>mp4</strong>.</li>
+    <li><strong>Predicting a sequence.</strong> A <code>sequence</code> isn't only an input kind
+        &mdash; it can be a prediction target too. Give the leaderboard a prediction field
+        <code>clip_pred</code> (kind <code>sequence</code>). On the client, each input clip is
+        <em>iterable</em>: loop its frames, run your per-frame model, and wrap the results back
+        into a <code>bh.Sequence</code>:
+        <pre><code class="language-python">lb = client.leaderboard("you/your-clip-board")   # the board's handle
+sub = lb.submission(name="my-frame-model")
+for name, inputs in lb.iter_samples():
+    clip = inputs["clip"]                                    # clip is iterable
+    out = [bh.Image(my_frame_model(f.array)) for f in clip]
+    sub.predict(name, clip_pred=bh.Sequence(out, item_kind="image", fps=10))
+sub.submit()</code></pre>
+        <code>item_kind</code> declares what each element is (here <code>image</code>); <code>fps</code>
+        sets the playback rate for the rendered mp4.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Variants &amp; splits</h2>
+<p>Sometimes a file-tree repo encodes a quality level or a split <em>inside the path</em> &mdash;
+    e.g. <code>train/&lt;seq&gt;/{quality}/&lt;id&gt;.png</code>, where <code>{quality}</code> is
+    <code>low</code> or <code>normal</code>. The mapper gives you two ways to handle that
+    extra path token, depending on whether you want one dataset or many.</p>
+<ul>
+    <li><strong>Import just one split/subset</strong> &mdash; set the mapper's &ldquo;import only
+        where token = value&rdquo; to e.g. <code>quality = normal</code>. You get one dataset
+        containing only those samples; the other variants are skipped.</li>
+    <li><strong>Fan out into separate datasets</strong> &mdash; set the variant token to
+        <code>quality</code>. BenchHub creates one dataset per distinct value
+        (<code>&lt;name&gt;_low</code>, <code>&lt;name&gt;_normal</code>), each importing only
+        its own slice. Useful when you want a separate leaderboard per condition.</li>
+</ul>
+<p>Either way the path token never leaks into the field contract &mdash; it's a selection lever,
+    not a field. The samples you keep still map through the same <code>loader</code>/<code>kind</code>/<code>role</code>
+    rows as the recipes above.</p>
+
+<div class="alert alert-secondary mt-5">
+    Stuck on a specific repo's layout? Open a
+    <a href="https://github.com/yakirma/BenchHub/issues" target="_blank" rel="noopener"
+       class="alert-link">GitHub issue</a> with the repo id and structure &mdash; odd trees are
+    how the mapper grows.
+</div>
+
+<div class="alert alert-light border mt-5">
+    Next: <a href="{{ url_for('docs', page='tutorial_python_dataset') }}">Build a dataset in
+    Python (no HuggingFace)</a> &mdash; when you already have the data in memory and want to skip
+    the importer entirely.
+</div>
+{% endblock %}

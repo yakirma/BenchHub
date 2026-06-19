@@ -1,0 +1,179 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+
+<h1>Build a dataset in Python</h1>
+<p class="lead">Have data already in memory or on disk? Skip the importer and push a typed
+    dataset straight from Python with the client &mdash; no HuggingFace repo, no file tree,
+    no commit-time mapping. You declare the schema and stream the samples yourself.</p>
+<hr>
+
+<p>The <a href="{{ url_for('docs', page='importing') }}">importer</a> exists to <em>fill</em> a
+    typed contract from a repo that already lives somewhere. But the contract is the spine, not
+    the repo &mdash; if you already hold the bytes (a generated eval set, a CSV plus a folder of
+    images, the output of yesterday's data pipeline), there's nothing to import. The client lets
+    you build the same typed dataset directly: declare each field's <em>kind</em> and
+    <em>role</em>, then hand it typed values sample by sample. Everything downstream &mdash;
+    decode, render, score, the comparison view &mdash; works identically to an imported dataset,
+    because the contract is identical.</p>
+
+<div class="alert alert-info">
+    <strong>When to use this.</strong> Reach for the client when the data isn't on HuggingFace
+    in a clean form, or isn't worth round-tripping through a repo: synthetic / generated evals,
+    a private slice you can't publish, anything you can already load into Python. Reach for the
+    <a href="{{ url_for('docs', page='importing') }}">importer</a> instead when the data already
+    sits in an HF (or Kaggle) repo &mdash; one button beats re-uploading bytes you don't own.
+</div>
+
+<h2 class="mt-5">The four moves, in code</h2>
+<p>Same shape as every other tutorial &mdash; <strong>bring data in &rarr; declare the
+    contract &rarr; bind a metric &rarr; submit &amp; compare</strong>. Here the first two
+    moves happen in Python:</p>
+
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
+
+ds = client.create_dataset("my-eval", visibility="private")
+ds.add_field("image", kind="image", role="input")
+ds.add_field("answer", kind="text",  role="gt")
+for name, img, ans in load_my_data():
+    ds.add_sample(name, image=bh.Image(img), answer=bh.Text(ans))
+print(ds.create())</code></pre>
+
+<p><code>load_my_data()</code> is your own loader (pseudocode here) &mdash; whatever yields
+    your <code>(name, image, answer)</code> tuples, from a folder, a CSV, or a pipeline in
+    memory.</p>
+<p>That's the whole dataset. The leaderboard, metric, and submission steps are then
+    identical to an imported dataset (covered below). New to <em>kind</em>, <em>role</em>, or
+    <em>contract</em>? See <a href="{{ url_for('docs', page='concepts') }}">Core Concepts</a>;
+    the full list of kinds and their constructors is in
+    <a href="{{ url_for('docs', page='data_types') }}">Data Types</a>.</p>
+
+<h2 class="mt-5">Step by step</h2>
+
+<h3 class="mt-4">1 &middot; Connect the client</h3>
+<p>Install once (<code>pip install benchhub-client</code>), then construct a client. It reads
+    your API token from the environment, so nothing secret lives in the script:</p>
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
+# or pass it explicitly:
+# client = bh.Client(token="&lt;your-api-token&gt;")</code></pre>
+<p>Generate a token at <a href="/settings/api_tokens">Settings &rarr; API tokens</a> (also
+    reachable from <a href="/settings/account">Settings &rarr; Account</a>); this requires a
+    signed-in account. The base URL defaults to <code>https://runbenchhub.com</code>;
+    override it with <code>$BENCHHUB_BASE_URL</code> if you run your own instance.</p>
+
+<h3 class="mt-4">2 &middot; Create the dataset</h3>
+<pre><code class="language-python">ds = client.create_dataset("my-eval", visibility="private")</code></pre>
+<p><code>create_dataset</code> returns a local builder &mdash; nothing is uploaded yet. It
+    defaults to <strong>public</strong>, so pass <code>visibility="private"</code> (as the
+    example does) to keep the dataset yours alone until you choose to share it. (You can also
+    flip visibility later from the dataset page.)</p>
+
+<h3 class="mt-4">3 &middot; Declare the schema with <code>add_field</code></h3>
+<p>Each field declares a <strong>name</strong>, a <strong>kind</strong> (its declared type),
+    and a <strong>role</strong>. The role is the load-bearing decision:</p>
+<ul>
+    <li><code>role="input"</code> &mdash; conditioning given to the submitter. Shipped to the
+        model at submit time; <em>not</em> a prediction target.</li>
+    <li><code>role="gt"</code> &mdash; the ground truth (the held-aside answer). Kept
+        server-side and scored against; never handed to the model.</li>
+</ul>
+<pre><code class="language-python">ds.add_field("image",  kind="image", role="input")
+ds.add_field("answer", kind="text",  role="gt")</code></pre>
+<p>Some kinds take <strong>params</strong> &mdash; pass them with <code>params=</code>. A
+    <code>label</code> field's class vocabulary and a <code>depth</code> field's unit are the
+    common ones:</p>
+<pre><code class="language-python">ds.add_field("cls",   kind="label", role="gt",
+             params={"names": ["cat", "dog", "bird"]})
+ds.add_field("depth", kind="depth", role="gt",
+             params={"unit": "meters"})</code></pre>
+<div class="alert alert-warning">
+    <strong>Roles aren't cosmetic &mdash; they decide the contract.</strong> When you build a
+    leaderboard on this dataset, BenchHub derives the prediction contract from your
+    <code>gt</code> fields (an <code>answer</code> GT &rarr; an <code>answer_pred</code> field
+    submitters fill in) and ships the <code>input</code> fields to the model. Mislabel an
+    answer column as <code>input</code> and it leaks to the model; mislabel a conditioning
+    image as <code>gt</code> and the board asks people to predict it. Get the roles right here
+    and the rest follows.
+</div>
+
+<h3 class="mt-4">4 &middot; Add samples with typed values</h3>
+<p>Stream your data through <code>add_sample(name, **typed_values)</code>. The first argument
+    is the sample's stable name (used to align GT with predictions and to navigate the
+    comparison view); the keyword arguments match your declared field names, each wrapped in
+    the matching <code>bh.&lt;Kind&gt;(&hellip;)</code> constructor:</p>
+<pre><code class="language-python">for name, img, ans in load_my_data():
+    ds.add_sample(name, image=bh.Image(img), answer=bh.Text(ans))</code></pre>
+<p>Wrapping the value in <code>bh.Image(&hellip;)</code> / <code>bh.Text(&hellip;)</code> /
+    <code>bh.Label(&hellip;)</code> / <code>bh.Depth(&hellip;)</code> &hellip; is what makes
+    the dataset <em>typed</em>: the kind travels with the bytes, so the platform never has to
+    guess how to decode or render them. <code>bh.Image</code> takes a NumPy array (e.g.
+    <code>(H, W, 3)</code> <code>uint8</code>); the array kinds (<code>image</code>,
+    <code>mask</code>, <code>depth</code>) expose <code>.array</code> when read back. Use a name
+    that is unique and stable across runs &mdash; re-using a name <em>merges</em> fields into
+    that existing sample (overwriting any field you pass again) rather than adding a
+    duplicate.</p>
+
+<h3 class="mt-4">5 &middot; Upload with <code>ds.create()</code></h3>
+<pre><code class="language-python">print(ds.create())</code></pre>
+<p><code>create()</code> packs everything you added and uploads it in one call &mdash; this is
+    the first time bytes leave your machine. It returns the created dataset's identity, which
+    you'll use to build a leaderboard. The dataset is stored as the lightweight
+    <strong>preview tier</strong> (small thumbnail-resolution copies for browsing, not
+    full-resolution bytes); when you later create a leaderboard that scores on a subset, only
+    that subset's full-resolution bytes are <em>materialised</em>. Because the example passed
+    <code>visibility="private"</code>, it stays <strong>private</strong> until you choose to
+    share it.</p>
+
+<h2 class="mt-5">From dataset to scored leaderboard</h2>
+<p>You now have a dataset that is indistinguishable from an imported one &mdash; same typed
+    contract, same preview tier, same visibility controls. So the remaining moves are
+    exactly the canonical loop:</p>
+<ol>
+    <li><strong>Create a leaderboard.</strong> Open the dataset &rarr; <strong>New
+        leaderboard</strong>. The prediction contract is derived from your <code>gt</code>
+        fields (here: <code>answer_pred</code>, kind <code>text</code>); your
+        <code>input</code> fields are what the model receives. Pick a sample selection and bind
+        a <a href="{{ url_for('docs', page='metrics') }}">metric</a>, mapping its
+        <code>gt</code> arg to <code>answer</code> and its <code>pred</code> arg to
+        <code>answer_pred</code>.</li>
+    <li><strong>Submit.</strong> Iterate the board's samples, run your model, predict, submit
+        &mdash; the same reusable loop as everywhere else.</li>
+    <li><strong>Compare.</strong> Open the comparison view to see GT vs each prediction, sample
+        by sample.</li>
+</ol>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <p class="mb-2">The submission loop, for the contract above:</p>
+        <pre class="mb-0"><code class="language-python">lb = client.leaderboard("you/my-eval-board")   # the board's "Client handle"
+sub = lb.submission(name="my-model")
+for name, inputs in lb.iter_samples():
+    img = inputs["image"].array                # decoded bh.Image
+    sub.predict(name, answer_pred=bh.Text(my_model(img)))
+sub.submit()</code></pre>
+    </div>
+</div>
+
+<p class="mt-3">Inputs arrive as decoded <code>bh.&lt;Kind&gt;</code> instances and are cached
+    on disk after the first download, so re-runs are offline. The full submission walkthrough
+    &mdash; reusable script, Colab, re-scoring &mdash; is in
+    <a href="{{ url_for('docs', page='tutorial_first_submission') }}">the first-submission
+    tutorial</a>, and the complete client API is in
+    <a href="{{ url_for('docs', page='submitting') }}">Submitting</a>.</p>
+
+<div class="alert alert-success mt-4">
+    <strong>One contract, every entry point.</strong> Importing, the file-tree mapper, and the
+    Python client all converge on the same typed dataset &mdash; once you've built one in code,
+    everything you learned about leaderboards, metrics, and the comparison view applies
+    unchanged.
+</div>
+
+<div class="alert alert-light border mt-5">
+    That's the last tutorial. Head back to
+    <a href="{{ url_for('docs', page='tutorials') }}">all tutorials</a> to revisit the other
+    data shapes, or browse the <a href="{{ url_for('docs', page='index') }}">docs index</a>.
+</div>
+{% endblock %}

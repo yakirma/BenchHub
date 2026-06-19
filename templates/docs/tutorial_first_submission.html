@@ -1,0 +1,229 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+<h1>Your first submission</h1>
+<p class="lead">The canonical loop, walked end to end once: a tabular HuggingFace dataset
+    (image&nbsp;+&nbsp;label) &rarr; a leaderboard &rarr; a first scored submission &mdash; on
+    CIFAR-10, scored by accuracy.</p>
+<hr>
+
+<p>Every benchmark on BenchHub is the same four moves: <strong>import</strong> a dataset,
+    <strong>create a leaderboard</strong> that declares what to predict and how to score it,
+    <strong>submit</strong> predictions from Python, then <strong>compare</strong> them against
+    ground truth. The data source changes from benchmark to benchmark; the shape doesn't. Learn
+    it here on the simplest possible case &mdash; classify 32&times;32 images into ten classes
+    &mdash; and every other tutorial is a variation on it.</p>
+
+<p class="small text-body-secondary">New to the vocabulary (<em>kind</em>, <em>field</em>,
+    <em>ground truth</em>, <em>contract</em>)?
+    <a href="{{ url_for('docs', page='concepts') }}">Core Concepts</a> builds the object model
+    bottom-up. This page defines each term as it comes up, so you can also just read straight
+    through.</p>
+
+<p class="small text-body-secondary"><strong>Before you start:</strong> you need an account &mdash;
+    <a href="{{ url_for('login') }}">sign in</a> (top-right) first. Importing a dataset, creating a
+    leaderboard, and getting an API token all require it.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">1 &middot; Import the dataset</h2>
+<p>An <em>import</em> pulls a public dataset onto BenchHub as a browsable, typed
+    <strong>Dataset</strong>. CIFAR-10 lives on HuggingFace as a clean table &mdash; one row per
+    image, with an <code>img</code> column and a <code>label</code> column &mdash; which is the
+    simplest layout to import: no file-tree mapping, just confirm the inferred columns.</p>
+<ol>
+    <li><strong>Open the importer.</strong> Go to <a href="/datasets">Datasets</a> &rarr;
+        <strong>Add a dataset</strong>, paste the HuggingFace repo id
+        <code>uoft-cs/cifar10</code>, and click <strong>Fetch &amp; preview</strong>. BenchHub
+        reads the dataset's schema and shows you what it found before anything is committed.</li>
+    <li><strong>Confirm the kinds.</strong> Each column is assigned a <em>kind</em> &mdash; its
+        declared type, the single decision the whole system keys off. You'll see the image
+        column inferred as <code>image</code> and the label column as <code>label</code> (an
+        integer drawn from a fixed class vocabulary, rendered as a class name in the UI rather
+        than a bare index). If a kind looks wrong here, fix it now &mdash; decode, render, score,
+        and compare all fall out of it downstream.</li>
+    <li><strong>Pick the split.</strong> Choose the <code>test</code> split. You score against
+        held-out data, never the data a model trained on. Leave <em>max samples</em> at your
+        taste &mdash; the full split is fine; you'll narrow it down per-leaderboard in the next
+        step, not here.</li>
+    <li><strong>Commit.</strong> The dataset caches as a <em>preview</em>: a tiny,
+        thumbnail-resolution copy (downscaled images, inline labels) meant for fast browsing, not
+        scoring. It's a few tens of KB per sample, so the import is quick and cheap. Full-
+        resolution bytes don't land yet &mdash; they only arrive for the exact samples a
+        leaderboard actually scores on (see step&nbsp;2). New datasets default to
+        <strong>private</strong>; you publish when you're ready.</li>
+</ol>
+<p class="small text-body-secondary">Not a tabular repo? Paired files, folder-as-label, video
+    clips, and other non-table layouts go through the file-tree mapper instead &mdash; see
+    <a href="{{ url_for('docs', page='tutorial_data_layouts') }}">Data layouts</a>. Already have
+    data in memory? <a href="{{ url_for('docs', page='tutorial_python_dataset') }}">Build a
+    dataset in Python</a>. Either way you land back on this same loop.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">2 &middot; Create the leaderboard</h2>
+<p>A dataset is just data. A <strong>leaderboard</strong> turns it into a benchmark: it picks
+    which samples to score on, declares the <em>prediction contract</em> (what submitters must
+    hand back), and binds a metric (how predictions are scored). Open the dataset and click
+    <strong>New leaderboard</strong>.</p>
+
+<h3 class="mt-4">Field roles &mdash; input vs. GT</h3>
+<p>Every dataset field carries a <em>role</em> that says how it's used at scoring time:</p>
+<ul>
+    <li><strong><code>input</code></strong> &mdash; given to the submitter as conditioning, and
+        <em>not</em> predicted. Here, <code>image = input</code>: the model sees each image and
+        must produce an answer for it.</li>
+    <li><strong><code>gt</code></strong> &mdash; the <em>ground truth (GT)</em>: the held-aside
+        correct answer, kept server-side and revealed only in the comparison view. Here,
+        <code>label = gt</code>: it's what each prediction is scored against, so submitters never
+        receive it through the client.</li>
+</ul>
+<p>This split is what keeps the benchmark honest &mdash; the client hands out inputs and withholds
+    GT automatically, purely from the roles you set.</p>
+
+<h3 class="mt-4">The prediction contract</h3>
+<p>The contract is the list of fields a submission must produce, each with a name and a kind. For
+    classification it's a single field: <strong><code>label_pred</code></strong>, kind
+    <strong><code>label</code></strong>. The kind is load-bearing &mdash; declaring
+    <code>label_pred</code> as <code>label</code> tells the client to accept a
+    <code>bh.Label(...)</code> and tells the metric engine to decode it as a class index. The
+    <code>_pred</code> suffix is just the convention pairing it with the <code>label</code> GT
+    field it'll be scored against. You can inspect any board's contract from code with
+    <code>lb.contract()</code> &mdash; a list of <code>{name, kind, params, role}</code> entries.</p>
+
+<h3 class="mt-4">Sample selection &mdash; stratified sampling</h3>
+<p>You rarely need the whole test split to rank models. Pick <strong>1,000 samples</strong>,
+    <strong>stratified by <code>label</code></strong>. <em>Stratified</em> sampling draws
+    proportionally from each class, so all ten CIFAR classes are represented evenly instead of
+    whatever the head of the file happens to contain. (Plain head/random sampling can skew when a
+    split is sorted by class.) A smaller, balanced subset scores fast and still ranks models
+    faithfully.</p>
+
+<h3 class="mt-4">Bind the metric</h3>
+<p>A <strong>metric</strong> is the scoring function. Bind the built-in
+    <strong>accuracy</strong> &mdash; it ships with BenchHub, so there's no code to write &mdash;
+    and map its arguments to your fields: <code>gt&rarr;label</code>,
+    <code>pred&rarr;label_pred</code>. That mapping is how the engine knows which GT field and
+    which prediction field to feed the metric for each sample.</p>
+
+<h3 class="mt-4">Create &mdash; and what materialization does</h3>
+<p>Click <strong>Create</strong>. Now <em>materialization</em> kicks off in the background:
+    BenchHub downloads the <strong>full-resolution bytes</strong> for exactly the 1,000 samples
+    this leaderboard scores on (the preview tier from step&nbsp;1 is too low-res to score or to
+    serve to a model). It runs as a background job because fetching full-res media for a thousand
+    samples takes a moment, and there's no reason to block the page on it &mdash; the board exists
+    immediately; the status flips to ready once the bytes land. You only pay the storage cost for
+    the subset a board actually uses, not the whole dataset.</p>
+<div class="alert alert-warning">
+    <i class="bi bi-clock-history me-2"></i>
+    Give materialization a moment to finish before submitting. <code>iter_samples</code> serves a
+    board's <em>materialized</em> subset; if it's still downloading, wait for the board to show
+    ready.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">3 &middot; Submit predictions</h2>
+<p>Submissions come from the <code>benchhub-client</code> Python package. Install it with
+    <code>pip install benchhub-client</code>, then grab an API token from
+    <a href="/settings/api_tokens">Settings &rarr; API tokens</a> &rarr; <strong>Generate</strong>
+    (or <a href="/settings/account">your account page</a> &rarr; API tokens). Tokens are
+    <strong>copy-once</strong> &mdash; copy it when shown; <strong>Regenerate</strong> immediately
+    invalidates the old one.</p>
+<p>Use <strong>your</strong> board's handle, shown on its page as <em>&ldquo;Client handle&rdquo;</em>
+    &mdash; <code>alice/cifar10-1k</code> below is just an example. The loop:</p>
+<pre><code class="language-python">import benchhub as bh
+client = bh.Client(token="&lt;your-api-token&gt;")
+# The board's handle, shown on its page as "Client handle" (an id still works too):
+lb = client.leaderboard("alice/cifar10-1k")
+
+sub = lb.submission(name="my-classifier")
+for name, inputs in lb.iter_samples():
+    x = inputs["image"].array        # (32,32,3) uint8
+    sub.predict(name, label_pred=bh.Label(int(my_model(x))))
+sub.submit(description="baseline CNN")</code></pre>
+<p>Reading it line by line:</p>
+<ul>
+    <li><code>bh.Client(token=&hellip;)</code> &mdash; you can also drop the argument and let the
+        client read <code>$BENCHHUB_API_TOKEN</code> from the environment. The base URL defaults
+        to <code>https://runbenchhub.com</code> (override with <code>$BENCHHUB_BASE_URL</code>).</li>
+    <li><code>client.leaderboard("alice/cifar10-1k")</code> &mdash; references the board by its
+        <strong>handle</strong> (<code>&lt;owner&gt;/&lt;slug&gt;</code>), shown on the board page
+        as <em>&ldquo;Client handle&rdquo;</em>. An integer id works anywhere a handle does.</li>
+    <li><code>lb.iter_samples()</code> &mdash; yields <code>(name, inputs)</code> for every sample
+        in the materialized subset. <code>inputs</code> is keyed by input-field name, and each
+        value arrives <strong>already decoded</strong>: the <code>image</code> field is a
+        <code>bh.Image</code>, so <code>inputs["image"].array</code> is a
+        <code>(32,32,3)&nbsp;uint8</code> NumPy array. File-backed inputs download <em>once</em>
+        as one bulk archive cached under <code>~/.cache/benchhub/</code> (override with
+        <code>$BENCHHUB_CACHE_DIR</code>); re-runs read from disk with no network, and
+        <code>force_download=True</code> forces a re-fetch.</li>
+    <li><code>sub.predict(name, label_pred=bh.Label(&hellip;))</code> &mdash; stages one typed
+        prediction per sample. The keyword <code>label_pred</code> and the <code>bh.Label</code>
+        wrapper must match the contract from step&nbsp;2; the client validates immediately.</li>
+    <li><code>sub.submit(&hellip;)</code> &mdash; packs the staged predictions and uploads them.
+        <code>description</code> (and optional <code>link</code>) show on the submission row.
+        Guard against re-uploading the same run with
+        <code>lb.submission_exists(name)</code>.</li>
+</ul>
+<p>Replace <code>my_model</code> with your classifier. See
+    <a href="{{ url_for('docs', page='submitting') }}">Submitting</a> for the full client
+    reference.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">4 &middot; Compare</h2>
+<p>After <code>submit()</code> the server validates your predictions against the contract and
+    queues scoring; the run moves <code>Pending &rarr; Processing &rarr; Processed</code>. Your
+    submission then appears on the leaderboard with its accuracy and rank. Click it &mdash; or hit
+    the comparison view &mdash; to line up ground truth against your prediction, sample by sample.</p>
+<div class="alert alert-success">
+    <strong>Why the comparison view matters.</strong> The leaderboard gives you one number; the
+    comparison view lines up the GT against each model's prediction, sample by sample. So you
+    don't just learn <em>that</em> a model scored 0.84 &mdash; you see exactly which samples it
+    got wrong, and how. That's where the score turns into insight about where your model fails.
+</div>
+<p class="small text-body-secondary">Changed the metric after submitting? You don't re-upload
+    &mdash; the board owner hits <strong>Recalculate</strong> (&#8635;) from the Actions menu to
+    re-score every submission, or the per-row &#8635; button to re-score just one.</p>
+
+<div class="alert alert-info">
+    <strong>This is the whole loop.</strong> Bring data in (the import), declare the prediction
+    contract (<code>label_pred</code>, kind <code>label</code>), bind a metric
+    (<code>accuracy</code>), submit &amp; compare. Every other tutorial swaps out one piece
+    &mdash; a different data layout, a custom metric, a different kind &mdash; without changing
+    the shape.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Actually run it</h2>
+<p>The snippet above is the loop; the next two tutorials are the two ways to <em>run</em> it
+    against a real board, each starting from the tailored download in that board's
+    <strong>Submit</strong> block:</p>
+<div class="row g-3">
+    <div class="col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <h3 class="h5"><i class="bi bi-google me-2 text-primary"></i>Submit from Colab</h3>
+                <p class="mb-2">One-click into a board-tailored notebook in Google Colab &mdash;
+                    free GPU, no local setup. Token handling and the predict loop come
+                    pre-filled.</p>
+                <a href="{{ url_for('docs', page='tutorial_submit_colab') }}">Submit from Colab
+                    &rarr;</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <h3 class="h5"><i class="bi bi-terminal me-2 text-primary"></i>Submit locally</h3>
+                <p class="mb-2">Run on your own machine with the generated self-contained script
+                    (or your own code) and a token in the environment.</p>
+                <a href="{{ url_for('docs', page='tutorial_submit_local') }}">Submit from a local
+                    script &rarr;</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-light border mt-5">Next:
+    <a href="{{ url_for('docs', page='tutorial_submit_colab') }}">Submit from Colab</a> &mdash;
+    run this loop on a free GPU with a board-tailored notebook.</div>
+{% endblock %}

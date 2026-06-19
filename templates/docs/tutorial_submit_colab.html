@@ -1,0 +1,228 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+
+<h1>Submit from Google Colab</h1>
+<p class="lead">Run the BenchHub submission loop in a Google Colab notebook on a free GPU &mdash;
+    no local Python, no CUDA install. The board hands you a pre-filled notebook; you fill in
+    one function and hit <em>Run all</em>.</p>
+<hr>
+
+<h2 class="mt-5">Why Colab</h2>
+<p>The submission loop (install the client &rarr; resolve a token &rarr; iterate samples, run
+    your model, predict, submit) is identical everywhere. Colab is the lowest-friction place
+    to run it:</p>
+<ul>
+    <li><strong>Zero install.</strong> No local Python, no CUDA, no driver mismatch &mdash;
+        the runtime ships ready, and the notebook <code>pip install</code>s
+        <code>benchhub-client</code> in its first cell.</li>
+    <li><strong>Free GPU.</strong> Flip <code>Runtime &rarr; Change runtime type</code> to a
+        GPU and your model runs on hardware you didn't pay for.</li>
+    <li><strong>The board does the boilerplate.</strong> BenchHub generates a notebook
+        <em>tailored to one leaderboard</em> &mdash; it already names the board's handle and
+        wires up the right <code>bh.&lt;Kind&gt;(&hellip;)</code> constructors for that
+        board's prediction fields. You only write the model.</li>
+</ul>
+
+<div class="alert alert-light border">
+    <i class="bi bi-info-circle me-2"></i>
+    New to the loop itself? <a href="{{ url_for('docs', page='submitting') }}" class="alert-link">Submitting
+    predictions</a> walks the <code>iterate &rarr; predict &rarr; submit</code> flow and the
+    typed <code>bh.&lt;Kind&gt;</code> instances. This page is purely about running it in Colab.
+</div>
+
+<h2 class="mt-5">1 &middot; Get the notebook</h2>
+<p>Open the leaderboard you want to submit to. Its page has a <strong>Submit</strong> block
+    with three tailored actions &mdash; all three are generated for <em>this specific board</em>:</p>
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <ul class="mb-0">
+            <li><strong>Open in Colab</strong> (green) &mdash; one click: the server publishes
+                the tailored notebook to a GitHub gist and opens it in Colab, pre-filled and
+                ready. <em>Path&nbsp;A</em> below.</li>
+            <li><strong>Download notebook (.ipynb)</strong> &mdash; the same tailored notebook
+                as a file, to upload into Colab by hand. <em>Path&nbsp;B</em> below (and the
+                fallback when one-click isn't available).</li>
+            <li><strong>Download script (.py)</strong> &mdash; a self-contained Python script
+                that reads <code>BENCHHUB_API_TOKEN</code> from the environment. For running
+                locally or on your own box &mdash; see <a href="{{ url_for('docs', page='tutorial_submit_local') }}">Submit
+                from a script</a>.</li>
+        </ul>
+    </div>
+</div>
+
+<h2 class="mt-5">2 &middot; Path A &mdash; one-click &ldquo;Open in Colab&rdquo;</h2>
+<p>This is the fast path. The button needs your identity to mint a token, so sign in to
+    BenchHub first &mdash; or just click <strong>Open in Colab</strong> while signed out: it
+    sends you through login and returns you to the same action automatically. Then:</p>
+<ol>
+    <li>The server publishes the board-tailored notebook to a <strong>GitHub gist</strong> and
+        redirects you straight into Google Colab with it loaded.</li>
+    <li>Baked into the notebook is a <strong>short-lived submission token</strong> &mdash; it
+        expires in about <strong>1&nbsp;hour</strong>. That's long enough to run a submission
+        right now without touching <a href="/settings/account">Settings</a>.</li>
+    <li>Sign in to Colab with any Google account, fill in your model, and run. No token
+        wrangling needed for this session.</li>
+</ol>
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle me-2"></i>
+    The one-click path needs a GitHub gist token configured on the server. If it isn't, the
+    board <strong>flashes a note</strong> instead of opening Colab: download the
+    <code>.ipynb</code> and upload it by hand. That's Path&nbsp;B &mdash; identical notebook,
+    one extra step.
+</div>
+
+<h2 class="mt-5">3 &middot; Path B &mdash; manual upload (fallback)</h2>
+<p>Use this when one-click isn't available, or any time you'd rather not go through a gist:</p>
+<ol>
+    <li>Click <strong>Download notebook (.ipynb)</strong> in the Submit block.</li>
+    <li>Go to <a href="https://colab.research.google.com" target="_blank" rel="noopener">colab.research.google.com</a>
+        and choose <code>File &rarr; Upload notebook</code>, then pick the
+        <code>.ipynb</code> you just downloaded.</li>
+</ol>
+<p>It's the <em>same tailored notebook</em> as Path&nbsp;A &mdash; the only difference is that
+    a manually-uploaded notebook has <strong>no</strong> inline token baked in, so token
+    resolution falls through to the Colab Secret or the interactive prompt (see the next
+    section).</p>
+
+<h2 class="mt-5">4 &middot; The three cells</h2>
+<p>After a title cell, the generated notebook has exactly <strong>three code cells</strong>.
+    Run them top to bottom.</p>
+
+<h3 class="mt-4">Cell 1 &mdash; install</h3>
+<pre><code class="language-bash">!pip install -q --upgrade benchhub-client numpy</code></pre>
+<p>Pulls the client into the Colab runtime. Quiet (<code>-q</code>) and always upgrades so you
+    get the current client.</p>
+
+<h3 class="mt-4">Cell 2 &mdash; token resolution</h3>
+<p>This cell finds an API token and sets <code>os.environ['BENCHHUB_API_TOKEN']</code> so the
+    client picks it up automatically. It tries <strong>three tiers in order</strong>, and
+    <strong>validates the winner against <code>/api/whoami</code></strong> before continuing,
+    so a stale or wrong token fails loudly here rather than at submit time:</p>
+<ol>
+    <li><strong>Inline token</strong> &mdash; the short-lived (&approx;1&nbsp;hour) token baked
+        in by <em>Open in Colab</em>. Present only on a Path&nbsp;A notebook; absent after a
+        manual upload.</li>
+    <li><strong>Colab Secret</strong> named <code>BENCHHUB_API_TOKEN</code> &mdash; a durable
+        token you set once (next section). This is what makes the notebook reusable past the
+        1-hour window.</li>
+    <li><strong>Interactive prompt</strong> &mdash; if neither of the above resolves, a
+        <code>getpass</code> box asks you to paste a token. Nothing is echoed to the notebook
+        output.</li>
+</ol>
+<div class="alert alert-info">
+    <i class="bi bi-key me-2"></i>
+    <strong>Inline token vs. durable Secret.</strong> The inline token is convenient but
+    <em>ephemeral</em> &mdash; once it expires (~1h) re-running the notebook fails token
+    validation. The Colab Secret is the <em>durable</em> answer: set it once and every future
+    run resolves to it, no matter how old the notebook is.
+</div>
+
+<h3 class="mt-4">Cell 3 &mdash; the body</h3>
+<p>The board-tailored script. It references the leaderboard by its handle, builds a submission
+    with <code>sub = lb.submission()</code>, gives you a <code>my_model(inputs)</code> stub to
+    fill in, and runs the <code>iterate &rarr; predict &rarr; submit</code> loop with the
+    <code>bh.&lt;Kind&gt;(&hellip;)</code> constructors that match <em>this board's</em>
+    prediction fields. The snippet below is <strong>illustrative</strong> of that generated body
+    &mdash; the real cell already has the handle and the matching constructors wired in for your
+    board:</p>
+<pre><code class="language-python">import benchhub as bh
+
+client = bh.Client()                            # reads BENCHHUB_API_TOKEN from the env (cell 2)
+lb = client.leaderboard("&lt;owner&gt;/&lt;slug&gt;")    # the board's handle, pre-filled for you
+
+# print(lb.contract())   # [{name, kind, params, role}, ...] &mdash; what this board expects
+
+def my_model(inputs):
+    # TODO: your model. inputs[&lt;field&gt;] are decoded bh.&lt;Kind&gt; instances:
+    #   image/mask/depth -&gt; bh.Image/bh.Mask/bh.Depth (use .array)
+    #   audio -&gt; bh.Audio ; sequence -&gt; iterable clip
+    #   scalar/label/text/json/label_list -&gt; the raw decoded value
+    ...
+
+sub = lb.submission(name="my-colab-run", description="...", link="...")
+for name, inputs in lb.iter_samples():
+    pred = my_model(inputs)
+    sub.predict(name, label_pred=bh.Label(int(pred)))   # constructor(s) tailored to this board
+sub.submit()</code></pre>
+<p>You must return a value for <em>every</em> prediction field in <code>lb.contract()</code> on
+    <em>every</em> sample &mdash; a sample missing any required pred field fails validation.</p>
+
+<h2 class="mt-5">5 &middot; Reuse it &mdash; add a Colab Secret</h2>
+<p>The inline token dies in an hour. To keep re-running this notebook (or any BenchHub
+    notebook) for days, give Colab a durable token <strong>once</strong>:</p>
+<ol>
+    <li>In <a href="/settings/account">Settings &rarr; Account &rarr; API tokens</a> (also at
+        <a href="/settings/api_tokens">/settings/api_tokens</a>), click <strong>Generate
+        token</strong> (or <strong>Regenerate</strong> if you already have one). Copy the token
+        &mdash; it has no special prefix, and it's shown only once. <strong>Regenerate
+        immediately invalidates the old token</strong>, so anything still using it &mdash; other
+        notebooks, scripts &mdash; stops working until you update it.</li>
+    <li>In Colab, open the <strong>key icon</strong> (<i class="bi bi-key"></i> <em>Secrets</em>)
+        in the left sidebar.</li>
+    <li>Add a secret named exactly <code>BENCHHUB_API_TOKEN</code> with the token as its value.</li>
+    <li>Toggle <strong>Notebook access</strong> on for it &mdash; otherwise the notebook can't
+        read it and tier&nbsp;2 falls through to the prompt.</li>
+</ol>
+<p>Now cell&nbsp;2 resolves to the Secret on every run, regardless of whether the inline token
+    has expired. Set the Secret once and forget about tokens.</p>
+
+<h2 class="mt-5">6 &middot; Fill in the model, pick a GPU, run</h2>
+<ol>
+    <li><strong>Write <code>my_model()</code></strong> in the body cell. Inputs arrive as
+        <strong>already-decoded</strong> <code>bh.&lt;Kind&gt;</code> instances &mdash;
+        <code>inputs["image"].array</code> is a NumPy array, an <code>audio</code> input is a
+        <code>bh.Audio</code>, a <code>sequence</code> input is an iterable clip, and inline
+        kinds (<code>scalar</code>/<code>label</code>/<code>text</code>/<code>json</code>/<code>label_list</code>)
+        are the raw decoded value. Return predictions wrapped in the
+        <code>bh.&lt;Kind&gt;</code> constructors the body cell already shows for this board.</li>
+    <li><strong>Pick a GPU.</strong> <code>Runtime &rarr; Change runtime type</code> &rarr;
+        choose a GPU accelerator, then save.</li>
+    <li><strong>Run all.</strong> <code>Runtime &rarr; Run all</code>. Cells 1&ndash;2 set up
+        the client and token; cell&nbsp;3 iterates the board's samples and submits.</li>
+</ol>
+<div class="alert alert-light border">
+    <i class="bi bi-hdd-network me-2"></i>
+    File-backed inputs (images, masks, depth, audio, clips) download <strong>once</strong> as a
+    single bulk zip, cached under <code>~/.cache/benchhub</code> (override with
+    <code>$BENCHHUB_CACHE_DIR</code>). On a Colab runtime that cache lives only as long as the
+    session &mdash; a fresh runtime re-downloads. Pass <code>force_download=True</code> to
+    <code>iter_samples</code> to force a re-fetch.
+</div>
+
+<h2 class="mt-5">7 &middot; After it submits</h2>
+<ul>
+    <li>The run appears on the leaderboard with its score and rank; status moves
+        <code>Pending &rarr; Processing &rarr; Processed</code> as metrics finish.</li>
+    <li>Open the <strong>comparison view</strong> to inspect GT vs. your prediction
+        sample-by-sample &mdash; that's where a single score turns into insight about which
+        samples your model got wrong.</li>
+    <li>Iterating? Edit <code>my_model()</code> and re-run <strong>just the body cell</strong>
+        (cells 1&ndash;2 already ran) to resubmit &mdash; no need to <em>Run all</em> again.</li>
+    <li>Give each run a distinct <code>name</code>. Guard against duplicates with
+        <code>lb.submission_exists(name)</code>:
+        <pre><code class="language-python">name = "my-colab-run"
+if lb.submission_exists(name):
+    name = name + "-v2"
+sub = lb.submission(name=name)</code></pre></li>
+</ul>
+
+<h2 class="mt-5">Troubleshooting</h2>
+<ul>
+    <li><strong>Token rejected (<code>/api/whoami</code> fails in cell&nbsp;2).</strong> The
+        inline token has likely expired (~1h). Generate a fresh one at
+        <a href="/settings/account">Settings &rarr; Account</a> and either paste it at the
+        prompt or, better, set it as the <code>BENCHHUB_API_TOKEN</code> Colab Secret so it
+        sticks.</li>
+    <li><strong>&ldquo;Open in Colab&rdquo; landed on Colab's homepage</strong> (no notebook).
+        The server has no gist token configured. Use the <code>.ipynb</code> upload path
+        &mdash; <strong>Download notebook (.ipynb)</strong>, then
+        <code>File &rarr; Upload notebook</code> in Colab.</li>
+    <li><strong>GPU out of memory.</strong> Use a smaller batch size in
+        <code>my_model()</code>, or process one sample at a time. The loop already hands you
+        samples one by one &mdash; batch only as much as the GPU holds.</li>
+</ul>
+
+<div class="alert alert-light border mt-5">Next: <a href="{{ url_for('docs', page='tutorial_submit_local') }}">Submit from a script (local / your own box)</a></div>
+{% endblock %}

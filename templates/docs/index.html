@@ -39,7 +39,7 @@
             <h5 class="mb-3"><i class="bi bi-rocket-takeoff me-2"></i>Start here</h5>
             <ul class="list-unstyled mb-0">
                 <li class="mb-2"><a href="{{ url_for('docs', page='concepts') }}" class="text-decoration-none fw-semibold">Core concepts &rarr;</a><br><span class="small text-muted">kinds, fields &amp; roles, datasets, leaderboards, submissions, metrics</span></li>
-                <li class="mb-2"><a href="{{ url_for('docs', page='tutorials') }}" class="text-decoration-none fw-semibold">A first tutorial &rarr;</a><br><span class="small text-muted">build a dataset, score it, read the comparison view</span></li>
+                <li class="mb-2"><a href="{{ url_for('docs', page='tutorial_first_submission') }}" class="text-decoration-none fw-semibold">A first tutorial &rarr;</a><br><span class="small text-muted">build a dataset, score it, read the comparison view</span></li>
                 <li class="mb-2"><a href="{{ url_for('docs', page='importing') }}" class="text-decoration-none fw-semibold">Import a dataset &rarr;</a><br><span class="small text-muted">from HuggingFace, or build one in Python</span></li>
                 <li><a href="{{ url_for('docs', page='submitting') }}" class="text-decoration-none fw-semibold">Submit predictions &rarr;</a><br><span class="small text-muted">with the Python client</span></li>
             </ul>
@@ -186,7 +186,7 @@ print(ds.create())</code></pre>
         one dataset be used many ways, so the rest of the docs name things you already
         understand.</p>
     <p class="mb-2">Next, work through a
-        <a href="{{ url_for('docs', page='tutorials') }}" class="alert-link">first tutorial</a>
+        <a href="{{ url_for('docs', page='tutorial_first_submission') }}" class="alert-link">first tutorial</a>
         end to end: build a small dataset, create a leaderboard, submit with the client, and read
         the comparison view.</p>
     <p class="mb-0">Only then reach for the

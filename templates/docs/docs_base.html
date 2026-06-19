@@ -94,6 +94,42 @@
                         <i class="bi bi-mortarboard me-2"></i> Tutorials
                     </a>
                 </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_first_submission' }}"
+                        href="{{ url_for('docs', page='tutorial_first_submission') }}">
+                        <i class="bi bi-rocket-takeoff me-2"></i> First submission
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_submit_colab' }}"
+                        href="{{ url_for('docs', page='tutorial_submit_colab') }}">
+                        <i class="bi bi-google me-2"></i> Submit from Colab
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_submit_local' }}"
+                        href="{{ url_for('docs', page='tutorial_submit_local') }}">
+                        <i class="bi bi-terminal me-2"></i> Submit locally
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_metrics_viz' }}"
+                        href="{{ url_for('docs', page='tutorial_metrics_viz') }}">
+                        <i class="bi bi-calculator me-2"></i> Metrics &amp; views
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_data_layouts' }}"
+                        href="{{ url_for('docs', page='tutorial_data_layouts') }}">
+                        <i class="bi bi-diagram-3 me-2"></i> Bring your own data
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center small ps-4 {{ 'active fw-bold' if page == 'tutorial_python_dataset' }}"
+                        href="{{ url_for('docs', page='tutorial_python_dataset') }}">
+                        <i class="bi bi-code-slash me-2"></i> Dataset in Python
+                    </a>
+                </li>
             </ul>
         </div>
     </nav>

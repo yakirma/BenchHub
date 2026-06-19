@@ -1,0 +1,157 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+
+<h1>Submit from a local script</h1>
+<p class="lead">Run the submission loop on your own machine or in CI &mdash; no notebook, no
+    browser. Install the client, point it at a board by its handle, iterate the samples, run
+    your model, and submit. The same shape works everywhere.</p>
+<hr>
+
+<p>A <em>submission</em> is one model's predictions against a leaderboard's samples, packed
+    and scored server-side. The <code>benchhub-client</code> package does the packing for you:
+    you write a plain Python loop, it downloads the inputs, validates your predictions against
+    the board's <em>contract</em> (the typed list of fields it expects), and POSTs the result.
+    Because it's just a script, it drops straight into a Makefile, a cron job, or a CI step.</p>
+
+<h2 class="mt-5">1 &middot; Install</h2>
+<pre><code class="language-bash">pip install benchhub-client</code></pre>
+<p>The package exposes everything under one import &mdash; <code>import benchhub as bh</code>
+    gives you the client plus the typed <code>bh.&lt;Kind&gt;</code> constructors
+    (<code>bh.Image</code>, <code>bh.Label</code>, <code>bh.Depth</code>, &hellip;).</p>
+
+<h2 class="mt-5">2 &middot; Get a token</h2>
+<p>Every request is authenticated with an <strong>API token</strong>. Generate one at
+    <a href="/settings/account"><code>Settings &rarr; account</code></a> (the
+    <em>API tokens</em> section, also reachable directly at
+    <a href="/settings/api_tokens"><code>/settings/api_tokens</code></a>) and click
+    <strong>Generate</strong>. Copy it once &mdash; it won't be shown again, and clicking
+    <strong>Regenerate</strong> immediately invalidates the old token.</p>
+<p>The client reads <code>$BENCHHUB_API_TOKEN</code> automatically, so the cleanest setup is
+    to export it and never put the secret in source:</p>
+<pre><code class="language-bash">export BENCHHUB_API_TOKEN="&lt;your-api-token&gt;"</code></pre>
+<p>Then <code>bh.Client()</code> picks it up with no arguments. You can also pass it
+    explicitly with <code>bh.Client(token="&lt;your-api-token&gt;")</code> &mdash; handy when
+    juggling several accounts, but prefer the env var so the token never lands in a file or a
+    shell history you might commit.</p>
+<div class="alert alert-light border">
+    <i class="bi bi-globe me-2"></i>
+    The base URL defaults to <code>https://runbenchhub.com</code>. Point the client at
+    another instance by setting <code>$BENCHHUB_BASE_URL</code>.
+</div>
+
+<h2 class="mt-5">3 &middot; Two ways to get the code</h2>
+<p>You don't have to write the loop from scratch. Every board page has a <strong>Submit</strong>
+    block with a tailored download:</p>
+<ul>
+    <li><strong>Download script (.py)</strong> &mdash; a self-contained Python file,
+        <em>pre-filled for this board</em>: it sets <code>LEADERBOARD = "&lt;owner&gt;/&lt;slug&gt;"</code>
+        to the board's handle, wires up the right <code>bh.&lt;Kind&gt;(&hellip;)</code>
+        prediction constructors for this board's pred fields, and leaves a
+        <code>my_model(inputs)</code> stub for you to fill in. It reads
+        <code>BENCHHUB_API_TOKEN</code> from the environment and raises if it's unset. Run it
+        with <code>python &lt;board&gt;_submit.py</code>.</li>
+    <li><strong>Write the loop yourself</strong> &mdash; the shape below is short enough to
+        type by hand, and reusing it across boards is the point. Swap the handle and the
+        <code>bh.&lt;Kind&gt;</code> constructors to match each board's contract.</li>
+</ul>
+<p>If you'd rather run in a hosted GPU notebook, the same Submit block also offers a Colab
+    path &mdash; see <a href="{{ url_for('docs', page='tutorial_submit_colab') }}">Submit from
+    Colab</a>.</p>
+
+<h2 class="mt-5">4 &middot; The reusable loop</h2>
+<p>This is the whole thing &mdash; reuse this shape for any board:</p>
+<pre><code class="language-python">import os, benchhub as bh
+
+client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
+lb = client.leaderboard("alice/cifar10-1k")  # the handle from the board page (an id works too)
+print(lb.contract())                       # [{name, kind, params, role}, ...]
+
+sub = lb.submission(name="run-2026-06", link="https://github.com/me/model")
+for name, inputs in lb.iter_samples():
+    img = inputs["image"].array             # decoded bh.Image -> NumPy array
+    pred = my_model(img)
+    sub.predict(name, label_pred=bh.Label(int(pred)))
+print(sub.submit())</code></pre>
+<p><code>my_model</code> is <strong>your</strong> code &mdash; replace it with whatever turns
+    the decoded inputs into a prediction.</p>
+<p>What each line is doing:</p>
+<ul>
+    <li><code>client.leaderboard("&lt;owner&gt;/&lt;slug&gt;")</code> references the board by
+        its <strong>handle</strong> &mdash; shown on the board page as <em>&ldquo;Client
+        handle&rdquo;</em>. An integer id works anywhere a handle does.</li>
+    <li><code>lb.contract()</code> returns the list of fields the board expects &mdash; each a
+        <code>{name, kind, params, role}</code> dict. Read it once to confirm the
+        <code>role: "pred"</code> field names and kinds you must produce.</li>
+    <li><code>lb.submission(name=&hellip;, link=&hellip;)</code> stages a run; pass
+        <code>description=</code> too if you want a blurb in the table. The <code>link</code>
+        is the http(s) URL the submission name hyperlinks to.</li>
+    <li><code>lb.iter_samples()</code> yields <code>(name, inputs)</code> for every sample in
+        the board's materialized subset &mdash; the full-resolution samples the board actually
+        scores on. <code>inputs</code> is a dict keyed by input-field
+        name, and each value is an <strong>already-decoded</strong> typed instance &mdash;
+        <code>image</code>/<code>mask</code>/<code>depth</code> arrive as
+        <code>bh.Image</code>/<code>bh.Mask</code>/<code>bh.Depth</code> (use
+        <code>.array</code>), <code>audio</code> as <code>bh.Audio</code>,
+        <code>sequence</code> as an iterable <code>bh.Sequence</code> clip, and inline kinds
+        (<code>scalar</code>/<code>label</code>/<code>text</code>/<code>json</code>/<code>label_list</code>)
+        as the raw decoded value.</li>
+    <li><code>sub.predict(name, &lt;field&gt;_pred=bh.&lt;Kind&gt;(&hellip;))</code> stages one
+        sample's typed prediction; the kind must match the contract or the client rejects it
+        immediately.</li>
+    <li><code>sub.submit()</code> packs everything into a ZIP, uploads it, and the server
+        enqueues scoring.</li>
+</ul>
+
+<h2 class="mt-5">5 &middot; Caching and re-runs</h2>
+<p>File-backed inputs (images, masks, depth, audio, clips) download <strong>once</strong> as a
+    single bulk archive and cache on disk under <code>~/.cache/benchhub/</code> (override with
+    <code>$BENCHHUB_CACHE_DIR</code>). A second run of the same script reads straight from disk
+    with no network &mdash; so iterating on <code>my_model</code> is offline and fast. When the
+    board's samples change, or a download was interrupted, pass
+    <code>force_download=True</code> to <code>iter_samples</code> to re-fetch:</p>
+<pre><code class="language-python">for name, inputs in lb.iter_samples(force_download=True):
+    ...</code></pre>
+
+<h2 class="mt-5">6 &middot; Idempotency &amp; CI</h2>
+<p>Because the token comes from an env var, the same script runs unattended in CI &mdash; set
+    <code>BENCHHUB_API_TOKEN</code> as a secret and call <code>python my_board_submit.py</code>.
+    To keep a re-run from creating a duplicate, guard on the name with
+    <code>lb.submission_exists(name)</code>:</p>
+<pre><code class="language-python">import os
+
+name = f"ci-{os.environ.get('GIT_SHA', 'local')}"
+if lb.submission_exists(name):
+    print(f"{name} already submitted; skipping")
+else:
+    sub = lb.submission(name=name, link="https://github.com/me/model")
+    for sample_name, inputs in lb.iter_samples():
+        sub.predict(sample_name, label_pred=bh.Label(int(my_model(inputs))))
+    print(sub.submit())</code></pre>
+
+<h2 class="mt-5">7 &middot; Run it</h2>
+<pre><code class="language-bash">python my_board_submit.py</code></pre>
+<p>The submission appears on the board with its primary-metric score and rank as scoring runs
+    (status <code>Pending &rarr; Processing &rarr; Processed</code>). Open the
+    <strong>comparison view</strong> from the board to line up the ground truth against your
+    predictions sample-by-sample &mdash; that's where the single number turns into insight
+    about where your model fails. After a metric change you don't re-upload: hit the
+    <strong>Recalculate</strong> (&#8635;) control on the board to re-score the existing run.</p>
+
+<div class="alert alert-success">
+    <i class="bi bi-check-circle me-2"></i>
+    That's the entire local path &mdash; install, token, loop, run. The
+    <a href="{{ url_for('docs', page='submitting') }}" class="alert-link">Submitting
+    predictions</a> page covers <code>predict()</code>, contract matching, and shape
+    enforcement in depth; the <a href="{{ url_for('docs', page='api_reference') }}"
+    class="alert-link">API reference</a> documents every client method and the raw HTTP
+    endpoint.
+</div>
+
+<div class="alert alert-light border mt-5">
+    Next: <a href="{{ url_for('docs', page='tutorial_metrics_viz') }}">Write a metric and a
+    visualization</a> &mdash; author the scoring and the comparison view themselves, then
+    re-score without re-uploading.
+</div>
+{% endblock %}

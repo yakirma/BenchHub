@@ -1,0 +1,165 @@
+{% extends "docs/docs_base.html" %}
+
+{% block docs_content %}
+<p class="small text-body-secondary mb-3"><a href="{{ url_for('docs', page='tutorials') }}"><i class="bi bi-arrow-left me-1"></i>All tutorials</a></p>
+
+<h1>Author a metric &amp; visualization</h1>
+<p class="lead">A leaderboard's score and its
+    <a href="{{ url_for('docs', page='tutorial_first_submission') }}">comparison view</a>
+    (the side-by-side per-sample GT-vs-prediction table) are both just Python you write,
+    bind, and re-run. This tutorial builds an <code>accuracy</code> metric from scratch, binds
+    a ready-made confusion-matrix view, and re-scores existing submissions without anyone
+    re-uploading.</p>
+<hr>
+
+<p>Earlier tutorials brought data in and pushed predictions. This one fills in the missing
+    half: <strong>how the number gets computed</strong>. The dataset and submissions stay put
+    &mdash; you change scoring on the server side and apply it retroactively. Nothing here
+    requires the submitters to lift a finger.</p>
+
+<div class="alert alert-info">
+    <strong>The mental model.</strong> A <em>metric</em> is a function that scores one
+    prediction against ground truth (GT). A <em>visualization</em> is a function that draws a
+    picture from the same fields. You author each in the library, then <strong>bind</strong>
+    it to a leaderboard &mdash; the binding is what wires the function's arguments to actual
+    dataset/prediction fields. The same metric can be bound to many boards with different
+    mappings.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">1 &middot; Write a metric on the Metrics page</h2>
+<p>Open the <a href="/metrics"><strong>Metrics</strong></a> page and create a new metric. A
+    metric is plain Python source: it takes one argument per mapped field and returns a
+    number. <code>numpy</code> (as <code>np</code>) and <code>benchhub</code> (as
+    <code>bh</code>) are pre-injected; import anything else inside the body. (<code>accuracy</code>
+    already ships as a built-in metric &mdash; here you rebuild it from scratch to learn
+    authoring.) Paste this:</p>
+<pre><code class="language-python">import benchhub as bh
+
+def accuracy(gt: bh.Label, pred: bh.Label):
+    return 1.0 if pred.value == gt.value else 0.0</code></pre>
+
+<p>Two things in that signature are doing real work &mdash; this is the part to understand:</p>
+<ul>
+    <li><strong>The type annotations declare accepted kinds.</strong>
+        <code>gt: bh.Label</code> and <code>pred: bh.Label</code> are parsed at save time
+        into the metric's accepted <em>kinds</em> (a kind is a field's declared type &mdash;
+        <code>label</code>, <code>image</code>, <code>depth</code>, &hellip;). Because the
+        args are typed, BenchHub hands you a decoded <code>bh.Label</code> instance (read
+        <code>.value</code> for the class index) instead of a raw primitive. Annotate with a
+        <code>|</code> union (<code>pred: bh.Label | bh.LabelList</code>) to accept more than
+        one kind; an un-annotated metric keeps receiving the raw value for back-compat.</li>
+    <li><strong>The argument names map to roles by convention.</strong> Name an argument
+        <code>gt</code>, <code>pred</code>, or <code>input</code> and BenchHub knows which
+        role it expects &mdash; <code>gt</code> is the held-aside answer, <code>pred</code>
+        the submitted prediction, <code>input</code> a conditioning field that isn't scored.
+        This is why the binding step below knows that <code>gt</code> should map to a GT-role
+        field and <code>pred</code> to a prediction field.</li>
+</ul>
+
+<div class="alert alert-light border">
+    <strong>Per-sample vs aggregated.</strong> The metric above returns one number for one
+    sample &mdash; BenchHub runs it on every sample and <strong>pools</strong> the results
+    into the single leaderboard number. Each per-sample value is also stored, so re-pooling
+    is instant and never re-runs your code. (Metrics that can't be averaged sample-by-sample
+    &mdash; AUROC, corpus BLEU &mdash; instead receive the full <em>lists</em> of values and
+    return one number; see <a href="{{ url_for('docs', page='metrics') }}">Writing
+    metrics</a>.)
+</div>
+
+<h3 class="mt-4">Bind it to a leaderboard</h3>
+<p>Saving the metric only adds it to the library &mdash; it scores nothing until you
+    <strong>bind</strong> it to a leaderboard on that board's Edit page. Binding takes the
+    abstract function and pins each argument to a concrete field:</p>
+<p class="small text-body-secondary">Authoring a metric or visualization is open to everyone;
+    <strong>binding</strong> one to a board and re-scoring (<strong>Recalculate</strong>) are
+    owner/admin-only.</p>
+<ol>
+    <li><strong>Argument mappings.</strong> Map <code>gt&rarr;label</code> and
+        <code>pred&rarr;label_pred</code> &mdash; i.e. the function's <code>gt</code> arg
+        reads the dataset's <code>label</code> field, and <code>pred</code> reads the
+        submission's <code>label_pred</code> prediction field. (The argument <em>names</em>
+        from step 1 are why the form pre-suggests a GT field for <code>gt</code> and a pred
+        field for <code>pred</code>.) The arg's declared kind must match the field's kind, or
+        there's no valid field to point it at.</li>
+    <li><strong>Display name.</strong> The column header on the board &mdash; and the handle
+        other metrics can chain on (see below).</li>
+    <li><strong>Pooling.</strong> How the per-sample scores pool into the single board number:
+        <code>mean</code>, <code>median</code>, <code>percentile</code>, <code>min</code>, or
+        <code>max</code>. <code>mean</code> is the common choice &mdash; accuracy is a mean of
+        0/1 values.</li>
+    <li><strong>Sort direction.</strong> Higher-is-better (accuracy) or lower-is-better (an
+        error metric) &mdash; this decides which way the leaderboard ranks.</li>
+</ol>
+<p>Optionally add a <strong>tag filter</strong> to score only a subset of samples. Once
+    you save the binding, every existing submission's stored per-sample predictions feed the
+    metric and the column appears.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">2 &middot; Add a confusion-matrix visualization</h2>
+<p>The leaderboard gives you one number; a visualization turns the same fields into a
+    picture. A <code>confusion_matrix</code> <strong>aggregated</strong> viz ships ready to
+    bind &mdash; no code to write:</p>
+<ol>
+    <li>On the leaderboard's Edit page, bind <code>confusion_matrix</code> and map
+        <code>gt&rarr;label</code>, <code>pred&rarr;label_pred</code> &mdash; the same two
+        fields the metric uses. Its axes pick up the class names automatically.</li>
+    <li><em>Aggregated</em> means it draws one figure for the whole submission (every GT
+        label vs every predicted label), not one per sample &mdash; exactly what a confusion
+        matrix needs.</li>
+</ol>
+<p>Prefer your own? Author a visualization the same way you authored the metric &mdash; a
+    typed Python function that returns a figure &mdash; on the
+    <a href="/visualizations">Visualizations</a> page. The argument-kind and role conventions
+    are identical to metrics. See
+    <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a> for the figure
+    API and the per-sample vs aggregated split.</p>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">3 &middot; Re-score existing submissions</h2>
+<p>You changed scoring after submissions already landed &mdash; and that's the whole point.
+    No one re-uploads anything.</p>
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <p class="mb-2">On the leaderboard, re-scoring lives behind the
+            <strong>Recalculate</strong> (<i class="bi bi-arrow-clockwise"></i>&nbsp;&#8635;)
+            control: the per-row <strong>&#8635;</strong> button re-scores a single submission,
+            and <strong>Actions &rarr; Recalculate</strong> re-scores every submission on the
+            board. No re-upload needed. BenchHub replays each submission's <em>stored</em>
+            per-sample predictions through the new/changed metric bindings, re-pools, and
+            refreshes the columns and bound visualizations. Because predictions are stored
+            decoded, this never re-runs the submitters' models &mdash; it only re-runs
+            <em>your</em> scoring code.</p>
+        <p class="small text-body-secondary mb-0">Use this any time you tweak a metric, change
+            pooling, fix a bug in scoring, or bind a brand-new metric to a board that already
+            has runs.</p>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 class="mt-5">Two things worth knowing</h2>
+
+<h3 class="mt-4">Metric outputs can chain</h3>
+<p>A metric can consume <em>another</em> metric's per-sample output by mapping one of its
+    arguments to that metric's display name instead of a dataset field. BenchHub
+    topologically sorts the bound metrics so dependencies run first, then feeds the upstream
+    values in &mdash; so you can build, say, a normalized or thresholded score on top of a
+    raw error without recomputing the error.</p>
+
+<h3 class="mt-4">All user code runs in a hardened sandbox</h3>
+<p>Both metric and visualization code execute inside a network-isolated, read-only container
+    (one short-lived sandbox per scoring job) &mdash; never in-process on the server. That's
+    why anyone can author and publish scoring code: it can't reach the network, the DB, or
+    other submissions' raw bytes. Decoded typed arguments and any image bytes cross into the
+    sandbox as data, and results cross back out.</p>
+
+<div class="alert alert-warning mt-4">
+    A metric is just code &mdash; spot-check anything non-trivial (rank-based, span-overlap,
+    BLEU-family) on a couple of samples in the comparison view before you trust the column.
+    The sandbox makes user code <em>safe to run</em>, not automatically <em>correct</em>.
+</div>
+
+<div class="alert alert-light border mt-5">Next:
+    <a href="{{ url_for('docs', page='tutorial_data_layouts') }}">Bring your own data layout
+    &rarr;</a></div>
+{% endblock %}

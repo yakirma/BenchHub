@@ -2,8 +2,8 @@
 
 {% block docs_content %}
 <h1>Tutorials</h1>
-<p class="lead">End-to-end walkthroughs. Each one goes from nothing to a scored submission;
-    pick the shape that matches your data.</p>
+<p class="lead">End-to-end walkthroughs. Each goes from nothing to a scored submission;
+    pick the one that matches what you're doing.</p>
 <hr>
 
 <style>
@@ -29,6 +29,8 @@
         font-family: var(--bs-font-monospace); font-size: .8rem;
     }
     .bh-chain i { color: var(--bs-primary); opacity: .55; }
+    .bh-tut-card .bh-tut-ico { font-size: 1.5rem; color: var(--bs-primary); }
+    .bh-tut-card:hover { border-color: var(--bs-primary) !important; }
     @media (max-width: 575px) {
         .bh-flow { flex-direction: column; }
         .bh-flow .bh-flow-arrow { transform: rotate(90deg); }
@@ -79,8 +81,8 @@
 
 <p class="small text-body-secondary mb-2">New to these ideas?
     <a href="{{ url_for('docs', page='concepts') }}">Core Concepts</a> builds the object model
-    smallest to largest, so the tutorials below name things you already understand:</p>
-<div class="bh-chain mb-1">
+    smallest to largest, so the tutorials name things you already understand:</p>
+<div class="bh-chain mb-4">
     <span class="bh-node">kind</span><i class="bi bi-arrow-right"></i>
     <span class="bh-node">field</span><i class="bi bi-arrow-right"></i>
     <span class="bh-node">sample</span><i class="bi bi-arrow-right"></i>
@@ -90,233 +92,96 @@
     <span class="bh-node">metric</span>
 </div>
 
-<div class="p-3 bg-body-tertiary rounded-3 mb-4">
-    <strong>Scenarios</strong>
-    <p class="small text-body-secondary mb-2 mt-1">Concept &amp; simplest path first;
-        authoring next; data-layout recipes last.</p>
-    <strong class="small">Start here</strong>
-    <ol class="mb-2 mt-1">
-        <li><a href="#t1">Tabular dataset &rarr; leaderboard &rarr; first submission</a></li>
-    </ol>
-    <strong class="small">Author scoring &amp; views</strong>
-    <ol class="mb-2 mt-1" start="2">
-        <li><a href="#t2">Write a metric + a confusion-matrix visualization</a></li>
-        <li><a href="#t3">Submit from a script or Colab (reusable loop)</a></li>
-    </ol>
-    <strong class="small">Bring your own data layout</strong>
-    <ol class="mb-0 mt-1" start="4">
-        <li><a href="#t4">File-tree: paired RGB + depth</a></li>
-        <li><a href="#t5">Folder-as-label image classification</a></li>
-        <li><a href="#t6">A video / clip (sequence) benchmark</a></li>
-        <li><a href="#t7">Build a dataset in Python (no HuggingFace)</a></li>
-        <li><a href="#t8">Variants &amp; splits</a></li>
-    </ol>
+{# ---- Start here ---- #}
+<h2 class="h5 fw-semibold mt-4 mb-2"><i class="bi bi-flag me-2 text-primary"></i>Start here</h2>
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <a href="{{ url_for('docs', page='tutorial_first_submission') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body d-flex gap-3 align-items-start">
+                <i class="bi bi-rocket-takeoff bh-tut-ico"></i>
+                <div>
+                    <h6 class="fw-bold mb-1">Your first submission</h6>
+                    <p class="small text-body-secondary mb-0">A tabular dataset &rarr; a leaderboard
+                        &rarr; a scored run, walked end to end on CIFAR-10. The canonical loop &mdash;
+                        every other tutorial is a variation on it.</p>
+                </div>
+            </div>
+        </a>
+    </div>
 </div>
 
-<!-- ============================================================ -->
-<h2 class="mt-5">Start here</h2>
-<p>The canonical shape of every benchmark, walked end to end once. The same four moves apply
-    no matter where the data comes from &mdash; a HuggingFace import, a file tree, or a
-    dataset you build in Python. Learn it here; the rest of the page is variations on it.</p>
-
-<h3 id="t1" class="mt-4">1 &middot; Tabular dataset &rarr; leaderboard &rarr; first submission</h3>
-<p>The fastest path: a HuggingFace dataset with columns (image + label), scored by accuracy.</p>
-<ol>
-    <li><strong>Import.</strong> Datasets &rarr; <em>Add a dataset</em>, paste e.g.
-        <code>uoft-cs/cifar10</code>, click <strong>Fetch &amp; preview</strong>. Confirm
-        the inferred kinds (an <code>image</code> column and a <code>label</code> column),
-        pick the <code>test</code> split, leave <em>max samples</em> at your taste, and
-        commit. The dataset caches as a <em>preview</em> &mdash; a tiny thumbnail-resolution
-        copy used for browsing.</li>
-    <li><strong>Create a leaderboard.</strong> Open the dataset &rarr; <strong>Create
-        leaderboard</strong>. Roles: <code>image = input</code>,
-        <code>label = gt</code> (the <em>ground truth (GT)</em> &mdash; the held-aside answer
-        a prediction is scored against). Prediction field: <code>label_pred</code>
-        (kind <code>label</code>). Sample selection: 1,000 samples, stratified by
-        <code>label</code>. Metric: <strong>accuracy</strong>, mapped
-        <code>gt&rarr;label</code>, <code>pred&rarr;label_pred</code>. Create &mdash;
-        <em>materialization</em> (downloading the full-resolution bytes for the samples this
-        leaderboard scores on) runs in the background.</li>
-    <li><strong>Submit.</strong> Grab a token from
-        <a href="/settings/api_tokens">API tokens</a>, then:
-        <pre><code class="language-python">import benchhub as bh
-client = bh.Client(token="&lt;your-api-token&gt;")
-# The board's handle, shown on its page as "Client handle" (an id still works too):
-lb = client.leaderboard("alice/cifar10-1k")
-
-sub = lb.submission(name="my-classifier")
-for name, inputs in lb.iter_samples():
-    x = inputs["image"].array        # (32,32,3) uint8
-    sub.predict(name, label_pred=bh.Label(int(my_model(x))))
-sub.submit(description="baseline CNN")</code></pre></li>
-    <li><strong>Compare.</strong> Your submission appears on the leaderboard with its
-        accuracy + rank. Open the comparison view to see per-sample predictions vs GT.</li>
-</ol>
-<div class="alert alert-success">
-    <strong>Why the comparison view matters.</strong> The leaderboard gives you one number;
-    the comparison view lines up the GT against each model's prediction, sample by sample. So
-    you don't just learn <em>that</em> a model scored 0.84 &mdash; you see exactly which
-    samples it got wrong, and how. That's where the score turns into insight about where your
-    model fails.
-</div>
-<div class="alert alert-info">
-    <strong>This is the whole loop.</strong> Bring data in (the import), declare the
-    prediction contract (<code>label_pred</code>, kind <code>label</code>), bind a metric
-    (<code>accuracy</code>), submit &amp; compare. Every other tutorial swaps out one piece
-    &mdash; a different data layout, a custom metric, a different kind &mdash; without
-    changing the shape.
+{# ---- Submit your model ---- #}
+<h2 class="h5 fw-semibold mt-4 mb-1"><i class="bi bi-upload me-2 text-primary"></i>Submit your model</h2>
+<p class="small text-body-secondary mb-2">Two ways to run the loop &mdash; pick whichever fits your setup.</p>
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <a href="{{ url_for('docs', page='tutorial_submit_colab') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body d-flex gap-3 align-items-start">
+                <i class="bi bi-google bh-tut-ico"></i>
+                <div>
+                    <h6 class="fw-bold mb-1">Submit from Google Colab</h6>
+                    <p class="small text-body-secondary mb-0">Zero install, a free GPU, and a notebook
+                        the board pre-fills for you. The fastest way to a first run.</p>
+                </div>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-6">
+        <a href="{{ url_for('docs', page='tutorial_submit_local') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body d-flex gap-3 align-items-start">
+                <i class="bi bi-terminal bh-tut-ico"></i>
+                <div>
+                    <h6 class="fw-bold mb-1">Submit from a local script</h6>
+                    <p class="small text-body-secondary mb-0">Run the loop on your own machine or in CI
+                        with <code>benchhub-client</code> and an API token.</p>
+                </div>
+            </div>
+        </a>
+    </div>
 </div>
 
-<!-- ============================================================ -->
-<h2 class="mt-5">Author scoring &amp; views</h2>
-<p>How the score and the comparison view get their behavior: you write the metric and the
-    visualization as Python, bind them to a leaderboard, and re-score without re-uploading.
-    All user-supplied code runs in a hardened sandbox, so anyone can contribute scoring
-    without being trusted.</p>
+{# ---- Go further ---- #}
+<h2 class="h5 fw-semibold mt-4 mb-2"><i class="bi bi-stars me-2 text-primary"></i>Go further</h2>
+<div class="row g-3 mb-2">
+    <div class="col-md-4">
+        <a href="{{ url_for('docs', page='tutorial_metrics_viz') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body">
+                <i class="bi bi-calculator bh-tut-ico"></i>
+                <h6 class="fw-bold mt-2 mb-1">Author a metric &amp; visualization</h6>
+                <p class="small text-body-secondary mb-0">Write the score and the comparison views in
+                    Python; re-score with one click.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-4">
+        <a href="{{ url_for('docs', page='tutorial_data_layouts') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body">
+                <i class="bi bi-diagram-3 bh-tut-ico"></i>
+                <h6 class="fw-bold mt-2 mb-1">Bring your own data layout</h6>
+                <p class="small text-body-secondary mb-0">Non-tabular repos: paired files, folder-as-label,
+                    video clips, and path-encoded variants.</p>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-4">
+        <a href="{{ url_for('docs', page='tutorial_python_dataset') }}"
+           class="card bh-tut-card h-100 border shadow-sm text-decoration-none text-body">
+            <div class="card-body">
+                <i class="bi bi-code-slash bh-tut-ico"></i>
+                <h6 class="fw-bold mt-2 mb-1">Build a dataset in Python</h6>
+                <p class="small text-body-secondary mb-0">Push a typed dataset straight from the client
+                    &mdash; no HuggingFace needed.</p>
+            </div>
+        </a>
+    </div>
+</div>
 
-<h3 id="t2" class="mt-4">2 &middot; Write a metric + a confusion-matrix visualization</h3>
-<ol>
-    <li><strong>Metric.</strong> On the <a href="/metrics">Metrics</a> page, author your own
-        accuracy from scratch (the built-in <code>accuracy</code> does the same thing):
-        <pre><code class="language-python">import benchhub as bh
-
-def accuracy(gt: bh.Label, pred: bh.Label):
-    return 1.0 if pred.value == gt.value else 0.0</code></pre>
-        Bind it to your leaderboard with <code>gt&rarr;label</code>,
-        <code>pred&rarr;label_pred</code>, pooling = mean, higher-is-better.</li>
-    <li><strong>Visualization.</strong> A <code>confusion_matrix</code> aggregated viz ships
-        ready to bind &mdash; map <code>gt&rarr;label</code>,
-        <code>pred&rarr;label_pred</code>; its axes show class names automatically. Or
-        write your own (see <a href="{{ url_for('docs', page='visualizations') }}">Visualizations</a>).</li>
-    <li><strong>Re-score.</strong> Existing submissions don't need re-uploading &mdash; hit
-        the recompute (&#8635;) button on the leaderboard to apply the new metric.</li>
-</ol>
-
-<h3 id="t3" class="mt-4">3 &middot; Submit from a script or Colab (reusable loop)</h3>
-<p>The submission loop is the same everywhere &mdash; iterate, run your model, predict,
-    submit:</p>
-<pre><code class="language-python">import os, benchhub as bh
-
-client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
-lb = client.leaderboard("alice/cifar10-1k")  # the handle from the board page (an id works too)
-
-# Inspect what the leaderboard expects:
-print(lb.contract())                       # [{name, kind, params, role}, ...]
-
-sub = lb.submission(name="run-2026-06", link="https://github.com/me/model")
-for name, inputs in lb.iter_samples():
-    pred = my_model(inputs)                 # use inputs["&lt;field&gt;"]
-    sub.predict(name, label_pred=bh.Label(int(pred)))
-print(sub.submit())</code></pre>
-<p>Inputs are downloaded once and cached on disk
-    (<code>~/.cache/benchhub/</code>, or <code>$BENCHHUB_CACHE_DIR</code>), so re-runs are
-    offline. Pass <code>force_download=True</code> to <code>iter_samples</code> to
-    re-fetch. See <a href="{{ url_for('docs', page='submitting') }}">Submitting</a> for the
-    full client reference.</p>
-
-<!-- ============================================================ -->
-<h2 class="mt-5">Bring your own data layout</h2>
-<p>Real datasets rarely arrive as a clean table. These recipes cover the common non-tabular
-    shapes &mdash; paired files, folder-as-label, video clips, in-memory data, and
-    path-encoded variants. The file-tree mapper handles the HuggingFace ones; the client
-    handles data you already have. Either way the dataset caches as the preview tier and
-    defaults to <strong>private</strong> &mdash; you publish when ready &mdash; and from
-    there it's the Tutorial&nbsp;1 loop again.</p>
-
-<h3 id="t4" class="mt-4">4 &middot; File-tree: paired RGB + depth</h3>
-<p>A repo laid out as <code>train/&lt;seq&gt;/&lt;frame&gt;.png</code> for RGB plus one
-    packed <code>depth.npz</code> per sequence. Not tabular &mdash; use the file-tree
-    mapper.</p>
-<ol>
-    <li><strong>Inspect.</strong> Fetch &amp; preview hands off to the file-tree mapper
-        automatically (no schema). It lists the tree and the path levels.</li>
-    <li><strong>Map fields.</strong>
-        <pre><code class="language-text">image : loader=file  pattern=train/{seq}/normal/{id}.png   role=input  kind=image
-depth : loader=npz   pattern=train/{seq}/normal/depth.npz  key=depth  shared=yes  axis=0
-        role=gt  kind=depth</code></pre>
-        The shared <code>depth.npz</code> holds all frames stacked along axis 0; BenchHub
-        splits it and aligns frame N to the Nth image (sorted filename order).</li>
-    <li><strong>Decode preview.</strong> Click it &mdash; confirm the depth frame lines up
-        with image 0 before committing.</li>
-    <li><strong>Leaderboard + metric.</strong> Create an LB with <code>image=input</code>,
-        <code>depth=gt</code>, pred field <code>depth_pred</code> (kind depth), and bind
-        <strong>rmse_depth</strong> (<code>gt&rarr;depth</code>,
-        <code>pred&rarr;depth_pred</code>).</li>
-    <li><strong>Submit.</strong>
-        <pre><code class="language-python">lb = client.leaderboard("alice/rgbd-depth")   # the board's handle
-sub = lb.submission(name="my-depth-model")
-for name, inputs in lb.iter_samples():
-    rgb = inputs["image"].array
-    sub.predict(name, depth_pred=bh.Depth(my_depth_model(rgb), unit="meters"))
-sub.submit()</code></pre></li>
-</ol>
-
-<h3 id="t5" class="mt-4">5 &middot; Folder-as-label image classification</h3>
-<p>A repo where the <em>folder name is the class</em>:
-    <code>Alex_Brush/000.png</code>, <code>Cookie/001.png</code>, &hellip;</p>
-<ol>
-    <li><strong>Describe the structure.</strong> In the mapper, the &ldquo;describe the
-        structure&rdquo; panel shows two levels: the class folder (default role
-        <code>property</code>) and the filename (<code>id</code>). Click
-        <strong>Generate fields from structure</strong>.</li>
-    <li>It produces two rows automatically:
-        <pre><code class="language-text">image : loader=file   pattern={label}/{id}.png   kind=image  role=input
-label : loader=token  token=label                kind=label  role=gt</code></pre>
-        The <code>token</code> loader turns each folder name into a label, building the
-        class vocabulary across the dataset (so the UI shows <code>Cookie</code>, not an
-        index).</li>
-    <li><strong>Leaderboard.</strong> pred field <code>label_pred</code> (kind label);
-        bind <strong>accuracy</strong>. Submit as in tutorial&nbsp;1.</li>
-</ol>
-
-<h3 id="t6" class="mt-4">6 &middot; A video / clip (sequence) benchmark</h3>
-<p>Each sample is a clip of frames &mdash; e.g. <code>clips/&lt;id&gt;/&lt;frame&gt;.png</code>.</p>
-<ol>
-    <li><strong>Map a sequence field.</strong>
-        <pre><code class="language-text">clip : loader=sequence  pattern=clips/{id}/{frame}.png   kind=sequence  role=input</code></pre>
-        The <code>{frame}</code> token marks the per-frame part; each <code>{id}</code>
-        becomes one sample whose frames are gathered into a clip. In the dataset and
-        comparison views the clip renders as an <strong>mp4</strong>.</li>
-    <li><strong>Predicting a sequence.</strong> A <code>sequence</code> can also be a
-        prediction kind. Give the leaderboard a pred field <code>clip_pred</code>
-        (kind <code>sequence</code>), then read each clip and submit one back:
-        <pre><code class="language-python">lb = client.leaderboard("you/your-clip-board")   # the board's handle
-sub = lb.submission(name="my-frame-model")
-for name, inputs in lb.iter_samples():
-    clip = inputs["clip"]                                    # clip is iterable
-    out = [bh.Image(my_frame_model(f.array)) for f in clip]
-    sub.predict(name, clip_pred=bh.Sequence(out, item_kind="image", fps=10))
-sub.submit()</code></pre></li>
-</ol>
-
-<h3 id="t7" class="mt-4">7 &middot; Build a dataset in Python (no HuggingFace)</h3>
-<p>Have data already in memory or on disk? Skip the importer and push a typed dataset
-    directly:</p>
-<pre><code class="language-python">import benchhub as bh
-client = bh.Client()                       # reads $BENCHHUB_API_TOKEN
-
-ds = client.create_dataset("my-eval", visibility="private")
-ds.add_field("image", kind="image", role="input")
-ds.add_field("answer", kind="text",  role="gt")
-for name, img, ans in load_my_data():
-    ds.add_sample(name, image=bh.Image(img), answer=bh.Text(ans))
-print(ds.create())</code></pre>
-<p>Then create a leaderboard on it exactly like an imported dataset.</p>
-
-<h3 id="t8" class="mt-4">8 &middot; Variants &amp; splits</h3>
-<p>When a file-tree repo encodes a quality or split in the path, e.g.
-    <code>train/&lt;seq&gt;/{quality}/&lt;id&gt;.png</code>:</p>
-<ul>
-    <li><strong>Import just one split/subset</strong> &mdash; set the mapper's
-        &ldquo;import only where token = value&rdquo; to e.g. <code>quality = normal</code>.
-        One dataset, only those samples.</li>
-    <li><strong>Fan out into separate datasets</strong> &mdash; set the variant token to
-        <code>quality</code>. BenchHub creates one dataset per value
-        (<code>&lt;name&gt;_low</code>, <code>&lt;name&gt;_normal</code>), each importing
-        only its slice.</li>
-</ul>
-
-<div class="alert alert-secondary mt-5">
+<div class="alert alert-secondary mt-4">
     Stuck on a specific repo's layout? Open a
     <a href="https://github.com/yakirma/BenchHub/issues" target="_blank" rel="noopener"
        class="alert-link">GitHub issue</a> with the repo id and structure.
