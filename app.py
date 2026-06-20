@@ -10593,14 +10593,135 @@ def _acquisition_funnel():
     return data
 
 
+_activation_cache = {'ts': 0.0, 'days': None, 'data': None}
+
+# A signup counts as "activated" only if it did something real beyond creating
+# the account. Reasons are checked in priority order (most meaningful first).
+_ACTIVATION_BROWSE_SECS = 120   # stayed >2 min in the signup session
+_ACTIVATION_RETURN_SECS = 90    # logged in again later (came back)
+
+
+def _active_user_ids():
+    """Set of user ids that OWN at least one piece of content — datasets,
+    leaderboards, submissions, metrics, or visualizations. One cheap DISTINCT
+    query per table; the content tables are small."""
+    ids = set()
+    for sql in (
+        "SELECT DISTINCT owner_user_id FROM dataset WHERE owner_user_id IS NOT NULL",
+        "SELECT DISTINCT owner_user_id FROM leaderboard WHERE owner_user_id IS NOT NULL",
+        "SELECT DISTINCT owner_user_id FROM submission WHERE owner_user_id IS NOT NULL",
+        "SELECT DISTINCT owner_user_id FROM global_metric WHERE owner_user_id IS NOT NULL",
+        "SELECT DISTINCT owner_user_id FROM global_visualization WHERE owner_user_id IS NOT NULL",
+    ):
+        try:
+            ids.update(r[0] for r in db.session.execute(db.text(sql)) if r[0] is not None)
+        except Exception:
+            pass  # a table may be absent on an old DB — skip it
+    return ids
+
+
+def _activation_reason(u, active_uids):
+    """Return the strongest activation signal for a user, or '' if none.
+    Priority: created content > minted a token > came back > browsed a while."""
+    if u.id in active_uids:
+        return 'created content'
+    if getattr(u, 'api_token', None):
+        return 'API token'
+    try:
+        if u.last_login_at and u.created_at and \
+                (u.last_login_at - u.created_at).total_seconds() > _ACTIVATION_RETURN_SECS:
+            return 'returned'
+    except Exception:
+        pass
+    try:
+        if u.last_seen_at and u.created_at and \
+                (u.last_seen_at - u.created_at).total_seconds() > _ACTIVATION_BROWSE_SECS:
+            return 'browsed'
+    except Exception:
+        pass
+    return ''
+
+
+def _activation_stats(days=30):
+    """Signup → activation breakdown over the last `days`, by traffic source and
+    by ad campaign, plus a per-signup table. 'Activated' = did anything real
+    after signing up (see _activation_reason). Cached 5 min."""
+    import time as _time
+    now = _time.time()
+    c = _activation_cache
+    if c['data'] is not None and c['days'] == days and now - c['ts'] < 300:
+        return c['data']
+
+    active_uids = _active_user_ids()
+    since = datetime.utcnow() - timedelta(days=days)
+    users = (User.query.filter(User.created_at >= since)
+             .order_by(User.created_at.desc()).all())
+
+    def _blank():
+        return {'signups': 0, 'activated': 0}
+    by_source, by_campaign, recent = {}, {}, []
+    total, activated_total = 0, 0
+    for u in users:
+        attr = {}
+        if u.signup_attribution:
+            try:
+                attr = json.loads(u.signup_attribution) or {}
+            except Exception:
+                attr = {}
+        source = attr.get('source') or 'direct'
+        campaign = attr.get('gad_campaignid') or attr.get('utm_campaign') or '—'
+        reason = _activation_reason(u, active_uids)
+        is_active = bool(reason)
+        total += 1
+        activated_total += 1 if is_active else 0
+        s = by_source.setdefault(source, _blank()); s['signups'] += 1; s['activated'] += int(is_active)
+        if source in ('google_ads', 'bing_ads', 'meta_ads') or campaign != '—':
+            k = by_campaign.setdefault(campaign, {'signups': 0, 'activated': 0, 'source': source})
+            k['signups'] += 1; k['activated'] += int(is_active)
+        if len(recent) < 40:
+            recent.append({
+                'email': (u.email or '')[:34],
+                'created': u.created_at.strftime('%m-%d %H:%M') if u.created_at else '—',
+                'source': source,
+                'campaign': campaign,
+                'activated': is_active,
+                'reason': reason or 'never engaged',
+            })
+
+    def _rate(d):
+        return round(d['activated'] * 100.0 / d['signups']) if d['signups'] else 0
+    src_rows = sorted(({'name': k, **v, 'rate': _rate(v)} for k, v in by_source.items()),
+                      key=lambda r: -r['signups'])
+    camp_rows = sorted(({'name': k, **v, 'rate': _rate(v)} for k, v in by_campaign.items()),
+                       key=lambda r: -r['signups'])
+    data = {
+        'days': days,
+        'signups': total,
+        'activated': activated_total,
+        'rate': round(activated_total * 100.0 / total) if total else 0,
+        'by_source': src_rows,
+        'by_campaign': camp_rows,
+        'recent': recent,
+    }
+    c.update(ts=now, days=days, data=data)
+    return data
+
+
 @app.route('/admin/acquisition')
 @login_required
 def admin_acquisition():
-    """Ad → login → signup funnel, split by in-app WebView vs real browser, so
-    the WebView conversion collapse is visible at a glance (today, UTC)."""
+    """Ad → login → signup funnel (today, by WebView vs browser) + signup →
+    activation breakdown by source/campaign (last N days), so low-quality ad
+    traffic that signs up but never engages is visible at a glance."""
     if not is_admin(g.current_user):
         abort(403)
-    return render_template('admin_acquisition.html', f=_acquisition_funnel())
+    try:
+        days = max(1, min(365, int(request.args.get('days', 30))))
+    except (TypeError, ValueError):
+        days = 30
+    return render_template('admin_acquisition.html',
+                           f=_acquisition_funnel(),
+                           act=_activation_stats(days))
 
 
 @app.route('/admin/lb_templates')

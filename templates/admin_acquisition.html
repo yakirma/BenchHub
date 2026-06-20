@@ -81,5 +81,131 @@
         with many login starts means the in-app-browser audience can't sign in — they're nudged to
         email magic-link login (which works in WebViews). Counts cached ~5&nbsp;min.
     </p>
+
+    {# ===================== Activation ===================== #}
+    <hr class="my-4">
+    <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+        <h2 class="h4 fw-bold mb-0">
+            <i class="bi bi-graph-up-arrow me-2 text-success"></i>Activation
+        </h2>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Time window">
+            {% for d in [7, 30, 90] %}
+            <a href="{{ url_for('admin_acquisition', days=d) }}"
+               class="btn btn-outline-secondary {{ 'active' if act.days == d }}">{{ d }}d</a>
+            {% endfor %}
+        </div>
+    </div>
+    <p class="text-body-secondary small mb-3">
+        Signups are vanity if they never come back. <strong>Activated</strong> = a signup that did
+        something real afterward — created a dataset / leaderboard / submission / metric / viz,
+        minted an API token, returned for another session, or browsed more than two minutes. Last
+        <strong>{{ act.days }} days</strong> (UTC). Cached ~5&nbsp;min.
+    </p>
+
+    {# Headline #}
+    <div class="row g-3 mb-3">
+        <div class="col-sm-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="small text-body-secondary">Signups</div>
+                <div class="h3 fw-bold mb-0">{{ act.signups }}</div>
+            </div></div>
+        </div>
+        <div class="col-sm-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="small text-body-secondary">Activated</div>
+                <div class="h3 fw-bold mb-0 text-success">{{ act.activated }}</div>
+            </div></div>
+        </div>
+        <div class="col-sm-4">
+            <div class="card border-0 shadow-sm h-100"><div class="card-body py-3">
+                <div class="small text-body-secondary">Activation rate</div>
+                <div class="h3 fw-bold mb-0 {{ 'text-danger' if act.rate < 25 else 'text-success' }}">
+                    {{ act.rate }}%</div>
+            </div></div>
+        </div>
+    </div>
+
+    {% if act.signups == 0 %}
+    <p class="small text-body-secondary">No signups in this window.</p>
+    {% else %}
+
+    {# By source #}
+    <h3 class="h6 fw-semibold mt-3 mb-2">By traffic source</h3>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead><tr>
+                <th>Source</th>
+                <th class="text-end">Signups</th>
+                <th class="text-end">Activated</th>
+                <th class="text-end">Rate</th>
+            </tr></thead>
+            <tbody>
+                {% for r in act.by_source %}
+                <tr>
+                    <td>{{ r.name }}</td>
+                    <td class="text-end">{{ r.signups }}</td>
+                    <td class="text-end">{{ r.activated }}</td>
+                    <td class="text-end fw-semibold {{ 'text-danger' if r.rate < 25 else 'text-success' }}">{{ r.rate }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# By campaign #}
+    {% if act.by_campaign %}
+    <h3 class="h6 fw-semibold mt-3 mb-2">By ad campaign</h3>
+    <p class="small text-body-secondary mb-2">Google Ads <code>gad_campaignid</code> (or
+        <code>utm_campaign</code>). A campaign with many signups but a low rate is buying accounts
+        that never engage — re-target or pause it.</p>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead><tr>
+                <th>Campaign</th>
+                <th>Source</th>
+                <th class="text-end">Signups</th>
+                <th class="text-end">Activated</th>
+                <th class="text-end">Rate</th>
+            </tr></thead>
+            <tbody>
+                {% for r in act.by_campaign %}
+                <tr>
+                    <td class="font-monospace small">{{ r.name }}</td>
+                    <td class="small text-body-secondary">{{ r.source }}</td>
+                    <td class="text-end">{{ r.signups }}</td>
+                    <td class="text-end">{{ r.activated }}</td>
+                    <td class="text-end fw-semibold {{ 'text-danger' if r.rate < 25 else 'text-success' }}">{{ r.rate }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {# Recent signups #}
+    <h3 class="h6 fw-semibold mt-3 mb-2">Recent signups <span class="text-body-secondary fw-normal">(up to 40)</span></h3>
+    <div class="table-responsive">
+        <table class="table table-sm align-middle">
+            <thead><tr>
+                <th></th>
+                <th>Email</th>
+                <th>Created (UTC)</th>
+                <th>Source</th>
+                <th>Status</th>
+            </tr></thead>
+            <tbody>
+                {% for u in act.recent %}
+                <tr>
+                    <td>{% if u.activated %}<i class="bi bi-check-circle-fill text-success"></i>{% else %}<i class="bi bi-x-circle text-danger"></i>{% endif %}</td>
+                    <td class="font-monospace small">{{ u.email }}</td>
+                    <td class="small text-body-secondary">{{ u.created }}</td>
+                    <td class="small">{{ u.source }}{% if u.campaign != '—' %} <span class="text-body-secondary">/ {{ u.campaign }}</span>{% endif %}</td>
+                    <td class="small {{ 'text-success' if u.activated else 'text-body-secondary' }}">{{ u.reason }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 </div>
 {% endblock %}
