@@ -1270,7 +1270,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].gt_field_id) }}"
                                     {% if _vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=data.custom_fields[col_key].gt_field_id) }}"{% endif %}
                                     {% if _vis_type == 'mask' %}data-mask-raw-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}?raw=1"{% endif %}
-                                    {% if _vis_type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
+                                    {% if _vis_type == 'mask' and mask_vocabs is defined and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
                                     {% if _vis_type == 'audio' %}data-audio-url="{{ url_for('serve_custom_field_audio', field_id=data.custom_fields[col_key].gt_field_id) }}"{% endif %}
                                     data-group-id="gt-{{ col_key }}" data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _vis_type }}" alt="{{ col_key }}">
@@ -1331,7 +1331,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=_sub_field_id) }}"
                                     {% if _sub_vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=_sub_field_id) }}"{% endif %}
                                     {% if _sub_vis_type == 'mask' %}data-mask-raw-url="{{ _sub_src }}?raw=1"{% endif %}
-                                    {% if _sub_vis_type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
+                                    {% if _sub_vis_type == 'mask' and mask_vocabs is defined and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
                                     {% if _sub_vis_type == 'audio' %}data-audio-url="{{ url_for('serve_custom_field_audio', field_id=_sub_field_id) }}"{% endif %}
                                     data-group-id="sub-{{ pred.sub_id }}-{{ col_key }}"
                                     data-sample-name="{{ data.sample_name }}"

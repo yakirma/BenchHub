@@ -16217,6 +16217,17 @@ def comparison_view(leaderboard_id):
     except (TypeError, ValueError):
         pass
 
+    # Mask class-name vocabularies (e.g. ADE20K / cityscapes), keyed by field
+    # name. Surfaced on the comparison table + zoom modal so the pixel-hover
+    # tooltip reads "12 road" instead of just "class=12" (mirrors dataset_view).
+    mask_vocabs = {}
+    for _ds in (leaderboard.datasets or []):
+        for _df in getattr(_ds, 'fields', []) or []:
+            if _df.kind == 'mask':
+                _names = (_df.get_params() or {}).get('names')
+                if isinstance(_names, list) and _names:
+                    mask_vocabs[_df.name] = list(_names)
+
     # Human-readable description of the active sort (never expose the
     # internal lm_<id> keys). Used by the "(sorted by …)" caption.
     def _sort_by_label():
@@ -16242,6 +16253,7 @@ def comparison_view(leaderboard_id):
                            all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
                            label_vocabs=label_vocabs,
+                           mask_vocabs=mask_vocabs,
                            gt_col_badges=gt_col_badges,
                            sub_col_badges=sub_col_badges,
                            selected_metrics=all_selected_metrics,
