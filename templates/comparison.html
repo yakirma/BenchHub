@@ -4504,8 +4504,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             if (mode === 'mask') return img.getAttribute('data-mask-raw-url');
             if (mode === 'depth') {
                 // Always sample a TURBO render so reverse-turbo is valid even
-                // when the column's display colormap was switched.
-                const base = img.getAttribute('data-depth-base');
+                // when the column's display colormap was switched. The base URL
+                // (sans cmap) lives on the wrapping .depth-cell in the table, or
+                // is copied straight onto the modal img by _primeModalHover.
+                const cell = img.closest && img.closest('.depth-cell');
+                const base = img.getAttribute('data-depth-base')
+                    || (cell && cell.getAttribute('data-depth-base'));
                 if (base) return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'cmap=turbo';
                 return img.currentSrc || img.src;
             }
@@ -4611,11 +4615,20 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     // too. Called whenever the modal's static image src is (re)assigned.
     window._primeModalHover = function (modalImg, trigger, visType) {
         if (!modalImg || !trigger) return;
-        ['data-mask-raw-url', 'data-mask-class-names', 'data-depth-meta-url', 'data-depth-base']
-            .forEach(function (a) {
-                const v = trigger.getAttribute(a);
-                if (v) modalImg.setAttribute(a, v); else modalImg.removeAttribute(a);
-            });
+        // The depth base URL lives on the trigger's .depth-cell wrapper, not the
+        // img — resolve it so modal depth hover samples turbo too.
+        const _cell = trigger.closest && trigger.closest('.depth-cell');
+        const _depthBase = trigger.getAttribute('data-depth-base')
+            || (_cell && _cell.getAttribute('data-depth-base'));
+        const _attrs = {
+            'data-mask-raw-url': trigger.getAttribute('data-mask-raw-url'),
+            'data-mask-class-names': trigger.getAttribute('data-mask-class-names'),
+            'data-depth-meta-url': trigger.getAttribute('data-depth-meta-url'),
+            'data-depth-base': _depthBase,
+        };
+        Object.keys(_attrs).forEach(function (a) {
+            if (_attrs[a]) modalImg.setAttribute(a, _attrs[a]); else modalImg.removeAttribute(a);
+        });
         if (visType) modalImg.setAttribute('data-vis-type', visType);
         else modalImg.removeAttribute('data-vis-type');
         modalImg._maskNames = undefined;  // force re-parse of the new field's vocab
