@@ -1270,6 +1270,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=data.custom_fields[col_key].gt_field_id) }}"
                                     {% if _vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=data.custom_fields[col_key].gt_field_id) }}"{% endif %}
                                     {% if _vis_type == 'mask' %}data-mask-raw-url="{{ url_for('serve_custom_field_image', field_id=data.custom_fields[col_key].gt_field_id) }}?raw=1"{% endif %}
+                                    {% if _vis_type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
                                     {% if _vis_type == 'audio' %}data-audio-url="{{ url_for('serve_custom_field_audio', field_id=data.custom_fields[col_key].gt_field_id) }}"{% endif %}
                                     data-group-id="gt-{{ col_key }}" data-sample-name="{{ data.sample_name }}"
                                     data-vis-type="{{ _vis_type }}" alt="{{ col_key }}">
@@ -1330,6 +1331,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     data-api-url="{{ url_for('serve_custom_field_depth_data', field_id=_sub_field_id) }}"
                                     {% if _sub_vis_type == 'depth' %}data-depth-meta-url="{{ url_for('serve_custom_field_depth_meta', field_id=_sub_field_id) }}"{% endif %}
                                     {% if _sub_vis_type == 'mask' %}data-mask-raw-url="{{ _sub_src }}?raw=1"{% endif %}
+                                    {% if _sub_vis_type == 'mask' and mask_vocabs.get(col_key) %}data-mask-class-names='{{ mask_vocabs[col_key]|tojson|safe }}'{% endif %}
                                     {% if _sub_vis_type == 'audio' %}data-audio-url="{{ url_for('serve_custom_field_audio', field_id=_sub_field_id) }}"{% endif %}
                                     data-group-id="sub-{{ pred.sub_id }}-{{ col_key }}"
                                     data-sample-name="{{ data.sample_name }}"
@@ -2465,6 +2467,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                             // Honour the field's remembered colormap+inverse on
                             // the static fallback too.
                             if (_isDepthThumb) window._applyModalDepthMode();
+                            window._primeModalHover(modalImg, triggerElement, visType);
                         } else if (errorContainer) {
                             errorContainer.style.display = 'block';
                             errorContainer.innerHTML = `
@@ -2480,6 +2483,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     modalImg.style.display = 'block';
                     // Reset old src to avoid flash (optional)
                     modalImg.src = visUrl;
+                    window._primeModalHover(modalImg, triggerElement, visType);
 
                     // Re-attach or Update ZoomHandler
                     // We need to wait for image to load to reset dimensions? 
@@ -4442,90 +4446,181 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     }
     initDepthColorbars();
 
-    // ----- Mask pixel hover -----
-    // Fetch the raw (pre-palette) mask PNG once per IMG and decode it
-    // into an OffscreenCanvas / Canvas. On mousemove, map the cursor
-    // coordinate to source pixel space (accounting for object-fit:
-    // contain letterboxing) and look up the class index.
-    const _maskHover = (function () {
+    // ----- Pixel hover: read values off visual dtypes (mask / depth / image) -----
+    // Mirrors the dataset page's _bhPixelHover so the comparison table AND the
+    // zoom modal show per-pixel values on hover. Modality comes from the cell's
+    // authoritative `data-vis-type` (NOT the CSS class — comparison cells carry
+    // `depth-img` on every kind for the colormap machinery, so the class can't
+    // be trusted here). Draws the displayed/raw image to a canvas once, then
+    // samples pixels on mousemove:
+    //   mask  → sample the raw (pre-palette) PNG via data-mask-raw-url; show
+    //           the class id + name (from data-mask-class-names) if available.
+    //   depth → sample the turbo-colormapped image (forced via data-depth-base
+    //           so a changed display colormap doesn't corrupt the reading),
+    //           reverse-turbo to a normalised 0..1 value, scaled to metric units
+    //           when a depth-meta sidecar exists.
+    //   image → show the displayed pixel's R,G,B.
+    // The modal's <img> inherits data-vis-type + the data-* attributes when it
+    // opens (see _primeModalHover), so the same handler covers it.
+    window._bhPixelHover = (function () {
         const tooltip = document.createElement('div');
         tooltip.className = 'mask-hover-tooltip';
         document.body.appendChild(tooltip);
+        const cache = new WeakMap();
+        const depthMetaCache = new WeakMap();
 
-        const cache = new WeakMap();  // img -> { canvas, ctx, w, h, ready }
+        // Turbo LUT (256×3) — same polynomial as preview.py:_turbo_colormap.
+        const turboLUT = (function () {
+            const lut = new Uint8Array(256 * 3);
+            for (let i = 0; i < 256; i++) {
+                const v = i / 255;
+                let r = 34.61 + v*(1172.33 + v*(-10793.56 + v*(33300.12 + v*(-38394.49 + v*14825.05))));
+                let g = 23.31 + v*(557.33   + v*(1225.33  + v*(-3574.96  + v*(1073.77  + v*707.56))));
+                let b = 27.2  + v*(3211.1   + v*(-15327.97 + v*(27814.0  + v*(-22569.18 + v*6838.66))));
+                lut[i*3+0] = Math.max(0, Math.min(255, Math.round(r)));
+                lut[i*3+1] = Math.max(0, Math.min(255, Math.round(g)));
+                lut[i*3+2] = Math.max(0, Math.min(255, Math.round(b)));
+            }
+            return lut;
+        })();
+        function reverseTurbo(r, g, b) {
+            let bestI = 0, bestD = Infinity;
+            for (let i = 0; i < 256; i++) {
+                const dr = r - turboLUT[i*3+0], dg = g - turboLUT[i*3+1], db = b - turboLUT[i*3+2];
+                const d = dr*dr + dg*dg + db*db;
+                if (d < bestD) { bestD = d; bestI = i; }
+            }
+            return bestI / 255;
+        }
 
-        function load(img) {
-            if (cache.has(img)) return cache.get(img);
-            const url = img.getAttribute('data-mask-raw-url');
+        function modeOf(img) {
+            const vt = (img.getAttribute && img.getAttribute('data-vis-type')) || '';
+            if (vt === 'mask' && img.getAttribute('data-mask-raw-url')) return 'mask';
+            if (vt === 'depth') return 'depth';
+            if (vt === 'image') return 'image';
+            return null;
+        }
+        function sourceUrl(img, mode) {
+            if (mode === 'mask') return img.getAttribute('data-mask-raw-url');
+            if (mode === 'depth') {
+                // Always sample a TURBO render so reverse-turbo is valid even
+                // when the column's display colormap was switched.
+                const base = img.getAttribute('data-depth-base');
+                if (base) return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'cmap=turbo';
+                return img.currentSrc || img.src;
+            }
+            return img.currentSrc || img.src;  // image
+        }
+        function load(img, mode) {
+            const url = sourceUrl(img, mode);
             if (!url) return null;
-            const entry = { canvas: null, ctx: null, w: 0, h: 0, ready: false };
+            let bucket = cache.get(img);
+            if (bucket && bucket._url === url) return bucket;
+            const entry = { _url: url, ctx: null, w: 0, h: 0, ready: false };
             cache.set(img, entry);
             const raw = new Image();
             raw.crossOrigin = 'anonymous';
             raw.onload = function () {
                 const c = document.createElement('canvas');
-                c.width = raw.naturalWidth;
-                c.height = raw.naturalHeight;
+                c.width = raw.naturalWidth; c.height = raw.naturalHeight;
                 const ctx = c.getContext('2d', { willReadFrequently: true });
                 ctx.drawImage(raw, 0, 0);
-                entry.canvas = c; entry.ctx = ctx;
-                entry.w = raw.naturalWidth; entry.h = raw.naturalHeight;
+                entry.ctx = ctx; entry.w = raw.naturalWidth; entry.h = raw.naturalHeight;
                 entry.ready = true;
             };
-            raw.onerror = function () { /* fail silent — no tooltip */ };
+            raw.onerror = function () {};
             raw.src = url;
             return entry;
         }
-
-        function pixelAt(img, clientX, clientY) {
-            const entry = load(img);
+        function pixelAt(img, mode, cx, cy) {
+            const entry = load(img, mode);
             if (!entry || !entry.ready) return null;
             const rect = img.getBoundingClientRect();
-            // object-fit: contain — figure out the letterboxed sub-rect.
-            const dispW = rect.width, dispH = rect.height;
-            const imgW = entry.w, imgH = entry.h;
-            if (imgW === 0 || imgH === 0) return null;
-            const dispRatio = dispW / dispH;
-            const srcRatio  = imgW / imgH;
-            let drawW, drawH, offX, offY;
-            if (srcRatio > dispRatio) {
-                drawW = dispW; drawH = dispW / srcRatio;
-                offX = 0; offY = (dispH - drawH) / 2;
-            } else {
-                drawH = dispH; drawW = dispH * srcRatio;
-                offY = 0; offX = (dispW - drawW) / 2;
-            }
-            const localX = clientX - rect.left - offX;
-            const localY = clientY - rect.top - offY;
-            if (localX < 0 || localX >= drawW || localY < 0 || localY >= drawH) return null;
-            const px = Math.floor(localX / drawW * imgW);
-            const py = Math.floor(localY / drawH * imgH);
+            const dispW = rect.width, dispH = rect.height, iw = entry.w, ih = entry.h;
+            if (!iw || !ih) return null;
+            const dr = dispW / dispH, sr = iw / ih;
+            let dW, dH, oX, oY;
+            if (sr > dr) { dW = dispW; dH = dispW / sr; oX = 0; oY = (dispH - dH) / 2; }
+            else         { dH = dispH; dW = dispH * sr; oY = 0; oX = (dispW - dW) / 2; }
+            const lx = cx - rect.left - oX, ly = cy - rect.top - oY;
+            if (lx < 0 || lx >= dW || ly < 0 || ly >= dH) return null;
+            const px = Math.floor(lx / dW * iw), py = Math.floor(ly / dH * ih);
             try {
-                const data = entry.ctx.getImageData(px, py, 1, 1).data;
-                return { x: px, y: py, classId: data[0], r: data[0], g: data[1], b: data[2] };
+                const d = entry.ctx.getImageData(px, py, 1, 1).data;
+                return { x: px, y: py, r: d[0], g: d[1], b: d[2], a: d[3] };
             } catch (e) { return null; }
         }
+        function depthMeta(img) {
+            const url = img.getAttribute('data-depth-meta-url');
+            if (!url) return { lo: 0, hi: 1, normalized: true };
+            const src = img.currentSrc || img.src;
+            const bucket = depthMetaCache.get(img);
+            if (bucket && bucket._src === src) return bucket.meta;
+            const placeholder = { lo: 0, hi: 1, normalized: true };
+            depthMetaCache.set(img, { _src: src, meta: placeholder });
+            fetch(url).then(r => r.ok ? r.json() : null).then(j => {
+                if (!j) return;
+                depthMetaCache.set(img, { _src: src, meta: {
+                    lo: j.min || 0, hi: j.max || 1, normalized: !!j.normalized } });
+            }).catch(() => {});
+            return placeholder;
+        }
+        function format(img, mode, p) {
+            const xy = '(' + p.x + ',' + p.y + ')';
+            if (mode === 'mask') {
+                const cid = p.r;
+                let names = img._maskNames;
+                if (names === undefined) {
+                    const raw = img.getAttribute('data-mask-class-names');
+                    try { names = raw ? JSON.parse(raw) : null; } catch (e) { names = null; }
+                    img._maskNames = names;
+                }
+                if (Array.isArray(names) && cid >= 0 && cid < names.length) return xy + '  ' + cid + ' ' + names[cid];
+                return xy + '  class=' + cid;
+            }
+            if (mode === 'depth') {
+                const t = reverseTurbo(p.r, p.g, p.b), m = depthMeta(img);
+                const v = t * (m.hi - m.lo) + m.lo;
+                return xy + '  depth=' + v.toFixed(3) + (m.normalized ? '  (norm)' : '');
+            }
+            return xy + '  rgb=(' + p.r + ',' + p.g + ',' + p.b + ')';  // image
+        }
 
-        function onMove(ev) {
+        document.addEventListener('mousemove', function (ev) {
             const img = ev.target;
-            if (!img || !img.classList || !img.classList.contains('mask-img')) return;
-            const p = pixelAt(img, ev.clientX, ev.clientY);
+            if (!img || img.tagName !== 'IMG') return;
+            const mode = modeOf(img);
+            if (!mode) return;
+            const p = pixelAt(img, mode, ev.clientX, ev.clientY);
             if (p == null) { tooltip.style.display = 'none'; return; }
-            tooltip.textContent = '(' + p.x + ',' + p.y + ')  class=' + p.classId;
+            tooltip.textContent = format(img, mode, p);
             tooltip.style.display = 'block';
             tooltip.style.left = (ev.clientX + 12) + 'px';
             tooltip.style.top  = (ev.clientY + 12) + 'px';
-        }
-        function onLeave(ev) {
-            const img = ev.target;
-            if (img && img.classList && img.classList.contains('mask-img')) {
-                tooltip.style.display = 'none';
-            }
-        }
-        document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('mouseleave', onLeave, true);
-        return { load: load };
+        }, true);
+        document.addEventListener('mouseleave', function (ev) {
+            if (ev.target && ev.target.tagName === 'IMG' && modeOf(ev.target)) tooltip.style.display = 'none';
+        }, true);
+
+        // Re-prime the cache after the modal img's src/attrs change.
+        return { reload: function (img) { cache.delete(img); const m = modeOf(img); if (m) load(img, m); } };
     })();
+
+    // Copy the hover-relevant attributes from a table thumbnail onto the modal
+    // <img> so the single document-level handler reads values in the zoom view
+    // too. Called whenever the modal's static image src is (re)assigned.
+    window._primeModalHover = function (modalImg, trigger, visType) {
+        if (!modalImg || !trigger) return;
+        ['data-mask-raw-url', 'data-mask-class-names', 'data-depth-meta-url', 'data-depth-base']
+            .forEach(function (a) {
+                const v = trigger.getAttribute(a);
+                if (v) modalImg.setAttribute(a, v); else modalImg.removeAttribute(a);
+            });
+        if (visType) modalImg.setAttribute('data-vis-type', visType);
+        else modalImg.removeAttribute('data-vis-type');
+        modalImg._maskNames = undefined;  // force re-parse of the new field's vocab
+        if (window._bhPixelHover) window._bhPixelHover.reload(modalImg);
+    };
 </script>
 
 {# Aggregated-viz side-by-side compare — isolated in its OWN script so a
