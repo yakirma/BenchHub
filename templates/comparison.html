@@ -1283,6 +1283,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     <span class="cbar-min">…</span>
                                 </div>
                                 {% endif %}
+                                {% if _vis_type == 'audio' %}
+                                {# Inline player — audio is playable in the table;
+                                   the waveform above still click-zooms to the
+                                   synced playhead view. #}
+                                <audio controls preload="none" class="d-block mx-auto mt-1"
+                                       style="width: 250px; max-width: 100%; height: 32px;"
+                                       src="{{ url_for('serve_custom_field_audio', field_id=data.custom_fields[col_key].gt_field_id) }}"
+                                       onclick="event.stopPropagation();"></audio>
+                                {% endif %}
                             </div>
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].gt_scalar_value is
                             not none %}
@@ -1344,6 +1353,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     <span class="cbar-mid">…</span>
                                     <span class="cbar-min">…</span>
                                 </div>
+                                {% endif %}
+                                {% if _sub_vis_type == 'audio' %}
+                                <audio controls preload="none" class="d-block mx-auto mt-1"
+                                       style="width: 250px; max-width: 100%; height: 32px;"
+                                       src="{{ url_for('serve_custom_field_audio', field_id=_sub_field_id) }}"
+                                       onclick="event.stopPropagation();"></audio>
                                 {% endif %}
                             </div>
                             {% elif data.custom_fields.get(col_key) and data.custom_fields[col_key].sub_scalars and
