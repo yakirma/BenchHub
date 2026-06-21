@@ -1195,7 +1195,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
-                                    {% if _is_flow %}data-flow="1"{% endif %}
+                                    {% if _is_flow %}data-flow="1" data-vis-type="flow" data-flow-data-url="{{ url_for('serve_flow_data', lv_id=viz_id, sample_id=data.sample_id) }}"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
                                 {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
                                 </span>
@@ -1230,7 +1230,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
-                                    {% if _is_flow %}data-flow="1"{% endif %}
+                                    {% if _is_flow %}data-flow="1" data-vis-type="flow" data-flow-data-url="{{ url_for('serve_flow_data', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
                                 {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
                                 </span>
@@ -4497,8 +4497,31 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const vt = (img.getAttribute && img.getAttribute('data-vis-type')) || '';
             if (vt === 'mask' && img.getAttribute('data-mask-raw-url')) return 'mask';
             if (vt === 'depth') return 'depth';
+            if (vt === 'flow' && img.getAttribute('data-flow-data-url')) return 'flow';
             if (vt === 'image') return 'image';
             return null;
+        }
+        // Flow cells fetch the raw (u, v) field as packed binary (int32 H, int32
+        // W, then H*W float32 u, then H*W float32 v — little-endian) instead of
+        // sampling pixels off a canvas, so the tooltip reads true displacement.
+        function loadFlow(img) {
+            const url = img.getAttribute('data-flow-data-url');
+            if (!url) return null;
+            let bucket = cache.get(img);
+            if (bucket && bucket._url === url) return bucket;
+            const entry = { _url: url, flow: true, u: null, v: null, w: 0, h: 0, ready: false };
+            cache.set(img, entry);
+            fetch(url).then(function (r) { return r.ok ? r.arrayBuffer() : null; }).then(function (buf) {
+                if (!buf || buf.byteLength < 8) return;
+                const dv = new DataView(buf);
+                const H = dv.getInt32(0, true), W = dv.getInt32(4, true), n = H * W;
+                if (n <= 0 || buf.byteLength < 8 + n * 8) return;
+                entry.h = H; entry.w = W;
+                entry.u = new Float32Array(buf, 8, n);
+                entry.v = new Float32Array(buf, 8 + n * 4, n);
+                entry.ready = true;
+            }).catch(function () {});
+            return entry;
         }
         function sourceUrl(img, mode) {
             if (mode === 'mask') return img.getAttribute('data-mask-raw-url');
@@ -4516,6 +4539,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             return img.currentSrc || img.src;  // image
         }
         function load(img, mode) {
+            if (mode === 'flow') return loadFlow(img);
             const url = sourceUrl(img, mode);
             if (!url) return null;
             let bucket = cache.get(img);
@@ -4549,6 +4573,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             const lx = cx - rect.left - oX, ly = cy - rect.top - oY;
             if (lx < 0 || lx >= dW || ly < 0 || ly >= dH) return null;
             const px = Math.floor(lx / dW * iw), py = Math.floor(ly / dH * ih);
+            if (entry.flow) {
+                const idx = py * iw + px;
+                return { x: px, y: py, u: entry.u[idx], v: entry.v[idx] };
+            }
             try {
                 const d = entry.ctx.getImageData(px, py, 1, 1).data;
                 return { x: px, y: py, r: d[0], g: d[1], b: d[2], a: d[3] };
@@ -4586,6 +4614,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const t = reverseTurbo(p.r, p.g, p.b), m = depthMeta(img);
                 const v = t * (m.hi - m.lo) + m.lo;
                 return xy + '  depth=' + v.toFixed(3) + (m.normalized ? '  (norm)' : '');
+            }
+            if (mode === 'flow') {
+                if (!isFinite(p.u) || !isFinite(p.v)) return xy + '  flow: invalid';
+                const sg = function (x) { return (x >= 0 ? '+' : '') + x.toFixed(1); };
+                const mag = Math.sqrt(p.u * p.u + p.v * p.v);
+                return xy + '  u=' + sg(p.u) + ' v=' + sg(p.v) + ' px  |v|=' + mag.toFixed(1);
             }
             return xy + '  rgb=(' + p.r + ',' + p.g + ',' + p.b + ')';  // image
         }
@@ -4625,6 +4659,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             'data-mask-class-names': trigger.getAttribute('data-mask-class-names'),
             'data-depth-meta-url': trigger.getAttribute('data-depth-meta-url'),
             'data-depth-base': _depthBase,
+            'data-flow-data-url': trigger.getAttribute('data-flow-data-url'),
         };
         Object.keys(_attrs).forEach(function (a) {
             if (_attrs[a]) modalImg.setAttribute(a, _attrs[a]); else modalImg.removeAttribute(a);

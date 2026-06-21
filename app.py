@@ -19021,6 +19021,73 @@ def serve_custom_field_depth_data(field_id):
         
     return serve_depth_data(custom_field.value_text)
 
+def _load_flow_component(rel_path):
+    """Load one flow component (u or v) as a 2D float32 ndarray from its npz,
+    or None when it can't be recovered. True signed displacement only lives in
+    the raw .npz; a colormapped preview JPG can't be reversed to a signed
+    value, so those return None (the hover then shows nothing)."""
+    if not isinstance(rel_path, str) or not rel_path:
+        return None
+    full = os.path.join(app.config['UPLOAD_FOLDER'], rel_path)
+    if not os.path.exists(full) or not full.lower().endswith('.npz'):
+        return None
+    try:
+        with np.load(full) as data:
+            for key in data.files:
+                a = data[key]
+                if getattr(a, 'ndim', 0) == 2:
+                    return np.asarray(a, dtype=np.float32)
+    except Exception:
+        return None
+    return None
+
+
+@app.route('/api/flow_data/<int:lv_id>/<int:sample_id>')
+def serve_flow_data(lv_id, sample_id):
+    """Raw optical-flow field (u, v) for one flow-viz cell, so the comparison
+    hover can read true pixel displacement instead of decoding the colour wheel.
+    Resolves the flow_u / flow_v source fields from the LeaderboardVisualization's
+    arg_mappings (the same keys execute_visualization uses), loads both .npz
+    grids, and packs them as little-endian binary: int32 H, int32 W, then H*W
+    float32 u, then H*W float32 v. `?submission_id=` selects a prediction cell;
+    omit it for the GT cell. Visibility-gated to the LB."""
+    lv = LeaderboardVisualization.query.get_or_404(lv_id)
+    lb = Leaderboard.query.get(lv.leaderboard_id)
+    user = getattr(g, 'current_user', None)
+    if user is None:
+        bearer = _bearer_token_from_request()
+        if bearer:
+            user, _ = _resolve_api_token(bearer)
+    if lb is None or not _can_view_parent(user, lb):
+        abort(404)
+    try:
+        m = json.loads(lv.arg_mappings or '{}') or {}
+    except (TypeError, ValueError):
+        m = {}
+    u_key, v_key = m.get('flow_u'), m.get('flow_v')
+    if not u_key or not v_key:
+        abort(404)
+    sample = Sample.query.get(sample_id)
+    if sample is None:
+        abort(404)
+    submission = None
+    sub_id = request.args.get('submission_id', type=int)
+    if sub_id:
+        submission = Submission.query.get(sub_id)
+    u_path = extract_viz_arg_value(sample, submission, u_key, leaderboard_id=lv.leaderboard_id)
+    v_path = extract_viz_arg_value(sample, submission, v_key, leaderboard_id=lv.leaderboard_id)
+    u = _load_flow_component(u_path)
+    v = _load_flow_component(v_path)
+    if u is None or v is None or u.shape != v.shape:
+        abort(404)
+    import struct
+    H, W = int(u.shape[0]), int(u.shape[1])
+    buf = (struct.pack('<ii', H, W)
+           + np.ascontiguousarray(u, dtype='<f4').tobytes()
+           + np.ascontiguousarray(v, dtype='<f4').tobytes())
+    return Response(buf, mimetype='application/octet-stream')
+
+
 @app.route('/api/custom_field_depth_meta/<int:field_id>')
 def serve_custom_field_depth_meta(field_id):
     """Return just {min, max, shape} for a depth field. The full
