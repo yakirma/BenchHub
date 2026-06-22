@@ -40,10 +40,10 @@ def test_generic_link_uses_source_domain():
     assert a == "arxiv.org"
 
 
-def test_no_link_is_anonymous_not_submitter():
+def test_no_link_is_dash_not_submitter():
     for link in ("", None):
         a, url = _author_fields(_sub(link))
-        assert a == "Anonymous"
+        assert a == "—"
         assert url is None
         assert a != "Yakir Matari"
 

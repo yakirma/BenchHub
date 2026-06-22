@@ -59,6 +59,8 @@ def _safe_author(sub) -> str:
 _AUTHOR_HOST_LABELS = {
     "docs.opencv.org": "OpenCV", "opencv.org": "OpenCV",
     "github.com": "GitHub", "gitlab.com": "GitLab",
+    "huggingface.co": "Hugging Face",   # generic HF link with no /<owner>/<model>
+    "pytorch.org": "PyTorch", "tensorflow.org": "TensorFlow",
 }
 
 
@@ -73,7 +75,7 @@ def _author_fields(sub):
     A submission may be a third-party model someone curated onto the board (e.g.
     the stereo boards: RAFT-Stereo, HITNet, … submitted by an admin), so crediting
     the submitter would falsely attribute the model. When there's no usable link,
-    fall back to 'Anonymous' rather than the submitter."""
+    show '—' (unknown) rather than the submitter."""
     link = (getattr(sub, "link", None) or "").strip()
     low = link.lower()
     for host, base in (("huggingface.co/", "https://huggingface.co"),
@@ -90,7 +92,7 @@ def _author_fields(sub):
         if netloc.startswith("www."):
             netloc = netloc[4:]
         return _AUTHOR_HOST_LABELS.get(netloc, netloc), link
-    return "Anonymous", None
+    return "—", None   # em-dash: unknown author (never the submitter)
 
 
 def _score(mr) -> float | None:
