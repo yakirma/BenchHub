@@ -196,6 +196,19 @@ def build_index_entry(lb, payload: dict) -> dict:
             "description": _short(getattr(d, "card_description", None)),
             "source_url": (getattr(d, "source_url", None) or None),
         })
+    # Leader (rank-1 verified row) + its score on the primary metric, so the
+    # mirror's catalog cards can show "🥇 <model> · <score>" without fetching
+    # every per-board file. Cheap: the payload is already ranked best-first.
+    top = None
+    _v = payload.get("verified") or []
+    _cols = payload.get("columns") or []
+    if _v and _cols:
+        _r0, _mid0 = _v[0], str(_cols[0]["metric_id"])
+        top = {
+            "name": _r0.get("name"),
+            "score": (_r0.get("scores") or {}).get(_mid0),
+            "metric": _cols[0].get("label"),
+        }
     return {
         "id": lb.id,
         "name": lb.name,
@@ -205,6 +218,8 @@ def build_index_entry(lb, payload: dict) -> dict:
         "datasets": datasets,
         "n_verified": len(payload["verified"]),
         "n_mirrored": len(payload["mirrored"]),
+        "n_metrics": len(payload.get("columns") or []),
+        "top": top,
         "updated_at": lb.upload_date.isoformat() if getattr(lb, "upload_date", None) else None,
     }
 

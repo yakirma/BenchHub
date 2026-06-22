@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BenchHub Leaderboards — open multi-modal ML benchmarks</title>
+<meta name="description" content="Live, apples-to-apples ML leaderboards across vision, audio, and NLP — every model scored on the same data and metric. Browse standings and submit your model free at runbenchhub.com.">
+<link rel="canonical" href="https://runbenchhub-leaderboard-mirror.hf.space/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="BenchHub Leaderboards — open multi-modal ML benchmarks">
+<meta property="og:description" content="Live ML leaderboards across vision, audio & NLP. Same data, same metric, reproducible. Submit your model free.">
+<meta property="og:url" content="https://runbenchhub.com">
+<meta name="theme-color" content="#7c3aed">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebSite","name":"BenchHub Leaderboards","url":"https://runbenchhub.com","description":"Open, multi-modal ML benchmarking — vision, audio, NLP leaderboards scored on the same data and metric."}
+</script>
+<style>
+  :root{
+    --violet:#7c3aed; --violet-2:#a78bfa;
+    --bg:#fcf9f4; --card:#fffdf8; --card-2:#f5efe2; --border:#e8dfc8;
+    --text:#3a2614; --text-2:#6b5b43; --muted:#9a8c73;
+    --shadow:0 4px 18px rgba(60,38,20,.08);
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  body.dark{
+    --bg:#0f1117; --card:#171a21; --card-2:#1e222b; --border:#2b313c;
+    --text:#e7e3da; --text-2:#a7adba; --muted:#7c8595;
+    --shadow:0 4px 22px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.45;-webkit-font-smoothing:antialiased;transition:background .2s,color .2s;}
+  a{color:var(--violet);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 18px 60px}
+
+  /* Top bar */
+  .topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    padding:16px 18px;max-width:1140px;margin:0 auto;}
+  .brand{font-weight:800;font-size:1.15rem;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+  .brand .dot{color:var(--violet)}
+  .topbar .spacer{flex:1}
+  .btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
+    background:var(--card);color:var(--text);border-radius:9px;padding:7px 13px;
+    font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap}
+  .btn:hover{border-color:var(--violet);color:var(--violet);text-decoration:none;transform:translateY(-1px)}
+  .btn-primary{background:var(--violet);color:#fff;border-color:var(--violet)}
+  .btn-primary:hover{background:#6d28d9;color:#fff;border-color:#6d28d9}
+
+  /* Hero */
+  .hero{text-align:center;padding:26px 0 8px}
+  .hero h1{font-size:2rem;margin:.1em 0 .15em;letter-spacing:-.02em}
+  .hero p{color:var(--text-2);max-width:680px;margin:.2em auto 1.1em;font-size:1.02rem}
+  .stats{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:10px 0 4px}
+  .stat{background:var(--card);border:1px solid var(--border);border-top:3px solid var(--violet);
+    border-radius:12px;padding:12px 20px;min-width:120px;box-shadow:var(--shadow)}
+  .stat .n{font-size:1.7rem;font-weight:800;font-family:var(--mono);color:var(--violet);line-height:1}
+  .stat .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:5px}
+
+  /* Controls */
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 16px}
+  #search{flex:1;min-width:220px;border:1px solid var(--border);background:var(--card);color:var(--text);
+    border-radius:10px;padding:10px 14px;font-size:.95rem}
+  #search:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(124,58,237,.15)}
+  .pills{display:flex;gap:6px;flex-wrap:wrap}
+  .pill{border:1px solid var(--border);background:var(--card);color:var(--text-2);border-radius:999px;
+    padding:6px 13px;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .12s}
+  .pill:hover{border-color:var(--violet-2)}
+  .pill.on{background:var(--violet);color:#fff;border-color:var(--violet)}
+
+  /* Card grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:15px 16px;
+    box-shadow:var(--shadow);cursor:pointer;transition:transform .14s,border-color .14s;
+    display:flex;flex-direction:column;gap:9px}
+  .card:hover{transform:translateY(-3px);border-color:var(--violet)}
+  .card .cat{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--violet);background:rgba(124,58,237,.1);align-self:flex-start;border-radius:6px;padding:2px 8px}
+  .card h3{margin:0;font-size:1.04rem;letter-spacing:-.01em;word-break:break-word}
+  .card .lead{font-size:.85rem;color:var(--text-2);display:flex;align-items:center;gap:6px;min-height:1.2em}
+  .card .lead b{color:var(--text);font-weight:700}
+  .card .lead .score{font-family:var(--mono);color:#16a34a;font-weight:700}
+  .card .meta{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:6px;
+    border-top:1px solid var(--border);font-size:.78rem;color:var(--muted)}
+  .card .meta .subs b{color:var(--text);font-family:var(--mono)}
+  .card .go{color:var(--violet);font-weight:700}
+
+  /* Board detail */
+  #board{display:none}
+  .back{cursor:pointer;color:var(--text-2);font-weight:600;font-size:.88rem;margin-bottom:10px;display:inline-flex;gap:6px}
+  .back:hover{color:var(--violet)}
+  .board-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin-bottom:6px}
+  .board-head h2{margin:0;font-size:1.5rem;letter-spacing:-.01em}
+  .board-sub{color:var(--text-2);font-size:.9rem;margin:2px 0 16px}
+  table{border-collapse:collapse;width:100%;font-size:.9rem;background:var(--card);
+    border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  thead th{background:var(--card-2);text-align:left;padding:10px 12px;font-size:.74rem;
+    text-transform:uppercase;letter-spacing:.04em;color:var(--text-2);position:sticky;top:0}
+  tbody td{padding:9px 12px;border-top:1px solid var(--border);vertical-align:middle}
+  tbody tr:hover{background:var(--card-2)}
+  td.num{font-family:var(--mono);text-align:right;font-weight:600}
+  td.rank{font-family:var(--mono);color:var(--muted);width:42px;text-align:center}
+  .medal{font-size:1.05em}
+
+  .empty{text-align:center;color:var(--muted);padding:48px 0}
+  footer{text-align:center;color:var(--muted);font-size:.82rem;margin-top:40px;padding-top:20px;border-top:1px solid var(--border)}
+  .spin{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--violet);
+    border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media(max-width:560px){.hero h1{font-size:1.55rem}.stat{min-width:90px;padding:10px 14px}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="brand"><span>🏆</span> BenchHub <span class="dot">Leaderboards</span></div>
+  <div class="spacer"></div>
+  <button class="btn" id="darkBtn" onclick="toggleDark()">🌙 Dark</button>
+  <a class="btn btn-primary" id="ctaTop" target="_blank" rel="noopener">Open BenchHub →</a>
+</div>
+
+<div class="wrap">
+  <div class="hero">
+    <h1>Open, apples-to-apples ML benchmarks</h1>
+    <p>Every model scored on the <b>same data</b>, the <b>same metric</b>, in a reproducible sandbox —
+       across vision, audio, and NLP. Browse the standings here; run your model and submit free on BenchHub.</p>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <div class="controls">
+    <input id="search" type="search" placeholder="🔍 Search benchmarks by name or domain…" oninput="onSearch(this.value)">
+    <div class="pills" id="pills"></div>
+  </div>
+
+  <div id="grid" class="grid"><div class="empty"><span class="spin"></span> Loading leaderboards…</div></div>
+
+  <div id="board">
+    <span class="back" onclick="closeBoard()">← All benchmarks</span>
+    <div class="board-head"><h2 id="bName"></h2></div>
+    <div class="board-sub" id="bSub"></div>
+    <div id="bTable"></div>
+  </div>
+
+  <footer>
+    Read-only mirror of public standings from
+    <a id="ctaFoot" target="_blank" rel="noopener">runbenchhub.com</a>.
+    No ground-truth data, no submissions here — the interactive explorer, per-sample comparison,
+    and submission live on BenchHub. <span id="synced"></span>
+  </footer>
+</div>
+
+<script>
+const DATA = "https://huggingface.co/datasets/runbenchhub/leaderboards/resolve/main";
+const SITE = "https://runbenchhub.com";
+const UTM  = "utm_source=hf_space&utm_medium=mirror";
+const ALL  = "All";
+
+let ENTRIES = [], AREA = ALL, QUERY = "";
+
+function utm(url){ if(!url) return url; return url + (url.includes("?")?"&":"?") + UTM; }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function area(cat){ return (cat||"Uncategorized").split("/")[0]; }
+function subarea(cat){ const p=(cat||"").split("/"); return p.length>1?p.slice(1).join("/").trim():""; }
+function fmtNum(v){ if(v==null||isNaN(v)) return "—"; const n=+v; return Number.isInteger(n)?String(n):n.toFixed(4).replace(/0+$/,"").replace(/\.$/,""); }
+
+async function getJSON(path){
+  const r = await fetch(DATA+path, {cache:"no-cache"});
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+/* ---------- init ---------- */
+(async function init(){
+  document.getElementById("ctaTop").href  = utm(SITE);
+  document.getElementById("ctaFoot").href = utm(SITE);
+  if(localStorage.getItem("bh-dark")==="1") document.body.classList.add("dark"), setDarkLabel();
+  try{
+    const idx = await getJSON("/index.json");
+    ENTRIES = (idx.leaderboards||[]).filter(e => (e.n_verified||0) > 0);
+    renderStats(idx);
+    renderPills();
+    renderGrid();
+    const g = idx.generated_at;
+    if(g) document.getElementById("synced").textContent = "Last synced "+new Date(g).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})+".";
+  }catch(e){
+    document.getElementById("grid").innerHTML = '<div class="empty">Couldn’t load standings right now. <a href="'+utm(SITE)+'" target="_blank" rel="noopener">Open BenchHub →</a></div>';
+  }
+})();
+
+function renderStats(idx){
+  const subs = ENTRIES.reduce((a,e)=>a+(e.n_verified||0),0);
+  const domains = new Set(ENTRIES.map(e=>area(e.category))).size;
+  const el = document.getElementById("stats");
+  const cards = [["Benchmarks",ENTRIES.length],["Submissions",subs],["Domains",domains]];
+  el.innerHTML = cards.map(c=>`<div class="stat"><div class="n" data-to="${c[1]}">0</div><div class="l">${c[0]}</div></div>`).join("");
+  el.querySelectorAll(".n").forEach(countUp);
+}
+function countUp(node){
+  const to=+node.dataset.to||0, dur=900, t0=performance.now();
+  function step(t){ const p=Math.min(1,(t-t0)/dur); node.textContent=Math.round(to*(1-Math.pow(1-p,3))); if(p<1)requestAnimationFrame(step); }
+  requestAnimationFrame(step);
+}
+
+function renderPills(){
+  const areas = [ALL, ...[...new Set(ENTRIES.map(e=>area(e.category)))].sort()];
+  document.getElementById("pills").innerHTML =
+    areas.map(a=>`<span class="pill ${a===AREA?'on':''}" onclick="setArea('${esc(a).replace(/'/g,"")}')">${esc(a)}</span>`).join("");
+}
+function setArea(a){ AREA=a; renderPills(); renderGrid(); }
+function onSearch(v){ QUERY=(v||"").trim().toLowerCase(); renderGrid(); }
+
+function filtered(){
+  return ENTRIES.filter(e=>{
+    if(AREA!==ALL && area(e.category)!==AREA) return false;
+    if(QUERY && !((e.name+" "+(e.category||"")).toLowerCase().includes(QUERY))) return false;
+    return true;
+  }).sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
+}
+
+function renderGrid(){
+  const wrap=document.getElementById("grid"); const list=filtered();
+  if(!list.length){ wrap.innerHTML='<div class="empty">No benchmarks match.</div>'; return; }
+  wrap.innerHTML = list.map(e=>{
+    const sa = subarea(e.category);
+    const top = e.top;
+    const lead = top && top.name
+      ? `🥇 <b>${esc(top.name)}</b>${top.score!=null?` <span class="score">${fmtNum(top.score)}</span>`:""}`
+      : `<span style="color:var(--muted)">${e.n_verified} ranked model${e.n_verified===1?"":"s"}</span>`;
+    return `<div class="card" onclick="openBoard(${e.id})">
+      <span class="cat">${esc(area(e.category))}${sa?" · "+esc(sa):""}</span>
+      <h3>${esc(e.name)}</h3>
+      <div class="lead">${lead}</div>
+      <div class="meta">
+        <span class="subs"><b>${e.n_verified}</b> submission${e.n_verified===1?"":"s"}</span>
+        <span class="go">Standings →</span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ---------- board detail ---------- */
+function aggRanks(verified, cols){
+  const n=verified.length; if(!n||!cols.length) return {};
+  const tot=Array(n).fill(0), cnt=Array(n).fill(0);
+  for(const c of cols){
+    const mid=String(c.metric_id), higher=(c.sort_direction||"higher_is_better")!=="lower_is_better";
+    const scored=[], missing=[];
+    verified.forEach((r,i)=>{ const v=(r.scores||{})[mid]; (typeof v==="number"?scored:missing).push([i,v]); });
+    if(!scored.length) continue;
+    scored.sort((a,b)=>higher?b[1]-a[1]:a[1]-b[1]);
+    let k=0;
+    while(k<scored.length){ let j=k; while(j+1<scored.length && scored[j+1][1]===scored[k][1]) j++;
+      const avg=(k+j)/2+1; for(let t=k;t<=j;t++){ tot[scored[t][0]]+=avg; cnt[scored[t][0]]++; } k=j+1; }
+    for(const [i] of missing){ tot[i]+=n; cnt[i]++; }
+  }
+  const out={}; for(let i=0;i<n;i++) if(cnt[i]) out[i]=tot[i]/cnt[i];
+  return out;
+}
+function greenStyle(v, lo, hi, higher){
+  if(v==null||isNaN(v)) return "";
+  const rng=(hi-lo)||1; let norm=(v-lo)/rng; if(!higher) norm=1-norm;
+  return `background-color:hsl(120,68%,${(90-norm*47).toFixed(0)}%);color:#0b3d0b;`;
+}
+
+async function openBoard(id){
+  document.getElementById("grid").style.display="none";
+  document.querySelector(".controls").style.display="none";
+  const b=document.getElementById("board"); b.style.display="block";
+  document.getElementById("bName").textContent="Loading…";
+  document.getElementById("bSub").innerHTML="";
+  document.getElementById("bTable").innerHTML='<div class="empty"><span class="spin"></span></div>';
+  window.scrollTo({top:0,behavior:"smooth"});
+  let d; try{ d=await getJSON("/leaderboards/"+id+".json"); }
+  catch(e){ document.getElementById("bTable").innerHTML='<div class="empty">Couldn’t load this board.</div>'; return; }
+
+  const cols=d.columns||[], verified=d.verified||[];
+  document.getElementById("bName").textContent=d.name||"";
+  const view=utm(d.url||`${SITE}/leaderboard/${id}`), submit=utm(d.submit_url||`${SITE}/leaderboard/${id}`);
+  document.getElementById("bSub").innerHTML =
+    `<span style="color:var(--violet);font-weight:700">${esc(d.category||"Uncategorized")}</span> · `+
+    `${verified.length} submission${verified.length===1?"":"s"} &nbsp; `+
+    `<a class="btn btn-primary" href="${submit}" target="_blank" rel="noopener" style="padding:5px 12px">🚀 Submit your model</a> `+
+    `<a class="btn" href="${view}" target="_blank" rel="noopener" style="padding:5px 12px">Full board ↗</a>`;
+
+  if(!verified.length){ document.getElementById("bTable").innerHTML='<div class="empty">No ranked submissions yet.</div>'; return; }
+
+  const multi=cols.length>1;
+  const agg=aggRanks(verified,cols);
+  const order=verified.map((_,i)=>i).sort((a,b)=>(agg[a]??1e9)-(agg[b]??1e9));
+  // column ranges for the heatmap
+  const ranges=cols.map(c=>{ const mid=String(c.metric_id);
+    const nums=verified.map(r=>(r.scores||{})[mid]).filter(v=>typeof v==="number");
+    return {lo:Math.min(...nums), hi:Math.max(...nums), higher:(c.sort_direction||"higher_is_better")!=="lower_is_better"}; });
+  const aggNums=Object.values(agg); const aggLo=Math.min(...aggNums), aggHi=Math.max(...aggNums);
+
+  let head="<tr><th>#</th><th>Submission</th><th>Author</th>";
+  if(multi) head+="<th>Agg. rank</th>";
+  head+=cols.map(c=>`<th style="text-align:right">${esc(c.label)}</th>`).join("")+"</tr>";
+
+  const medals=["🥇","🥈","🥉"];
+  let body="";
+  order.forEach((i,pos)=>{
+    const r=verified[i], rk=pos+1;
+    const name=esc(r.name||"");
+    const sub=r.link?`<a href="${utm(esc(r.link))}" target="_blank" rel="noopener">${name}</a>`:name;
+    const author=r.author_url?`<a href="${esc(r.author_url)}" target="_blank" rel="noopener">${esc(r.author||"")}</a>`:esc(r.author||"");
+    let row=`<tr><td class="rank">${pos<3?`<span class="medal">${medals[pos]}</span>`:rk}</td>`+
+            `<td>${sub}</td><td style="color:var(--text-2)">${author||"—"}</td>`;
+    if(multi){ const a=agg[i]; row+=`<td class="num" style="${greenStyle(a,aggLo,aggHi,false)}">${a!=null?a.toFixed(2):"—"}</td>`; }
+    cols.forEach((c,ci)=>{ const v=(r.scores||{})[String(c.metric_id)];
+      row+=`<td class="num" style="${greenStyle(typeof v==="number"?v:null,ranges[ci].lo,ranges[ci].hi,ranges[ci].higher)}">${fmtNum(v)}</td>`; });
+    body+=row+"</tr>";
+  });
+  document.getElementById("bTable").innerHTML=`<table>${head}${body}</table>`;
+}
+function closeBoard(){
+  document.getElementById("board").style.display="none";
+  document.getElementById("grid").style.display="";
+  document.querySelector(".controls").style.display="";
+}
+
+/* ---------- dark mode ---------- */
+function setDarkLabel(){ document.getElementById("darkBtn").textContent=document.body.classList.contains("dark")?"☀️ Light":"🌙 Dark"; }
+function toggleDark(){ document.body.classList.toggle("dark"); localStorage.setItem("bh-dark",document.body.classList.contains("dark")?"1":"0"); setDarkLabel(); }
+</script>
+</body>
+</html>

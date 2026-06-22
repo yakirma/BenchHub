@@ -3,10 +3,8 @@ title: BenchHub Leaderboards
 emoji: 🏆
 colorFrom: purple
 colorTo: indigo
-sdk: gradio
-sdk_version: 5.9.1
-python_version: "3.12"
-app_file: app.py
+sdk: static
+app_file: index.html
 pinned: true
 hf_oauth: false
 short_description: Live ML leaderboards — vision, audio, NLP. Submit free.
