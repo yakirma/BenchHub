@@ -56,20 +56,41 @@ def _safe_author(sub) -> str:
     return "Anonymous"
 
 
+_AUTHOR_HOST_LABELS = {
+    "docs.opencv.org": "OpenCV", "opencv.org": "OpenCV",
+    "github.com": "GitHub", "gitlab.com": "GitLab",
+}
+
+
 def _author_fields(sub):
-    """(author, author_url) crediting the MODEL's owner for HF-model
-    submissions — the namespace in the submission link
-    (huggingface.co/<owner>/<model>), linking to that owner's HF page — not
-    the BenchHub user who ran the eval. Falls back to the scrubbed submitter
-    when the link isn't an HF model URL."""
-    link = getattr(sub, "link", None) or ""
-    if "huggingface.co/" in link:
-        rest = link.split("huggingface.co/", 1)[1].strip("/")
-        parts = [p for p in rest.split("/") if p]
-        if len(parts) >= 2:                      # <owner>/<model>
-            owner = parts[0]
-            return owner, f"https://huggingface.co/{owner}"
-    return _safe_author(sub), None
+    """(author, author_url) crediting the MODEL's SOURCE — derived from the
+    submission link, never the BenchHub user who ran the eval. In priority:
+
+      huggingface.co/<owner>/<model> → the HF owner (links to their HF page)
+      github.com/<owner>/<repo>      → the GitHub owner (links to their profile)
+      any other http(s) link         → the source domain (e.g. "OpenCV"), link out
+
+    A submission may be a third-party model someone curated onto the board (e.g.
+    the stereo boards: RAFT-Stereo, HITNet, … submitted by an admin), so crediting
+    the submitter would falsely attribute the model. When there's no usable link,
+    fall back to 'Anonymous' rather than the submitter."""
+    link = (getattr(sub, "link", None) or "").strip()
+    low = link.lower()
+    for host, base in (("huggingface.co/", "https://huggingface.co"),
+                       ("github.com/",      "https://github.com")):
+        if host in low:
+            rest = link[low.index(host) + len(host):].strip("/")
+            parts = [p for p in rest.split("/") if p]
+            # HF needs <owner>/<model>; GitHub credits the owner from <owner>/<repo>.
+            need = 2 if "huggingface" in host else 1
+            if len(parts) >= need and parts[0]:
+                return parts[0], f"{base}/{parts[0]}"
+    if low.startswith(("http://", "https://")):
+        netloc = low.split("//", 1)[1].split("/", 1)[0]
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return _AUTHOR_HOST_LABELS.get(netloc, netloc), link
+    return "Anonymous", None
 
 
 def _score(mr) -> float | None:
