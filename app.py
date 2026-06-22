@@ -1827,7 +1827,7 @@ def inject_settings():
         'name_width':   _clamped(request.cookies.get('name_width'),
                                   '140px', 200),
         'histogram_width': _clamped(request.cookies.get('histogram_width'),
-                                     '160px', 220),
+                                     '320px', 480),
         'theme_mode': user_theme if user_theme in ['light', 'dark'] else global_settings.theme_mode
     }
     return {'global_settings': settings_dict}
