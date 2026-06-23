@@ -50,7 +50,7 @@
             </tr>
           </thead>
           <tbody>
-            {% for m in s.models %}
+            {% for m in s.models[:50] %}
             <tr>
               <td class="text-center font-monospace text-muted">
                 {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
