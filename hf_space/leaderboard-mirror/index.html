@@ -60,7 +60,13 @@
   .stat .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:5px}
 
   /* Controls */
-  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 16px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 10px}
+  .subcontrols{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 16px;
+    padding-left:2px;animation:fade .15s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(-3px)}to{opacity:1}}
+  .sublabel{font-size:.76rem;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+  .subpills .pill{font-size:.76rem;padding:5px 11px;background:var(--card-2)}
+  .subpills .pill.on{background:var(--violet);color:#fff}
   #search{flex:1;min-width:220px;border:1px solid var(--border);background:var(--card);color:var(--text);
     border-radius:10px;padding:10px 14px;font-size:.95rem}
   #search:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(124,58,237,.15)}
@@ -132,6 +138,10 @@
     <input id="search" type="search" placeholder="🔍 Search benchmarks by name or domain…" oninput="onSearch(this.value)">
     <div class="pills" id="pills"></div>
   </div>
+  <div class="subcontrols" id="subcontrols" style="display:none">
+    <span class="sublabel">Sub-category</span>
+    <div class="pills subpills" id="subpills"></div>
+  </div>
 
   <div id="grid" class="grid"><div class="empty"><span class="spin"></span> Loading leaderboards…</div></div>
 
@@ -156,7 +166,7 @@ const SITE = "https://runbenchhub.com";
 const UTM  = "utm_source=hf_space&utm_medium=mirror";
 const ALL  = "All";
 
-let ENTRIES = [], AREA = ALL, QUERY = "";
+let ENTRIES = [], AREA = ALL, SUB = ALL, QUERY = "";
 
 function utm(url){ if(!url) return url; return url + (url.includes("?")?"&":"?") + UTM; }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -180,6 +190,7 @@ async function getJSON(path){
     ENTRIES = (idx.leaderboards||[]).filter(e => (e.n_verified||0) > 0);
     renderStats(idx);
     renderPills();
+    renderSubPills();
     renderGrid();
     const g = idx.generated_at;
     if(g) document.getElementById("synced").textContent = "Last synced "+new Date(g).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})+".";
@@ -207,12 +218,28 @@ function renderPills(){
   document.getElementById("pills").innerHTML =
     areas.map(a=>`<span class="pill ${a===AREA?'on':''}" onclick="setArea('${esc(a).replace(/'/g,"")}')">${esc(a)}</span>`).join("");
 }
-function setArea(a){ AREA=a; renderPills(); renderGrid(); }
+// Sub-categories available under the chosen domain (the part after the first
+// "/" in the category). Only shown once a specific domain is selected.
+function subsFor(a){
+  return [...new Set(ENTRIES.filter(e=>area(e.category)===a)
+                            .map(e=>subarea(e.category)).filter(Boolean))].sort();
+}
+function renderSubPills(){
+  const box=document.getElementById("subcontrols"), pl=document.getElementById("subpills");
+  const subs = AREA===ALL ? [] : subsFor(AREA);
+  if(!subs.length){ box.style.display="none"; pl.innerHTML=""; return; }
+  box.style.display="flex";
+  pl.innerHTML = [ALL,...subs].map(s=>
+    `<span class="pill ${s===SUB?'on':''}" onclick="setSub('${esc(s).replace(/'/g,"")}')">${esc(s)}</span>`).join("");
+}
+function setArea(a){ AREA=a; SUB=ALL; renderPills(); renderSubPills(); renderGrid(); }
+function setSub(s){ SUB=s; renderSubPills(); renderGrid(); }
 function onSearch(v){ QUERY=(v||"").trim().toLowerCase(); renderGrid(); }
 
 function filtered(){
   return ENTRIES.filter(e=>{
     if(AREA!==ALL && area(e.category)!==AREA) return false;
+    if(SUB!==ALL && subarea(e.category)!==SUB) return false;
     if(QUERY && !((e.name+" "+(e.category||"")).toLowerCase().includes(QUERY))) return false;
     return true;
   }).sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
@@ -266,6 +293,7 @@ function greenStyle(v, lo, hi, higher){
 async function openBoard(id){
   document.getElementById("grid").style.display="none";
   document.querySelector(".controls").style.display="none";
+  document.getElementById("subcontrols").style.display="none";
   const b=document.getElementById("board"); b.style.display="block";
   document.getElementById("bName").textContent="Loading…";
   document.getElementById("bSub").innerHTML="";
@@ -318,6 +346,7 @@ function closeBoard(){
   document.getElementById("board").style.display="none";
   document.getElementById("grid").style.display="";
   document.querySelector(".controls").style.display="";
+  renderSubPills();   // restore the sub-category row for the current domain
 }
 
 /* ---------- dark mode ---------- */
