@@ -5,7 +5,58 @@ Only sub-categories (a category containing "/") are ranked. A model must
 appear on >=50% of the sub-category's boards to be ranked, and a scope is
 only emitted if >=3 such models remain.
 """
-from benchhub.hf_results_export import model_identity, compute_aggregates
+from benchhub.hf_results_export import (model_identity, compute_aggregates,
+                                        _strip_board_dataset, _dataset_candidates)
+
+
+def _rowm(model, link, score):
+    k, d = model_identity(model, link)
+    return {"key": k, "model": d, "link": link, "score": score}
+
+
+def test_strip_board_dataset_general():
+    forklift = _dataset_candidates("Forklift-detection_benchmark")
+    plate = _dataset_candidates("LicensePlate-detection_benchmark")
+    coco = _dataset_candidates("COCO-val2017-detection_benchmark")
+    plane = _dataset_candidates("Plane-detection_benchmark")
+    # base architectures of any family collapse off their fine-tune dataset
+    assert _strip_board_dataset("detr-resnet50-forklift-detection", forklift) == "detr-resnet50"
+    assert _strip_board_dataset("yolos-small-finetuned-license-plate-detection", plate) == "yolos-small"
+    # size tokens survive; a model that isn't fine-tuned on this board is untouched
+    assert _strip_board_dataset("yolos-small", coco) == "yolos-small"
+    # segment-boundary guard: "Plane" must NOT bite "airplane"
+    assert _strip_board_dataset("airplane-net", plane) == "airplane-net"
+    # LLM model identity is left alone on a knowledge board
+    assert _strip_board_dataset("meta-llama/Llama-3.2-1B-Instruct",
+                                _dataset_candidates("MMLU-test_benchmark")) == "meta-llama/Llama-3.2-1B-Instruct"
+    # Generic board word must NOT strip an architecture name ending in it:
+    # "stereo-dataset" board must leave RAFT-Stereo / GMStereo intact.
+    stereo = _dataset_candidates("stereo-dataset__stereo-dataset_benchmark")
+    assert _strip_board_dataset("RAFT-Stereo", stereo) == "RAFT-Stereo"
+    assert _strip_board_dataset("GMStereo", _dataset_candidates("KITTI-2015-stereo_benchmark")) == "GMStereo"
+
+
+def test_non_yolo_finetunes_group_across_dataset_boards():
+    # A non-arch-listed model (DETR) fine-tuned per dataset, one per board.
+    HF = "https://huggingface.co/acme/{}"
+    boards = [
+        {"id": 1, "name": "Forklift-detection_benchmark", "category": "Vision/Object Detection",
+         "higher_is_better": True, "rows": [
+            _rowm("detr-r50-forklift-detection", HF.format("detr-r50-forklift-detection"), 0.7),
+            _rowm("yolov8s-forklift-detection", HF.format("yolov8s-forklift-detection"), 0.8),
+            _rowm("rtdetr-forklift-detection", HF.format("rtdetr-forklift-detection"), 0.6)]},
+        {"id": 2, "name": "Plane-detection_benchmark", "category": "Vision/Object Detection",
+         "higher_is_better": True, "rows": [
+            _rowm("detr-r50-plane-detection", HF.format("detr-r50-plane-detection"), 0.5),
+            _rowm("yolov8s-plane-detection", HF.format("yolov8s-plane-detection"), 0.9),
+            _rowm("rtdetr-plane-detection", HF.format("rtdetr-plane-detection"), 0.4)]},
+    ]
+    aggs = compute_aggregates(boards)
+    by = {m["model"]: m for m in aggs[0]["models"]}
+    # acme/detr-r50 (owner kept for non-arch), yolov8s (arch token), acme/rtdetr
+    assert "acme/detr-r50" in by and by["acme/detr-r50"]["coverage"] == 2
+    assert "yolov8s" in by and by["yolov8s"]["coverage"] == 2
+    assert "acme/rtdetr" in by
 
 
 def _row(model, score):

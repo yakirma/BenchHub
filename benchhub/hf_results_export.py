@@ -333,6 +333,74 @@ def _normalize(rows, higher_is_better):
     return out
 
 
+# Trailing "-finetuned" / "fine-tuned" left after a dataset suffix is stripped.
+_FINETUNED_TAIL = re.compile(r"[-_\s]*fine[-_]?tuned$", re.I)
+# Split / version qualifiers on a board's dataset name, dropped before matching.
+_SPLIT_QUAL = re.compile(r"[-_](val\d*|validation|test|train|dev)$", re.I)
+_TASK_KW = re.compile(
+    r"[-_](detection|segmentation|classification|recognition|matching|estimation|qa|ner)$", re.I)
+
+
+def _norm_alnum(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _dataset_candidates(board_name):
+    """Normalized dataset tokens to strip off a fine-tuned model name, from the
+    board's name — "Forklift-detection_benchmark" -> ["forkliftdetection",
+    "forklift"]. Two forms only: the full dataset id and the same minus a
+    trailing task keyword. The bare first word is intentionally NOT a candidate
+    — a generic board word ("stereo" in "stereo-dataset") must not strip a model
+    whose architecture name ends in that word (RAFT-Stereo). Longest first; the
+    match must also land on a segment boundary so "Plane" never bites "airplane"."""
+    s = re.sub(r"[-_ ]?benchmark$", "", (board_name or "").strip(), flags=re.I)
+    s = _SPLIT_QUAL.sub("", s)
+    if not s:
+        return []
+    cands = []
+    full = _norm_alnum(s)
+    if full:
+        cands.append(full)
+    no_kw = _norm_alnum(_TASK_KW.sub("", s))
+    if no_kw and no_kw not in cands:
+        cands.append(no_kw)
+    return sorted({c for c in cands if len(c) >= 3}, key=len, reverse=True)
+
+
+def _alnum_pos(token, alnum_idx):
+    """Original index in `token` of its `alnum_idx`-th alphanumeric char."""
+    count = 0
+    for i, ch in enumerate(token):
+        if ch.isalnum():
+            if count == alnum_idx:
+                return i
+            count += 1
+    return None
+
+
+def _strip_board_dataset(token, cands):
+    """Strip the board's dataset/task name (and a trailing -finetuned) off a
+    fine-tuned model identity so per-dataset fine-tunes group as one base model:
+    "yolov8s-forklift-detection" on the Forklift board -> "yolov8s". Only strips
+    on a segment boundary; leaves names with no dataset match untouched."""
+    if not token or not cands:
+        return token
+    nt = _norm_alnum(token)
+    for nds in cands:                      # longest candidate first
+        start = 0
+        while True:
+            idx = nt.find(nds, start)
+            if idx <= 0:                   # not found, or at the very start (=whole name)
+                break
+            cut = _alnum_pos(token, idx)
+            if cut and cut > 0 and not token[cut - 1].isalnum():   # segment boundary
+                base = token[:cut].rstrip(" -_/")
+                base = _FINETUNED_TAIL.sub("", base).rstrip(" -_/")
+                return base or token
+            start = idx + 1
+    return token
+
+
 def compute_aggregates(boards):
     """Build the meta-leaderboards. `boards` is a list of:
         {id, name, category, higher_is_better, rows: [{key, model, link, score}]}
@@ -367,8 +435,16 @@ def compute_aggregates(boards):
         per_model_norms = defaultdict(dict)   # key -> {board_name: {lb_id, norm}}
         display = {}                          # key -> (model, link)
         for b in bds:
-            norms = _normalize(b["rows"], b.get("higher_is_better", True))
+            # Collapse a base model's per-dataset fine-tunes by stripping THIS
+            # board's dataset name off each model identity ("yolov8s-forklift-
+            # detection" on the Forklift board -> "yolov8s").
+            cands = _dataset_candidates(b.get("name"))
+            rows = []
             for r in b["rows"]:
+                disp = _strip_board_dataset(r.get("model") or r["key"], cands)
+                rows.append({**r, "key": disp.lower(), "model": disp})
+            norms = _normalize(rows, b.get("higher_is_better", True))
+            for r in rows:
                 display.setdefault(r["key"], (r.get("model") or r["key"], r.get("link")))
             for k, nv in norms.items():
                 per_model_norms[k][b["name"]] = {"lb_id": b.get("id"), "norm": nv}
