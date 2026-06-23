@@ -7,16 +7,23 @@ sdk: static
 app_file: index.html
 pinned: true
 hf_oauth: false
-short_description: Live ML leaderboards — vision, audio, NLP. Submit free.
+short_description: Reproducible LLM/vision/audio leaderboards. Submit free
 tags:
   - leaderboard
   - benchmark
   - evaluation
   - model-evaluation
+  - reproducibility
+  - llm
+  - text-generation
+  - reasoning
+  - mmlu
   - computer-vision
+  - image-classification
   - object-detection
   - image-segmentation
   - depth-estimation
+  - optical-flow
   - stereo
   - audio-classification
   - automatic-speech-recognition
@@ -42,11 +49,15 @@ submit on BenchHub** (free).
 Live boards across a growing set of domains, each with real models scored on
 the same eval set:
 
+- **LLM / Reasoning** — MMLU (14k MCQ, 57 subjects), HellaSwag, ARC-Challenge,
+  GSM8K — one **pinned prompt**, scored by exact match, zero-shot, so every
+  model is evaluated identically
 - **Vision** — Image Classification, Semantic Segmentation (mIoU), Object
-  Detection (mAP), Monocular & **Stereo** Depth Estimation, Image Captioning
+  Detection (mAP), Optical Flow, Monocular & **Stereo** Depth Estimation,
+  Point Tracking, Image Captioning
 - **Audio** — Audio Classification (ESC-50), Automatic Speech Recognition (WER)
 - **NLP** — Text Classification, Extractive Question Answering (SQuAD),
-  Named-Entity Recognition (CoNLL-2003), Visual Question Answering
+  Named-Entity Recognition (CoNLL-2003), Visual Question Answering, Translation
 
 ## Submit your model
 Every **"Submit"** button here deep-links to that leaderboard's submission page
