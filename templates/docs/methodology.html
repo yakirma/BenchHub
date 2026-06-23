@@ -1,0 +1,70 @@
+{% extends "docs/docs_base.html" %}
+
+{% block title %}How we score — reproducible, apples-to-apples benchmarking | BenchHub{% endblock %}
+{% set meta_title = 'How we score — reproducible ML benchmarking | BenchHub' %}
+{% set meta_description = 'Why BenchHub scores are reliable: every model on a board runs the same eval set with the same metric, predictions are scored server-side in a sandbox (not self-reported), and LLM boards pin one exact prompt scored by exact match.' %}
+
+{% block docs_content %}
+<h1>How we score</h1>
+<p class="lead">Why a number on BenchHub means something — and how it stays
+    apples-to-apples across every model on a board.</p>
+<hr>
+
+<div class="alert alert-info border">
+    <h5 class="alert-heading">The problem with self-reported scores</h5>
+    <p class="mb-0">Most leaderboard numbers come from papers and model cards — each
+        produced with a different eval set, prompt, decoding setup, and scoring script.
+        They rarely reproduce and barely compare. BenchHub fixes the comparison by making
+        every model on a board run the <strong>same protocol</strong>, scored by us.</p>
+</div>
+
+<h2 class="h4 mt-4">1. Same data, same metric</h2>
+<p>Every board binds one <strong>eval set</strong> and one <strong>metric</strong>. Each
+    submission is scored on the identical samples with the identical scorer — so a
+    difference in the score is a difference in the model, not in the harness. The metric is
+    declared once (typed, in Python) and applies to every submission equally.</p>
+
+<h2 class="h4 mt-4">2. Sandboxed, not self-reported</h2>
+<p>You submit <strong>predictions</strong>, not a number. BenchHub decodes them against the
+    board's typed contract and runs the scoring metric <strong>server-side in a hardened
+    container</strong> — no network, no access to held-out ground truth beyond the scorer.
+    The score is computed here, on your actual outputs, so it's reproducible by construction
+    rather than taken on trust.</p>
+
+<h2 class="h4 mt-4">3. LLM boards pin the exact protocol</h2>
+<p>For LLM benchmarks (MMLU, HellaSwag, ARC-Challenge, GSM8K) the eval <em>protocol</em> is
+    baked into the input: the <strong>exact prompt</strong> — question, lettered choices,
+    and answer instruction — is part of the dataset, so every submitter sends the identical
+    string. Answers are scored by <strong>exact match</strong> (e.g. the chosen A–D letter),
+    <strong>zero-shot</strong>, with no per-model prompt tuning. That removes the biggest
+    source of "leaderboard inflation": prompt and few-shot cherry-picking.</p>
+
+<h2 class="h4 mt-4">4. A visible trust gradient</h2>
+<p>Boards distinguish <strong>verified</strong> submissions (scored by BenchHub from
+    predictions) from any <strong>reported</strong> figures mirrored from external sources.
+    Verified beats reported — and only verified scores feed the
+    <a href="{{ url_for('leaderboards') }}">cross-board model rankings</a>, which combine a
+    model's normalized score across every board in a sub-category.</p>
+
+<h2 class="h4 mt-4">5. Open and re-runnable</h2>
+<p>Standings are public and mirrored read-only to a
+    <a href="https://huggingface.co/spaces/runbenchhub/leaderboards" target="_blank" rel="noopener">Hugging Face Space</a>.
+    The eval sets are real datasets, the metrics are inspectable Python, and anyone can
+    submit the same way — so a result is something you can reproduce, not just read.</p>
+
+<div class="card border-0 shadow-sm mt-4">
+    <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
+        <div>
+            <h5 class="mb-1">See where your model lands</h5>
+            <p class="text-body-secondary mb-0 small">Pick a board, run the one-line client on
+                your predictions, and get a verified score.</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{{ url_for('leaderboards') }}" class="btn btn-outline-primary">
+                <i class="bi bi-list-ol me-1"></i>Browse boards</a>
+            <a href="{{ url_for('docs', page='submitting') }}" class="btn btn-primary">
+                <i class="bi bi-send me-1"></i>How to submit</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

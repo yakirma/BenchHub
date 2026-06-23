@@ -1,10 +1,28 @@
 {% extends "base.html" %}
 {% from "_user_avatar.html" import user_avatar %}
 
-{% block title %}{{ leaderboard.name }} - Leaderboard{% endblock %}
+{% block title %}{{ leaderboard.name }} leaderboard{% if leaderboard.category %} — {{ leaderboard.category }}{% endif %} | BenchHub{% endblock %}
 
-{% set meta_title = leaderboard.name ~ ' — BenchHub leaderboard' %}
-{% set meta_description = 'Public benchmarking leaderboard "' ~ leaderboard.name ~ '" with ' ~ leaderboard.submissions|length ~ ' submission' ~ ('' if leaderboard.submissions|length == 1 else 's') ~ ' on BenchHub.' %}
+{% set _nsub = leaderboard.submissions|length %}
+{% set meta_title = leaderboard.name ~ ' leaderboard | BenchHub' %}
+{% set meta_description = leaderboard.name ~ ' leaderboard' ~ (' (' ~ leaderboard.category ~ ')' if leaderboard.category else '') ~ ' — reproducible, apples-to-apples model rankings. ' ~ _nsub ~ ' submission' ~ ('' if _nsub == 1 else 's') ~ ' scored on the same data with the same metric in a sandbox, not self-reported. Submit your model free on BenchHub.' %}
+
+{# Structured data so the board can surface as a benchmark dataset in search.
+   Values go through |tojson so names with quotes can't break the JSON. #}
+{% block head_extra %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": {{ (leaderboard.name ~ ' leaderboard')|tojson }},
+  "description": {{ meta_description|tojson }},
+  "url": {{ request.url|tojson }},
+  "keywords": {{ ((leaderboard.name ~ (', ' ~ leaderboard.category if leaderboard.category else '') ~ ', ML leaderboard, model evaluation, reproducible benchmark, apples-to-apples'))|tojson }},
+  "isAccessibleForFree": true,
+  "creator": { "@type": "Organization", "name": "BenchHub", "url": "https://runbenchhub.com" }
+}
+</script>
+{% endblock %}
 
 {% block content %}
 {% include '_signin_to_submit.html' %}

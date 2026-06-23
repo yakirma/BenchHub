@@ -25,6 +25,12 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'methodology' }}"
+                        href="{{ url_for('docs', page='methodology') }}">
+                        <i class="bi bi-shield-check me-2"></i> How We Score
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link text-body d-flex align-items-center {{ 'active fw-bold' if page == 'user_guide' }}"
                         href="{{ url_for('docs', page='user_guide') }}">
                         <i class="bi bi-rocket-takeoff me-2"></i> User Guide
