@@ -127,6 +127,20 @@
   .rk-bchip:hover{background:var(--violet);color:#fff;box-shadow:var(--shadow)}
   .rk-bchip b{font-family:var(--mono);font-weight:700}
   .rk-bchip-name{max-width:11rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Top-3 by default; rk-extra rows reveal when the tbody is expanded. */
+  tbody:not(.rk-expanded) tr.rk-extra{display:none}
+  .rk-more{border:1px solid var(--border);background:var(--card);color:var(--violet);
+    border-radius:999px;padding:6px 16px;font-size:.82rem;font-weight:700;cursor:pointer;transition:all .14s}
+  .rk-more:hover{border-color:var(--violet);background:var(--violet);color:#fff}
+  /* Collapsible per-board chip list (default collapsed). */
+  .rk-boards-d{margin-top:6px}
+  .rk-boards-d > summary{display:inline-flex;align-items:center;gap:4px;cursor:pointer;list-style:none;
+    font-size:.74rem;color:var(--violet);width:max-content}
+  .rk-boards-d > summary::-webkit-details-marker{display:none}
+  .rk-boards-d > summary::before{content:"▸";font-size:.66rem;transition:transform .12s}
+  .rk-boards-d[open] > summary::before{transform:rotate(90deg)}
+  .rk-boards-d > summary:hover{text-decoration:underline}
+  .rk-boards-d .rk-chips{margin-top:5px}
   .cov{font-family:var(--mono);font-size:.78rem;border-radius:6px;padding:2px 8px;border:1px solid;white-space:nowrap}
   .cov.full{background:rgba(22,163,74,.12);color:#16a34a;border-color:rgba(22,163,74,.32)}
   .cov.part{background:rgba(202,138,4,.13);color:#b45309;border-color:rgba(202,138,4,.32)}
@@ -394,7 +408,8 @@ function closeBoard(){
 function miniColor(nv){ return `hsl(258,70%,${Math.round(88 - nv*48)}%)`; }
 function renderScope(s){
   const medals=["🥇","🥈","🥉"];
-  const rows = (s.models||[]).slice(0,50).map((m,i)=>{
+  const list=(s.models||[]).slice(0,50);
+  const rows = list.map((m,i)=>{
     const rk=i+1;
     const name = m.link ? `<a href="${utm(esc(m.link))}" target="_blank" rel="noopener">${esc(m.model)}</a>` : esc(m.model);
     // Clickable per-board chips: each opens that board's standings, tinted by
@@ -406,9 +421,11 @@ function renderScope(s){
         `<span class="rk-bchip-name">${esc(bn)}</span><b>${nv.toFixed(2)}</b></span>`;
     }).join("");
     const full = m.coverage===s.n_boards;
-    return `<tr>
+    // Per-board chips collapsed by default (native <details>).
+    const boards = `<details class="rk-boards-d"><summary>${m.coverage} board${m.coverage===1?"":"s"}</summary><div class="rk-chips">${chips}</div></details>`;
+    return `<tr class="${i>=3?"rk-extra":""}">
       <td class="rank">${rk<=3?`<span class="medal">${medals[rk-1]}</span>`:rk}</td>
-      <td><div style="font-weight:600;word-break:break-word">${name}</div><div class="rk-chips">${chips}</div></td>
+      <td><div style="font-weight:600;word-break:break-word">${name}</div>${boards}</td>
       <td><div style="display:flex;align-items:center;gap:8px">
         <div class="rk-bar"><i style="width:${Math.round((+m.score)*100)}%"></i></div>
         <span class="num" style="font-weight:700">${(+m.score).toFixed(3)}</span>
@@ -416,7 +433,10 @@ function renderScope(s){
       <td style="text-align:center"><span class="cov ${full?"full":"part"}">${m.coverage}/${s.n_boards}</span></td>
     </tr>`;
   }).join("");
-  const more = s.n_models>50 ? `<div class="rk-meta" style="margin-top:9px">Showing top 50 of ${s.n_models} models.</div>` : "";
+  const shown=list.length;
+  // Top 3 by default; "Show all" reveals the rest (rk-extra rows).
+  const toggle = shown>3 ? `<div style="text-align:center;margin-top:10px"><button class="rk-more" data-more="Show all ${shown} models" data-less="Show top 3" onclick="rkToggle(this)">Show all ${shown} models</button></div>` : "";
+  const more = s.n_models>50 ? `<div class="rk-meta" style="margin-top:7px;text-align:center">Top 50 of ${s.n_models} models.</div>` : "";
   return `<div class="rk-card">
     <div class="rk-head">
       <h3>🏆 Model ranking</h3>
@@ -424,8 +444,14 @@ function renderScope(s){
     </div>
     <table><thead><tr><th>#</th><th>Model</th><th>Score</th><th style="text-align:center">Coverage</th></tr></thead>
     <tbody>${rows}</tbody></table>
-    ${more}
+    ${toggle}${more}
   </div>`;
+}
+// Expand/collapse the ranking table (top 3 ⇄ all).
+function rkToggle(btn){
+  const tb=btn.closest(".rk-card").querySelector("tbody");
+  const exp=tb.classList.toggle("rk-expanded");
+  btn.textContent = exp ? btn.dataset.less : btn.dataset.more;
 }
 
 /* ---------- dark mode ---------- */

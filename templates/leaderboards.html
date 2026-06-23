@@ -153,6 +153,27 @@
         font-weight: 600;
         color: var(--bs-body-tertiary, var(--bs-body-secondary));
     }
+    /* Top-3 by default; rows beyond the 3rd reveal when the tbody is expanded. */
+    #rkBody:not(.rk-expanded) tr.rk-extra { display: none; }
+    /* Collapsible per-board chip list (default collapsed). */
+    .rk-boards-d > summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        cursor: pointer;
+        list-style: none;
+        font-size: 0.72rem;
+        color: var(--bs-primary-text-emphasis);
+        width: max-content;
+    }
+    .rk-boards-d > summary::-webkit-details-marker { display: none; }
+    .rk-boards-d > summary::before {
+        content: "▸";
+        font-size: 0.65rem;
+        transition: transform .12s;
+    }
+    .rk-boards-d[open] > summary::before { transform: rotate(90deg); }
+    .rk-boards-d > summary:hover { text-decoration: underline; }
 
 </style>
 
@@ -325,6 +346,7 @@
           higher- vs lower-is-better). <strong>Coverage</strong> shows how many of
           this sub-category's boards a model ran on — weigh a high score against it.
         </p>
+        {% set shown = (s.models[:50])|length %}
         <div class="table-responsive">
           <table class="table table-sm align-middle mb-0">
             <thead>
@@ -335,28 +357,33 @@
                 <th style="width:90px" class="text-center">Coverage</th>
               </tr>
             </thead>
-            <tbody>
+            {# Only the top 3 show by default; the rest are revealed by the
+               "Show all" toggle below (rows beyond 3 carry .rk-extra). #}
+            <tbody id="rkBody">
               {% for m in s.models[:50] %}
-              <tr>
+              <tr class="{{ 'rk-extra' if loop.index > 3 }}">
                 <td class="text-center font-monospace text-muted">
                   {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
                 </td>
                 <td class="text-break">
                   {% if m.link %}<a href="{{ m.link }}" target="_blank" rel="noopener" class="text-decoration-none fw-semibold">{{ m.model }}</a>
                   {% else %}<span class="fw-semibold">{{ m.model }}</span>{% endif %}
-                  {# Clickable per-board breakdown: each chip → that board's standings,
-                     tinted by the model's normalized score there. #}
-                  <div class="d-flex flex-wrap gap-1 mt-1">
-                    {% for bname, info in m.per_board.items() %}
-                    <a href="{{ url_for('leaderboard_view', leaderboard_id=info.lb_id) }}"
-                       class="rk-bchip text-decoration-none"
-                       title="See this model on “{{ bname }}” — normalized {{ '%.2f'|format(info.norm) }}"
-                       style="border-color:hsl(258,55%,{{ (82 - info.norm*42)|round|int }}%);">
-                      <span class="rk-bchip-name">{{ bname }}</span>
-                      <span class="rk-bchip-score">{{ '%.2f'|format(info.norm) }}</span>
-                    </a>
-                    {% endfor %}
-                  </div>
+                  {# Per-board breakdown — collapsed by default; expand to reveal
+                     chips that each deep-link to that board's standings. #}
+                  <details class="rk-boards-d mt-1">
+                    <summary>{{ m.coverage }} board{{ '' if m.coverage == 1 else 's' }}</summary>
+                    <div class="d-flex flex-wrap gap-1 mt-1">
+                      {% for bname, info in m.per_board.items() %}
+                      <a href="{{ url_for('leaderboard_view', leaderboard_id=info.lb_id) }}"
+                         class="rk-bchip text-decoration-none"
+                         title="See this model on “{{ bname }}” — normalized {{ '%.2f'|format(info.norm) }}"
+                         style="border-color:hsl(258,55%,{{ (82 - info.norm*42)|round|int }}%);">
+                        <span class="rk-bchip-name">{{ bname }}</span>
+                        <span class="rk-bchip-score">{{ '%.2f'|format(info.norm) }}</span>
+                      </a>
+                      {% endfor %}
+                    </div>
+                  </details>
                 </td>
                 <td>
                   <div class="d-flex align-items-center gap-2">
@@ -376,11 +403,26 @@
             </tbody>
           </table>
         </div>
+        {% if shown > 3 %}
+        <div class="text-center mt-2">
+          <button type="button" class="btn btn-sm btn-link text-decoration-none" id="rkToggleBtn"
+                  data-more="Show all {{ shown }} models" data-less="Show top 3"
+                  onclick="rkToggleRanking(this)">Show all {{ shown }} models</button>
+        </div>
+        {% endif %}
         {% if s.n_models > 50 %}
-        <p class="small text-body-tertiary mb-0 mt-2">Showing top 50 of {{ s.n_models }} models.</p>
+        <p class="small text-body-tertiary mb-0 mt-1 text-center">Top 50 of {{ s.n_models }} models.</p>
         {% endif %}
       </div>
     </div>
+    <script>
+    function rkToggleRanking(btn){
+      var body = document.getElementById('rkBody');
+      if(!body) return;
+      var expanded = body.classList.toggle('rk-expanded');
+      btn.textContent = expanded ? btn.dataset.less : btn.dataset.more;
+    }
+    </script>
     {% endif %}
 
     {% if rows %}
