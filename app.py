@@ -12233,7 +12233,34 @@ def leaderboard_view(leaderboard_id):
     is_following = bool(
         g.current_user and LeaderboardFollow.query.filter_by(
             user_id=g.current_user.id, leaderboard_id=leaderboard_id).first())
+
+    # Personalized badge prompt: the current user's OWN ranked submissions on
+    # this (public) board + their rank — same source as the badge endpoint, so
+    # a submitter is nudged to add a badge to their model card. Covers both a
+    # fresh submission and any existing ones (submissions are async — the board
+    # is where the author returns to see their rank).
+    my_ranked = []
+    if g.current_user and (leaderboard.visibility == 'public'
+                           or leaderboard.owner_user_id is None):
+        try:
+            from benchhub.hf_results_export import build_lb_standings
+            _payload = build_lb_standings(leaderboard, MetricResult=MetricResult)
+            _verified = _payload.get('verified') or []
+            _rankmap = {r['name']: r['rank'] for r in _verified}
+            _total = len(_verified)
+            _seen = set()
+            mine = [s for s in verified_submissions
+                    if s.owner_user_id == g.current_user.id and s.name in _rankmap]
+            for s in sorted(mine, key=lambda s: _rankmap[s.name]):
+                if s.name not in _seen:
+                    _seen.add(s.name)
+                    my_ranked.append({'name': s.name,
+                                      'rank': _rankmap[s.name], 'total': _total})
+        except Exception:
+            my_ranked = []
+
     return render_template('leaderboard.html',
+                           my_ranked=my_ranked,
                            leaderboard=leaderboard,
                            client_ref=_lb_client_ref(leaderboard),
                            is_following=is_following,

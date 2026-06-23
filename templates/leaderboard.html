@@ -26,6 +26,53 @@
 
 {% block content %}
 {% include '_signin_to_submit.html' %}
+
+{# Personalized post-submission nudge: shown to a logged-in user who owns a
+   ranked submission on this board (new OR existing). Pre-fills the badge for
+   their model so they can drop it on their model card in one click. #}
+{% if my_ranked %}
+<div class="container mt-3">
+  <div class="card border-0 shadow-sm" style="border-left:4px solid var(--bs-primary)!important;background:linear-gradient(120deg,rgba(124,58,237,.07),var(--bs-body-bg));">
+    <div class="card-body">
+      <h5 class="fw-bold mb-1">
+        <i class="bi bi-trophy-fill text-warning me-1"></i>
+        {% if my_ranked|length == 1 %}
+          Your model <span class="text-primary">{{ my_ranked[0].name }}</span> is ranked #{{ my_ranked[0].rank }} of {{ my_ranked[0].total }}
+        {% else %}
+          You have {{ my_ranked|length }} ranked models on this board
+        {% endif %}
+      </h5>
+      <p class="text-body-secondary small mb-2">Add a live rank badge to your model card — it links back here and updates automatically as standings change.</p>
+      <select id="myBadgeModel" class="form-select form-select-sm mb-2 {{ 'd-none' if my_ranked|length == 1 }}" style="max-width:26rem;">
+        {% for m in my_ranked %}<option value="{{ m.name }}">{{ m.name }} — #{{ m.rank }} of {{ m.total }}</option>{% endfor %}
+      </select>
+      <div class="mb-2"><img id="myBadgePreview" alt="Ranked on BenchHub" height="20"></div>
+      <div class="input-group input-group-sm" style="max-width:48rem;">
+        <textarea id="myBadgeMd" class="form-control font-monospace" rows="2" readonly style="font-size:.72rem;"></textarea>
+        <button class="btn btn-primary" type="button" id="myBadgeCopy">Copy badge</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var base="https://runbenchhub.com/leaderboard/{{ leaderboard.id }}/badge.svg";
+  var board="https://runbenchhub.com/leaderboard/{{ leaderboard.id }}";
+  var sel=document.getElementById('myBadgeModel'), img=document.getElementById('myBadgePreview'),
+      md=document.getElementById('myBadgeMd'), btn=document.getElementById('myBadgeCopy');
+  function refresh(){
+    var url=base+"?model="+encodeURIComponent(sel.value);
+    img.src=url; md.value="[![Ranked on BenchHub]("+url+")]("+board+")";
+  }
+  if(sel){ sel.addEventListener('change',refresh); refresh(); }
+  if(btn){ btn.addEventListener('click',function(){
+    md.select();
+    if(navigator.clipboard){ navigator.clipboard.writeText(md.value); } else { document.execCommand('copy'); }
+    btn.textContent='Copied!'; setTimeout(function(){ btn.textContent='Copy badge'; },1500);
+  }); }
+})();
+</script>
+{% endif %}
 <style>
     /* Collapsible-card chevrons (Submission contract / Metrics). */
     .collapse-chevron {
@@ -2122,8 +2169,9 @@ print(sub.submit(
 
 {# "Ranked on BenchHub" badge — public boards with verified submissions. Lets a
    model author embed a live rank badge on their HF model card / README, which
-   is the highest-leverage organic backlink channel. #}
-{% if (leaderboard.visibility == 'public' or leaderboard.owner_user_id is none) and submissions %}
+   is the highest-leverage organic backlink channel. Hidden when the viewer
+   already has the personalized top callout (my_ranked). #}
+{% if (leaderboard.visibility == 'public' or leaderboard.owner_user_id is none) and submissions and not my_ranked %}
 <div class="container my-4">
   <div class="card border-0 shadow-sm">
     <div class="card-body">
