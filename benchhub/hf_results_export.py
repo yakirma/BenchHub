@@ -19,8 +19,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 RUNBENCHHUB = "https://runbenchhub.com"
+
+# Trailing parenthetical qualifier(s) on a submission name — "RAFT-Stereo (ETH3D)",
+# "CREStereo (combined, iter10)" — that distinguish fine-tune / config variants of
+# the SAME base model. Stripped for ranking identity so variants group together.
+_VARIANT_SUFFIX_RE = re.compile(r"(?:\s*\([^()]*\))+\s*$")
 
 # Substrings that must never appear in an exported string value — a tripwire
 # for the moat fixes above (tracebacks, on-disk paths, serialized arrays).
@@ -257,7 +263,10 @@ def build_index_entry(lb, payload: dict) -> dict:
 def model_identity(name, link):
     """(key, display) for a submission's MODEL, stable across boards. Prefer the
     HF id from the link (huggingface.co/<owner>/<model>), else the submission
-    name. Key is lowercased for matching; display keeps original casing."""
+    name with any trailing parenthetical variant qualifier stripped, so a base
+    model's fine-tune / config variants — "RAFT-Stereo (ETH3D)", "(fast)",
+    "(iter10)" — group as ONE model in the rankings (best variant per board).
+    Key is lowercased for matching; display keeps original casing."""
     link = (link or "").strip()
     low = link.lower()
     if "huggingface.co/" in low:
@@ -267,6 +276,9 @@ def model_identity(name, link):
             disp = f"{parts[0]}/{parts[1]}"
             return disp.lower(), disp
     nm = (name or "").strip()
+    base = _VARIANT_SUFFIX_RE.sub("", nm).strip()
+    if base:                       # don't let an all-parenthetical name collapse to ""
+        nm = base
     return nm.lower(), nm
 
 

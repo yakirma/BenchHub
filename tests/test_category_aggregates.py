@@ -20,6 +20,37 @@ def test_model_identity_prefers_hf_id():
     assert model_identity("RAFT-Stereo", "https://github.com/x/y")[1] == "RAFT-Stereo"
 
 
+def test_model_identity_strips_variant_suffix():
+    # Fine-tune / config variants of the same base model collapse to one identity.
+    assert model_identity("RAFT-Stereo (ETH3D)", "https://github.com/x") == ("raft-stereo", "RAFT-Stereo")
+    assert model_identity("RAFT-Stereo (fast)", "https://github.com/x") == ("raft-stereo", "RAFT-Stereo")
+    assert model_identity("CREStereo (combined, iter10)", "")[0] == "crestereo"
+    assert model_identity("StereoSGBM (block5, 128disp)", "")[1] == "StereoSGBM"
+    # no parenthetical → unchanged; all-parenthetical → not collapsed to empty
+    assert model_identity("HITNet", "")[1] == "HITNet"
+    assert model_identity("(only)", "")[1] == "(only)"
+
+
+def test_variants_group_as_one_model_best_per_board():
+    # Two RAFT-Stereo variants + two HITNet variants across 2 boards. Each base
+    # model should appear once, scored by its BEST variant per board.
+    boards = [
+        {"id": 1, "name": "B1", "category": "Vision/Stereo", "higher_is_better": True,
+         "rows": [_row("RAFT-Stereo (ETH3D)", 0.6), _row("RAFT-Stereo (fast)", 0.9),
+                  _row("HITNet (SceneFlow)", 0.4), _row("CREStereo (iter10)", 0.2)]},
+        {"id": 2, "name": "B2", "category": "Vision/Stereo", "higher_is_better": True,
+         "rows": [_row("RAFT-Stereo (ETH3D)", 0.5), _row("HITNet (Middlebury)", 0.8),
+                  _row("CREStereo (iter20)", 0.3)]},
+    ]
+    aggs = compute_aggregates(boards)
+    by = {m["model"]: m for m in aggs[0]["models"]}
+    assert set(by) == {"RAFT-Stereo", "HITNet", "CREStereo"}   # variants collapsed
+    # B1 RAFT norms: fast 0.9 is best (→1.0), ETH3D 0.6, HITNet 0.4, CRE 0.2.
+    raft = by["RAFT-Stereo"]
+    assert raft["coverage"] == 2                                # both boards, not 3 rows
+    assert raft["per_board"]["B1"]["norm"] == 1.0              # best variant (fast) on B1
+
+
 def test_normalized_mean_and_coverage():
     boards = [
         {"id": 1, "name": "GSM8K", "category": "NLP/Math", "higher_is_better": True,
