@@ -93,6 +93,17 @@
   .card .meta .subs b{color:var(--text);font-family:var(--mono)}
   .card .go{color:var(--violet);font-weight:700}
 
+  /* Drill-down: area section headers + sub-category cards */
+  .cat-head{font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-2);
+    font-weight:800;margin:24px 0 11px;display:flex;align-items:center;gap:8px}
+  .cat-head:first-child{margin-top:4px}
+  .cat-head .n{color:var(--muted);font-weight:600}
+  .grid + .cat-head{margin-top:26px}
+  .catcard h3{font-size:1.1rem}
+  #backBar{margin:4px 0 16px}
+  #backBar .crumb{margin-left:12px;color:var(--text-2);font-weight:700;font-size:.92rem}
+  #backBar .crumb .area{color:var(--violet)}
+
   /* Board detail */
   #board{display:none}
   .back{cursor:pointer;color:var(--text-2);font-weight:600;font-size:.88rem;margin-bottom:10px;display:inline-flex;gap:6px}
@@ -171,20 +182,19 @@
 
   <div class="controls">
     <input id="search" type="search" placeholder="🔍 Search benchmarks by name or domain…" oninput="onSearch(this.value)">
-    <div class="pills" id="pills"></div>
   </div>
-  <div class="subcontrols" id="subcontrols" style="display:none">
-    <span class="sublabel">Sub-category</span>
-    <div class="pills subpills" id="subpills"></div>
-  </div>
+
+  <!-- Drill-down back link + breadcrumb, shown when inside a sub-category. -->
+  <div id="backBar" style="display:none"></div>
 
   <!-- Inline meta-ranking: appears when a specific sub-category is selected. -->
   <div id="subRanking"></div>
 
-  <div id="grid" class="grid"><div class="empty"><span class="spin"></span> Loading leaderboards…</div></div>
+  <!-- Holds either sub-category cards (default) or a sub-category's board cards. -->
+  <div id="grid"><div class="empty"><span class="spin"></span> Loading…</div></div>
 
   <div id="board">
-    <span class="back" onclick="closeBoard()">← All benchmarks</span>
+    <span class="back" onclick="closeBoard()">← Back</span>
     <div class="board-head"><h2 id="bName"></h2></div>
     <div class="board-sub" id="bSub"></div>
     <div id="bTable"></div>
@@ -231,9 +241,7 @@ async function getJSON(path){
     // ready the moment a sub-category pill is clicked.
     try{ const ag = await getJSON("/aggregates.json"); AGG = ag.scopes || []; }catch(_){ AGG = []; }
     renderStats(idx);
-    renderPills();
-    renderSubPills();
-    renderGrid();
+    render();
     const g = idx.generated_at;
     if(g) document.getElementById("synced").textContent = "Last synced "+new Date(g).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})+".";
   }catch(e){
@@ -255,52 +263,72 @@ function countUp(node){
   requestAnimationFrame(step);
 }
 
-function renderPills(){
-  const areas = [ALL, ...[...new Set(ENTRIES.map(e=>area(e.category)))].sort()];
-  document.getElementById("pills").innerHTML =
-    areas.map(a=>`<span class="pill ${a===AREA?'on':''}" onclick="setArea('${esc(a).replace(/'/g,"")}')">${esc(a)}</span>`).join("");
-}
-// Sub-categories available under the chosen domain (the part after the first
-// "/" in the category). Only shown once a specific domain is selected.
-function subsFor(a){
-  return [...new Set(ENTRIES.filter(e=>area(e.category)===a)
-                            .map(e=>subarea(e.category)).filter(Boolean))].sort();
-}
-function renderSubPills(){
-  const box=document.getElementById("subcontrols"), pl=document.getElementById("subpills");
-  const subs = AREA===ALL ? [] : subsFor(AREA);
-  if(!subs.length){ box.style.display="none"; pl.innerHTML=""; return; }
-  box.style.display="flex";
-  pl.innerHTML = [ALL,...subs].map(s=>
-    `<span class="pill ${s===SUB?'on':''}" onclick="setSub('${esc(s).replace(/'/g,"")}')">${esc(s)}</span>`).join("");
-}
-function setArea(a){ AREA=a; SUB=ALL; renderPills(); renderSubPills(); renderGrid(); }
-function setSub(s){ SUB=s; renderSubPills(); renderGrid(); }
-function onSearch(v){ QUERY=(v||"").trim().toLowerCase(); renderGrid(); }
+const jsstr = s => String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
 
-function filtered(){
-  return ENTRIES.filter(e=>{
-    if(AREA!==ALL && area(e.category)!==AREA) return false;
-    if(SUB!==ALL && subarea(e.category)!==SUB) return false;
-    if(QUERY && !((e.name+" "+(e.category||"")).toLowerCase().includes(QUERY))) return false;
-    return true;
-  }).sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
+// Two-level browse: sub-category cards (default) -> a sub-category's boards.
+// AREA/SUB === ALL means "browsing categories"; both set means "inside a sub".
+function onSearch(v){ QUERY=(v||"").trim().toLowerCase(); render(); }
+function enterSub(a,s){ AREA=a; SUB=s; QUERY=""; const i=document.getElementById("search"); if(i) i.value=""; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+function backToCats(){ AREA=ALL; SUB=ALL; QUERY=""; const i=document.getElementById("search"); if(i) i.value=""; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+
+// Master view dispatcher.
+function render(){
+  const bb=document.getElementById("backBar"), sr=document.getElementById("subRanking");
+  document.getElementById("board").style.display="none";
+  document.querySelector(".controls").style.display="";
+  document.getElementById("grid").style.display="";
+  if(QUERY){                                   // search: flat board cards across all
+    bb.style.display="none"; sr.innerHTML=""; renderBoardCards(searchList());
+  } else if(AREA!==ALL && SUB!==ALL){          // inside a sub-category
+    bb.style.display="";
+    bb.innerHTML=`<span class="back" onclick="backToCats()">← All categories</span>`+
+      `<span class="crumb"><span class="area">${esc(AREA)}</span> · ${esc(SUB)}</span>`;
+    renderSubRanking();
+    renderBoardCards(subList());
+  } else {                                     // default: sub-category cards
+    bb.style.display="none"; sr.innerHTML=""; renderCatCards();
+  }
 }
 
-// Sub-category meta-ranking, shown inline above the grid only when a specific
-// sub-category is selected. Matches aggregates.json scope = "Area/Sub".
-function renderSubRanking(){
-  const box=document.getElementById("subRanking");
-  if(AREA===ALL || SUB===ALL){ box.innerHTML=""; return; }
-  const scope=(AGG||[]).find(s=>s.scope===AREA+"/"+SUB);
-  box.innerHTML = scope ? renderScope(scope) : "";
+function searchList(){
+  return ENTRIES.filter(e=>(e.name+" "+(e.category||"")).toLowerCase().includes(QUERY))
+                .sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
+}
+function subList(){
+  return ENTRIES.filter(e=>area(e.category)===AREA && (subarea(e.category)||"General")===SUB)
+                .sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
 }
 
-function renderGrid(){
-  renderSubRanking();
-  const wrap=document.getElementById("grid"); const list=filtered();
+// area -> [[sub, count], ...] desc by count, for the default card view.
+function catGroups(){
+  const m={};
+  ENTRIES.forEach(e=>{ const a=area(e.category), s=subarea(e.category)||"General";
+    (m[a]=m[a]||{}); m[a][s]=(m[a][s]||0)+1; });
+  return Object.keys(m).sort((x,y)=>{
+    const cx=Object.values(m[x]).reduce((p,c)=>p+c,0), cy=Object.values(m[y]).reduce((p,c)=>p+c,0);
+    return cy-cx || x.localeCompare(y);
+  }).map(a=>[a, Object.entries(m[a]).sort((p,q)=>q[1]-p[1])]);
+}
+
+function renderCatCards(){
+  const groups=catGroups();
+  if(!groups.length){ document.getElementById("grid").innerHTML='<div class="empty">No benchmarks yet.</div>'; return; }
+  document.getElementById("grid").innerHTML = groups.map(([a,subs])=>{
+    const total=subs.reduce((p,[,c])=>p+c,0);
+    const cards=subs.map(([s,c])=>
+      `<div class="card catcard" onclick="enterSub('${jsstr(a)}','${jsstr(s)}')">
+         <span class="cat">${esc(a)}</span>
+         <h3>${esc(s)}</h3>
+         <div class="meta"><span class="subs"><b>${c}</b> board${c===1?"":"s"}</span><span class="go">Browse →</span></div>
+       </div>`).join("");
+    return `<div class="cat-head">${esc(a)} <span class="n">${total}</span></div><div class="grid">${cards}</div>`;
+  }).join("");
+}
+
+function renderBoardCards(list){
+  const wrap=document.getElementById("grid");
   if(!list.length){ wrap.innerHTML='<div class="empty">No benchmarks match.</div>'; return; }
-  wrap.innerHTML = list.map(e=>{
+  wrap.innerHTML = '<div class="grid">'+list.map(e=>{
     const sa = subarea(e.category);
     const top = e.top;
     const lead = top && top.name
@@ -315,7 +343,15 @@ function renderGrid(){
         <span class="go">Standings →</span>
       </div>
     </div>`;
-  }).join("");
+  }).join("")+'</div>';
+}
+
+// Sub-category meta-ranking, shown inline above the board cards inside a sub.
+function renderSubRanking(){
+  const box=document.getElementById("subRanking");
+  if(AREA===ALL || SUB===ALL){ box.innerHTML=""; return; }
+  const scope=(AGG||[]).find(s=>s.scope===AREA+"/"+SUB);
+  box.innerHTML = scope ? renderScope(scope) : "";
 }
 
 /* ---------- board detail ---------- */
@@ -345,7 +381,7 @@ function greenStyle(v, lo, hi, higher){
 async function openBoard(id){
   document.getElementById("grid").style.display="none";
   document.querySelector(".controls").style.display="none";
-  document.getElementById("subcontrols").style.display="none";
+  document.getElementById("backBar").style.display="none";
   document.getElementById("subRanking").innerHTML="";
   const b=document.getElementById("board"); b.style.display="block";
   document.getElementById("bName").textContent="Loading…";
@@ -397,10 +433,7 @@ async function openBoard(id){
 }
 function closeBoard(){
   document.getElementById("board").style.display="none";
-  document.getElementById("grid").style.display="";
-  document.querySelector(".controls").style.display="";
-  renderSubPills();      // restore the sub-category row for the current domain
-  renderSubRanking();    // and its meta-ranking, if a sub-category is selected
+  render();              // restore whichever view we came from (cards or sub)
 }
 
 /* ---------- model rankings ---------- */

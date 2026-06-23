@@ -4727,6 +4727,15 @@ def leaderboards():
     # landing page via _category_tree.
     category_tree = _category_tree(Leaderboard, visible_lb_filter)
 
+    # Representative thumbnail per category, for the default sub-category-card
+    # browse view (shown when no category/search/tag filter is active).
+    subcat_thumbs = {}
+    for row in rows:
+        lb = row['lb'] if isinstance(row, dict) else row.lb
+        cat = lb.category or 'Uncategorized'
+        if cat not in subcat_thumbs and leaderboard_thumbs.get(lb.id):
+            subcat_thumbs[cat] = leaderboard_thumbs[lb.id]
+
     # Meta-ranking shown inline when a SUB-category (a category with "/") is
     # selected — models ranked by mean normalized score across that
     # sub-category's boards. Only sub-categories get one (>=2 boards).
@@ -4748,6 +4757,7 @@ def leaderboards():
         category_tree=category_tree,
         active_category=category_filter,
         category_ranking=category_ranking,
+        subcat_thumbs=subcat_thumbs,
     )
 
 
