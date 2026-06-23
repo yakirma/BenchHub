@@ -4542,6 +4542,74 @@ def _category_rankings():
     return data
 
 
+def _svg_badge(label, value, color='#7c3aed'):
+    """A flat shields.io-style SVG badge: a gray `label` segment + a colored
+    `value` segment. Self-contained (no external assets) so it embeds anywhere
+    a model card renders an image."""
+    def esc(t):
+        return (str(t).replace('&', '&amp;').replace('<', '&lt;')
+                .replace('>', '&gt;').replace('"', '&quot;'))
+    label, value = esc(label), esc(value)
+    # ~6.2px/char at 11px Verdana + 10px side padding; good enough for crisp text.
+    lw = int(len(label) * 6.2) + 12
+    vw = int(len(value) * 6.4) + 12
+    total = lw + vw
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{total}" height="20" role="img" aria-label="{label}: {value}">
+<title>{label}: {value}</title>
+<linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+<clipPath id="r"><rect width="{total}" height="20" rx="3" fill="#fff"/></clipPath>
+<g clip-path="url(#r)">
+  <rect width="{lw}" height="20" fill="#555"/>
+  <rect x="{lw}" width="{vw}" height="20" fill="{color}"/>
+  <rect width="{total}" height="20" fill="url(#s)"/>
+</g>
+<g fill="#fff" text-anchor="middle" font-family="Verdana,DejaVu Sans,Geneva,sans-serif" font-size="11">
+  <text x="{lw/2:.0f}" y="15" fill="#010101" fill-opacity=".3">{label}</text>
+  <text x="{lw/2:.0f}" y="14">{label}</text>
+  <text x="{lw + vw/2:.0f}" y="15" fill="#010101" fill-opacity=".3">{value}</text>
+  <text x="{lw + vw/2:.0f}" y="14">{value}</text>
+</g>
+</svg>'''
+
+
+@app.route('/leaderboard/<int:lb_id>/badge.svg')
+def leaderboard_badge(lb_id):
+    """Embeddable 'Ranked on BenchHub' badge for a model on a board. Drives the
+    model-card backlink flywheel: `?model=<submission name or HF id>` renders
+    that model's rank; no/unknown model renders a neutral 'benchmarked' badge.
+    Always 200 + image/svg+xml so the image never breaks on a card."""
+    from benchhub.hf_results_export import build_lb_standings, model_identity
+
+    def svg(label, value, color='#7c3aed'):
+        resp = Response(_svg_badge(label, value, color), mimetype='image/svg+xml')
+        # short cache; ranks move as submissions land
+        resp.headers['Cache-Control'] = 'public, max-age=600'
+        return resp
+
+    lb = Leaderboard.query.get(lb_id)
+    if not lb or not (lb.visibility == 'public' or lb.owner_user_id is None):
+        return svg('BenchHub', 'leaderboard', '#999')
+    try:
+        payload = build_lb_standings(lb, MetricResult=MetricResult)
+    except Exception:
+        return svg('BenchHub', 'leaderboard', '#999')
+    verified = payload.get('verified') or []
+    total = len(verified)
+    model = (request.args.get('model') or '').strip()
+    rank = None
+    if model:
+        qkey = model_identity(model, '')[0]
+        ml = model.lower()
+        for r in verified:
+            if (r.get('name') or '').lower() == ml or \
+               model_identity(r.get('name'), r.get('link'))[0] == qkey:
+                rank = r.get('rank')
+                break
+    if rank:
+        return svg('BenchHub rank', f'#{rank} of {total}')
+    return svg('BenchHub', 'benchmarked' if total else 'leaderboard')
+
+
 @app.route('/leaderboards')
 def leaderboards():
     """Public catalog of leaderboards (Phase 6 Slice 2).
