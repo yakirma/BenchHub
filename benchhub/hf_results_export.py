@@ -299,9 +299,11 @@ def compute_aggregates(boards):
     Produces one ranking per SUB-CATEGORY (a category containing "/") that has
     >=2 boards. Top-level categories are intentionally NOT ranked — only the
     narrower, apples-to-apples sub-category scopes. Each model is scored by the
-    MEAN of its normalized per-board scores; ALL models are ranked (coverage =
-    how many of the scope's boards it appears on, shown but not gating). Returns
-    a list of scope dicts sorted by breadth then name."""
+    MEAN of its normalized per-board scores. A model is only ranked if it
+    appears on >=50% of the sub-category's boards (coverage gate), and a scope
+    is only emitted if >=3 such models remain. Each model's `per_board` maps a
+    board name -> {lb_id, norm} so callers can link to the model's standing on
+    each board. Returns a list of scope dicts sorted by breadth then name."""
     from collections import defaultdict
     # scope_key -> (level, list of boards). Only sub-category scopes: a board
     # whose category has no "/" (top-level only) gets no meta-ranking.
@@ -316,31 +318,39 @@ def compute_aggregates(boards):
     result = []
     for scope, info in scopes.items():
         bds = info["boards"]
-        if len(bds) < 2:
+        if len(bds) < 2:                      # need >=2 boards in the sub-category
             continue
-        per_model_norms = defaultdict(dict)   # key -> {board_name: norm}
+        n_boards = len(bds)
+        # A model must appear on >=50% of the sub-category's boards to be ranked
+        # (ceil, so 2 boards needs 1, 3 needs 2, 4 needs 2, 5 needs 3).
+        min_cov = (n_boards + 1) // 2
+        per_model_norms = defaultdict(dict)   # key -> {board_name: {lb_id, norm}}
         display = {}                          # key -> (model, link)
         for b in bds:
             norms = _normalize(b["rows"], b.get("higher_is_better", True))
             for r in b["rows"]:
                 display.setdefault(r["key"], (r.get("model") or r["key"], r.get("link")))
             for k, nv in norms.items():
-                per_model_norms[k][b["name"]] = nv
+                per_model_norms[k][b["name"]] = {"lb_id": b.get("id"), "norm": nv}
         models = []
         for k, bmap in per_model_norms.items():
+            if len(bmap) < min_cov:           # coverage gate: drop <50% models
+                continue
             mdisp, mlink = display.get(k, (k, None))
             models.append({
                 "model": mdisp,
                 "link": mlink,
-                "score": round(sum(bmap.values()) / len(bmap), 4),
+                "score": round(sum(v["norm"] for v in bmap.values()) / len(bmap), 4),
                 "coverage": len(bmap),
                 "per_board": bmap,
             })
+        if len(models) < 3:                   # need >=3 valid models to be worth a table
+            continue
         models.sort(key=lambda m: (-m["score"], -m["coverage"], m["model"].lower()))
         result.append({
             "scope": scope,
             "level": info["level"],
-            "n_boards": len(bds),
+            "n_boards": n_boards,
             "boards": [b["name"] for b in bds],
             "n_models": len(models),
             "models": models,

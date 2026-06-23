@@ -120,6 +120,40 @@
         color: var(--bs-body-secondary);
     }
 
+    /* Per-board chips in the sub-category model ranking — clickable links to
+       each board's standings, tinted by the model's normalized score there. */
+    .rk-bchip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.72rem;
+        line-height: 1.1;
+        padding: 0.12rem 0.5rem;
+        border: 1px solid var(--bs-border-color);
+        border-left-width: 3px;
+        border-radius: 999px;
+        background: var(--bs-body-bg);
+        color: var(--bs-body-secondary);
+        max-width: 16rem;
+        transition: background .12s, color .12s, box-shadow .12s;
+    }
+    .rk-bchip:hover {
+        background: var(--bs-primary-bg-subtle);
+        color: var(--bs-primary-text-emphasis);
+        box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    }
+    .rk-bchip-name {
+        max-width: 11rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .rk-bchip-score {
+        font-family: var(--bs-font-monospace, monospace);
+        font-weight: 600;
+        color: var(--bs-body-tertiary, var(--bs-body-secondary));
+    }
+
 </style>
 
 <div class="container py-4">
@@ -310,11 +344,17 @@
                 <td class="text-break">
                   {% if m.link %}<a href="{{ m.link }}" target="_blank" rel="noopener" class="text-decoration-none fw-semibold">{{ m.model }}</a>
                   {% else %}<span class="fw-semibold">{{ m.model }}</span>{% endif %}
-                  <div class="d-flex gap-1 mt-1" title="Normalized per board">
-                    {% for bname, nv in m.per_board.items() %}
-                    <span class="rounded" title="{{ bname }}: {{ '%.2f'|format(nv) }}"
-                          style="display:inline-block;width:22px;height:6px;
-                                 background:hsl(258,70%,{{ (88 - nv*48)|round|int }}%);"></span>
+                  {# Clickable per-board breakdown: each chip → that board's standings,
+                     tinted by the model's normalized score there. #}
+                  <div class="d-flex flex-wrap gap-1 mt-1">
+                    {% for bname, info in m.per_board.items() %}
+                    <a href="{{ url_for('leaderboard_view', leaderboard_id=info.lb_id) }}"
+                       class="rk-bchip text-decoration-none"
+                       title="See this model on “{{ bname }}” — normalized {{ '%.2f'|format(info.norm) }}"
+                       style="border-color:hsl(258,55%,{{ (82 - info.norm*42)|round|int }}%);">
+                      <span class="rk-bchip-name">{{ bname }}</span>
+                      <span class="rk-bchip-score">{{ '%.2f'|format(info.norm) }}</span>
+                    </a>
                     {% endfor %}
                   </div>
                 </td>
