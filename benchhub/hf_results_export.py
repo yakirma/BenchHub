@@ -247,6 +247,110 @@ def build_index_entry(lb, payload: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Category model-rankings ("meta-leaderboards") — aggregate a model's results
+# across all the boards in a category/sub-category into one normalized score.
+# Pure functions, shared by the site route and the HF-mirror export so both
+# agree. Identity is the model's HF id (from its submission link/name); no
+# model-registry table needed — submissions are grouped on the fly.
+# ---------------------------------------------------------------------------
+def model_identity(name, link):
+    """(key, display) for a submission's MODEL, stable across boards. Prefer the
+    HF id from the link (huggingface.co/<owner>/<model>), else the submission
+    name. Key is lowercased for matching; display keeps original casing."""
+    link = (link or "").strip()
+    low = link.lower()
+    if "huggingface.co/" in low:
+        rest = link[low.index("huggingface.co/") + len("huggingface.co/"):].strip("/")
+        parts = [p for p in rest.split("/") if p]
+        if len(parts) >= 2:
+            disp = f"{parts[0]}/{parts[1]}"
+            return disp.lower(), disp
+    nm = (name or "").strip()
+    return nm.lower(), nm
+
+
+def _normalize(rows, higher_is_better):
+    """rows: [{key, score}]. Min-max scale scores to [0,1] (best=1, worst=0,
+    flipping when lower-is-better). Returns {key: norm}, taking a model's BEST
+    submission if it appears more than once on the board. All-equal/one-row →
+    1.0 (indistinguishable = treated as the board's best)."""
+    vals = [r["score"] for r in rows if isinstance(r.get("score"), (int, float))]
+    if not vals:
+        return {}
+    lo, hi = min(vals), max(vals)
+    rng = hi - lo
+    out = {}
+    for r in rows:
+        s = r.get("score")
+        if not isinstance(s, (int, float)):
+            continue
+        norm = 1.0 if rng == 0 else (s - lo) / rng
+        if not higher_is_better:
+            norm = 1.0 - norm
+        k = r["key"]
+        out[k] = max(out.get(k, -1.0), norm)
+    return out
+
+
+def compute_aggregates(boards):
+    """Build the meta-leaderboards. `boards` is a list of:
+        {id, name, category, higher_is_better, rows: [{key, model, link, score}]}
+    Produces one ranking per top-level category AND per sub-category that has
+    >=2 boards. Each model is scored by the MEAN of its normalized per-board
+    scores; ALL models are ranked (coverage = how many of the scope's boards it
+    appears on, shown but not gating). Returns a list of scope dicts sorted by
+    breadth then name."""
+    from collections import defaultdict
+    # scope_key -> (level, list of boards). A board contributes to its full
+    # category (sub-category scope) and its top-level area (category scope).
+    scopes = defaultdict(lambda: {"level": None, "boards": []})
+    for b in boards:
+        cat = (b.get("category") or "Uncategorized").strip()
+        area = cat.split("/", 1)[0].strip()
+        scopes[area]["level"] = "category"
+        scopes[area]["boards"].append(b)
+        if "/" in cat:                      # also a sub-category scope
+            scopes[cat]["level"] = "subcategory"
+            scopes[cat]["boards"].append(b)
+
+    result = []
+    for scope, info in scopes.items():
+        bds = info["boards"]
+        if len(bds) < 2:
+            continue
+        per_model_norms = defaultdict(dict)   # key -> {board_name: norm}
+        display = {}                          # key -> (model, link)
+        for b in bds:
+            norms = _normalize(b["rows"], b.get("higher_is_better", True))
+            for r in b["rows"]:
+                display.setdefault(r["key"], (r.get("model") or r["key"], r.get("link")))
+            for k, nv in norms.items():
+                per_model_norms[k][b["name"]] = nv
+        models = []
+        for k, bmap in per_model_norms.items():
+            mdisp, mlink = display.get(k, (k, None))
+            models.append({
+                "model": mdisp,
+                "link": mlink,
+                "score": round(sum(bmap.values()) / len(bmap), 4),
+                "coverage": len(bmap),
+                "per_board": bmap,
+            })
+        models.sort(key=lambda m: (-m["score"], -m["coverage"], m["model"].lower()))
+        result.append({
+            "scope": scope,
+            "level": info["level"],
+            "n_boards": len(bds),
+            "boards": [b["name"] for b in bds],
+            "n_models": len(models),
+            "models": models,
+        })
+    # category scopes first, then sub-categories; each by board count desc
+    result.sort(key=lambda s: (s["level"] != "category", -s["n_boards"], s["scope"]))
+    return result
+
+
 def payload_hash(obj) -> str:
     """Stable content hash for idempotent skip-if-unchanged."""
     return hashlib.sha256(
@@ -282,6 +386,8 @@ def _readme(generated_at: str, n_lbs: int) -> str:
         f"Last synced: {generated_at}\n\n"
         "- `index.json` — catalog of mirrored leaderboards.\n"
         "- `leaderboards/<id>.json` — per-leaderboard ranked standings.\n"
+        "- `aggregates.json` — per-category model rankings (mean normalized "
+        "score across the boards in each category/sub-category).\n"
     )
 
 
@@ -292,6 +398,7 @@ def build_repo_files(lbs, *, MetricResult, generated_at: str):
     files: dict[str, str] = {}
     manifest = {"schema_version": 1, "generated_at": generated_at, "leaderboards": {}}
     index = {"generated_at": generated_at, "source": RUNBENCHHUB, "leaderboards": []}
+    agg_boards = []
     for lb in lbs:
         p = build_lb_standings(lb, MetricResult=MetricResult)
         assert_no_leak(p)
@@ -304,8 +411,24 @@ def build_repo_files(lbs, *, MetricResult, generated_at: str):
         files[f"leaderboards/{lb.id}.json"] = json.dumps(p, indent=2, ensure_ascii=False)
         manifest["leaderboards"][str(lb.id)] = payload_hash(p)
         index["leaderboards"].append(build_index_entry(lb, p))
+        # Collect (model -> primary-metric score) rows for the category rankings.
+        cols = p.get("columns") or []
+        if cols:
+            mid0 = str(cols[0]["metric_id"])
+            hib = (cols[0].get("sort_direction") or "higher_is_better") != "lower_is_better"
+            rows = []
+            for r in p["verified"]:
+                k, disp = model_identity(r.get("name"), r.get("link"))
+                rows.append({"key": k, "model": disp, "link": r.get("link"),
+                             "score": (r.get("scores") or {}).get(mid0)})
+            agg_boards.append({"id": lb.id, "name": p.get("name"),
+                               "category": p.get("category"),
+                               "higher_is_better": hib, "rows": rows})
     index["leaderboards"].sort(key=lambda e: ((e["category"] or "~"), (e["name"] or "").lower()))
     files["index.json"] = json.dumps(index, indent=2, ensure_ascii=False)
+    files["aggregates.json"] = json.dumps(
+        {"generated_at": generated_at, "scopes": compute_aggregates(agg_boards)},
+        indent=2, ensure_ascii=False)
     files["_manifest.json"] = json.dumps(manifest, indent=2, ensure_ascii=False)
     files["README.md"] = _readme(generated_at, len(index["leaderboards"]))
     return files, manifest

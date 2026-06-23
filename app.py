@@ -4504,6 +4504,51 @@ def explore():
     return redirect(url_for('leaderboards', **request.args))
 
 
+_rankings_cache = {'ts': 0.0, 'data': None}
+
+
+def _category_rankings():
+    """Category model-rankings: each model's MEAN NORMALIZED score across the
+    boards in a category / sub-category (the same computation the HF mirror
+    exports). Built from public boards' standings, cached 5 min."""
+    import time as _t
+    now = _t.time()
+    if _rankings_cache['data'] is not None and now - _rankings_cache['ts'] < 300:
+        return _rankings_cache['data']
+    from benchhub.hf_results_export import (build_lb_standings, model_identity,
+                                            compute_aggregates)
+    lbs = Leaderboard.query.filter(visible_in_list(Leaderboard, None)).all()
+    agg_boards = []
+    for lb in lbs:
+        try:
+            p = build_lb_standings(lb, MetricResult=MetricResult)
+        except Exception:
+            continue
+        cols = p.get('columns') or []
+        if not p.get('verified') or not cols:
+            continue
+        mid0 = str(cols[0]['metric_id'])
+        hib = (cols[0].get('sort_direction') or 'higher_is_better') != 'lower_is_better'
+        rows = []
+        for r in p['verified']:
+            k, disp = model_identity(r.get('name'), r.get('link'))
+            rows.append({'key': k, 'model': disp, 'link': r.get('link'),
+                         'score': (r.get('scores') or {}).get(mid0)})
+        agg_boards.append({'id': lb.id, 'name': p.get('name'),
+                           'category': p.get('category'),
+                           'higher_is_better': hib, 'rows': rows})
+    data = compute_aggregates(agg_boards)
+    _rankings_cache.update(ts=now, data=data)
+    return data
+
+
+@app.route('/rankings')
+def model_rankings():
+    """Meta-leaderboards: rank models by their mean normalized score across all
+    the boards in each category / sub-category (>=2 boards). Coverage shown."""
+    return render_template('rankings.html', scopes=_category_rankings())
+
+
 @app.route('/leaderboards')
 def leaderboards():
     """Public catalog of leaderboards (Phase 6 Slice 2).
