@@ -28,6 +28,27 @@ RUNBENCHHUB = "https://runbenchhub.com"
 # the SAME base model. Stripped for ranking identity so variants group together.
 _VARIANT_SUFFIX_RE = re.compile(r"(?:\s*\([^()]*\))+\s*$")
 
+# Known base-model architecture+size tokens. A repo/name fine-tuned per dataset —
+# "yolov8s-forklift-detection", "yolov8n-blood-cell-detection" — collapses to its
+# bare architecture token ("yolov8s") so all its per-dataset fine-tunes group as
+# ONE model in the rankings (across owners). Anchored at the start + a word
+# boundary so it only fires on real architecture names — it never touches
+# "RAFT-Stereo", "Llama-3.2-1B", etc. Extend this list for other families.
+_BASE_ARCH_PATTERNS = [
+    re.compile(r"^(yolov\d+[a-z]?)\b", re.I),   # yolov8s, yolov8n, yolov5m, yolov10x …
+]
+
+
+def _arch_token(token):
+    """If `token` starts with a known architecture+size name, return that bare
+    token (e.g. "yolov8s-forklift-detection" -> "yolov8s"); else None."""
+    t = (token or "").strip()
+    for pat in _BASE_ARCH_PATTERNS:
+        m = pat.match(t)
+        if m:
+            return m.group(1)
+    return None
+
 # Substrings that must never appear in an exported string value — a tripwire
 # for the moat fixes above (tracebacks, on-disk paths, serialized arrays).
 _LEAK_MARKERS = (
@@ -273,12 +294,19 @@ def model_identity(name, link):
         rest = link[low.index("huggingface.co/") + len("huggingface.co/"):].strip("/")
         parts = [p for p in rest.split("/") if p]
         if len(parts) >= 2:
-            disp = f"{parts[0]}/{parts[1]}"
+            repo = _VARIANT_SUFFIX_RE.sub("", parts[1]).strip() or parts[1]
+            arch = _arch_token(repo)
+            if arch:               # architecture family → group across owners/datasets
+                return arch.lower(), arch
+            disp = f"{parts[0]}/{repo}"
             return disp.lower(), disp
     nm = (name or "").strip()
     base = _VARIANT_SUFFIX_RE.sub("", nm).strip()
     if base:                       # don't let an all-parenthetical name collapse to ""
         nm = base
+    arch = _arch_token(nm)
+    if arch:
+        return arch.lower(), arch
     return nm.lower(), nm
 
 

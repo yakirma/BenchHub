@@ -31,6 +31,23 @@ def test_model_identity_strips_variant_suffix():
     assert model_identity("(only)", "")[1] == "(only)"
 
 
+def test_arch_family_groups_finetunes_across_datasets():
+    # keremberke's per-dataset YOLO fine-tunes collapse to the architecture token.
+    assert model_identity("yolov8s-forklift-detection",
+                          "https://huggingface.co/keremberke/yolov8s-forklift-detection") == ("yolov8s", "yolov8s")
+    assert model_identity("yolov8s-blood-cell-detection",
+                          "https://huggingface.co/keremberke/yolov8s-blood-cell-detection")[0] == "yolov8s"
+    assert model_identity("yolov8n-plane-detection",
+                          "https://huggingface.co/keremberke/yolov8n-plane-detection")[0] == "yolov8n"
+    assert model_identity("yolov8m-hard-hat-detection",
+                          "https://huggingface.co/keremberke/yolov8m-hard-hat-detection")[0] == "yolov8m"
+    # Different sizes stay distinct; non-YOLO names are untouched.
+    assert model_identity("yolov8n-x", "")[0] != model_identity("yolov8s-x", "")[0]
+    assert model_identity("yolos-small", "https://huggingface.co/hustvl/yolos-small") == ("hustvl/yolos-small", "hustvl/yolos-small")
+    assert model_identity("RAFT-Stereo", "")[1] == "RAFT-Stereo"          # not "RAFT"
+    assert model_identity("X", "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct")[1] == "meta-llama/Llama-3.2-1B-Instruct"
+
+
 def test_variants_group_as_one_model_best_per_board():
     # Two RAFT-Stereo variants + two HITNet variants across 2 boards. Each base
     # model should appear once, scored by its BEST variant per board.
