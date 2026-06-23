@@ -110,6 +110,20 @@
   td.rank{font-family:var(--mono);color:var(--muted);width:42px;text-align:center}
   .medal{font-size:1.05em}
 
+  /* Model rankings (inline, shown when a sub-category is selected) */
+  .rk-card{background:var(--card);border:1px solid var(--border);border-radius:14px;
+    padding:16px 18px;box-shadow:var(--shadow);margin-bottom:18px}
+  .rk-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}
+  .rk-head h3{margin:0;font-size:1.18rem;letter-spacing:-.01em}
+  .rk-meta{color:var(--muted);font-size:.8rem}
+  .rk-bar{height:8px;border-radius:5px;background:var(--card-2);overflow:hidden;min-width:70px;flex:1}
+  .rk-bar > i{display:block;height:100%;background:var(--violet)}
+  .rk-mini{display:flex;gap:2px;margin-top:4px}
+  .rk-mini span{display:inline-block;width:18px;height:5px;border-radius:2px}
+  .cov{font-family:var(--mono);font-size:.78rem;border-radius:6px;padding:2px 8px;border:1px solid;white-space:nowrap}
+  .cov.full{background:rgba(22,163,74,.12);color:#16a34a;border-color:rgba(22,163,74,.32)}
+  .cov.part{background:rgba(202,138,4,.13);color:#b45309;border-color:rgba(202,138,4,.32)}
+  body.dark .cov.part{color:#fbbf24}
   .empty{text-align:center;color:var(--muted);padding:48px 0}
   footer{text-align:center;color:var(--muted);font-size:.82rem;margin-top:40px;padding-top:20px;border-top:1px solid var(--border)}
   .spin{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--violet);
@@ -143,6 +157,9 @@
     <div class="pills subpills" id="subpills"></div>
   </div>
 
+  <!-- Inline meta-ranking: appears when a specific sub-category is selected. -->
+  <div id="subRanking"></div>
+
   <div id="grid" class="grid"><div class="empty"><span class="spin"></span> Loading leaderboards…</div></div>
 
   <div id="board">
@@ -167,6 +184,7 @@ const UTM  = "utm_source=hf_space&utm_medium=mirror";
 const ALL  = "All";
 
 let ENTRIES = [], AREA = ALL, SUB = ALL, QUERY = "";
+let AGG = [];   // sub-category meta-rankings from aggregates.json
 
 function utm(url){ if(!url) return url; return url + (url.includes("?")?"&":"?") + UTM; }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -188,6 +206,9 @@ async function getJSON(path){
   try{
     const idx = await getJSON("/index.json");
     ENTRIES = (idx.leaderboards||[]).filter(e => (e.n_verified||0) > 0);
+    // Load the sub-category meta-rankings up front (best-effort) so they're
+    // ready the moment a sub-category pill is clicked.
+    try{ const ag = await getJSON("/aggregates.json"); AGG = ag.scopes || []; }catch(_){ AGG = []; }
     renderStats(idx);
     renderPills();
     renderSubPills();
@@ -245,7 +266,17 @@ function filtered(){
   }).sort((a,b)=>(b.n_verified||0)-(a.n_verified||0));
 }
 
+// Sub-category meta-ranking, shown inline above the grid only when a specific
+// sub-category is selected. Matches aggregates.json scope = "Area/Sub".
+function renderSubRanking(){
+  const box=document.getElementById("subRanking");
+  if(AREA===ALL || SUB===ALL){ box.innerHTML=""; return; }
+  const scope=(AGG||[]).find(s=>s.scope===AREA+"/"+SUB);
+  box.innerHTML = scope ? renderScope(scope) : "";
+}
+
 function renderGrid(){
+  renderSubRanking();
   const wrap=document.getElementById("grid"); const list=filtered();
   if(!list.length){ wrap.innerHTML='<div class="empty">No benchmarks match.</div>'; return; }
   wrap.innerHTML = list.map(e=>{
@@ -294,6 +325,7 @@ async function openBoard(id){
   document.getElementById("grid").style.display="none";
   document.querySelector(".controls").style.display="none";
   document.getElementById("subcontrols").style.display="none";
+  document.getElementById("subRanking").innerHTML="";
   const b=document.getElementById("board"); b.style.display="block";
   document.getElementById("bName").textContent="Loading…";
   document.getElementById("bSub").innerHTML="";
@@ -346,7 +378,41 @@ function closeBoard(){
   document.getElementById("board").style.display="none";
   document.getElementById("grid").style.display="";
   document.querySelector(".controls").style.display="";
-  renderSubPills();   // restore the sub-category row for the current domain
+  renderSubPills();      // restore the sub-category row for the current domain
+  renderSubRanking();    // and its meta-ranking, if a sub-category is selected
+}
+
+/* ---------- model rankings ---------- */
+// 0..1 → violet ramp, matching the site's hsl(258,70%,...) per-board bars
+function miniColor(nv){ return `hsl(258,70%,${Math.round(88 - nv*48)}%)`; }
+function renderScope(s){
+  const medals=["🥇","🥈","🥉"];
+  const rows = (s.models||[]).slice(0,50).map((m,i)=>{
+    const rk=i+1;
+    const name = m.link ? `<a href="${utm(esc(m.link))}" target="_blank" rel="noopener">${esc(m.model)}</a>` : esc(m.model);
+    const mini = Object.entries(m.per_board||{}).map(([bn,nv])=>
+      `<span title="${esc(bn)}: ${(+nv).toFixed(2)}" style="background:${miniColor(+nv)}"></span>`).join("");
+    const full = m.coverage===s.n_boards;
+    return `<tr>
+      <td class="rank">${rk<=3?`<span class="medal">${medals[rk-1]}</span>`:rk}</td>
+      <td><div style="font-weight:600;word-break:break-word">${name}</div><div class="rk-mini">${mini}</div></td>
+      <td><div style="display:flex;align-items:center;gap:8px">
+        <div class="rk-bar"><i style="width:${Math.round((+m.score)*100)}%"></i></div>
+        <span class="num" style="font-weight:700">${(+m.score).toFixed(3)}</span>
+      </div></td>
+      <td style="text-align:center"><span class="cov ${full?"full":"part"}">${m.coverage}/${s.n_boards}</span></td>
+    </tr>`;
+  }).join("");
+  const more = s.n_models>50 ? `<div class="rk-meta" style="margin-top:9px">Showing top 50 of ${s.n_models} models.</div>` : "";
+  return `<div class="rk-card">
+    <div class="rk-head">
+      <h3>🏆 Model ranking</h3>
+      <span class="rk-meta">· combined across ${s.n_boards} boards · ${s.n_models} models</span>
+    </div>
+    <table><thead><tr><th>#</th><th>Model</th><th>Score</th><th style="text-align:center">Coverage</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    ${more}
+  </div>`;
 }
 
 /* ---------- dark mode ---------- */

@@ -4508,9 +4508,9 @@ _rankings_cache = {'ts': 0.0, 'data': None}
 
 
 def _category_rankings():
-    """Category model-rankings: each model's MEAN NORMALIZED score across the
-    boards in a category / sub-category (the same computation the HF mirror
-    exports). Built from public boards' standings, cached 5 min."""
+    """Sub-category model-rankings: each model's MEAN NORMALIZED score across the
+    boards in a sub-category (the same computation the HF mirror exports). Built
+    from public boards' standings, cached 5 min."""
     import time as _t
     now = _t.time()
     if _rankings_cache['data'] is not None and now - _rankings_cache['ts'] < 300:
@@ -4540,13 +4540,6 @@ def _category_rankings():
     data = compute_aggregates(agg_boards)
     _rankings_cache.update(ts=now, data=data)
     return data
-
-
-@app.route('/rankings')
-def model_rankings():
-    """Meta-leaderboards: rank models by their mean normalized score across all
-    the boards in each category / sub-category (>=2 boards). Coverage shown."""
-    return render_template('rankings.html', scopes=_category_rankings())
 
 
 @app.route('/leaderboards')
@@ -4734,6 +4727,16 @@ def leaderboards():
     # landing page via _category_tree.
     category_tree = _category_tree(Leaderboard, visible_lb_filter)
 
+    # Meta-ranking shown inline when a SUB-category (a category with "/") is
+    # selected — models ranked by mean normalized score across that
+    # sub-category's boards. Only sub-categories get one (>=2 boards).
+    category_ranking = None
+    if category_filter and '/' in category_filter:
+        for s in _category_rankings():
+            if s.get('scope') == category_filter:
+                category_ranking = s
+                break
+
     return render_template(
         'leaderboards.html',
         rows=rows,
@@ -4744,6 +4747,7 @@ def leaderboards():
         leaderboard_thumbs=leaderboard_thumbs,
         category_tree=category_tree,
         active_category=category_filter,
+        category_ranking=category_ranking,
     )
 
 

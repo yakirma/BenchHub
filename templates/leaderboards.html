@@ -137,10 +137,6 @@
             </p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-        <a href="{{ url_for('model_rankings') }}" class="btn btn-outline-primary"
-           title="Models ranked by their combined score across all boards in each category">
-            <i class="bi bi-trophy me-1"></i>Model rankings
-        </a>
         {% if current_user %}
         <a href="{{ url_for('create_lb_chooser') }}"
            class="btn btn-primary"
@@ -277,6 +273,76 @@
     {% endif %}
 
     <main class="{{ 'col-md-9' if category_tree else 'col-12' }}">
+
+    {# Sub-category meta-ranking: models ranked by their mean normalized score
+       across this sub-category's boards. Only shown when a sub-category (a
+       category containing "/") is selected and it has 2+ boards. #}
+    {% if category_ranking %}
+    {% set s = category_ranking %}
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-body p-3 p-md-4">
+        <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+          <h2 class="h5 fw-bold mb-0"><i class="bi bi-trophy-fill me-2 text-warning"></i>Model ranking</h2>
+          <span class="text-body-secondary small">· combined across {{ s.n_boards }} boards · {{ s.n_models }} models</span>
+        </div>
+        <p class="small text-body-tertiary mb-3">
+          Each model's score is the <strong>mean</strong> of its per-board scores,
+          each normalized to <strong>0–1</strong> (best = 1, worst = 0, respecting
+          higher- vs lower-is-better). <strong>Coverage</strong> shows how many of
+          this sub-category's boards a model ran on — weigh a high score against it.
+        </p>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width:42px" class="text-center">#</th>
+                <th>Model</th>
+                <th style="width:200px">Score</th>
+                <th style="width:90px" class="text-center">Coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for m in s.models[:50] %}
+              <tr>
+                <td class="text-center font-monospace text-muted">
+                  {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+                </td>
+                <td class="text-break">
+                  {% if m.link %}<a href="{{ m.link }}" target="_blank" rel="noopener" class="text-decoration-none fw-semibold">{{ m.model }}</a>
+                  {% else %}<span class="fw-semibold">{{ m.model }}</span>{% endif %}
+                  <div class="d-flex gap-1 mt-1" title="Normalized per board">
+                    {% for bname, nv in m.per_board.items() %}
+                    <span class="rounded" title="{{ bname }}: {{ '%.2f'|format(nv) }}"
+                          style="display:inline-block;width:22px;height:6px;
+                                 background:hsl(258,70%,{{ (88 - nv*48)|round|int }}%);"></span>
+                    {% endfor %}
+                  </div>
+                </td>
+                <td>
+                  <div class="d-flex align-items-center gap-2">
+                    <div class="progress flex-grow-1" style="height:8px;">
+                      <div class="progress-bar bg-primary" style="width: {{ (m.score*100)|round|int }}%;"></div>
+                    </div>
+                    <span class="font-monospace small fw-semibold">{{ '%.3f'|format(m.score) }}</span>
+                  </div>
+                </td>
+                <td class="text-center">
+                  <span class="badge {{ 'text-bg-success-subtle text-success-emphasis' if m.coverage == s.n_boards else 'text-bg-warning-subtle text-warning-emphasis' }} border">
+                    {{ m.coverage }}/{{ s.n_boards }}
+                  </span>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if s.n_models > 50 %}
+        <p class="small text-body-tertiary mb-0 mt-2">Showing top 50 of {{ s.n_models }} models.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
     {% if rows %}
     {# Grouped list mirroring /datasets cached-HF section: Area headers
        in uppercase, Task sub-headers with chevron, then one row per LB

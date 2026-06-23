@@ -296,23 +296,22 @@ def _normalize(rows, higher_is_better):
 def compute_aggregates(boards):
     """Build the meta-leaderboards. `boards` is a list of:
         {id, name, category, higher_is_better, rows: [{key, model, link, score}]}
-    Produces one ranking per top-level category AND per sub-category that has
-    >=2 boards. Each model is scored by the MEAN of its normalized per-board
-    scores; ALL models are ranked (coverage = how many of the scope's boards it
-    appears on, shown but not gating). Returns a list of scope dicts sorted by
-    breadth then name."""
+    Produces one ranking per SUB-CATEGORY (a category containing "/") that has
+    >=2 boards. Top-level categories are intentionally NOT ranked — only the
+    narrower, apples-to-apples sub-category scopes. Each model is scored by the
+    MEAN of its normalized per-board scores; ALL models are ranked (coverage =
+    how many of the scope's boards it appears on, shown but not gating). Returns
+    a list of scope dicts sorted by breadth then name."""
     from collections import defaultdict
-    # scope_key -> (level, list of boards). A board contributes to its full
-    # category (sub-category scope) and its top-level area (category scope).
+    # scope_key -> (level, list of boards). Only sub-category scopes: a board
+    # whose category has no "/" (top-level only) gets no meta-ranking.
     scopes = defaultdict(lambda: {"level": None, "boards": []})
     for b in boards:
         cat = (b.get("category") or "Uncategorized").strip()
-        area = cat.split("/", 1)[0].strip()
-        scopes[area]["level"] = "category"
-        scopes[area]["boards"].append(b)
-        if "/" in cat:                      # also a sub-category scope
-            scopes[cat]["level"] = "subcategory"
-            scopes[cat]["boards"].append(b)
+        if "/" not in cat:                  # top-level only → no meta-ranking
+            continue
+        scopes[cat]["level"] = "subcategory"
+        scopes[cat]["boards"].append(b)
 
     result = []
     for scope, info in scopes.items():
@@ -346,8 +345,8 @@ def compute_aggregates(boards):
             "n_models": len(models),
             "models": models,
         })
-    # category scopes first, then sub-categories; each by board count desc
-    result.sort(key=lambda s: (s["level"] != "category", -s["n_boards"], s["scope"]))
+    # broadest sub-categories first, then alphabetical
+    result.sort(key=lambda s: (-s["n_boards"], s["scope"]))
     return result
 
 
