@@ -146,14 +146,18 @@
         </div>
     </details>
 
-    {# Full-width search row, HF-style. #}
-    <div class="mb-3 position-relative">
+    {# Full-width search row, HF-style. Server-side (mirrors /leaderboards) so it
+       works from the sub-category browse view; a client-side instant filter
+       additionally refines the rendered rows once drilled into a category. #}
+    <form method="GET" action="{{ url_for('datasets_list') }}" class="mb-3 position-relative">
+        {% if active_category %}<input type="hidden" name="category" value="{{ active_category }}">{% endif %}
         <i class="bi bi-search position-absolute"
-           style="left: 14px; top: 50%; transform: translateY(-50%); color: var(--bs-body-secondary);"></i>
-        <input type="search" id="ds-search" class="form-control form-control-lg ps-5"
-               placeholder="Filter by name, repo id, tag, or category…"
+           style="left: 14px; top: 50%; transform: translateY(-50%); color: var(--bs-body-secondary); z-index: 3;"></i>
+        <input type="search" id="ds-search" name="q" value="{{ q }}"
+               class="form-control form-control-lg ps-5"
+               placeholder="Search by name, repo id, tag, or category…"
                autocomplete="off">
-    </div>
+    </form>
 
     <div class="row g-4">
         {# ── Left sidebar: facets + actions ── #}
@@ -352,11 +356,82 @@ print(result[&quot;dataset_id&quot;])</code></pre>
 
         {# ── Main feed ── #}
         <div class="col-lg-9">
+            {% if active_category or q %}
+            <div class="mb-3 small d-flex align-items-center flex-wrap gap-1">
+                <a href="{{ url_for('datasets_list') }}" class="link-secondary text-decoration-none">
+                    <i class="bi bi-arrow-left me-1"></i>All categories
+                </a>
+                {% if active_category %}
+                <span class="text-body-tertiary">/</span>
+                <span class="fw-semibold text-body">{{ active_category }}</span>
+                {% endif %}
+                {% if q %}
+                <span class="text-body-tertiary">·</span>
+                <span class="text-body-secondary">search: “{{ q }}”</span>
+                {% endif %}
+                <span class="text-body-tertiary ms-1">· {{ entries|length }} result{{ '' if entries|length == 1 else 's' }}</span>
+            </div>
+            {% endif %}
             <div id="ds-search-empty" class="alert alert-secondary d-none" role="alert">
                 <i class="bi bi-search me-2"></i>No datasets match that search.
             </div>
 
-            {% if entries %}
+            {% set _browsing = not active_category and not q %}
+            {% if _browsing and category_tree %}
+            {# Default view: browse by SUB-CATEGORY cards (mirrors /leaderboards).
+               Drill into one to see its dataset cards; the sidebar + search do
+               the same via ?category= / ?q=. Keeps the initial page tiny. #}
+            <div class="mb-4">
+                {% for area in category_tree %}
+                <div class="d-flex align-items-center gap-2 mt-4 mb-2">
+                    <span class="small fw-semibold text-body-secondary text-uppercase"
+                          style="letter-spacing: 0.05em;">
+                        <i class="bi bi-diagram-3 me-1"></i>{{ area.area }}
+                    </span>
+                    <span class="text-body-tertiary small">{{ area.count }}</span>
+                    <span class="flex-grow-1 border-bottom"></span>
+                </div>
+                <div class="bh-card-grid">
+                    {% if area.tasks %}
+                        {% for task in area.tasks %}
+                        {% set _cat = area.area ~ '/' ~ task.name %}
+                        <a href="{{ url_for('datasets_list', category=_cat) }}" class="text-decoration-none">
+                            <div class="card home-card h-100 border-0 shadow-sm">
+                                {% if subcat_thumbs.get(_cat) %}
+                                <div class="home-card-thumb" style="background-image: url('{{ subcat_thumbs[_cat] }}');"></div>
+                                {% else %}
+                                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                                    <i class="bi bi-collection"></i>
+                                </div>
+                                {% endif %}
+                                <div class="card-body p-3 d-flex flex-column">
+                                    <div class="fw-semibold text-body text-truncate" title="{{ task.name }}">{{ task.name }}</div>
+                                    <div class="text-body-secondary small mt-1">
+                                        <i class="bi bi-database me-1"></i>{{ task.count }} dataset{{ '' if task.count == 1 else 's' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </a>
+                        {% endfor %}
+                    {% else %}
+                        <a href="{{ url_for('datasets_list', category=area.area) }}" class="text-decoration-none">
+                            <div class="card home-card h-100 border-0 shadow-sm">
+                                <div class="home-card-thumb home-card-placeholder home-card-tint-{{ (loop.index0 % 5) + 1 }}">
+                                    <i class="bi bi-collection"></i>
+                                </div>
+                                <div class="card-body p-3 d-flex flex-column">
+                                    <div class="fw-semibold text-body text-truncate">{{ area.area }}</div>
+                                    <div class="text-body-secondary small mt-1">
+                                        <i class="bi bi-database me-1"></i>{{ area.count }} dataset{{ '' if area.count == 1 else 's' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </a>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% elif entries %}
             {# Single grouped list across both kinds. Each entry is one
                row; Area / Task headers emit on transitions. The row
                body branches on `e.kind` for the small set of kind-
@@ -586,6 +661,9 @@ details.dataset-req-card:hover > summary .req-chev {
         const empty = document.getElementById('ds-search-empty');
         if (!input) return;
         const rows = document.querySelectorAll('.ds-search-row');
+        // Browse (sub-category card) view has no dataset rows — there, the
+        // form's server-side ?q= submit handles search; nothing to filter here.
+        if (!rows.length) return;
         function refresh() {
             const q = input.value.trim().toLowerCase();
             let visible = 0;

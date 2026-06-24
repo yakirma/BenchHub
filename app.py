@@ -16983,6 +16983,17 @@ def datasets_list():
             key=lambda kv: (kv[0] == 'Uncategorized', -kv[1]['count'], kv[0]))
     ]
 
+    # Representative thumbnail per full Area/Task category, for the browse-
+    # view sub-category cards. First thumbed dataset in each category wins;
+    # built from the full (pre-filter) entry list so every card can show art.
+    subcat_thumbs = {}
+    for e in entries:
+        if not e.get('thumb_url'):
+            continue
+        for cat in (e.get('categories') or ([e['category']] if e.get('category') else [])):
+            if cat and cat not in subcat_thumbs:
+                subcat_thumbs[cat] = e['thumb_url']
+
     active_category = (request.args.get('category') or '').strip()
     if active_category:
         if '/' in active_category:
@@ -16997,8 +17008,28 @@ def datasets_list():
             # Area-level filter — match against the area of any cat.
             def _has_area(e):
                 cats = e.get('categories') or ([e['category']] if e.get('category') else [])
+                if not cats:
+                    return active_category == 'Uncategorized'
                 return any(c and c.split('/', 1)[0] == active_category for c in cats)
             entries = [e for e in entries if _has_area(e)]
+
+    # Free-text search (server-side, like /leaderboards) over name + every
+    # declared category + tags (BH) / attached LB names (HF). Applied after the
+    # category narrow so search composes with a drilled-in category. Lets the
+    # default sub-category browse view stay tiny while search still reaches
+    # every dataset.
+    q = (request.args.get('q') or '').strip()
+    if q:
+        _ql = q.lower()
+        def _entry_matches(e):
+            parts = [e.get('name') or '']
+            parts += (e.get('categories') or ([e.get('category')] if e.get('category') else []))
+            if e['kind'] == 'bh':
+                parts += [t.name for t in (e['bh'].tags or [])]
+            else:
+                parts += [lb.name for lb in (e['hf'].get('leaderboards') or [])]
+            return _ql in ' '.join((p or '').lower() for p in parts)
+        entries = [e for e in entries if _entry_matches(e)]
 
     # Datalist suggestions for the upload form. Categories already in
     # use anywhere on the site (BH dataset OR LB), distinct.
@@ -17057,7 +17088,9 @@ def datasets_list():
                            dataset_thumbs=dataset_thumbs,
                            entries=entries,
                            category_tree=category_tree,
+                           subcat_thumbs=subcat_thumbs,
                            active_category=active_category,
+                           q=q,
                            known_categories=known_categories,
                            storage_used=storage_used,
                            storage_cap=storage_cap,
