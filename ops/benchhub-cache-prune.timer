@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily HF datasets-cache prune (02:30) + on-boot catch-up
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=600
+Unit=benchhub-cache-prune.service
+
+[Install]
+WantedBy=timers.target

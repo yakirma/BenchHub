@@ -1,0 +1,11 @@
+[Unit]
+Description=Prune the Hugging Face datasets cache (orphaned import scratch)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/ymatri/Git/BenchHub/scripts/prune_hf_cache.sh
+StandardOutput=journal
+StandardError=journal
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
