@@ -266,7 +266,8 @@ async function getJSON(path){
     // ready the moment a sub-category pill is clicked.
     try{ const ag = await getJSON("/aggregates.json"); AGG = ag.scopes || []; }catch(_){ AGG = []; }
     renderStats(idx);
-    render();
+    applyNav(parseHash());   // restore view from the URL hash (deep link / refresh)
+    replaceNav();            // seed the history entry for this view
     const g = idx.generated_at;
     if(g) document.getElementById("synced").textContent = "Last synced "+new Date(g).toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})+".";
   }catch(e){
@@ -294,9 +295,38 @@ const jsstr = s => String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
 
 // Two-level browse: sub-category cards (default) -> a sub-category's boards.
 // AREA/SUB === ALL means "browsing categories"; both set means "inside a sub".
-function onSearch(v){ QUERY=(v||"").trim().toLowerCase(); render(); }
-function enterSub(a,s){ AREA=a; SUB=s; QUERY=""; const i=document.getElementById("search"); if(i) i.value=""; render(); window.scrollTo({top:0,behavior:"smooth"}); }
-function backToCats(){ AREA=ALL; SUB=ALL; QUERY=""; const i=document.getElementById("search"); if(i) i.value=""; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+let BOARD = null;   // open board id, or null
+
+// --- History API: browser Back/Forward mirror the in-app drill-down ---
+function hashFor(){
+  if(BOARD!=null) return "#b/"+BOARD;
+  if(QUERY) return "#q/"+encodeURIComponent(QUERY);
+  if(AREA!==ALL && SUB!==ALL) return "#c/"+encodeURIComponent(AREA)+"/"+encodeURIComponent(SUB);
+  if(AREA!==ALL) return "#d/"+encodeURIComponent(AREA);
+  return "#";
+}
+function navState(){ return {area:AREA, sub:SUB, query:QUERY, board:BOARD}; }
+function pushNav(){ try{ history.pushState(navState(), "", hashFor()); }catch(e){} }
+function replaceNav(){ try{ history.replaceState(navState(), "", hashFor()); }catch(e){} }
+function parseHash(){
+  const h=decodeURIComponent(location.hash||""); let m;
+  if(m=h.match(/^#b\/(\d+)/)) return {board:+m[1]};
+  if(m=h.match(/^#q\/(.+)/)) return {query:m[1].toLowerCase()};
+  if(m=h.match(/^#c\/([^/]+)\/(.+)/)) return {area:m[1], sub:m[2]};
+  if(m=h.match(/^#d\/(.+)/)) return {area:m[1]};
+  return {};
+}
+function applyNav(s){                            // set state from a popped/parsed entry; no new push
+  s=s||{};
+  AREA=s.area||ALL; SUB=s.sub||ALL; QUERY=s.query||""; BOARD=(s.board!=null?s.board:null);
+  const i=document.getElementById("search"); if(i) i.value=QUERY;
+  if(BOARD!=null) openBoard(BOARD, true); else render();
+}
+window.addEventListener("popstate", function(e){ applyNav(e.state || parseHash()); window.scrollTo({top:0}); });
+
+function onSearch(v){ const had=!!QUERY; QUERY=(v||"").trim().toLowerCase(); BOARD=null; render(); if(QUERY&&!had) pushNav(); else replaceNav(); }
+function enterSub(a,s){ AREA=a; SUB=s; QUERY=""; BOARD=null; const i=document.getElementById("search"); if(i) i.value=""; pushNav(); render(); window.scrollTo({top:0,behavior:"smooth"}); }
+function backToCats(){ history.back(); }         // in-app back == browser back
 
 // Master view dispatcher.
 function render(){
@@ -326,7 +356,7 @@ function renderDomainPills(){
   document.getElementById("domainPills").innerHTML =
     [ALL,...areas].map(a=>`<span class="pill ${a===AREA?'on':''}" onclick="setDomain('${jsstr(a)}')">${esc(a)}</span>`).join("");
 }
-function setDomain(a){ AREA=a; SUB=ALL; QUERY=""; const i=document.getElementById("search"); if(i) i.value=""; render(); }
+function setDomain(a){ AREA=a; SUB=ALL; QUERY=""; BOARD=null; const i=document.getElementById("search"); if(i) i.value=""; pushNav(); render(); }
 
 function searchList(){
   return ENTRIES.filter(e=>(e.name+" "+(e.category||"")).toLowerCase().includes(QUERY))
@@ -417,7 +447,8 @@ function greenStyle(v, lo, hi, higher){
   return `background-color:hsl(120,68%,${(90-norm*47).toFixed(0)}%);color:#0b3d0b;`;
 }
 
-async function openBoard(id){
+async function openBoard(id, fromPop){
+  BOARD=id; if(!fromPop) pushNav();
   document.getElementById("grid").style.display="none";
   document.querySelector(".controls").style.display="none";
   document.getElementById("backBar").style.display="none";
@@ -470,10 +501,7 @@ async function openBoard(id){
   });
   document.getElementById("bTable").innerHTML=`<table>${head}${body}</table>`;
 }
-function closeBoard(){
-  document.getElementById("board").style.display="none";
-  render();              // restore whichever view we came from (cards or sub)
-}
+function closeBoard(){ history.back(); }   // in-app back == browser back (popstate restores the view)
 
 /* ---------- model rankings ---------- */
 // 0..1 → violet ramp, matching the site's hsl(258,70%,...) per-board bars
