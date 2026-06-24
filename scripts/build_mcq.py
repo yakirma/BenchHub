@@ -51,7 +51,7 @@ CONFIG = {
         'ds_name': 'ARC-Easy-test',
         'repo': 'allenai/ai2_arc',
         'parquet': 'ARC-Easy/test-00000-of-00001.parquet',
-        'category': 'NLP/Science QA',
+        'category': 'NLP/Reasoning & Knowledge',
         'source': 'https://huggingface.co/datasets/allenai/ai2_arc',
         'desc': 'ARC-Easy (Clark et al., 2018) — grade-school science '
                 'multiple-choice questions (test, 4-option). Pinned zero-shot '
@@ -64,7 +64,7 @@ CONFIG = {
         'ds_name': 'OpenBookQA-test',
         'repo': 'allenai/openbookqa',
         'parquet': 'main/test-00000-of-00001.parquet',
-        'category': 'NLP/Commonsense Reasoning',
+        'category': 'NLP/Reasoning & Knowledge',
         'source': 'https://huggingface.co/datasets/allenai/openbookqa',
         'desc': 'OpenBookQA (Mihaylov et al., 2018) — elementary-science '
                 'open-book multiple-choice questions (test, 4-option). Pinned '
