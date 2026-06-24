@@ -3,7 +3,7 @@
    ask appears only when there's something to submit to. Post-login
    `next` returns to the current page (query params preserved). #}
 {% if not current_user %}
-<div class="alert d-flex align-items-center gap-2 shadow-sm border-0 mb-3" role="alert"
+<div class="alert d-flex align-items-center gap-2 shadow-sm border-0 mb-3 js-dismiss-nudge" role="alert"
      style="background: linear-gradient(120deg, rgba(124,58,237,0.12), rgba(255,0,138,0.06)), var(--bs-body-bg);
             position: sticky; top: 70px; z-index: 1019;">
     <i class="bi bi-trophy-fill fs-5 text-primary"></i>

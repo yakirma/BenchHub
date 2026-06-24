@@ -1942,6 +1942,38 @@
     })();
     </script>
     {% block scripts %}{% endblock %}
+
+    {# Universal dismiss for signup/sign-in nudges. Any element tagged
+       `js-dismiss-nudge` gets a visible × button; clicking it hides every
+       nudge and remembers the choice (so it stays gone across pages). #}
+    <script>
+    (function () {
+      function nudges() { return document.querySelectorAll('.js-dismiss-nudge'); }
+      function hideAll() { nudges().forEach(function (n) { n.style.display = 'none'; }); }
+      function init() {
+        try { if (localStorage.getItem('bh_nudge_dismissed') === '1') { hideAll(); return; } } catch (e) {}
+        nudges().forEach(function (n) {
+          if (n.querySelector('.js-nudge-x')) return;
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'js-nudge-x flex-shrink-0';
+          b.setAttribute('aria-label', 'Dismiss');
+          b.innerHTML = '&times;';
+          b.style.cssText = 'cursor:pointer;border:0;background:transparent;font-size:1.4rem;line-height:1;color:inherit;opacity:.55;padding:0 .35rem;margin-left:.25rem;';
+          b.addEventListener('mouseenter', function () { b.style.opacity = '1'; });
+          b.addEventListener('mouseleave', function () { b.style.opacity = '.55'; });
+          b.addEventListener('click', function (ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            try { localStorage.setItem('bh_nudge_dismissed', '1'); } catch (e) {}
+            hideAll();
+          });
+          n.appendChild(b);
+        });
+      }
+      if (document.readyState !== 'loading') init();
+      else document.addEventListener('DOMContentLoaded', init);
+    })();
+    </script>
 </body>
 
 </html>
