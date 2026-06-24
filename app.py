@@ -5933,6 +5933,18 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
                                 _PILImage.open(io.BytesIO(_z.read(_names[0]))).convert('RGB')))
             except Exception:
                 return v
+            # Registered (user-defined) file-backed kinds (e.g. point_cloud,
+            # point_labels): load the bytes into a RegisteredBlob so they cross
+            # to the sandbox and decode via the kind's decode hook (built-ins
+            # above already returned). Matched by the registered file_ext.
+            try:
+                dt = DataTypeDef.query.filter_by(file_ext='.' + ext).first()
+                if dt is not None:
+                    from metric_engine import RegisteredBlob
+                    with open(full, 'rb') as fh:
+                        return RegisteredBlob(dt.name, fh.read(), {}, dt.decode_code)
+            except Exception:
+                return v
             return v
         kwargs = {k: _viz_path_to_typed(v) for k, v in kwargs.items()}
 

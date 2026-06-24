@@ -53,3 +53,12 @@ uploads/
 dist/
 build/
 *.egg-info/
+*.tar.gz
+*.tgz
+*.tar
+*.tar.zst
+*.tar.bz2
+*.zst
+*.bin
+*.pcd
+nuScenes-*
