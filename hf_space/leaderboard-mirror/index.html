@@ -270,9 +270,11 @@ async function getJSON(path){
 
 function renderStats(idx){
   const subs = ENTRIES.reduce((a,e)=>a+(e.n_verified||0),0);
-  const domains = new Set(ENTRIES.map(e=>area(e.category))).size;
+  // Distinct sub-categories (full "Area/Sub" category strings) — reflects the
+  // breadth of the catalog better than the handful of top-level domains.
+  const subcats = new Set(ENTRIES.map(e=>e.category||"Uncategorized")).size;
   const el = document.getElementById("stats");
-  const cards = [["Benchmarks",ENTRIES.length],["Submissions",subs],["Domains",domains]];
+  const cards = [["Benchmarks",ENTRIES.length],["Submissions",subs],["Sub-categories",subcats]];
   el.innerHTML = cards.map(c=>`<div class="stat"><div class="n" data-to="${c[1]}">0</div><div class="l">${c[0]}</div></div>`).join("");
   el.querySelectorAll(".n").forEach(countUp);
 }
