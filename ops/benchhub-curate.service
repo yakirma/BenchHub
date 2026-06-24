@@ -1,0 +1,16 @@
+[Unit]
+Description=BenchHub autonomous benchmark curation (headless Claude adds 1 vetted benchmark)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ymatri/Git/BenchHub
+EnvironmentFile=/home/ymatri/benchhub/.env
+# Headless Claude reads the tightly-scoped curation prompt, adds ONE vetted
+# benchmark (verify-or-abort), builds it, and commits locally (no push — a bad
+# commit stays reviewable). The growth job then auto-populates the new board.
+ExecStart=/bin/bash -lc '/home/ymatri/.local/bin/claude --dangerously-skip-permissions --model claude-opus-4-8 -p "$(cat /home/ymatri/Git/BenchHub/ops/curate_prompt.txt)" >> /home/ymatri/.dtofbenchmarking/curate.log 2>&1'
+StandardOutput=journal
+StandardError=journal
+Nice=15
+TimeoutStartSec=5400

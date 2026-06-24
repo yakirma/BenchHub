@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly BenchHub autonomous benchmark curation (Sundays 06:00)
+
+[Timer]
+# Weekly — bounded to ~1 new vetted benchmark/week. Offset from the other jobs.
+OnCalendar=Sun *-*-* 06:00:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=benchhub-curate.service
+
+[Install]
+WantedBy=timers.target
