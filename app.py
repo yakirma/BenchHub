@@ -11326,7 +11326,18 @@ def _pred_field_constructor_lines(lb, *, indent: str = '                  ') -> 
         elif kind == 'json':
             line = f"{indent}{name}=bh.Json({ref}),"
         else:
-            line = f"{indent}{name}={ref},  # kind={kind}"
+            # Registered (user-defined) kind — no built-in DataType class, so
+            # submit the raw serialized bytes via RawPrediction. Show the exact
+            # kind, its on-disk extension, and what bytes to provide (from the
+            # dtype's own description), so the submitter knows how to format it.
+            dt = DataTypeDef.query.filter_by(name=kind).first()
+            ext = (dt.file_ext if dt and dt.file_ext else None)
+            args = [repr(kind), ref] + ([f"file_ext={ext!r}"] if ext else [])
+            desc = (dt.description.strip().split('.')[0].strip()
+                    if dt and dt.description else '')
+            comment = f"  # registered dtype {kind!r}" + (f" — {desc}" if desc else
+                      " — pass your serialized output as bytes")
+            line = f"{indent}{name}=bh.RawPrediction({', '.join(args)}),{comment}"
         lines.append(line)
     if not lines:
         lines = [
