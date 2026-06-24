@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly BenchHub growth job (Mondays 05:00 local) + on-boot catch-up
+
+[Timer]
+# Mondays 05:00 local — offset from the 04:00 mirror sync and 03:00 DB backup.
+OnCalendar=Mon *-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=1800
+Unit=benchhub-grow.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Weekly BenchHub growth — benchmark new models + add curated benchmarks
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ymatri/Git/BenchHub
+# HF token (gated models) + API config; the job no-ops gracefully on failures.
+EnvironmentFile=/home/ymatri/benchhub/.env
+Environment=BENCHHUB_BASE_URL=http://127.0.0.1:6060
+# Benchmarks new notable models on the LLM boards, builds the next curated
+# benchmark, seeds baselines, then triggers the standings sync to publish.
+ExecStart=/home/ymatri/benchhub/.venv/bin/python /home/ymatri/Git/BenchHub/scripts/weekly_grow.py
+StandardOutput=journal
+StandardError=journal
+# Low priority — it shares the box with web/celery; long-running (model eval).
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=21600

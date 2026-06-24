@@ -47,6 +47,32 @@ CONFIG = {
                  'only the letter (A, B, C, or D).',
         'stem': 'Question',
     },
+    'arc_easy': {
+        'ds_name': 'ARC-Easy-test',
+        'repo': 'allenai/ai2_arc',
+        'parquet': 'ARC-Easy/test-00000-of-00001.parquet',
+        'category': 'NLP/Science QA',
+        'source': 'https://huggingface.co/datasets/allenai/ai2_arc',
+        'desc': 'ARC-Easy (Clark et al., 2018) — grade-school science '
+                'multiple-choice questions (test, 4-option). Pinned zero-shot '
+                'prompt; scored by letter exact match.',
+        'instr': 'Answer the multiple-choice science question. Respond with '
+                 'only the letter (A, B, C, or D).',
+        'stem': 'Question',
+    },
+    'openbookqa': {
+        'ds_name': 'OpenBookQA-test',
+        'repo': 'allenai/openbookqa',
+        'parquet': 'main/test-00000-of-00001.parquet',
+        'category': 'NLP/Commonsense Reasoning',
+        'source': 'https://huggingface.co/datasets/allenai/openbookqa',
+        'desc': 'OpenBookQA (Mihaylov et al., 2018) — elementary-science '
+                'open-book multiple-choice questions (test, 4-option). Pinned '
+                'zero-shot prompt; scored by letter exact match.',
+        'instr': 'Answer the multiple-choice question using basic science '
+                 'knowledge. Respond with only the letter (A, B, C, or D).',
+        'stem': 'Question',
+    },
 }
 
 
@@ -59,13 +85,14 @@ def rows(df, key):
             if len(ch) != 4:
                 continue
             yield str(d['ctx']), [str(c) for c in ch], int(d['label'])
-        else:  # arc
+        else:  # arc / arc_easy (question) and openbookqa (question_stem)
+            stem = d['question_stem'] if key == 'openbookqa' else d['question']
             texts = list(d['choices']['text'])
             labels = list(d['choices']['label'])
             ak = str(d['answerKey'])
             if len(texts) != 4 or ak not in [str(x) for x in labels]:
                 continue
-            yield str(d['question']), [str(t) for t in texts], \
+            yield str(stem), [str(t) for t in texts], \
                 [str(x) for x in labels].index(ak)
 
 
