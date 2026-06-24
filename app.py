@@ -16726,44 +16726,56 @@ def datasets_list():
         .all()
     )
 
-    # Pre-calculate activity stats for leaderboards used by these datasets
+    # Pre-calculate activity stats for the LBs used by these datasets.
+    # This used to be a double N+1 — `ds.leaderboards.all()` per dataset
+    # (one query each) then `lb.submissions` per LB (lazy-loading every
+    # submission row just to take a max date + a 7-day count). Replaced
+    # with three set-based queries assembled in Python.
     now = datetime.utcnow()
+    _recent_cutoff = now - timedelta(days=7)
+    _ds_ids = [ds.id for ds in datasets]
+
+    # (1) dataset -> [(lb_id, lb_name, lb_upload_date)] via the association
+    # table. Mirrors the plain many-to-many `ds.leaderboards` (no visibility
+    # filter), so the activity set is identical to the old per-dataset walk.
+    _links_by_ds = {}
+    for _did, _lid, _lname, _lupload in (
+        db.session.query(
+            leaderboard_datasets.c.dataset_id,
+            Leaderboard.id, Leaderboard.name, Leaderboard.upload_date,
+        )
+        .join(Leaderboard, Leaderboard.id == leaderboard_datasets.c.leaderboard_id)
+        .filter(leaderboard_datasets.c.dataset_id.in_(_ds_ids or [0]))
+        .all()
+    ):
+        _links_by_ds.setdefault(_did, []).append((_lid, _lname, _lupload))
+
+    # (2) submission upload-dates grouped by LB, one lightweight query (only
+    # ~hundreds of submissions catalog-wide). Aggregated in Python below.
+    _sub_dates = {}
+    for _lid, _udate in (
+        db.session.query(Submission.leaderboard_id, Submission.upload_date)
+        .filter(Submission.leaderboard_id.isnot(None))
+        .all()
+    ):
+        _sub_dates.setdefault(_lid, []).append(_udate)
+
     for ds in datasets:
-        # ds.leaderboards is a dynamic relationship query object
-        lbs = ds.leaderboards.all()
         ds.active_leaderboards = []
-        
-        # Track the very latest activity across all LBs for this dataset for sorting
-        ds_last_activity = ds.upload_date
-        
-        for lb in lbs:
-            submissions = lb.submissions # This is lazy loaded
-            
-            # Find the last submission date for this LB
-            lb_last_sub = None
-            if submissions:
-                lb_last_sub = max(s.upload_date for s in submissions)
-            
-            # Update dataset's overall max activity:
-            # 1. Check LB creation date
-            if lb.upload_date > ds_last_activity:
-                ds_last_activity = lb.upload_date
-                
-            # 2. Check last submission date
+        ds_last_activity = ds.upload_date  # latest activity across LBs, for sorting
+        for _lid, _lname, _lupload in _links_by_ds.get(ds.id, []):
+            dates = _sub_dates.get(_lid, [])
+            lb_last_sub = max(dates) if dates else None
+            if _lupload and _lupload > ds_last_activity:
+                ds_last_activity = _lupload
             if lb_last_sub and lb_last_sub > ds_last_activity:
                 ds_last_activity = lb_last_sub
-            
-            # Check for recent activity (using same 7-day window as active)
-            subs_last_24h = sum(1 for s in submissions if s.upload_date > now - timedelta(days=7)) 
-            
-            # Create a simple dict for the template
+            subs_last_24h = sum(1 for d in dates if d and d > _recent_cutoff)
             ds.active_leaderboards.append({
-                'id': lb.id,
-                'name': lb.name,
-                'subs_last_24h': subs_last_24h
+                'id': _lid,
+                'name': _lname,
+                'subs_last_24h': subs_last_24h,
             })
-        
-        # Store for sorting
         ds.last_associated_activity = ds_last_activity
 
     # Sort datasets by their last associated activity (most recent first)
@@ -21657,6 +21669,20 @@ def check_and_migrate_db():
                 except Exception as e:
                     print(f"Migration error (custom_field indexes): {e}")
 
+                # sample.dataset_id was un-indexed despite being the FK every
+                # per-dataset query filters/groups on — so COUNT(*) WHERE
+                # dataset_id=? full-scanned the (400k-row) sample table. The
+                # /datasets prune did one such COUNT per dataset (~2.2s/load);
+                # the explorable-LB + thumbnail joins paid it too.
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS ix_sample_dataset_id "
+                        "ON sample (dataset_id)"
+                    )
+                    conn.commit()
+                except Exception as e:
+                    print(f"Migration error (sample.dataset_id index): {e}")
+
                 # Add git_author column to submission table
                 cursor.execute("PRAGMA table_info(submission)")
                 submission_columns = [row[1] for row in cursor.fetchall()]
@@ -22827,6 +22853,16 @@ def prune_incomplete_datasets():
     datasets_root = os.path.join(upload_folder, 'datasets')
     removed = 0
 
+    # Batch the per-dataset sample counts into ONE grouped query. A COUNT(*)
+    # per dataset full-scanned the 400k-row sample table EACH time (it carried
+    # no dataset_id index until ix_sample_dataset_id) — 217 datasets ≈ 2.2s on
+    # every /datasets load, the bulk of that page's latency. One GROUP BY ≈ 50ms.
+    sample_counts = dict(
+        db.session.query(Sample.dataset_id, func.count(Sample.id))
+        .group_by(Sample.dataset_id)
+        .all()
+    )
+
     for ds in Dataset.query.all():
         # Async HF imports look "incomplete" by all the usual signals
         # (no samples yet, no folder) right up until the Celery task
@@ -22839,7 +22875,7 @@ def prune_incomplete_datasets():
         # folder check for them; sample-count > 0 is the only signal
         # of completion.
         is_pointer = (ds.storage_mode == 'hf-pointer')
-        sample_count = Sample.query.filter_by(dataset_id=ds.id).count()
+        sample_count = sample_counts.get(ds.id, 0)
         folder_path = os.path.join(datasets_root, str(ds.id))
         folder_ok = os.path.isdir(folder_path)
 
