@@ -690,7 +690,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                        (the datalist swallows Enter), so the filter seemed broken. #}
                     <input type="text" name="filter_value" class="form-control form-control-sm me-2"
                         style="max-width: 160px;" value="{{ filter_value or '' }}" list="cmp-filter-suggestions"
-                        onchange="this.form.submit()"
+                        onchange="this.form.submit()" autocomplete="off"
                         placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}">
                     <datalist id="cmp-filter-suggestions">
                         {% for sug in filter_suggestions %}<option value="{{ sug }}">{% endfor %}
