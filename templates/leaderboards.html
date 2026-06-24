@@ -226,11 +226,25 @@
            onclick="if(window.gtag){gtag('event','login_start',{method:'leaderboards_catalog_banner'});}">
             <i class="bi bi-box-arrow-in-right me-1"></i>Sign up free
         </a>
-        <button type="button" class="btn-close flex-shrink-0 ms-1" aria-label="Dismiss"
-                onclick="try{localStorage.setItem('bh_signup_nudge','1')}catch(e){};this.parentElement.style.display='none';"></button>
+        <button type="button" id="nudge-dismiss" class="btn-close flex-shrink-0 ms-1"
+                aria-label="Dismiss" style="cursor:pointer;"></button>
     </div>
-    {# Keep it dismissed across navigations — runs immediately so there's no flash. #}
-    <script>try{if(localStorage.getItem('bh_signup_nudge')==='1'){var _n=document.getElementById('signup-nudge');if(_n)_n.style.display='none';}}catch(e){}</script>
+    {# Dismiss + persist. Runs immediately (the button is already in the DOM
+       above), so a previously-dismissed nudge never flashes. #}
+    <script>
+    (function(){
+      var n = document.getElementById('signup-nudge');
+      try { if (localStorage.getItem('bh_signup_nudge') === '1') { if (n) n.style.display = 'none'; return; } } catch (e) {}
+      var x = document.getElementById('nudge-dismiss');
+      if (x && n) {
+        x.addEventListener('click', function (ev) {
+          ev.preventDefault(); ev.stopPropagation();
+          try { localStorage.setItem('bh_signup_nudge', '1'); } catch (e) {}
+          n.style.display = 'none';
+        });
+      }
+    })();
+    </script>
     {% endif %}
 
     {# ---- Tag cloud ---- #}
