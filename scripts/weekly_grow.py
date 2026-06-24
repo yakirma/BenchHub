@@ -41,13 +41,28 @@ ALLOWED_ORGS = {
     'deepseek-ai', 'allenai', 'ibm-granite', 'tiiuae', 'nvidia', 'stabilityai',
 }
 MAX_PARAMS_B = 9.0      # bf16 size cap the local GPU can run
-DEFAULT_MAX_MODELS = 3  # new models per run
+DEFAULT_MAX_MODELS = 8  # new models per run (high — utilize the GPU)
 
-# Curated queue of NEXT benchmarks to add (keys must exist in build_mcq.py CONFIG).
-# The job builds the first one whose dataset isn't already imported.
-BENCHMARK_QUEUE = ['arc_easy', 'openbookqa']
-# Baselines to seed onto a freshly-built board.
-BASELINE_MODELS = ['Qwen/Qwen2.5-3B-Instruct', 'meta-llama/Llama-3.2-1B-Instruct']
+# Curated benchmark queue — each {key, builder script, dataset name}. The job
+# builds EVERY un-built one each run (building is cheap; seeding is the GPU
+# cost). Add a vetted spec to build_benchmark.py/build_mcq.py + a row here to
+# grow the suite. ALWAYS hand-vetted, never arbitrary discovery.
+BENCHMARK_QUEUE = [
+    {'key': 'arc_easy',      'builder': 'build_mcq',       'ds': 'arc-easy-test'},
+    {'key': 'openbookqa',    'builder': 'build_mcq',       'ds': 'openbookqa-test'},
+    {'key': 'winogrande',    'builder': 'build_benchmark', 'ds': 'winogrande-validation'},
+    {'key': 'commonsenseqa', 'builder': 'build_benchmark', 'ds': 'commonsenseqa-validation'},
+    {'key': 'sciq',          'builder': 'build_benchmark', 'ds': 'sciq-test'},
+    {'key': 'medmcqa',       'builder': 'build_benchmark', 'ds': 'medmcqa-validation'},
+    {'key': 'mmlu_pro',      'builder': 'build_benchmark', 'ds': 'mmlu-pro-test'},
+]
+# Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
+BASELINE_MODELS = [
+    'Qwen/Qwen2.5-7B-Instruct', 'Qwen/Qwen2.5-3B-Instruct',
+    'Qwen/Qwen2.5-1.5B-Instruct', 'Qwen/Qwen2.5-0.5B-Instruct',
+    'meta-llama/Llama-3.2-3B-Instruct', 'meta-llama/Llama-3.2-1B-Instruct',
+    'google/gemma-2-2b-it', 'microsoft/Phi-3.5-mini-instruct',
+]
 
 DRY = '--dry-run' in sys.argv
 if '--max-models' in sys.argv:
@@ -175,29 +190,31 @@ def benchmark(model, boards):
             log(f'ERROR {model} on lb{lb}: {e}')
 
 
-def build_next_benchmark():
-    """Build the first queued benchmark whose dataset isn't imported yet."""
+def build_pending_benchmarks():
+    """Build EVERY queued benchmark whose dataset isn't imported yet (building is
+    cheap CPU work; baselines are seeded separately). Returns built keys."""
     con = _db()
     have = {r['name'].lower() for r in con.execute('SELECT name FROM dataset').fetchall()}
     con.close()
-    # build_mcq CONFIG ds_name → import name; quick map (kept in sync manually).
-    DS_NAME = {'arc_easy': 'arc-easy-test', 'openbookqa': 'openbookqa-test'}
-    for key in BENCHMARK_QUEUE:
-        if DS_NAME.get(key, key).lower() in have:
+    built = []
+    for item in BENCHMARK_QUEUE:
+        if item['ds'].lower() in have:
             continue
-        log(f'building new benchmark: {key}')
+        script = os.path.join(REPO, 'scripts', item['builder'] + '.py')
+        log(f"building benchmark {item['key']} via {item['builder']}")
         env = dict(os.environ, BENCHHUB_DATA_DIR=os.path.expanduser('~/.dtofbenchmarking'))
         try:
-            r = subprocess.run([BENCHHUB_PY, BUILD_MCQ, key],
-                               env=env, cwd=REPO, timeout=1800, check=False)
+            r = subprocess.run([BENCHHUB_PY, script, item['key']],
+                               env=env, cwd=REPO, timeout=2400, check=False)
             if r.returncode == 0:
-                return key
-            log(f'build_mcq {key} exited {r.returncode}')
+                built.append(item['key'])
+            else:
+                log(f"build {item['key']} exited {r.returncode}")
         except Exception as e:
-            log(f'build {key} failed: {e}')
-        return None
-    log('benchmark queue empty — nothing to build')
-    return None
+            log(f"build {item['key']} failed: {e}")
+    if not built:
+        log('benchmark queue: nothing new to build')
+    return built
 
 
 def publish():
@@ -220,16 +237,17 @@ def main():
     log('new models to benchmark:', models or '(none new)')
 
     if DRY:
-        nb = [k for k in BENCHMARK_QUEUE]
-        log('DRY-RUN — would benchmark the above, build next of', nb, 'and publish.')
+        pending = [i['key'] for i in BENCHMARK_QUEUE]
+        log('DRY-RUN — would benchmark the above, build any un-built of', pending,
+            ', seed baselines on sparse boards, and publish.')
         return
 
     for m in models:
         benchmark(m, boards)
 
-    built = build_next_benchmark()
+    built = build_pending_benchmarks()
     if built:
-        boards = llm_boards()      # the new board now exists
+        boards = llm_boards()      # the new boards now exist
     seed_sparse(boards)            # populate any sparse/new board with baselines
 
     publish()

@@ -1,11 +1,15 @@
 [Unit]
-Description=Weekly BenchHub growth job (Mondays 05:00 local) + on-boot catch-up
+Description=BenchHub growth job — frequent re-run so the GPU stays busy whenever there's new work
 
 [Timer]
-# Mondays 05:00 local — offset from the 04:00 mirror sync and 03:00 DB backup.
-OnCalendar=Mon *-*-* 05:00:00
+# First run shortly after boot, then re-run ~30 min after each run FINISHES.
+# When there's a backlog (new models/benchmarks) a run is long and the GPU
+# stays saturated; when idle it just re-checks every ~30 min. systemd won't
+# start a second instance while one is still running (oneshot).
+OnBootSec=10min
+OnUnitInactiveSec=30min
 Persistent=true
-RandomizedDelaySec=1800
+RandomizedDelaySec=300
 Unit=benchhub-grow.service
 
 [Install]

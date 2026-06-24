@@ -17,4 +17,6 @@ StandardError=journal
 Nice=15
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
-TimeoutStartSec=21600
+# A full run (many models × many boards) can take many hours; per-model
+# subprocess timeouts bound individual steps, so allow a long overall run.
+TimeoutStartSec=43200
