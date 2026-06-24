@@ -214,7 +214,7 @@
     {# Sticky so the signup CTA stays visible while scrolling the catalog.
        top:70px clears the fixed navbar; opaque backdrop (gradient over body
        bg) keeps it readable as cards scroll behind. #}
-    <div class="alert d-flex align-items-center gap-2 shadow-sm border-0 mb-4" role="alert"
+    <div id="signup-nudge" class="alert d-flex align-items-center gap-2 shadow-sm border-0 mb-4" role="alert"
          style="background: linear-gradient(120deg, rgba(124,58,237,0.12), rgba(255,0,138,0.06)), var(--bs-body-bg);
                 position: sticky; top: 70px; z-index: 1020;">
         <i class="bi bi-trophy-fill fs-5 text-primary"></i>
@@ -226,7 +226,11 @@
            onclick="if(window.gtag){gtag('event','login_start',{method:'leaderboards_catalog_banner'});}">
             <i class="bi bi-box-arrow-in-right me-1"></i>Sign up free
         </a>
+        <button type="button" class="btn-close flex-shrink-0 ms-1" aria-label="Dismiss"
+                onclick="try{localStorage.setItem('bh_signup_nudge','1')}catch(e){};this.parentElement.style.display='none';"></button>
     </div>
+    {# Keep it dismissed across navigations — runs immediately so there's no flash. #}
+    <script>try{if(localStorage.getItem('bh_signup_nudge')==='1'){var _n=document.getElementById('signup-nudge');if(_n)_n.style.display='none';}}catch(e){}</script>
     {% endif %}
 
     {# ---- Tag cloud ---- #}
