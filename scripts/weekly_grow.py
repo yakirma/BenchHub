@@ -1,22 +1,27 @@
 #!/usr/bin/env python
-"""Weekly growth job — keeps the BenchHub LLM boards (and the HF Space mirror)
-current so the leaderboard is the place that *already benchmarked* the model
-people are searching for.
+"""BenchHub growth job — keeps the leaderboard the place that *already
+benchmarked* the model people are searching for, and steadily widens coverage.
 
-Each run:
-  1. Discovers the LLM boards (input field `prompt`, pred field `answer_pred`).
-  2. Picks a few NEW notable instruct models (HF trending, reputable orgs,
-     size-capped, accessible, not already submitted) and benchmarks them on
-     every LLM board — per (model,board) error-isolated so one bad model can't
-     wedge the run.
-  3. Builds the next benchmark from a CURATED queue (vetted MCQ datasets via
-     scripts/build_mcq.py) and benchmarks a couple of baselines on it.
-  4. Triggers the standings sync so the Space refreshes with the real new
-     content (freshness bump = genuine new results, not churn).
+GOAL (what every run optimizes for):
+  * BREADTH — more sub-categories represented (each new benchmark in the queue
+    can open a NEW sub-category, e.g. NLP/Reading Comprehension).
+  * DEPTH  — more boards inside each sub-category, and more models on each board.
+
+PRIORITY HOOK each run:
+  1. If there are NEW models to submit  -> benchmark them on every board
+     (per-(model,board) error-isolated so one bad model can't wedge the run).
+  2. ELSE (caught up on models)         -> build & populate the next un-built
+     benchmark from the CURATED queue (this is how coverage widens when the GPU
+     would otherwise idle).
+  In practice a run does both: benchmark whatever models are new, THEN build any
+  pending benchmarks and seed baselines onto sparse/new boards. When models are
+  caught up, the build+seed step is the work that keeps the GPU busy.
+  Finally: trigger the standings sync so the Space refreshes with real content.
 
 Safety: only reputable orgs + a hard size cap are auto-benchmarked; new boards
-come from a hand-vetted queue, never arbitrary auto-discovery — a broken public
-board would undercut the whole "reliable scores" point.
+come ONLY from the hand-vetted queue (verified schema + correct split), never
+arbitrary auto-discovery — a broken public board would undercut "reliable
+scores". To grow coverage: add a vetted spec to build_benchmark.py + a queue row.
 
 Run:  ~/benchhub/.venv/bin/python scripts/weekly_grow.py [--dry-run] [--max-models N]
 """
@@ -55,6 +60,9 @@ BENCHMARK_QUEUE = [
     {'key': 'sciq',          'builder': 'build_benchmark', 'ds': 'sciq-test'},
     {'key': 'medmcqa',       'builder': 'build_benchmark', 'ds': 'medmcqa-validation'},
     {'key': 'mmlu_pro',      'builder': 'build_benchmark', 'ds': 'mmlu-pro-test'},
+    # NLP/Reading Comprehension — a NEW sub-category (widens coverage)
+    {'key': 'race',          'builder': 'build_benchmark', 'ds': 'race-test'},
+    {'key': 'boolq',         'builder': 'build_benchmark', 'ds': 'boolq-validation'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [

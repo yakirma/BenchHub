@@ -91,6 +91,26 @@ def p_medmcqa(df):
         yield str(d['question']), opts, int(cop)
 
 
+def p_race(df):
+    for d in df.to_dict('records'):
+        opts = [str(o) for o in list(d['options'])]
+        ak = str(d['answer']).strip().upper()
+        if len(opts) != 4 or ak not in 'ABCD':
+            continue
+        stem = f"{d['article']}\n\nQuestion: {d['question']}"
+        yield stem, opts, 'ABCD'.index(ak)
+
+
+def p_boolq(df):
+    for d in df.to_dict('records'):
+        a = d.get('answer')
+        if a is None:
+            continue
+        gold = 0 if bool(a) else 1                       # A=Yes(True), B=No(False)
+        stem = f"{d['passage']}\n\nQuestion: {d['question']}"
+        yield stem, ['Yes', 'No'], gold
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -143,8 +163,31 @@ SPECS = {
         'instr': 'Answer the multiple-choice medical question. Respond with '
                  'only the letter (A, B, C, or D).',
         'parse': p_medmcqa},
+    # --- NLP/Reading Comprehension (new sub-category, widens coverage) ---
+    'race': {
+        'repo': 'ehovy/race', 'parquet': 'all/test-00000-of-00001.parquet',
+        'ds_name': 'RACE-test', 'stem': 'Passage',
+        'category': 'NLP/Reading Comprehension',
+        'source': 'https://huggingface.co/datasets/ehovy/race',
+        'desc': 'RACE (Lai et al., 2017) — English-exam reading comprehension, '
+                '4-option, over a passage (test). Pinned zero-shot prompt; '
+                'scored by letter exact match.',
+        'instr': 'Read the passage and answer the question. Respond with only '
+                 'the letter (A, B, C, or D).',
+        'parse': p_race},
+    'boolq': {
+        'repo': 'google/boolq', 'parquet': 'data/validation-00000-of-00001.parquet',
+        'ds_name': 'BoolQ-validation', 'stem': 'Passage',
+        'category': 'NLP/Reading Comprehension',
+        'source': 'https://huggingface.co/datasets/google/boolq',
+        'desc': 'BoolQ (Clark et al., 2019) — yes/no reading-comprehension '
+                'questions over a passage (validation). Pinned zero-shot '
+                'prompt; scored by letter exact match.',
+        'instr': 'Read the passage and answer the yes/no question. Respond with '
+                 'only the letter (A for Yes, B for No).',
+        'parse': p_boolq},
 }
-CATEGORY = 'NLP/Reasoning & Knowledge'   # all join the combined LLM ranking
+DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
 
 def build_staging(staging, spec):
@@ -177,6 +220,7 @@ def build_staging(staging, spec):
 
 def main():
     spec = SPECS[KEY]
+    category = spec.get('category', DEFAULT_CATEGORY)
     import app as A
     from app import (db, Dataset, Sample, CustomField, DatasetField,
                      Leaderboard, LeaderboardMetric, GlobalMetric)
@@ -194,7 +238,7 @@ def main():
                     owner_user_id=2, visibility='public', preview_only=False)
                 db.session.commit()
                 ds = Dataset.query.get(ds_id)
-                ds.category = CATEGORY
+                ds.category = category
                 ds.source_url = spec['source']
                 ds.source_kind = 'local-llm'
                 ds.card_description = spec['desc']
@@ -212,7 +256,7 @@ def main():
         lb = Leaderboard.query.filter_by(name=lb_name).first()
         if lb is None:
             lb = Leaderboard(
-                name=lb_name, owner_user_id=2, visibility='public', category=CATEGORY,
+                name=lb_name, owner_user_id=2, visibility='public', category=category,
                 required_pred_fields_json=json.dumps(
                     [{"name": "answer_pred", "kind": "text", "params": {}, "role": "pred"}]),
                 field_roles_json=json.dumps({'prompt': 'input', 'answer': 'gt'}),
