@@ -111,6 +111,40 @@ def p_boolq(df):
         yield stem, ['Yes', 'No'], gold
 
 
+def p_qasc(df):
+    for d in df.to_dict('records'):
+        ch = d['choices']
+        texts = list(ch['text'])
+        labels = [str(x) for x in ch['label']]
+        ak = str(d['answerKey']).strip()
+        if not ak or ak not in labels or len(texts) < 2:
+            continue
+        yield str(d['question']), [str(t) for t in texts], labels.index(ak)
+
+
+def p_aqua(df):
+    import re
+    for d in df.to_dict('records'):
+        opts = []
+        for o in list(d['options']):
+            m = re.match(r'^\s*([A-E])\)\s*(.*)$', str(o), re.S)   # strip the "A)" prefix
+            opts.append(m.group(2) if m else str(o))
+        c = str(d['correct']).strip().upper()
+        if len(opts) != 5 or c not in 'ABCDE':
+            continue
+        yield str(d['question']), opts, 'ABCDE'.index(c)
+
+
+def p_truthfulqa(df):
+    for d in df.to_dict('records'):
+        mc = d['mc1_targets']
+        choices = list(mc['choices'])
+        labels = [int(x) for x in mc['labels']]
+        if 1 not in labels or len(choices) < 2 or len(choices) != len(labels):
+            continue
+        yield str(d['question']), [str(c) for c in choices], labels.index(1)
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -186,6 +220,40 @@ SPECS = {
         'instr': 'Read the passage and answer the yes/no question. Respond with '
                  'only the letter (A for Yes, B for No).',
         'parse': p_boolq},
+    # --- more new sub-categories (widen coverage) ---
+    'qasc': {
+        'repo': 'allenai/qasc', 'parquet': 'data/validation-00000-of-00001.parquet',
+        'ds_name': 'QASC-validation', 'stem': 'Question',
+        'category': 'NLP/Science QA',
+        'source': 'https://huggingface.co/datasets/allenai/qasc',
+        'desc': 'QASC (Khot et al., 2020) — multi-hop science QA, 8-option '
+                '(validation). Pinned zero-shot prompt; scored by letter exact '
+                'match.',
+        'instr': 'Answer the multiple-choice science question. Respond with '
+                 'only the letter of the correct option.',
+        'parse': p_qasc},
+    'aqua_rat': {
+        'repo': 'deepmind/aqua_rat', 'parquet': 'raw/test-00000-of-00001.parquet',
+        'ds_name': 'AQuA-RAT-test', 'stem': 'Problem',
+        'category': 'NLP/Mathematical Reasoning',
+        'source': 'https://huggingface.co/datasets/deepmind/aqua_rat',
+        'desc': 'AQuA-RAT (Ling et al., 2017) — algebraic math word problems, '
+                '5-option multiple choice (test). Pinned zero-shot prompt; '
+                'scored by letter exact match.',
+        'instr': 'Solve the math word problem. Respond with only the letter '
+                 '(A, B, C, D, or E) of the correct option.',
+        'parse': p_aqua},
+    'truthfulqa': {
+        'repo': 'truthfulqa/truthful_qa', 'parquet': 'multiple_choice/validation-00000-of-00001.parquet',
+        'ds_name': 'TruthfulQA-MC1', 'stem': 'Question',
+        'category': 'NLP/Truthfulness',
+        'source': 'https://huggingface.co/datasets/truthfulqa/truthful_qa',
+        'desc': 'TruthfulQA MC1 (Lin et al., 2022) — single-true-answer multiple '
+                'choice testing truthfulness (validation). Pinned zero-shot '
+                'prompt; scored by letter exact match.',
+        'instr': 'Answer the question truthfully. Respond with only the letter '
+                 'of the single correct option.',
+        'parse': p_truthfulqa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 

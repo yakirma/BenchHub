@@ -63,6 +63,10 @@ BENCHMARK_QUEUE = [
     # NLP/Reading Comprehension — a NEW sub-category (widens coverage)
     {'key': 'race',          'builder': 'build_benchmark', 'ds': 'race-test'},
     {'key': 'boolq',         'builder': 'build_benchmark', 'ds': 'boolq-validation'},
+    # more NEW sub-categories (breadth): Science QA, Math, Truthfulness
+    {'key': 'qasc',          'builder': 'build_benchmark', 'ds': 'qasc-validation'},
+    {'key': 'aqua_rat',      'builder': 'build_benchmark', 'ds': 'aqua-rat-test'},
+    {'key': 'truthfulqa',    'builder': 'build_benchmark', 'ds': 'truthfulqa-mc1'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [
