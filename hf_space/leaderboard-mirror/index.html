@@ -193,7 +193,7 @@
   </div>
 
   <!-- Trust strip: why these numbers are reliable (the conversion hook). -->
-  <div class="trust">
+  <div class="trust" id="trust">
     <div class="trust-item"><span>🎯</span><div><b>Same data &amp; metric</b><br>Every model on a board runs the identical eval set and scorer.</div></div>
     <div class="trust-item"><span>📌</span><div><b>Pinned protocol</b><br>LLM boards bake one exact prompt — zero-shot, exact-match, no per-model tuning.</div></div>
     <div class="trust-item"><span>📦</span><div><b>Sandboxed, not self-reported</b><br>Predictions are scored server-side in a container — reproducible, not paper numbers.</div></div>
@@ -331,21 +331,21 @@ function backToCats(){ history.back(); }         // in-app back == browser back
 // Master view dispatcher.
 function render(){
   const bb=document.getElementById("backBar"), sr=document.getElementById("subRanking"),
-        df=document.getElementById("domainFilter");
+        df=document.getElementById("domainFilter"), tr=document.getElementById("trust");
   document.getElementById("board").style.display="none";
   document.querySelector(".controls").style.display="";
   document.getElementById("grid").style.display="";
   if(QUERY){                                   // search: flat board cards across all
-    df.style.display="none"; bb.style.display="none"; sr.innerHTML=""; renderBoardCards(searchList());
+    tr.style.display="none"; df.style.display="none"; bb.style.display="none"; sr.innerHTML=""; renderBoardCards(searchList());
   } else if(AREA!==ALL && SUB!==ALL){          // inside a sub-category
-    df.style.display="none"; bb.style.display="";
+    tr.style.display="none"; df.style.display="none"; bb.style.display="";
     bb.innerHTML=`<span class="back" onclick="backToCats()">← All categories</span>`+
       `<span class="crumb"><span class="area">${esc(AREA)}</span> · ${esc(SUB)}</span>`;
     renderSubRanking();
     renderBoardCards(subList());
-  } else {                                     // default: sub-category cards (+ domain filter)
+  } else {                                     // main page: sub-category cards (+ domain filter + trust strip)
     bb.style.display="none"; sr.innerHTML="";
-    df.style.display="flex"; renderDomainPills(); renderCatCards();
+    tr.style.display=""; df.style.display="flex"; renderDomainPills(); renderCatCards();
   }
 }
 
@@ -449,6 +449,7 @@ function greenStyle(v, lo, hi, higher){
 
 async function openBoard(id, fromPop){
   BOARD=id; if(!fromPop) pushNav();
+  document.getElementById("trust").style.display="none";
   document.getElementById("grid").style.display="none";
   document.querySelector(".controls").style.display="none";
   document.getElementById("backBar").style.display="none";
