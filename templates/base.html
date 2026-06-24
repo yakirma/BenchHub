@@ -1949,7 +1949,9 @@
     <script>
     (function () {
       function nudges() { return document.querySelectorAll('.js-dismiss-nudge'); }
-      function hideAll() { nudges().forEach(function (n) { n.style.display = 'none'; }); }
+      // Nudges carry Bootstrap `.d-flex` (display:flex !important); a plain inline
+      // display:none loses the cascade, so set it with `important` priority.
+      function hideAll() { nudges().forEach(function (n) { n.style.setProperty('display', 'none', 'important'); }); }
       function init() {
         try { if (localStorage.getItem('bh_nudge_dismissed') === '1') { hideAll(); return; } } catch (e) {}
         nudges().forEach(function (n) {
