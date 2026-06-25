@@ -985,6 +985,40 @@
 </form>
 </div>
 
+{# HF-style class selector: clickable pills (class name + sample count) for
+   each label field, driving the existing label filter. One row per field. #}
+{% if label_facets %}
+<style>
+    .cls-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .18rem .6rem;
+        border-radius: 999px; border: 1px solid var(--bs-border-color); font-size: .8rem;
+        text-decoration: none; color: var(--bs-body-color); background: var(--bs-body-bg);
+        transition: background-color .12s ease, color .12s ease, border-color .12s ease; }
+    .cls-pill:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
+    .cls-pill.active { background: var(--bs-primary); border-color: var(--bs-primary); color: #fff; }
+    .cls-pill .cls-count { font-size: .72rem; opacity: .65; font-variant-numeric: tabular-nums; }
+    .cls-pill.active .cls-count { opacity: .9; }
+</style>
+<div class="mb-3" id="class-selector">
+    {% for facet in label_facets %}
+    {% set _all_active = not (filter_field == facet.field and filter_value) %}
+    <div class="d-flex align-items-center flex-wrap gap-2 {{ 'mb-2' if not loop.last }}">
+        <span class="badge text-bg-light border text-body-secondary fw-normal">
+            <i class="bi bi-tag-fill me-1 opacity-75"></i>{{ facet.field }}
+        </span>
+        <a class="cls-pill {{ 'active' if _all_active }}"
+           href="{{ url_for('dataset_view', dataset_id=dataset.id, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}#dataset-view-controls">
+            All <span class="cls-count">{{ '{:,}'.format(facet.total) }}</span>
+        </a>
+        {% for c in facet.classes %}
+        <a class="cls-pill {{ 'active' if facet.active_idx == c.idx }}"
+           href="{{ url_for('dataset_view', dataset_id=dataset.id, filter_field=facet.field, filter_value=c.name, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order) }}#dataset-view-controls">
+            {{ c.name }} <span class="cls-count">{{ '{:,}'.format(c.count) }}</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
 
 <div class="top-scrollbar-container" id="top-scroll-container">
     <div class="top-scrollbar-content" id="top-scroll-content"></div>

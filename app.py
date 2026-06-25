@@ -15400,6 +15400,31 @@ def comparison_view(leaderboard_id):
                 _nm = (_df.get_params() or {}).get('names')
                 if _nm:
                     _filter_label_vocab[_df.name] = _nm
+    # HF-style class selector facets: per-class counts for each label field.
+    # Counts come from the LB's GT — the LB-scoped stub rows when materialised,
+    # else the dataset's real samples — so they match what the board evaluates.
+    label_facets = []
+    for _fld, _vocab in _filter_label_vocab.items():
+        if hf_stub_mode:
+            _crows = (db.session.query(CustomField.value_text, func.count(CustomField.id))
+                      .filter(CustomField.leaderboard_id == leaderboard.id,
+                              CustomField.submission_id.is_(None), CustomField.sample_id.is_(None),
+                              CustomField.name == _fld)
+                      .group_by(CustomField.value_text).all())
+        else:
+            _crows = (db.session.query(CustomField.value_text, func.count(CustomField.id))
+                      .join(Sample, Sample.id == CustomField.sample_id)
+                      .filter(Sample.dataset_id.in_(dataset_ids),
+                              CustomField.submission_id.is_(None), CustomField.name == _fld)
+                      .group_by(CustomField.value_text).all())
+        _counts = dict(_crows)
+        label_facets.append({
+            'field': _fld,
+            'total': sum(_counts.values()),
+            'classes': [{'idx': i, 'name': nm, 'count': _counts.get(str(i), 0)}
+                        for i, nm in enumerate(_vocab)],
+            'active_idx': _label_active_idx(filter_field, filter_value, _fld, _vocab),
+        })
     filter_matched_names = None   # None = no field-filter active
     filter_suggestions = []
     if filter_field and filter_value and filter_field != 'sample_name' \
@@ -16430,6 +16455,7 @@ def comparison_view(leaderboard_id):
                            all_mirrored=all_mirrored,
                            comparison_data=comparison_data,
                            label_vocabs=label_vocabs,
+                           label_facets=label_facets,
                            mask_vocabs=mask_vocabs,
                            gt_col_badges=gt_col_badges,
                            sub_col_badges=sub_col_badges,
@@ -17940,6 +17966,26 @@ def dataset_import_status(dataset_id):
     })
 
 
+def _label_active_idx(filter_field, filter_value, field, vocab):
+    """Which class index the current label filter targets for `field` (None if
+    the active filter isn't this field, or nothing matches). Accepts a bare
+    class name, a bare index, or the '<idx> <name>' combined form. Shared by the
+    HF-style class selector on /dataset and /comparison."""
+    if filter_field != field or not filter_value or not vocab:
+        return None
+    nv = filter_value.strip().strip('"').strip("'")
+    parts = nv.split(None, 1)
+    if (len(parts) == 2 and parts[0].isdigit() and int(parts[0]) < len(vocab)
+            and vocab[int(parts[0])].lower() == parts[1].lower()):
+        return int(parts[0])
+    if nv.isdigit() and int(nv) < len(vocab):
+        return int(nv)
+    for i, nm in enumerate(vocab):
+        if nm.lower() == nv.lower():
+            return i
+    return None
+
+
 @app.route('/dataset/<int:dataset_id>')
 @visibility_required(Dataset, 'dataset_id')
 def dataset_view(dataset_id):
@@ -18062,6 +18108,27 @@ def dataset_view(dataset_id):
     )
     filterable_kinds = {'sample_name': 'sample_name'}
     filterable_kinds.update(field_type_map)
+
+    # HF-style class selector: per-class sample counts for each label field, so
+    # the page can show clickable "Crop 580 · Weed 420" pills driving the label
+    # filter. Counts key on the stored value_text (class index as a string).
+    label_facets = []
+    for _fld, _vocab in label_vocabs.items():
+        _counts = dict(
+            db.session.query(CustomField.value_text, func.count(CustomField.id))
+            .join(Sample, Sample.id == CustomField.sample_id)
+            .filter(Sample.dataset_id == dataset.id,
+                    CustomField.name == _fld,
+                    CustomField.submission_id.is_(None))
+            .group_by(CustomField.value_text).all()
+        )
+        label_facets.append({
+            'field': _fld,
+            'total': sum(_counts.values()),
+            'classes': [{'idx': i, 'name': nm, 'count': _counts.get(str(i), 0)}
+                        for i, nm in enumerate(_vocab)],
+            'active_idx': _label_active_idx(filter_field, filter_value, _fld, _vocab),
+        })
 
     if filter_field and filter_value:
         if filter_field == 'sample_name':
@@ -18466,6 +18533,7 @@ def dataset_view(dataset_id):
                            custom_field_names=sorted(list(custom_field_names)),
                            custom_fields_map=custom_fields_map,
                            label_vocabs=label_vocabs,
+                           label_facets=label_facets,
                            mask_vocabs=mask_vocabs,
                            lb_filter=lb_filter_obj,
                            lb_filter_names_count=lb_filter_names_count,
