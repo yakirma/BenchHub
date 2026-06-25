@@ -687,10 +687,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     {# Auto-apply on change/blur/suggestion-pick, matching the field
                        select above and the dataset page. Without this the filter only
                        applied via the Apply button — typing a value + Enter looked dead
-                       (the datalist swallows Enter), so the filter seemed broken. #}
+                       (the datalist swallows Enter), so the filter seemed broken.
+                       For fields with a suggestion list (label / sample_name) we also
+                       clear the box on focus, so clicking back into an applied filter
+                       shows ALL suggestions again instead of just the current value
+                       (a datalist filters its options down to whatever's in the box).
+                       Restore on blur if nothing was picked, and only submit when
+                       non-empty so the focus-clear never wipes the active filter. #}
+                    {% set _has_suggestions = filter_suggestions and filter_suggestions|length > 0 %}
                     <input type="text" name="filter_value" class="form-control form-control-sm me-2"
                         style="max-width: 160px;" value="{{ filter_value or '' }}" list="cmp-filter-suggestions"
-                        onchange="this.form.submit()" autocomplete="off"
+                        autocomplete="off"
+                        {% if _has_suggestions %}onfocus="this.dataset.prev=this.value; this.value='';" onblur="if(!this.value){ this.value = this.dataset.prev || ''; }" onchange="if(this.value){ this.form.submit(); }"{% else %}onchange="this.form.submit()"{% endif %}
                         placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}">
                     <datalist id="cmp-filter-suggestions">
                         {% for sug in filter_suggestions %}<option value="{{ sug }}">{% endfor %}
