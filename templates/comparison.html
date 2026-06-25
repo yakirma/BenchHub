@@ -4969,6 +4969,11 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 const newFrozen = doc.getElementById('cmp-frozen');
                 const oldFrozen = document.getElementById('cmp-frozen');
                 if (!newFrozen || !oldFrozen) { window.location.href = url; return; }
+                // Read the per-page data island NOW — replaceWith() adopts
+                // newFrozen (which contains #cmp-data) out of `doc` into the live
+                // DOM, after which doc.getElementById('cmp-data') would be null.
+                var ctx = {};
+                try { ctx = JSON.parse(doc.getElementById('cmp-data').textContent); } catch (e) {}
                 // Destroy charts on the outgoing rows before their canvases vanish.
                 oldFrozen.querySelectorAll('canvas').forEach(function (c) {
                     try { if (window.Chart && Chart.getChart(c)) Chart.getChart(c).destroy(); } catch (e) {}
@@ -4980,8 +4985,6 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     var n = doc.getElementById(id), o = document.getElementById(id);
                     if (n && o) o.innerHTML = n.innerHTML;
                 });
-                var ctx = {};
-                try { ctx = JSON.parse(doc.getElementById('cmp-data').textContent); } catch (e) {}
                 if (window.initResultsArea) window.initResultsArea(ctx);
                 if (opts.push !== false) history.pushState({ cmpAjax: true }, '', url);
                 var tc = document.getElementById('table-container');
