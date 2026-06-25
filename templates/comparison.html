@@ -750,40 +750,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
-{# HF-style class selector: clickable pills (class name + sample count) for each
-   label field, driving the existing label filter. Lives OUTSIDE #cmp-frozen;
-   navigateResults() swaps its innerHTML so active state + counts refresh, and a
-   delegated click updates the results in place. #}
+{# HF-style class selector: pills for few classes, a histogram strip for many.
+   Lives OUTSIDE #cmp-frozen; navigateResults() swaps its innerHTML so active
+   state + counts refresh, and a delegated click updates results in place.
+   Macro + shared CSS/JS in base.html. #}
 {% if label_facets %}
-<style>
-    .cls-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .18rem .6rem;
-        border-radius: 999px; border: 1px solid var(--bs-border-color); font-size: .8rem;
-        text-decoration: none; color: var(--bs-body-color); background: var(--bs-body-bg);
-        transition: background-color .12s ease, color .12s ease, border-color .12s ease; }
-    .cls-pill:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
-    .cls-pill.active { background: var(--bs-primary); border-color: var(--bs-primary); color: #fff; }
-    .cls-pill .cls-count { font-size: .72rem; opacity: .65; font-variant-numeric: tabular-nums; }
-    .cls-pill.active .cls-count { opacity: .9; }
-</style>
+{% from "_class_selector.html" import class_selector %}
 <div class="mb-2" id="cmp-class-selector">
-    {% for facet in label_facets %}
-    {% set _all_active = not (filter_field == facet.field and filter_value) %}
-    <div class="d-flex align-items-center flex-wrap gap-2 {{ 'mb-2' if not loop.last }}">
-        <span class="badge text-bg-light border text-body-secondary fw-normal">
-            <i class="bi bi-tag-fill me-1 opacity-75"></i>{{ facet.field }}
-        </span>
-        <a class="cls-pill {{ 'active' if _all_active }}"
-           href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, search_query=search_query, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">
-            All <span class="cls-count">{{ '{:,}'.format(facet.total) }}</span>
-        </a>
-        {% for c in facet.classes %}
-        <a class="cls-pill {{ 'active' if facet.active_idx == c.idx }}"
-           href="{{ url_for('comparison_view', leaderboard_id=leaderboard.id, filter_field=facet.field, filter_value=c.name, per_page=current_per_page, sort_by=sort_by, sort_order=sort_order, search_query=search_query, compare_ids=current_compare_ids, samples_only=1 if samples_only_mode else None) }}">
-            {{ c.name }} <span class="cls-count">{{ '{:,}'.format(c.count) }}</span>
-        </a>
-        {% endfor %}
-    </div>
-    {% endfor %}
+    {{ class_selector(label_facets, 'comparison_view',
+        {'leaderboard_id': leaderboard.id, 'per_page': current_per_page, 'sort_by': sort_by,
+         'sort_order': sort_order, 'search_query': search_query, 'compare_ids': current_compare_ids,
+         'samples_only': 1 if samples_only_mode else none},
+        filter_field, filter_value) }}
 </div>
 {% endif %}
 
@@ -5059,7 +5037,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             if (clsSel && !clsSel.dataset.ajaxWired) {
                 clsSel.dataset.ajaxWired = '1';
                 clsSel.addEventListener('click', function (e) {
-                    var a = e.target.closest && e.target.closest('a.cls-pill');
+                    var a = e.target.closest && e.target.closest('a.js-cls-filter');
                     if (!a || !a.getAttribute('href')) return;
                     e.preventDefault();
                     window.navigateResults(a.href);

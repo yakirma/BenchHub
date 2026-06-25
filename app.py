@@ -15427,10 +15427,15 @@ def comparison_view(leaderboard_id):
         })
     filter_matched_names = None   # None = no field-filter active
     filter_suggestions = []
+    # Allow filtering by any label field that has a class vocab even if its LB
+    # role is 'skip' (e.g. cifar100's coarse_label) — it's excluded from the
+    # comparison COLUMNS but is still a valid, browsable class facet, so the
+    # class selector's coarse pills must actually filter.
     if filter_field and filter_value and filter_field != 'sample_name' \
-            and filter_field in dataset_field_types:
+            and (filter_field in dataset_field_types or filter_field in _filter_label_vocab):
         import re as _re
-        _ftype = dataset_field_types.get(filter_field)
+        _ftype = dataset_field_types.get(filter_field) \
+            or ('label' if filter_field in _filter_label_vocab else None)
         if hf_stub_mode:
             _rows = db.session.query(
                 CustomField.sample_name, CustomField.value_text, CustomField.value_float,

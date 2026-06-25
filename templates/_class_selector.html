@@ -1,0 +1,49 @@
+{# HF-style class selector for label fields. Pills for a handful of classes;
+   a compact histogram strip (one bar per class, height ∝ count, hover/click to
+   inspect/filter) once there are many — like the HF dataset viewer, which is
+   far more convenient for cifar100 / 200-class boards than a wall of pills.
+   Both render <a class="js-cls-filter"> links to the existing label filter; the
+   comparison page intercepts those clicks for in-place AJAX. CSS + the hover
+   caption JS live in base.html (shared, delegated → survive AJAX swaps). #}
+{% macro class_selector(facets, endpoint, base_kwargs, filter_field, filter_value) %}
+{% for facet in facets %}
+{% set _all_active = not (filter_field == facet.field and filter_value) %}
+{% if facet.classes|length > 10 %}
+{# ---- histogram strip (many classes) ---- #}
+{% set _mx = (facet.classes|map(attribute='count')|max) or 1 %}
+{% set _act = (facet.classes|selectattr('idx', 'equalto', facet.active_idx)|first) if facet.active_idx is not none else none %}
+{% set _act_pct = ((100.0 * _act.count / facet.total)|round(1)|string + '%') if (_act and facet.total) else '' %}
+<div class="cls-hist {{ 'mb-2' if not loop.last }}">
+    <div class="cls-hist-head">
+        <span class="cls-hist-name"><i class="bi bi-tag-fill me-1 opacity-75"></i>{{ facet.field }}</span>
+        <span class="cls-hist-type">{{ facet.classes|length }} classes · {{ '{:,}'.format(facet.total) }}</span>
+        {% if not _all_active %}<a class="cls-hist-clear js-cls-filter" href="{{ url_for(endpoint, **base_kwargs) }}">show all</a>{% endif %}
+    </div>
+    <div class="cls-hist-bars">
+        {% for c in facet.classes %}
+        {% set _pct = (100.0 * c.count / facet.total)|round(1) if facet.total else 0 %}
+        <a class="cls-bar js-cls-filter {{ 'active' if facet.active_idx == c.idx }}"
+           href="{{ url_for(endpoint, filter_field=facet.field, filter_value=c.name, **base_kwargs) }}"
+           title="{{ c.name }} — {{ '{:,}'.format(c.count) }} ({{ _pct }}%)"
+           data-name="{{ c.name }}" data-pct="{{ _pct }}">
+            <span class="cls-bar-fill" style="height: {{ (6 + 94.0 * c.count / _mx)|round|int }}%"></span>
+        </a>
+        {% endfor %}
+    </div>
+    <div class="cls-hist-caption" data-def-name="{{ _act.name if _act else 'Hover a class' }}" data-def-pct="{{ _act_pct }}">
+        <span class="cls-cap-name">{{ _act.name if _act else 'Hover a class' }}</span>
+        <span class="cls-cap-pct">{{ _act_pct }}</span>
+    </div>
+</div>
+{% else %}
+{# ---- pills (few classes) ---- #}
+<div class="d-flex align-items-center flex-wrap gap-2 {{ 'mb-2' if not loop.last }}">
+    <span class="badge text-bg-light border text-body-secondary fw-normal"><i class="bi bi-tag-fill me-1 opacity-75"></i>{{ facet.field }}</span>
+    <a class="cls-pill js-cls-filter {{ 'active' if _all_active }}" href="{{ url_for(endpoint, **base_kwargs) }}">All <span class="cls-count">{{ '{:,}'.format(facet.total) }}</span></a>
+    {% for c in facet.classes %}
+    <a class="cls-pill js-cls-filter {{ 'active' if facet.active_idx == c.idx }}" href="{{ url_for(endpoint, filter_field=facet.field, filter_value=c.name, **base_kwargs) }}">{{ c.name }} <span class="cls-count">{{ '{:,}'.format(c.count) }}</span></a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endfor %}
+{% endmacro %}

@@ -1976,6 +1976,58 @@
       else document.addEventListener('DOMContentLoaded', init);
     })();
     </script>
+
+    {# HF-style label class selector (used on /dataset + /comparison via the
+       _class_selector.html macro): pills for few classes, a histogram strip
+       for many. Styles + the hover-caption handler are global so they survive
+       the comparison page's AJAX result swaps (delegated on document). #}
+    <style>
+      .cls-pill { display: inline-flex; align-items: center; gap: .35rem; padding: .18rem .6rem;
+          border-radius: 999px; border: 1px solid var(--bs-border-color); font-size: .8rem;
+          text-decoration: none; color: var(--bs-body-color); background: var(--bs-body-bg);
+          transition: background-color .12s ease, color .12s ease, border-color .12s ease; }
+      .cls-pill:hover { border-color: var(--bs-primary); color: var(--bs-primary); }
+      .cls-pill.active { background: var(--bs-primary); border-color: var(--bs-primary); color: #fff; }
+      .cls-pill .cls-count { font-size: .72rem; opacity: .65; font-variant-numeric: tabular-nums; }
+      .cls-pill.active .cls-count { opacity: .9; }
+      .cls-hist { display: inline-block; vertical-align: top; min-width: 220px; max-width: 480px; }
+      .cls-hist-head { font-size: .78rem; display: flex; align-items: baseline; gap: .5rem; }
+      .cls-hist-name { font-weight: 600; }
+      .cls-hist-type { color: var(--bs-secondary-color); font-size: .72rem; }
+      .cls-hist-clear { font-size: .72rem; margin-left: auto; text-decoration: none; }
+      .cls-hist-bars { display: flex; align-items: flex-end; gap: 1px; height: 30px; margin: 3px 0;
+          background: var(--bs-tertiary-bg); border-radius: 4px; padding: 2px; }
+      .cls-bar { flex: 1 1 0; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+      .cls-bar-fill { width: 100%; min-height: 2px; border-radius: 1px;
+          background: var(--bs-secondary-color); opacity: .45;
+          transition: background-color .1s ease, opacity .1s ease; }
+      .cls-bar:hover .cls-bar-fill { background: var(--bs-primary); opacity: 1; }
+      .cls-bar.active .cls-bar-fill { background: var(--bs-primary); opacity: 1; }
+      .cls-hist-caption { display: flex; justify-content: space-between; gap: .5rem;
+          font-size: .75rem; color: var(--bs-secondary-color); }
+      .cls-cap-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .cls-cap-pct { font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    </style>
+    <script>
+    (function () {
+      function setCap(hist, name, pct) {
+        var n = hist.querySelector('.cls-cap-name'), p = hist.querySelector('.cls-cap-pct');
+        if (n) n.textContent = name; if (p) p.textContent = pct;
+      }
+      document.addEventListener('mouseover', function (e) {
+        var bar = e.target.closest && e.target.closest('.cls-bar'); if (!bar) return;
+        var hist = bar.closest('.cls-hist'); if (!hist) return;
+        var pct = bar.getAttribute('data-pct');
+        setCap(hist, bar.getAttribute('data-name') || '', pct ? pct + '%' : '');
+      });
+      document.addEventListener('mouseout', function (e) {
+        var bar = e.target.closest && e.target.closest('.cls-bar'); if (!bar) return;
+        var hist = bar.closest('.cls-hist'); if (!hist) return;
+        var c = hist.querySelector('.cls-hist-caption');
+        setCap(hist, (c && c.getAttribute('data-def-name')) || '', (c && c.getAttribute('data-def-pct')) || '');
+      });
+    })();
+    </script>
 </body>
 
 </html>
