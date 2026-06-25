@@ -103,7 +103,10 @@ def test_visible_in_list_includes_shared_dataset(client, db_session, logged_in_u
 
     with client.session_transaction() as sess:
         sess['user_id'] = collaborator.id
-    body = client.get('/datasets').data
+    # /datasets now defaults to a sub-category card browse; individual dataset
+    # cards render under a search / category drill-in. Search by name — it still
+    # runs through visible_in_list, so the access-control assertion holds.
+    body = client.get('/datasets?q=shows_in_list').data
     assert b'shows_in_list' in body
 
 

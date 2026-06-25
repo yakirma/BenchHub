@@ -59,7 +59,9 @@ def test_dataset_tags_render_on_dataset_list(client, db_session):
     folder = os.path.join(flask_app.config['UPLOAD_FOLDER'], 'datasets', str(ds.id))
     os.makedirs(folder, exist_ok=True)
 
-    body = client.get('/datasets').data
+    # /datasets defaults to a sub-category card browse now; dataset cards (with
+    # their tags) render under a search / category drill-in.
+    body = client.get('/datasets?q=listed_with_tags').data
     assert b'listed_with_tags' in body
     assert b'segmentation' in body
 

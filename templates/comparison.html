@@ -693,11 +693,15 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                        shows ALL suggestions again instead of just the current value
                        (a datalist filters its options down to whatever's in the box).
                        Restore on blur if nothing was picked, and only submit when
-                       non-empty so the focus-clear never wipes the active filter. #}
+                       non-empty so the focus-clear never wipes the active filter.
+                       Enter is intercepted (preventDefault + blur) so the box submits
+                       ONCE via onchange instead of also triggering the form's native
+                       Enter-submit — that double-submit reloaded the page twice. #}
                     {% set _has_suggestions = filter_suggestions and filter_suggestions|length > 0 %}
                     <input type="text" name="filter_value" class="form-control form-control-sm me-2"
                         style="max-width: 160px;" value="{{ filter_value or '' }}" list="cmp-filter-suggestions"
                         autocomplete="off"
+                        onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
                         {% if _has_suggestions %}onfocus="this.dataset.prev=this.value; this.value='';" onblur="if(!this.value){ this.value = this.dataset.prev || ''; }" onchange="if(this.value){ this.form.submit(); }"{% else %}onchange="this.form.submit()"{% endif %}
                         placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}">
                     <datalist id="cmp-filter-suggestions">
