@@ -3387,7 +3387,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         }
     }
 
-    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix) {
+    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix, opts) {
         const url = new URL(window.location);
         if (include.length) url.searchParams.set('include_tags', include.join(',')); else url.searchParams.delete('include_tags');
         if (exclude.length) url.searchParams.set('exclude_tags', exclude.join(',')); else url.searchParams.delete('exclude_tags');
@@ -3407,14 +3407,18 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         const paramsChanged = ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix']
             .some(key => url.searchParams.get(key) !== currentUrl.searchParams.get(key));
 
-        if (paramsChanged) {
-            // If filters changed, reset to page 1 for safety
+        const _noReload = opts && opts.noReload;
+        if (paramsChanged && !_noReload) {
+            // A real user tag-filter change: reset to page 1 and reload once.
             url.searchParams.set('page', 1);
             window.location.href = url.toString();
-        } else {
-            // Just replace state for cosmetic or if no change (startup)
-            // window.history.replaceState({}, '', url); 
-            // Actually if no change, do nothing.
+            return;  // navigating away — skip the link patching below
+        } else if (paramsChanged && _noReload) {
+            // Initial-load normalisation: adopt the canonical params WITHOUT a
+            // second navigation. This self-reload (applyFilters() at startup
+            // calling location.href) was the "page refreshes twice" bug. Leave
+            // `page` alone — the user may have loaded a deep page directly.
+            window.history.replaceState({}, '', url.toString());
         }
 
         // Patch Pagination Links, etc. (Visual update locally)
@@ -3481,22 +3485,23 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         // No explicit applyFilters needed as reload just happened or its initial load which is correct.
         // Actually applyFilters also hides rows? No, we removed hiding.
         // applyFilters updates hidden links/forms? Yes.
-        // We SHOULD call applyFilters to update links/forms, but ensure it doesn't RELOAD.
-        applyFilters();
+        // Update links/forms but DON'T reload — this startup call self-reloaded
+        // the page (the "refreshes twice" bug). noReload normalises in place.
+        applyFilters({ noReload: true });
     }
 
-    function applyFilters() {
-        // Server-side filtering: Just update URL to trigger reload.
-        // No client-side hiding needed.
-
-        // Update URL and Links (Trigger Reload if changed)
+    function applyFilters(opts) {
+        // Server-side filtering: update URL. On a real tag-filter change this
+        // reloads once; on initial load (opts.noReload) it only normalises the
+        // URL + patches links, no navigation.
         updateURLParams(
             window.includeTagsCtrl.getTags(),
             window.excludeTagsCtrl.getTags(),
             window.prefixTagsCtrl.getTags(),
             document.getElementById('enable-include-tags').checked,
             document.getElementById('enable-exclude-tags').checked,
-            document.getElementById('enable-prefix-tags').checked
+            document.getElementById('enable-prefix-tags').checked,
+            opts
         );
     }
 
