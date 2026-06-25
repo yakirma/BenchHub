@@ -545,7 +545,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     <div class="card-body">
         <h5 class="card-title">View Options</h5>
         <div class="controls">
-            <form method="get" action="{{ url_for('comparison_view', leaderboard_id=leaderboard.id) }}">
+            <form method="get" id="cmp-controls-form" action="{{ url_for('comparison_view', leaderboard_id=leaderboard.id) }}">
                 {% if current_compare_ids %}
                 <input type="hidden" name="compare_ids" value="{{ current_compare_ids }}">
                 {% endif %}
@@ -600,9 +600,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 </div>
 
                 <!-- Row 2: Search and Pagination Controls -->
-                <div class="d-flex align-items-center">
+                <div class="d-flex align-items-center" id="cmp-controls-row">
                     <input type="text" name="search_query" class="form-control me-2"
                         placeholder="Search by sample name..." value="{{ search_query or '' }}"
+                        onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit(); }"
                         style="max-width: 300px;">
                     <select name="per_page" onchange="saveScrollAndSubmit(this.form)" class="form-select me-2"
                         style="width: auto;">
@@ -676,7 +677,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     {% if filterable_fields and filterable_fields|length > 1 %}
                     <label for="cmp-filter-field" class="form-label ms-3 me-2 mb-0 small text-muted">Filter by:</label>
                     <select id="cmp-filter-field" name="filter_field" class="form-select form-select-sm me-2"
-                        style="width: auto;" onchange="this.form.submit()">
+                        style="width: auto;" onchange="this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()">
                         <option value="">—</option>
                         {% for fname in filterable_fields %}
                         <option value="{{ fname }}" {% if filter_field==fname %}selected{% endif %}>
@@ -702,7 +703,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                         style="max-width: 160px;" value="{{ filter_value or '' }}" list="cmp-filter-suggestions"
                         autocomplete="off"
                         onkeydown="if(event.key==='Enter'){ event.preventDefault(); this.blur(); }"
-                        {% if _has_suggestions %}onfocus="this.dataset.prev=this.value; this.value='';" onblur="if(!this.value){ this.value = this.dataset.prev || ''; }" onchange="if(this.value){ this.form.submit(); }"{% else %}onchange="this.form.submit()"{% endif %}
+                        {% if _has_suggestions %}onfocus="this.dataset.prev=this.value; this.value='';" onblur="if(!this.value){ this.value = this.dataset.prev || ''; }" onchange="if(this.value){ this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit(); }"{% else %}onchange="this.form.requestSubmit ? this.form.requestSubmit() : this.form.submit()"{% endif %}
                         placeholder="{% if filter_field and filterable_field_types[filter_field] in ('scalar','metric') %}value or e.g. &gt;1.5{% else %}value{% endif %}">
                     <datalist id="cmp-filter-suggestions">
                         {% for sug in filter_suggestions %}<option value="{{ sug }}">{% endfor %}
@@ -749,7 +750,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
     </div>
 </div>
 
-<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2" id="cmp-pagination-bar">
     {# Range info: "Samples N–M of T" so the user knows where they are
        in the pagination + total. Range derives from current page +
        per-page; clamps the upper bound so the last page doesn't claim
@@ -868,6 +869,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
            Per-submission processing status lives in the .cmp-status-dot in
            each pred column header. #}
         <div id="cmp-frozen">
+        {# Per-page chart data island. comparison_data + chart_metrics_data are
+           the only per-sample (page/filter/sort-dependent) data; the AJAX
+           in-place updater (navigateResults) re-reads this from the fetched
+           page and feeds it to initResultsArea(). Lives inside #cmp-frozen so
+           it's swapped together with the rows. #}
+        <script id="cmp-data" type="application/json">{{ {"comparison_data": (comparison_data or []), "chart_metrics_data": (chart_metrics_data or [])} | tojson | safe }}</script>
         <div class="top-scrollbar-container" id="top-scroll-container">
             <div class="top-scrollbar-content" id="top-scroll-content"></div>
         </div>
@@ -1676,7 +1683,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         } catch (e) {
             console.error('SessionStorage error:', e);
         }
-        form.submit();
+        // requestSubmit (not submit) so the form's submit handler fires — the
+        // AJAX interceptor lives there. Falls back to full nav if unsupported.
+        if (form.requestSubmit) form.requestSubmit(); else form.submit();
     };
 
     // Picking a sort column auto-orients the direction to the most useful
@@ -1973,7 +1982,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
 
 
-        // Column Resizing Logic
+        // Column Resizing Logic — re-runnable for AJAX results swaps.
+        window.bindResizers = function () {
         const table = document.getElementById('comparison-table');
         if (table) {
             const resizers = table.querySelectorAll('.resizer');
@@ -2005,6 +2015,8 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 }
             });
         }
+        };
+        window.bindResizers();
 
         // Visualization Modal Logic
         // ZoomHandler moved to base.html
@@ -2666,12 +2678,13 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         });
     }
 
-    // Detailed charts
-    let comparisonData = {{ (comparison_data or[]) | tojson | safe }};
-    if (typeof comparisonData === 'string') { try { comparisonData = JSON.parse(comparisonData); } catch (e) { comparisonData = []; } }
-
-    let chartMetricsData = {{ (chart_metrics_data or[]) | tojson | safe }};
-    if (typeof chartMetricsData === 'string') { try { chartMetricsData = JSON.parse(chartMetricsData); } catch (e) { chartMetricsData = []; } }
+    // Detailed charts. comparisonData + chartMetricsData are read from the
+    // #cmp-data island (single source) so the AJAX in-place updater can re-feed
+    // fresh per-page values via initResultsArea() without a reload.
+    let __cmpIsland = {};
+    try { __cmpIsland = JSON.parse(document.getElementById('cmp-data').textContent); } catch (e) { __cmpIsland = {}; }
+    let comparisonData = __cmpIsland.comparison_data || [];
+    let chartMetricsData = __cmpIsland.chart_metrics_data || [];
 
     let selectedComparisonDisplayColumns = {{ (selected_comparison_display_columns or[]) | tojson | safe }};
     if (typeof selectedComparisonDisplayColumns === 'string') { try { selectedComparisonDisplayColumns = JSON.parse(selectedComparisonDisplayColumns); } catch (e) { selectedComparisonDisplayColumns = []; } }
@@ -2715,6 +2728,9 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         maintainAspectRatio: false
     };
 
+    // Re-runnable so the AJAX updater can rebuild per-sample charts after a
+    // results swap (reads the reassigned comparisonData/chartMetricsData lets).
+    window.initSampleCharts = function () {
     comparisonData.forEach((sampleData, sampleIndex) => {
         if (selectedComparisonDisplayColumns.includes('gt_histogram')) {
             const gtCanvas = document.getElementById(`gt-chart-${sampleData.sample_id}`);
@@ -2950,6 +2966,26 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
         }
     });
+    };
+    window.initSampleCharts();
+
+    // ---- AJAX in-place results refresh ----
+    // navigateResults() (below, run-once) swaps the #cmp-frozen rows in and
+    // then calls this to re-feed per-page data + rebind the per-results JS.
+    // Galleries / modals / pixel-hover / depth-cmap delegation bind to
+    // persistent elements or read the DOM live, so they survive the swap and
+    // are deliberately NOT re-run here (re-running would double-bind them).
+    window.initResultsArea = function (ctx) {
+        if (ctx) {
+            comparisonData = ctx.comparison_data || [];
+            chartMetricsData = ctx.chart_metrics_data || [];
+        }
+        try { window.initSampleCharts && window.initSampleCharts(); } catch (e) { console.error('initResultsArea charts', e); }
+        try { window.bindResizers && window.bindResizers(); } catch (e) { console.error('initResultsArea resizers', e); }
+        try { setupStickyScrollbar(); } catch (e) { console.error('initResultsArea sticky', e); }
+        try { if (typeof initDepthColorbars === 'function') initDepthColorbars(document.getElementById('cmp-frozen')); } catch (e) { console.error('initResultsArea colorbars', e); }
+        try { if (window._colorStatsTables) window._colorStatsTables(document.getElementById('cmp-frozen')); } catch (e) { console.error('initResultsArea stats', e); }
+    };
 
     // --- Modal Chart Logic ---
     const chartModal = new bootstrap.Modal(document.getElementById('chart-modal'));
@@ -3409,10 +3445,12 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
 
         const _noReload = opts && opts.noReload;
         if (paramsChanged && !_noReload) {
-            // A real user tag-filter change: reset to page 1 and reload once.
+            // A real user tag-filter change: reset to page 1 and update once
+            // (AJAX in place when available, else a full nav).
             url.searchParams.set('page', 1);
-            window.location.href = url.toString();
-            return;  // navigating away — skip the link patching below
+            if (window.navigateResults) window.navigateResults(url.toString());
+            else window.location.href = url.toString();
+            return;  // updating — skip the link patching below
         } else if (paramsChanged && _noReload) {
             // Initial-load normalisation: adopt the canonical params WITHOUT a
             // second navigation. This self-reload (applyFilters() at startup
@@ -4893,6 +4931,92 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         } else {
             colorStatsTables();
         }
+    })();
+</script>
+
+<script>
+    // ---- AJAX in-place navigation for the results controls ----
+    // Filter / search / sort / pagination / tag-filter update the results
+    // WITHOUT a full page reload: fetch the target URL, swap the #cmp-frozen
+    // rows + pagination bar + controls row, re-feed per-page chart data and
+    // rebind the per-results JS (initResultsArea), then push history state.
+    // Galleries / zoom modal / depth-cmap delegation / pixel-hover bind to
+    // persistent elements or read the DOM live, so they survive the swap.
+    // ANY failure falls back to a normal navigation — the GET form + the
+    // <a href> page links work without JS, so the page is never left broken.
+    (function () {
+        // Sequence token: if the user fires another update while a fetch is in
+        // flight, the stale response is dropped (no swap, no fallback) so only
+        // the latest result wins — prevents rapid filter/sort clicks racing.
+        var _navSeq = 0;
+        window.navigateResults = async function (url, opts) {
+            opts = opts || {};
+            var seq = ++_navSeq;
+            try {
+                // Time-box the fetch: on an image-heavy page the browser's
+                // connection pool can be saturated by in-flight thumbnails, so
+                // a starved fetch degrades to a normal reload rather than hanging.
+                const _ctrl = new AbortController();
+                const _to = setTimeout(function () { _ctrl.abort(); }, 8000);
+                let res;
+                try { res = await fetch(url, { headers: { 'X-Requested-With': 'fetch' }, signal: _ctrl.signal }); }
+                finally { clearTimeout(_to); }
+                if (seq !== _navSeq) return;                       // superseded
+                if (!res.ok) { window.location.href = url; return; }
+                const text = await res.text();
+                if (seq !== _navSeq) return;                       // superseded
+                const doc = new DOMParser().parseFromString(text, 'text/html');
+                const newFrozen = doc.getElementById('cmp-frozen');
+                const oldFrozen = document.getElementById('cmp-frozen');
+                if (!newFrozen || !oldFrozen) { window.location.href = url; return; }
+                // Destroy charts on the outgoing rows before their canvases vanish.
+                oldFrozen.querySelectorAll('canvas').forEach(function (c) {
+                    try { if (window.Chart && Chart.getChart(c)) Chart.getChart(c).destroy(); } catch (e) {}
+                });
+                oldFrozen.replaceWith(newFrozen);
+                // Pagination bar (range + page links) + controls row (selected
+                // sort/filter, datalist, clear-×) live OUTSIDE #cmp-frozen.
+                ['cmp-pagination-bar', 'cmp-controls-row'].forEach(function (id) {
+                    var n = doc.getElementById(id), o = document.getElementById(id);
+                    if (n && o) o.innerHTML = n.innerHTML;
+                });
+                var ctx = {};
+                try { ctx = JSON.parse(doc.getElementById('cmp-data').textContent); } catch (e) {}
+                if (window.initResultsArea) window.initResultsArea(ctx);
+                if (opts.push !== false) history.pushState({ cmpAjax: true }, '', url);
+                var tc = document.getElementById('table-container');
+                if (tc) { tc.scrollTop = 0; tc.scrollLeft = 0; }
+            } catch (e) {
+                if (seq !== _navSeq) return;   // superseded — the newer nav owns the page
+                console.error('navigateResults failed; full reload', e);
+                window.location.href = url;
+            }
+        };
+
+        function wire() {
+            var form = document.getElementById('cmp-controls-form');
+            if (form && !form.dataset.ajaxWired) {
+                form.dataset.ajaxWired = '1';
+                form.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    var u = form.getAttribute('action') + '?' + new URLSearchParams(new FormData(form)).toString();
+                    window.navigateResults(u);
+                });
+            }
+            var bar = document.getElementById('cmp-pagination-bar');
+            if (bar && !bar.dataset.ajaxWired) {
+                bar.dataset.ajaxWired = '1';
+                bar.addEventListener('click', function (e) {
+                    var a = e.target.closest && e.target.closest('a.page-link');
+                    if (!a || !a.getAttribute('href')) return;
+                    e.preventDefault();
+                    if (a.closest('.disabled')) return;
+                    window.navigateResults(a.href);
+                });
+            }
+        }
+        if (document.readyState !== 'loading') wire(); else document.addEventListener('DOMContentLoaded', wire);
+        window.addEventListener('popstate', function () { window.navigateResults(window.location.href, { push: false }); });
     })();
 </script>
 {% endblock %}
