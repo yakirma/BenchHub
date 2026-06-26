@@ -789,7 +789,7 @@
 </details>
 
 <div class="mb-3">
-    <form method="get" action="{{ url_for('dataset_view', dataset_id=dataset.id) }}">
+    <form method="get" id="ds-controls-form" action="{{ url_for('dataset_view', dataset_id=dataset.id) }}">
         {# Tag filters — hidden per request. Kept in the DOM (display:none) so
            the tag-chip JS still binds to its inputs without erroring. #}
         <details class="card border-0 shadow-sm mb-3 collapsible-card" style="display:none;">
@@ -947,7 +947,7 @@
         </div>
 
         <!-- Pagination inside form for layout -->
-        <nav aria-label="Page navigation">
+        <nav id="ds-pagination-bar" aria-label="Page navigation">
             <ul class="pagination justify-content-end mb-0">
                 <li class="page-item {{ 'disabled' if not paginated_samples.has_prev }}"><a class="page-link"
                         onclick="saveScrollPos()"
@@ -997,6 +997,12 @@
 </div>
 {% endif %}
 
+<div id="ds-frozen">
+{# Per-page chart data island (samples_data + dataset_metrics_data) — the AJAX
+   in-place updater (navigateResults) re-reads this from the fetched page and
+   feeds it to initResultsArea(). Inside #ds-frozen so it's swapped with the
+   rows; read BEFORE the swap (replaceWith adopts it out of the parsed doc). #}
+<script id="ds-data" type="application/json">{{ {"samples_data": (samples_data_for_charts or []), "metrics_data": (dataset_metrics_data or [])} | tojson | safe }}</script>
 <div class="top-scrollbar-container" id="top-scroll-container">
     <div class="top-scrollbar-content" id="top-scroll-content"></div>
 </div>
@@ -1303,6 +1309,7 @@
         </tbody>
     </table>
 </div>
+</div>{# /#ds-frozen #}
 
 <!-- Visualization Modal -->
 <div class="modal fade" id="vis-modal" tabindex="-1">
@@ -1706,8 +1713,9 @@
             });
             const action = form.getAttribute('action') || window.location.pathname;
             const qs = params.toString();
-            const url = action.split('#')[0] + (qs ? '?' + qs : '') + '#dataset-view-controls';
-            window.location.assign(url);
+            const url = action.split('#')[0] + (qs ? '?' + qs : '');
+            if (window.navigateResults) { window.navigateResults(url); return; }
+            window.location.assign(url + '#dataset-view-controls');
         } catch (e) {
             // Fallback to the regular path; user still gets a submit,
             // just without anchor-restore.
@@ -2574,7 +2582,8 @@
                 }
             }
         };
-        // Column Resizing Logic
+        // Column Resizing Logic — re-runnable for AJAX results swaps.
+        window.dsBindResizers = function () {
         const table = document.getElementById('dataset-table');
         if (table) {
             const resizers = table.querySelectorAll('.resizer');
@@ -2606,6 +2615,8 @@
                 }
             });
         }
+        };
+        window.dsBindResizers();
         var samplesData = {{ (samples_data_for_charts or[]) | tojson | safe }};
     if (typeof samplesData === 'string') { try { samplesData = JSON.parse(samplesData); } catch (e) { samplesData = []; } }
     console.log('DEBUG dataset_view samplesData:', { type: typeof samplesData, isArray: Array.isArray(samplesData), data: samplesData });
@@ -3012,8 +3023,10 @@
     // Load state on startup
     loadStateFromURL();
 
+    // Re-runnable so the AJAX updater can rebuild per-sample charts after a
+    // results swap (reads the reassigned datasetMetricsData / samplesData).
+    window.dsInitCharts = function () {
     if (selectedDisplayColumns && selectedDisplayColumns.includes('per_sample_metrics') && datasetMetricsData) {
-        console.log('Rendering per_sample_metrics charts:', { activeMetrics, customScalarMetrics, allMetricsForChart, datasetMetricsData });
         datasetMetricsData.forEach(function (sampleMetricData) {
             const canvasId = `sample-metrics-chart-${sampleMetricData.sample_id}`;
             const ctx = document.getElementById(canvasId);
@@ -3094,6 +3107,23 @@
             }
         });
     }
+    };
+    window.dsInitCharts();
+
+    // ---- AJAX in-place results refresh ----
+    // navigateResults() (below) swaps the #ds-frozen rows in, then calls this
+    // to re-feed per-page chart data + rebind the per-results JS. Galleries /
+    // modals bind to persistent elements or read the DOM live, so they survive
+    // the swap and are NOT re-run here.
+    window.initResultsArea = function (ctx) {
+        if (ctx) {
+            samplesData = ctx.samples_data || [];
+            datasetMetricsData = ctx.metrics_data || [];
+        }
+        try { window.dsInitCharts && window.dsInitCharts(); } catch (e) { console.error('initResultsArea charts', e); }
+        try { window.dsBindResizers && window.dsBindResizers(); } catch (e) { console.error('initResultsArea resizers', e); }
+        try { setupStickyScrollbar(); } catch (e) { console.error('initResultsArea sticky', e); }
+    };
 
     // --- Histogram Modal Logic ---
     const chartModalElement = document.getElementById('chart-modal');
@@ -3855,6 +3885,95 @@
         // Exported so the modal-open handler can re-prime the cache after
         // changing the modal-img src.
         return { reload: function (img) { cache.delete(img); load(img); } };
+    })();
+</script>
+
+<script>
+    // ---- AJAX in-place navigation for the dataset controls ----
+    // Class filter / search / sort / per_page / pagination / tag-filter update
+    // the results WITHOUT a reload: fetch the URL, swap the #ds-frozen rows +
+    // pagination bar + class selector + controls row, re-feed per-page chart
+    // data, re-init the per-results JS, and pushState. ANY failure falls back to
+    // a normal navigation — the GET form + <a> page links work without JS, so
+    // the page is never left broken. (Galleries / zoom modals bind to persistent
+    // elements / read the DOM live, so they survive the swap.)
+    (function () {
+        var _navSeq = 0;
+        window.navigateResults = async function (url, opts) {
+            opts = opts || {};
+            var seq = ++_navSeq;
+            try {
+                var _ctrl = new AbortController();
+                var _to = setTimeout(function () { _ctrl.abort(); }, 8000);
+                var res;
+                try { res = await fetch(url, { headers: { 'X-Requested-With': 'fetch' }, signal: _ctrl.signal }); }
+                finally { clearTimeout(_to); }
+                if (seq !== _navSeq) return;
+                if (!res.ok) { window.location.href = url; return; }
+                var text = await res.text();
+                if (seq !== _navSeq) return;
+                var doc = new DOMParser().parseFromString(text, 'text/html');
+                var newFrozen = doc.getElementById('ds-frozen');
+                var oldFrozen = document.getElementById('ds-frozen');
+                if (!newFrozen || !oldFrozen) { window.location.href = url; return; }
+                // Read the data island BEFORE replaceWith adopts #ds-frozen (and
+                // the island inside it) out of the parsed doc into the live DOM.
+                var ctx = {};
+                try { ctx = JSON.parse(doc.getElementById('ds-data').textContent); } catch (e) {}
+                oldFrozen.querySelectorAll('canvas').forEach(function (c) {
+                    try { if (window.Chart && Chart.getChart(c)) Chart.getChart(c).destroy(); } catch (e) {}
+                });
+                oldFrozen.replaceWith(newFrozen);
+                ['ds-pagination-bar', 'class-selector', 'dataset-view-controls'].forEach(function (id) {
+                    var n = doc.getElementById(id), o = document.getElementById(id);
+                    if (n && o) o.innerHTML = n.innerHTML;
+                });
+                if (window.initResultsArea) window.initResultsArea(ctx);
+                if (opts.push !== false) history.pushState({ dsAjax: true }, '', url);
+                var tc = document.getElementById('table-container');
+                if (tc) { tc.scrollTop = 0; tc.scrollLeft = 0; }
+            } catch (e) {
+                if (seq !== _navSeq) return;
+                console.error('navigateResults failed; full reload', e);
+                window.location.href = url;
+            }
+        };
+
+        function wire() {
+            var form = document.getElementById('ds-controls-form');
+            if (form && !form.dataset.ajaxWired) {
+                form.dataset.ajaxWired = '1';
+                form.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    var params = new URLSearchParams();
+                    new FormData(form).forEach(function (v, k) { if (v !== '' && v != null) params.append(k, v); });
+                    window.navigateResults(form.getAttribute('action') + (params.toString() ? '?' + params.toString() : ''));
+                });
+            }
+            var sel = document.getElementById('class-selector');
+            if (sel && !sel.dataset.ajaxWired) {
+                sel.dataset.ajaxWired = '1';
+                sel.addEventListener('click', function (e) {
+                    var a = e.target.closest && e.target.closest('a.js-cls-filter');
+                    if (!a || !a.getAttribute('href')) return;
+                    e.preventDefault();
+                    window.navigateResults(a.href);
+                });
+            }
+            var bar = document.getElementById('ds-pagination-bar');
+            if (bar && !bar.dataset.ajaxWired) {
+                bar.dataset.ajaxWired = '1';
+                bar.addEventListener('click', function (e) {
+                    var a = e.target.closest && e.target.closest('a.page-link');
+                    if (!a || !a.getAttribute('href')) return;
+                    e.preventDefault();
+                    if (a.closest('.disabled')) return;
+                    window.navigateResults(a.href);
+                });
+            }
+        }
+        if (document.readyState !== 'loading') wire(); else document.addEventListener('DOMContentLoaded', wire);
+        window.addEventListener('popstate', function () { window.navigateResults(window.location.href, { push: false }); });
     })();
 </script>
 {% endblock %}
