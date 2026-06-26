@@ -2905,7 +2905,7 @@
         });
     }
 
-    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix) {
+    function updateURLParams(include, exclude, prefix, enableInclude, enableExclude, enablePrefix, opts) {
         const url = new URL(window.location);
         if (include.length) url.searchParams.set('include_tags', include.join(',')); else url.searchParams.delete('include_tags');
         if (exclude.length) url.searchParams.set('exclude_tags', exclude.join(',')); else url.searchParams.delete('exclude_tags');
@@ -2919,9 +2919,16 @@
         const paramsChanged = ['include_tags', 'exclude_tags', 'prefix_tags', 'enable_include', 'enable_exclude', 'enable_prefix']
             .some(key => url.searchParams.get(key) !== currentUrl.searchParams.get(key));
 
-        if (paramsChanged) {
+        const _noReload = opts && opts.noReload;
+        if (paramsChanged && !_noReload) {
             url.searchParams.set('page', 1);
+            if (window.navigateResults) { window.navigateResults(url.toString()); return; }
             window.location.href = url.toString();
+            return;
+        } else if (paramsChanged && _noReload) {
+            // Initial-load normalisation WITHOUT a second navigation — this
+            // self-reload was the "filtering loads twice" bug.
+            window.history.replaceState({}, '', url.toString());
         }
 
         // Patch Pagination Links
@@ -2985,18 +2992,21 @@
             window.prefixTagsCtrl.setDisabled(false);
             window.prefixTagsCtrl.setTags(prefix);
         }
-        applyFilters();
+        applyFilters({ noReload: true });
     }
 
-    function applyFilters() {
-        // Server-side filtering: Just update URL to trigger reload.
+    function applyFilters(opts) {
+        // Server-side filtering: update URL. On a real tag-filter change this
+        // updates once (AJAX when available, else a reload); on initial load
+        // (opts.noReload) it only normalises the URL — no second navigation.
         updateURLParams(
             window.includeTagsCtrl.getTags(),
             window.excludeTagsCtrl.getTags(),
             window.prefixTagsCtrl.getTags(),
             document.getElementById('enable-include-tags').checked,
             document.getElementById('enable-exclude-tags').checked,
-            document.getElementById('enable-prefix-tags').checked
+            document.getElementById('enable-prefix-tags').checked,
+            opts
         );
     }
     // Load state on startup
