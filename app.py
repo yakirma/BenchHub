@@ -16875,6 +16875,13 @@ def datasets_list():
     ) if _all_cids else {}
     _UP = app.config['UPLOAD_FOLDER']
     _file_kinds = {'image', 'mask', 'depth', 'sequence', 'audio'}
+    # Registered (user-defined) kinds with a sandbox visualize() (point_cloud,
+    # volume, NIfTI, …) get a thumb too — same fallback as _dataset_thumb_url,
+    # so a point-cloud / volume dataset card (and any sub-category whose only
+    # thumbed candidate is such a dataset) isn't a blank placeholder.
+    _renderable = {n for (n,) in db.session.query(DataTypeDef.name)
+                   .filter(DataTypeDef.visualize_code.isnot(None),
+                           DataTypeDef.visualize_code != '').all()}
     dataset_thumbs = {}
     for _did, _kinds in _by_ds.items():
         for _k in _THUMB_KIND_PRIORITY:
@@ -16887,6 +16894,11 @@ def datasets_list():
                     continue
             dataset_thumbs[_did] = _thumb_url_for(_k, _cid)
             break
+        else:
+            for _k, _cid in _kinds.items():
+                if _k in _renderable:
+                    dataset_thumbs[_did] = url_for('serve_custom_field_image', field_id=_cid)
+                    break
 
     # HF-attached datasets. These don't live as Dataset rows — they're
     # referenced by Attachment rows pointing at huggingface.co. Group by
