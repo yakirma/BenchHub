@@ -4216,6 +4216,18 @@ def _dataset_thumb_url(ds):
             if not vt or not os.path.isfile(os.path.join(app.config['UPLOAD_FOLDER'], vt)):
                 continue
         return _thumb_url_for(kind, cid)
+    # Registered (user-defined) kinds with a sandbox visualize() — point_cloud,
+    # volume, NIfTI, EEG, … — render a BEV/MIP via serve_custom_field_image
+    # (disk-cached after first hit), so these datasets get a real card thumb
+    # instead of a blank placeholder. data_type_def is a tiny table; a non-NULL
+    # visualize_code is what makes a kind renderable.
+    if by_kind:
+        renderable = {n for (n,) in db.session.query(DataTypeDef.name)
+                      .filter(DataTypeDef.visualize_code.isnot(None),
+                              DataTypeDef.visualize_code != '').all()}
+        for dt_name, cid in by_kind.items():
+            if dt_name in renderable:
+                return url_for('serve_custom_field_image', field_id=cid)
     return None
 
 
@@ -4803,6 +4815,26 @@ def leaderboards():
         cat = lb.category or 'Uncategorized'
         if cat not in subcat_thumbs and leaderboard_thumbs.get(lb.id):
             subcat_thumbs[cat] = leaderboard_thumbs[lb.id]
+    # `rows` is capped (limit 60) for the LB-card view, so a sub-category whose
+    # boards all rank below the cap would show a blank placeholder card even
+    # though its boards have perfectly good thumbnails. Back-fill a
+    # representative thumb for every Area/Task in the tree the capped rows
+    # didn't already cover (one query for candidates, first thumbed board wins).
+    all_cats = {f"{a['area']}/{t['name']}" for a in category_tree for t in a['tasks']}
+    missing = [c for c in all_cats if c not in subcat_thumbs]
+    if missing:
+        cand_by_cat = {}
+        for lb in (Leaderboard.query
+                   .filter(visible_lb_filter, Leaderboard.category.in_(missing))
+                   .order_by(Leaderboard.upload_date.desc()).all()):
+            cand_by_cat.setdefault(lb.category, []).append(lb)
+        for cat, lbs in cand_by_cat.items():
+            for lb in lbs:
+                lb_ds = list(lb.datasets)
+                thumb = _dataset_thumb_url(lb_ds[0]) if lb_ds else None
+                if thumb:
+                    subcat_thumbs[cat] = thumb
+                    break
 
     # Meta-ranking shown inline when a SUB-category (a category with "/") is
     # selected — models ranked by mean normalized score across that
