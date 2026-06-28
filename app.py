@@ -5770,12 +5770,81 @@ def _render_viz_in_sandbox(code, kwargs, cache_path, *, function_name=None):
     return png, err
 
 
+def _viz_kwargs_to_typed(kwargs):
+    """Convert file-backed viz arg PATHS into typed bh.<Kind> / RegisteredBlob
+    instances so they cross to the hardened sandbox as bytes (it has no
+    filesystem access). Inline kinds (json/scalar/label/text) keep their
+    string/dict value. Shared by execute_visualization (LB) and
+    execute_dataset_visualization (dataset) so BOTH get registered-kind
+    decoding AND the .label ext-collision disambiguation (uint32 point_panoptic
+    and uint16 point_labels share '.label'; pick the kind from the stored
+    CustomField.data_type, else the panoptic loses its instance bits). Only
+    touches strings that resolve to a real upload file, so label/scalar viz
+    args (e.g. confusion_matrix) are unaffected."""
+    def _one(v):
+        if not isinstance(v, str):
+            return v
+        try:
+            full = v if os.path.isabs(v) else os.path.join(app.config['UPLOAD_FOLDER'], v)
+            if not os.path.isfile(full):
+                return v
+        except (ValueError, OSError):
+            return v
+        ext = full.rsplit('.', 1)[-1].lower() if '.' in full else ''
+        try:
+            from benchhub.types import Image as _BHImage, Depth as _BHDepth
+            from PIL import Image as _PILImage
+            if ext in ('png', 'jpg', 'jpeg', 'bmp', 'tiff', 'webp'):
+                return _BHImage(np.asarray(_PILImage.open(full).convert('RGB')))
+            if ext == 'npz':
+                with np.load(full) as _d:
+                    _arr = _d['depth'] if 'depth' in _d else _d[next(iter(_d.keys()))]
+                return _BHDepth(np.asarray(_arr))
+            if ext == 'zip':
+                # Sequence (video): hand the viz its FIRST frame as an image
+                # background (the whole clip is large + the sandbox only needs
+                # one frame to draw trajectories on).
+                import zipfile as _zf
+                with _zf.ZipFile(full) as _z:
+                    _names = sorted(n for n in _z.namelist() if not n.endswith('/'))
+                    if _names:
+                        return _BHImage(np.asarray(
+                            _PILImage.open(io.BytesIO(_z.read(_names[0]))).convert('RGB')))
+        except Exception:
+            return v
+        # Registered (user-defined) file-backed kinds (e.g. point_cloud,
+        # point_labels): load the bytes into a RegisteredBlob so they cross to
+        # the sandbox and decode via the kind's decode hook (built-ins above
+        # already returned). Matched by the registered file_ext.
+        try:
+            dt = DataTypeDef.query.filter_by(file_ext='.' + ext).first()
+            if dt is not None:
+                # An ext can map to several registered kinds ('.label' is BOTH
+                # point_labels and point_panoptic). Disambiguate by the actual
+                # stored CustomField's data_type so the correct decoder is
+                # shipped — otherwise a uint32 panoptic gets decoded as uint16
+                # and loses its instance bits.
+                cf = CustomField.query.filter_by(value_text=v).first()
+                if cf is not None:
+                    rdt = DataTypeDef.query.filter_by(name=cf.data_type).first()
+                    if rdt is not None:
+                        dt = rdt
+                from metric_engine import RegisteredBlob
+                with open(full, 'rb') as fh:
+                    return RegisteredBlob(dt.name, fh.read(), {}, dt.decode_code)
+        except Exception:
+            return v
+        return v
+    return {k: _one(v) for k, v in (kwargs or {}).items()}
+
+
 @app.route('/api/dataset_viz/<int:dv_id>/<int:sample_id>')
 def execute_dataset_visualization(dv_id, sample_id):
-    """Render a DatasetVisualization for one sample. Same exec model
-    as the LB-side execute_visualization (no submission since this is
-    dataset-scoped). Cached by content hash so repeat hits hit disk
-    not Python."""
+    """Render a DatasetVisualization for one sample. Mirrors the LB-side
+    execute_visualization exec model (no submission — dataset-scoped): typed-arg
+    conversion (+ the .label collision fix), the trusted+oversized in-process
+    escape hatch, and animated-GIF (temporal video) serving. Cached by content
+    hash; an animated viz caches a `.gif`."""
     import io as _io, hashlib as _hl, re as _re
     from PIL import Image as _PIL
     dv = DatasetVisualization.query.get_or_404(dv_id)
@@ -5791,6 +5860,9 @@ def execute_dataset_visualization(dv_id, sample_id):
     cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f'{cache_hash}.png')
+    cache_gif = os.path.join(cache_dir, f'{cache_hash}.gif')
+    if os.path.exists(cache_gif):
+        return send_file(cache_gif, mimetype='image/gif')
     if os.path.exists(cache_path):
         return send_file(cache_path, mimetype='image/png')
 
@@ -5798,22 +5870,38 @@ def execute_dataset_visualization(dv_id, sample_id):
         arg_mappings = json.loads(dv.arg_mappings) if dv.arg_mappings else {}
         kwargs = {a: extract_viz_arg_value(sample, None, k)
                   for a, k in arg_mappings.items()}
+        kwargs = _viz_kwargs_to_typed(kwargs)
         m = _re.search(r'def\s+(\w+)\s*\(', gv.python_code)
         func_name = m.group(1) if m else None
-        from metric_engine import _sandbox_enabled
-        if _sandbox_enabled():
+
+        from metric_engine import _sandbox_enabled, resolve_registered_kwargs
+        _run_inproc = _viz_owner_trusted(gv) and _viz_kwargs_bytes(kwargs) > 20_000_000
+        if _sandbox_enabled() and not _run_inproc:
             png, err = _render_viz_in_sandbox(
                 gv.python_code, kwargs, cache_path, function_name=func_name)
             if png and not err:
                 return send_file(_io.BytesIO(png), mimetype='image/png')
             return create_error_image((err or 'No result')[:60])
+
+        # In-process (sandbox-disabled OR a trusted oversized temporal viz):
+        # decode registered-kind args via their decode_code first, then run.
+        kwargs = resolve_registered_kwargs(kwargs)
         exec_globals = {
             'Image': _PIL, 'PIL': __import__('PIL'),
             'numpy': __import__('numpy'), 'np': __import__('numpy'),
+            'io': _io,
         }
         exec(gv.python_code, exec_globals)
         if func_name and func_name in exec_globals:
             result = exec_globals[func_name](**kwargs)
+            if isinstance(result, (bytes, bytearray)):
+                data = bytes(result)
+                is_gif = data[:4] == b'GIF8'
+                cp = cache_gif if is_gif else cache_path
+                with open(cp, 'wb') as fh:
+                    fh.write(data)
+                return send_file(_io.BytesIO(data),
+                                 mimetype='image/gif' if is_gif else 'image/png')
             if isinstance(result, _PIL.Image):
                 result.save(cache_path, 'PNG')
                 buf = _io.BytesIO()
@@ -5958,67 +6046,11 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
             )
 
         # File-backed image/depth args arrive as relative PATHS, but the
-        # hardened viz sandbox has no filesystem access (--read-only,
-        # --network=none, no uploads mount). Convert path args to typed
-        # bh.<Kind> instances so they cross to the sandbox as bytes; inline
-        # kinds (json/scalar/label/text) keep their string/dict value. Only
-        # touches strings that resolve to a real upload file, so label/scalar
-        # viz args (e.g. confusion_matrix) are unaffected.
-        def _viz_path_to_typed(v):
-            if not isinstance(v, str):
-                return v
-            try:
-                full = v if os.path.isabs(v) else os.path.join(app.config['UPLOAD_FOLDER'], v)
-                if not os.path.isfile(full):
-                    return v
-            except (ValueError, OSError):
-                return v
-            ext = full.rsplit('.', 1)[-1].lower() if '.' in full else ''
-            try:
-                from benchhub.types import Image as _BHImage, Depth as _BHDepth
-                from PIL import Image as _PILImage
-                if ext in ('png', 'jpg', 'jpeg', 'bmp', 'tiff', 'webp'):
-                    return _BHImage(np.asarray(_PILImage.open(full).convert('RGB')))
-                if ext == 'npz':
-                    with np.load(full) as _d:
-                        _arr = _d['depth'] if 'depth' in _d else _d[next(iter(_d.keys()))]
-                    return _BHDepth(np.asarray(_arr))
-                if ext == 'zip':
-                    # Sequence (video): hand the viz its FIRST frame as an image
-                    # background (the whole clip is large + the sandbox only
-                    # needs one frame to draw trajectories on).
-                    import zipfile as _zf
-                    with _zf.ZipFile(full) as _z:
-                        _names = sorted(n for n in _z.namelist() if not n.endswith('/'))
-                        if _names:
-                            return _BHImage(np.asarray(
-                                _PILImage.open(io.BytesIO(_z.read(_names[0]))).convert('RGB')))
-            except Exception:
-                return v
-            # Registered (user-defined) file-backed kinds (e.g. point_cloud,
-            # point_labels): load the bytes into a RegisteredBlob so they cross
-            # to the sandbox and decode via the kind's decode hook (built-ins
-            # above already returned). Matched by the registered file_ext.
-            try:
-                dt = DataTypeDef.query.filter_by(file_ext='.' + ext).first()
-                if dt is not None:
-                    # An ext can map to several registered kinds (e.g. '.label' is
-                    # BOTH point_labels and point_panoptic). Disambiguate by the
-                    # actual stored CustomField's data_type so the correct decoder
-                    # is shipped to the sandbox — otherwise a uint32 panoptic gets
-                    # decoded as uint16 and loses its instance bits.
-                    cf = CustomField.query.filter_by(value_text=v).first()
-                    if cf is not None:
-                        rdt = DataTypeDef.query.filter_by(name=cf.data_type).first()
-                        if rdt is not None:
-                            dt = rdt
-                    from metric_engine import RegisteredBlob
-                    with open(full, 'rb') as fh:
-                        return RegisteredBlob(dt.name, fh.read(), {}, dt.decode_code)
-            except Exception:
-                return v
-            return v
-        kwargs = {k: _viz_path_to_typed(v) for k, v in kwargs.items()}
+        # hardened viz sandbox has no filesystem access. Convert path args to
+        # typed bh.<Kind>/RegisteredBlob so they cross as bytes (inline kinds
+        # keep their value); registered '.label' kinds are disambiguated by the
+        # stored CustomField.data_type. Shared with the dataset-viz route.
+        kwargs = _viz_kwargs_to_typed(kwargs)
 
         # Find the function
         import re
