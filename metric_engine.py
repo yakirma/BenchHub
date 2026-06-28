@@ -270,6 +270,11 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
         for _k, _v in list(call_kwargs.items()):
             if isinstance(_v, RegisteredBlob):
                 call_kwargs[_k] = _resolve_registered_blob(_v)
+            elif isinstance(_v, (list, tuple)) and any(isinstance(_x, RegisteredBlob) for _x in _v):
+                # Aggregated metrics receive a list of per-sample RegisteredBlobs
+                # (one carrier per scan) — decode each so the metric sees arrays.
+                call_kwargs[_k] = [_resolve_registered_blob(_x) if isinstance(_x, RegisteredBlob) else _x
+                                   for _x in _v]
 
         # Call it
         result = func(**call_kwargs)
@@ -492,6 +497,19 @@ def _run_via_http(job, *, url, timeout_seconds):
         return f"sandbox returned non-JSON: {e}"
 
 
+def _metric_is_trusted(global_metric):
+    """True when a metric may run in-process (bypassing the docker sandbox): its
+    owner is staff. The sandbox exists to contain UNTRUSTED user code — admin-
+    authored metrics aren't that. Escape hatch for aggregated metrics whose
+    payload (a whole sequence of point clouds) can't fit a sandbox container."""
+    try:
+        from app import User, is_admin            # lazy: keep module DB-decoupled
+        owner_id = getattr(global_metric, 'owner_user_id', None)
+        return bool(owner_id is not None and is_admin(User.query.get(owner_id)))
+    except Exception:
+        return False
+
+
 def evaluate_in_sandbox(
     global_metric,
     contexts,
@@ -527,6 +545,19 @@ def evaluate_in_sandbox(
     """
     if not contexts:
         return []
+
+    # Oversized aggregated metrics (e.g. point-cloud PQ / LSTQ over a whole
+    # sequence) ship ONE context holding every sample's arrays — hundreds of MB
+    # that can't fit a sandbox container's body + 512m memory cap, so the
+    # sandbox returns a fatal. The sandbox exists to contain UNTRUSTED user
+    # code; when the metric is admin-authored (trusted) we evaluate it
+    # in-process instead. Cheap per-sample metrics never hit this.
+    try:
+        _one = max(1, len(json.dumps(_build_job(global_metric, contexts[:1], arg_mappings_json))))
+    except Exception:
+        _one = 0
+    if _one > 80_000_000 and _metric_is_trusted(global_metric):
+        return [evaluate_dynamic_metric(global_metric, c, arg_mappings_json) for c in contexts]
 
     # All contexts ship into ONE container, which has a hard memory cap
     # (`memory`, default 512m). Tiny payloads (labels/text/scalars) fit by the
