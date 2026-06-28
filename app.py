@@ -16151,6 +16151,10 @@ def comparison_view(leaderboard_id):
             # point_track_anim, not the PNG execute_visualization. (GlobalVisualization
             # has no mime column, so key off the known animated-viz name.)
             'anim': (lv.global_visualization.name or '') == 'point_track_overlay',
+            # Animated GIF served by execute_visualization (the per-sub-sequence
+            # panoptic VIDEO). Rendered as an <img> (browsers animate it) with a
+            # freeze-frame play/pause (Space/Enter) in the zoom modal.
+            'anim_img': (lv.global_visualization.name or '') == 'panoptic_video',
             # Flow viz get a Middlebury colour-wheel legend (direction=hue,
             # magnitude=brightness) in the cell + zoom modal, mirroring the
             # depth colorbar. Keyed off the known viz name.
@@ -16383,6 +16387,7 @@ def comparison_view(leaderboard_id):
                 'default_width': '250px',
                 'viz_id': viz_config['id'],
                 'anim': viz_config.get('anim', False),
+                'anim_img': viz_config.get('anim_img', False),
                 'is_flow': viz_config.get('is_flow', False),
             }
 

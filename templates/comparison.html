@@ -1255,6 +1255,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id) }}"
                                     data-sub-name="Ground Truth" data-sample-name="{{ data.sample_name }}"
+                                    {% if comparison_display_options[col_key].anim_img %}data-gif="1"{% endif %}
                                     {% if _is_flow %}data-flow="1" data-vis-type="flow" data-flow-data-url="{{ url_for('serve_flow_data', lv_id=viz_id, sample_id=data.sample_id) }}"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
                                 {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
@@ -1290,6 +1291,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                                     loading="lazy" data-bs-toggle="modal" data-bs-target="#vis-modal"
                                     data-vis-url="{{ url_for('execute_visualization', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"
                                     data-sub-name="{{ sub.name }}" data-sample-name="{{ data.sample_name }}"
+                                    {% if comparison_display_options[col_key].anim_img %}data-gif="1"{% endif %}
                                     {% if _is_flow %}data-flow="1" data-vis-type="flow" data-flow-data-url="{{ url_for('serve_flow_data', lv_id=viz_id, sample_id=data.sample_id, submission_id=sub.id) }}"{% endif %}
                                     alt="{{ comparison_display_options[col_key].label }}">
                                 {% if _is_flow %}<img class="flow-legend" src="{{ url_for('flow_legend') }}" title="Flow colour wheel — hue = direction, brightness = magnitude" alt="flow legend">{% endif %}
@@ -2149,9 +2151,41 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             }
         };
 
+        // --- Animated-GIF (temporal video) play/pause in the zoom modal. GIFs
+        // can't be paused natively, so we freeze by drawing the current frame
+        // into the SAME <img> (keeps the zoom handler working) and restore the
+        // GIF url to play. Toggled with Space / Enter. ---
+        function _modalGifToggle() {
+            const img = document.getElementById('modal-vis-img');
+            if (!img || img.getAttribute('data-gif') !== '1' || img.style.display === 'none') return false;
+            const hint = document.getElementById('modal-gif-hint');
+            if (img.dataset.gifPaused === '1') {
+                const base = img.dataset.gifBase || img.src;
+                img.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_g=' + Date.now();   // play (restart)
+                img.dataset.gifPaused = '0';
+                if (hint) hint.innerHTML = '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
+            } else {
+                try {
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth || img.clientWidth; c.height = img.naturalHeight || img.clientHeight;
+                    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                    img.src = c.toDataURL('image/png');                                       // freeze current frame
+                    img.dataset.gifPaused = '1';
+                    if (hint) hint.innerHTML = '<i class="bi bi-play-fill"></i> Space / Enter to play';
+                } catch (e) { console.warn('GIF pause failed', e); return false; }
+            }
+            return true;
+        }
+        const _modalGifKeydown = function (e) {
+            if (e.key === ' ' || e.code === 'Space' || e.key === 'Enter') {
+                if (_modalGifToggle()) { e.preventDefault(); e.stopPropagation(); }
+            }
+        };
+
         const visModal = document.getElementById('vis-modal');
         if (visModal) {
             visModal.addEventListener('show.bs.modal', function (event) {
+                document.addEventListener('keydown', _modalGifKeydown);
                 var triggerElement = event.relatedTarget;
                 // Reset zoom handler on fresh open
                 visZoomHandler = null;
@@ -2161,6 +2195,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
             });
 
             visModal.addEventListener('hidden.bs.modal', function () {
+                document.removeEventListener('keydown', _modalGifKeydown);
                 clearVisRotationControls();
                 const _mv = document.getElementById('modal-vis-video');
                 if (_mv) { try { _mv.pause(); } catch (e) {} _mv.removeAttribute('src'); _mv.style.display = 'none'; }
@@ -2568,6 +2603,29 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     // Reset old src to avoid flash (optional)
                     modalImg.src = visUrl;
                     window._primeModalHover(modalImg, triggerElement, visType);
+
+                    // Animated GIF (temporal video): arm Space/Enter freeze-frame
+                    // play/pause + a hint under the image. Reset to "playing" each open.
+                    {
+                        const _isGif = !!(triggerElement && triggerElement.getAttribute('data-gif') === '1');
+                        let _hint = document.getElementById('modal-gif-hint');
+                        if (_isGif) {
+                            modalImg.setAttribute('data-gif', '1');
+                            modalImg.dataset.gifBase = visUrl;
+                            modalImg.dataset.gifPaused = '0';
+                            if (!_hint) {
+                                _hint = document.createElement('div');
+                                _hint.id = 'modal-gif-hint';
+                                _hint.style.cssText = 'text-align:center;font-size:0.8rem;color:#888;margin-top:6px;';
+                                if (modalImg.parentNode) modalImg.parentNode.appendChild(_hint);
+                            }
+                            _hint.innerHTML = '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
+                            _hint.style.display = 'block';
+                        } else {
+                            modalImg.removeAttribute('data-gif');
+                            if (_hint) _hint.style.display = 'none';
+                        }
+                    }
 
                     // Re-attach or Update ZoomHandler
                     // We need to wait for image to load to reset dimensions? 
