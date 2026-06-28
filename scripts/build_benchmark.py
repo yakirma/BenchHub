@@ -145,6 +145,17 @@ def p_truthfulqa(df):
         yield str(d['question']), [str(c) for c in choices], labels.index(1)
 
 
+def p_copa(df):
+    for d in df.to_dict('records'):
+        lab = d.get('label')
+        if lab is None or int(lab) not in (0, 1):     # validation has visible 0/1 gold (test is -1)
+            continue
+        q = str(d['question']).strip().lower()
+        framing = 'What was the cause?' if q == 'cause' else 'What was the effect?'
+        stem = f"{d['premise']}\n{framing}"
+        yield stem, [str(d['choice1']), str(d['choice2'])], int(lab)
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -254,6 +265,19 @@ SPECS = {
         'instr': 'Answer the question truthfully. Respond with only the letter '
                  'of the single correct option.',
         'parse': p_truthfulqa},
+    # --- NLP/Commonsense Reasoning (pairs with HellaSwag → forms a ranking) ---
+    'copa': {
+        'repo': 'aps/super_glue', 'parquet': 'copa/validation-00000-of-00001.parquet',
+        'ds_name': 'COPA-validation', 'stem': 'Situation',
+        'category': 'NLP/Commonsense Reasoning',
+        'source': 'https://huggingface.co/datasets/aps/super_glue',
+        'desc': 'COPA (Roemmele et al., 2011; SuperGLUE) — Choice of Plausible '
+                'Alternatives, 2-option causal commonsense reasoning '
+                '(validation). Pinned zero-shot prompt; scored by letter exact '
+                'match.',
+        'instr': 'Choose the more plausible option. Respond with only the '
+                 'letter (A or B).',
+        'parse': p_copa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
