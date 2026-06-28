@@ -2152,28 +2152,55 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         };
 
         // --- Animated-GIF (temporal video) play/pause in the zoom modal. GIFs
-        // can't be paused natively, so we freeze by drawing the current frame
-        // into the SAME <img> (keeps the zoom handler working) and restore the
-        // GIF url to play. Toggled with Space / Enter. ---
-        function _modalGifToggle() {
-            const img = document.getElementById('modal-vis-img');
-            if (!img || img.getAttribute('data-gif') !== '1' || img.style.display === 'none') return false;
-            const hint = document.getElementById('modal-gif-hint');
-            if (img.dataset.gifPaused === '1') {
-                const base = img.dataset.gifBase || img.src;
-                img.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_g=' + Date.now();   // play (restart)
-                img.dataset.gifPaused = '0';
-                if (hint) hint.innerHTML = '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
-            } else {
-                try {
-                    const c = document.createElement('canvas');
-                    c.width = img.naturalWidth || img.clientWidth; c.height = img.naturalHeight || img.clientHeight;
-                    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-                    img.src = c.toDataURL('image/png');                                       // freeze current frame
-                    img.dataset.gifPaused = '1';
-                    if (hint) hint.innerHTML = '<i class="bi bi-play-fill"></i> Space / Enter to play';
-                } catch (e) { console.warn('GIF pause failed', e); return false; }
+        // can't be paused natively, so we freeze the current frame into the same
+        // <img> (keeps the zoom handler working) and restore the GIF url to play.
+        // Toggled with Space / Enter. The modal shows the picture via the
+        // #vis-modal-layers overlay stack (or #modal-vis-img); we act on whichever
+        // displayed imgs belong to an animated viz (window._animVizIds). ---
+        window._animVizIds = [{% for _k, _o in comparison_display_options.items() %}{% if _o.anim_img %}{{ _o.viz_id }},{% endif %}{% endfor %}];
+        function _modalGifImgs() {
+            const anim = window._animVizIds || [];
+            const m = document.getElementById('vis-modal');
+            if (!anim.length || !m) return [];
+            return [...m.querySelectorAll('#vis-modal-layers img, #modal-vis-img')].filter(i =>
+                i.offsetParent !== null &&
+                anim.some(id => (i.dataset.gifBase || i.src || '').indexOf('/visualization/' + id + '/') >= 0));
+        }
+        function _modalGifHint() {
+            let hint = document.getElementById('modal-gif-hint');
+            const imgs = _modalGifImgs();
+            if (!imgs.length) { if (hint) hint.style.display = 'none'; return; }
+            if (!hint) {
+                hint = document.createElement('div'); hint.id = 'modal-gif-hint';
+                hint.style.cssText = 'text-align:center;font-size:0.85rem;color:#888;margin-top:8px;';
+                const mc = document.querySelector('#vis-modal .modal-content') || document.getElementById('vis-modal');
+                if (mc) mc.appendChild(hint);
             }
+            const paused = imgs[0].dataset.gifPaused === '1';
+            hint.innerHTML = paused ? '<i class="bi bi-play-fill"></i> Space / Enter to play'
+                                    : '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
+            hint.style.display = 'block';
+        }
+        function _modalGifToggle() {
+            const imgs = _modalGifImgs();
+            if (!imgs.length) return false;
+            imgs.forEach(img => {
+                if (img.dataset.gifPaused === '1') {
+                    const base = img.dataset.gifBase || img.src;
+                    img.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_g=' + Date.now();   // play (restart)
+                    img.dataset.gifPaused = '0';
+                } else {
+                    try {
+                        if (!img.dataset.gifBase) img.dataset.gifBase = (img.src || '').split(/[?&]_g=/)[0];
+                        const c = document.createElement('canvas');
+                        c.width = img.naturalWidth || img.clientWidth; c.height = img.naturalHeight || img.clientHeight;
+                        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                        img.src = c.toDataURL('image/png');                                       // freeze current frame
+                        img.dataset.gifPaused = '1';
+                    } catch (e) { console.warn('GIF pause failed', e); }
+                }
+            });
+            _modalGifHint();
             return true;
         }
         const _modalGifKeydown = function (e) {
@@ -2192,6 +2219,7 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 clearVisRotationControls();
                 updateVisGallery(triggerElement);
                 updateVisModalContent(triggerElement);
+                setTimeout(_modalGifHint, 350);   // show the Space/Enter hint if a temporal video is on screen
             });
 
             visModal.addEventListener('hidden.bs.modal', function () {
@@ -2604,28 +2632,10 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                     modalImg.src = visUrl;
                     window._primeModalHover(modalImg, triggerElement, visType);
 
-                    // Animated GIF (temporal video): arm Space/Enter freeze-frame
-                    // play/pause + a hint under the image. Reset to "playing" each open.
-                    {
-                        const _isGif = !!(triggerElement && triggerElement.getAttribute('data-gif') === '1');
-                        let _hint = document.getElementById('modal-gif-hint');
-                        if (_isGif) {
-                            modalImg.setAttribute('data-gif', '1');
-                            modalImg.dataset.gifBase = visUrl;
-                            modalImg.dataset.gifPaused = '0';
-                            if (!_hint) {
-                                _hint = document.createElement('div');
-                                _hint.id = 'modal-gif-hint';
-                                _hint.style.cssText = 'text-align:center;font-size:0.8rem;color:#888;margin-top:6px;';
-                                if (modalImg.parentNode) modalImg.parentNode.appendChild(_hint);
-                            }
-                            _hint.innerHTML = '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
-                            _hint.style.display = 'block';
-                        } else {
-                            modalImg.removeAttribute('data-gif');
-                            if (_hint) _hint.style.display = 'none';
-                        }
-                    }
+                    // Single-img path: reset play state (animated-GIF play/pause is
+                    // handled generically by _modalGifToggle via window._animVizIds).
+                    modalImg.dataset.gifPaused = '0';
+                    modalImg.removeAttribute('data-gif');
 
                     // Re-attach or Update ZoomHandler
                     // We need to wait for image to load to reset dimensions? 
