@@ -18173,6 +18173,10 @@ def dataset_view(dataset_id):
         CustomField.submission_id == None
     ).distinct().all()
     
+    # Viz-only auxiliary fields (e.g. cloud_anim / scan_anim that feed the
+    # temporal-video visualization) aren't real dataset content — hide them from
+    # the column list, filters, and class selector. Convention: name ends '_anim'.
+    custom_field_query = [(n, t) for (n, t) in custom_field_query if not (n or '').endswith('_anim')]
     custom_field_names = set(custom_field_query)
     custom_scalar_metric_names = [name for name, ftype in custom_field_names if ftype in ('scalar', 'metric')]
 

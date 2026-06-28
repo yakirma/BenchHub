@@ -2169,17 +2169,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         function _modalGifHint() {
             let hint = document.getElementById('modal-gif-hint');
             const imgs = _modalGifImgs();
-            if (!imgs.length) { if (hint) hint.style.display = 'none'; return; }
+            if (!imgs.length) { if (hint) hint.parentNode && (hint.parentNode.style.display = 'none'); return; }
             if (!hint) {
                 hint = document.createElement('div'); hint.id = 'modal-gif-hint';
-                hint.style.cssText = 'text-align:center;font-size:0.85rem;color:#888;margin-top:8px;';
+                hint.setAttribute('role', 'button'); hint.title = 'Play / pause (Space or Enter)';
+                // A clickable pill — works on click as well as Space/Enter. NOT a
+                // <button> (so a focused-button Space wouldn't double-toggle); we
+                // preventDefault on mousedown to keep focus off it.
+                hint.style.cssText = 'display:inline-block;margin:8px auto 0;padding:4px 14px;cursor:pointer;' +
+                    'border:1px solid #ccc;border-radius:16px;font-size:0.85rem;color:#444;background:#f6f6f6;user-select:none;';
+                hint.addEventListener('mousedown', function (e) { e.preventDefault(); });
+                hint.addEventListener('click', function (e) { e.preventDefault(); _modalGifToggle(); });
                 const mc = document.querySelector('#vis-modal .modal-content') || document.getElementById('vis-modal');
-                if (mc) mc.appendChild(hint);
+                if (mc) { const wrap = document.createElement('div'); wrap.style.cssText = 'text-align:center;'; wrap.appendChild(hint); mc.appendChild(wrap); }
             }
+            if (hint.parentNode) hint.parentNode.style.display = 'block';
             const paused = imgs[0].dataset.gifPaused === '1';
-            hint.innerHTML = paused ? '<i class="bi bi-play-fill"></i> Space / Enter to play'
-                                    : '<i class="bi bi-pause-fill"></i> Space / Enter to pause';
-            hint.style.display = 'block';
+            hint.innerHTML = paused ? '<i class="bi bi-play-fill"></i> Play <span style="opacity:.6">(Space / Enter)</span>'
+                                    : '<i class="bi bi-pause-fill"></i> Pause <span style="opacity:.6">(Space / Enter)</span>';
         }
         function _modalGifToggle() {
             const imgs = _modalGifImgs();
