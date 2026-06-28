@@ -37,8 +37,102 @@ def decode(blob, params):
 '''
 
 # ---- metrics (validated byte-identical to the official PanopticEval / Panoptic4DEval) ----
-POINT_PQ = open(os.path.expanduser('/tmp/claude-1000/-home-ymatri-Git-BenchHub/d6b433c8-6758-47ba-a6c5-0ecccf71c8b3/scratchpad/pq_metric.py')).read()
-LSTQ = open(os.path.expanduser('/tmp/claude-1000/-home-ymatri-Git-BenchHub/d6b433c8-6758-47ba-a6c5-0ecccf71c8b3/scratchpad/lstq_metric.py')).read()
+POINT_PQ = r'''
+def point_pq(gt, pred):
+    """Aggregated Panoptic Quality (PQ) for 3D LiDAR panoptic segmentation, the
+    official SemanticKITTI metric (higher is better). gt/pred are LISTS of
+    per-scan uint32 point_panoptic arrays (semantic in low 16 bits, instance in
+    high 16). Instances matched at IoU>0.5; segments <50 pts ignored; class 0
+    ignored. PQ = mean over the 19 classes of SQ*RQ."""
+    import numpy as np
+    NC = 20; INCLUDE = list(range(1, 20)); MINPTS = 50; OFFSET = 1 << 32; EPS = 1e-15
+    if not isinstance(gt, (list, tuple)): gt = [gt]; pred = [pred]
+    tp = np.zeros(NC); iou = np.zeros(NC); fp = np.zeros(NC); fn = np.zeros(NC)
+    for g_arr, p_arr in zip(gt, pred):
+        g = np.asarray(g_arr).ravel().astype(np.uint32); p = np.asarray(p_arr).ravel().astype(np.uint32)
+        n = min(len(g), len(p)); g, p = g[:n], p[:n]
+        gs = (g & 0xFFFF).astype(np.int64); gi = (g >> 16).astype(np.int64) + 1
+        ps = (p & 0xFFFF).astype(np.int64); pi = (p >> 16).astype(np.int64) + 1
+        keep = gs != 0
+        gs, gi, ps, pi = gs[keep], gi[keep], ps[keep], pi[keep]
+        for cl in INCLUDE:
+            xic = pi * (ps == cl); yic = gi * (gs == cl)
+            up, cp = np.unique(xic[xic > 0], return_counts=True)
+            ug, cg = np.unique(yic[yic > 0], return_counts=True)
+            p2i = {v: k for k, v in enumerate(up)}; g2i = {v: k for k, v in enumerate(ug)}
+            valid = (xic > 0) & (yic > 0)
+            combo = xic[valid] + OFFSET * yic[valid]
+            uc, cc = np.unique(combo, return_counts=True)
+            pl = uc % OFFSET; gl = uc // OFFSET
+            pa = np.array([cp[p2i[x]] for x in pl]); ga = np.array([cg[g2i[x]] for x in gl])
+            ious = cc.astype(float) / (ga + pa - cc).astype(float)
+            tpm = ious > 0.5
+            tp[cl] += tpm.sum(); iou[cl] += ious[tpm].sum()
+            mg = np.zeros(len(ug), bool); mp = np.zeros(len(up), bool)
+            if tpm.any():
+                mg[[g2i[x] for x in gl[tpm]]] = True; mp[[p2i[x] for x in pl[tpm]]] = True
+            fn[cl] += np.sum((cg >= MINPTS) & ~mg); fp[cl] += np.sum((cp >= MINPTS) & ~mp)
+    sq = iou / np.maximum(tp, EPS)
+    rq = tp / np.maximum(tp + 0.5 * fp + 0.5 * fn, EPS)
+    pq = sq * rq
+    return float(np.mean([pq[c] for c in INCLUDE]))
+'''
+LSTQ = r'''
+def lstq(gt, pred):
+    """Aggregated LiDAR Segmentation & Tracking Quality (LSTQ / PQ4D) — the
+    official SemanticKITTI 4D-panoptic metric (higher is better). gt/pred are
+    LISTS of per-scan uint32 point_panoptic arrays in TEMPORAL order (semantic in
+    low 16 bits, instance/track id in high 16). LSTQ = sqrt(S_assoc * S_cls):
+    S_cls = semantic mIoU, S_assoc = spatio-temporal instance association. A
+    method that keeps instance ids consistent across scans scores far higher."""
+    import numpy as np, math
+    NC = 20; INCLUDE = list(range(1, 20)); MINPTS = 50; OFFSET = 1 << 32; EPS = 1e-15
+    if not isinstance(gt, (list, tuple)): gt = [gt]; pred = [pred]
+    conf = np.zeros((NC, NC), np.int64)
+    preds = {}; gts = [{} for _ in range(NC)]; inter = [{} for _ in range(NC)]
+    def upd(d, ids, cnts):
+        for i, c in zip(ids, cnts):
+            if i == 1: continue
+            d[i] = d.get(i, 0) + c
+    for g_arr, p_arr in zip(gt, pred):
+        g = np.asarray(g_arr).ravel().astype(np.uint32); p = np.asarray(p_arr).ravel().astype(np.uint32)
+        n = min(len(g), len(p)); g, p = g[:n], p[:n]
+        gs = (g & 0xFFFF).astype(np.int64); gi = (g >> 16).astype(np.int64) + 1
+        ps = (p & 0xFFFF).astype(np.int64); pi = (p >> 16).astype(np.int64) + 1
+        np.add.at(conf, (ps, gs), 1)
+        keep = gs != 0
+        gs, gi, ps, pi = gs[keep], gi[keep], ps[keep], pi[keep]
+        for cl in INCLUDE:
+            xic = pi * (ps == cl); yic = gi * (gs == cl)
+            ug, cg = np.unique(yic[yic > 0], return_counts=True)
+            k = cg > MINPTS
+            upd(gts[cl], ug[k], cg[k])
+            yic = yic * np.isin(yic, ug[k])
+            up, cp = np.unique(xic[xic > 0], return_counts=True)
+            upd(preds, up, cp)
+            valid = (pi > 0) & (yic > 0)
+            combo = pi[valid] + OFFSET * yic[valid]
+            uc, cc = np.unique(combo, return_counts=True)
+            upd(inter[cl], uc, cc)
+    num_tubes = [0] * NC; aq_ovr = 0.0
+    for cl in INCLUDE:
+        num_tubes[cl] += len(gts[cl])
+        for gid, gsz in gts[cl].items():
+            inner = 0.0
+            for pid, psz in preds.items():
+                key = pid + OFFSET * gid
+                if key in inter[cl]:
+                    tpa = inter[cl][key]
+                    inner += tpa * (tpa / (gsz + psz - tpa))
+            aq_ovr += inner / float(gsz)
+    S_assoc = aq_ovr / max(sum(num_tubes[1:9]), EPS)
+    c = conf.copy(); c[0, :] = 0; c[:, 0] = 0
+    tp = np.diag(c); fp = c.sum(1) - tp; fn = c.sum(0) - tp
+    union = tp + fp + fn; present = union > 0
+    iou = tp / np.maximum(union, EPS)
+    S_cls = np.mean([iou[k] for k in INCLUDE if present[k]]) if present[1:].any() else 0.0
+    return float(math.sqrt(max(S_assoc, 0.0) * max(S_cls, 0.0)))
+'''
 
 # ---- visualizations: instance-coloured BEV ----
 _VHELP = r'''
