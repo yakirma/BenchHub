@@ -6002,6 +6002,16 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
             try:
                 dt = DataTypeDef.query.filter_by(file_ext='.' + ext).first()
                 if dt is not None:
+                    # An ext can map to several registered kinds (e.g. '.label' is
+                    # BOTH point_labels and point_panoptic). Disambiguate by the
+                    # actual stored CustomField's data_type so the correct decoder
+                    # is shipped to the sandbox — otherwise a uint32 panoptic gets
+                    # decoded as uint16 and loses its instance bits.
+                    cf = CustomField.query.filter_by(value_text=v).first()
+                    if cf is not None:
+                        rdt = DataTypeDef.query.filter_by(name=cf.data_type).first()
+                        if rdt is not None:
+                            dt = rdt
                     from metric_engine import RegisteredBlob
                     with open(full, 'rb') as fh:
                         return RegisteredBlob(dt.name, fh.read(), {}, dt.decode_code)

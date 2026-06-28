@@ -48,11 +48,16 @@ _HELP = r'''
             m=(inst==u) & tm
             if m.any(): col[m]=_icol(u)                           # things: distinct per-instance colour
         return col
-    def _bev(xyz,col,px=320,rng=50.0):
+    def _bev(xyz,col,px=320,rng=50.0,big=None):
         u=((xyz[:,0]+rng)/(2*rng)*px).astype(int); v=((xyz[:,1]+rng)/(2*rng)*px).astype(int)
         m=(u>=0)&(u<px)&(v>=0)&(v<px)
         img=np.full((px,px,3),18,np.uint8); o=np.argsort(xyz[:,2])
         img[v[o][m[o]],u[o][m[o]]]=col[o][m[o]]
+        if big is not None:                                       # draw flagged pts (instances) ON TOP, dilated 2x2
+            bo=np.where(big & m)[0]
+            for dv in (0,1):
+                for du in (0,1):
+                    img[np.clip(v[bo]+dv,0,px-1),np.clip(u[bo]+du,0,px-1)]=col[bo]
         return PILImage.fromarray(img[::-1])
     def _gif(frames):
         if not frames: return _bev(np.zeros((1,4),np.float32), np.array([[18,18,18]],np.uint8))
@@ -63,7 +68,9 @@ _HELP = r'''
 
 INSTANCE_SEG = "def instance_seg(cloud, panoptic):" + _HELP + r'''
     pts=_pts(cloud); pan=_np(panoptic,np.uint32).ravel()
-    n=min(len(pts),len(pan)); return _bev(pts[:n], _inscols(pan[:n]))
+    n=min(len(pts),len(pan)); pts,pan=pts[:n],pan[:n]
+    big=np.isin(pan & 0xFFFF,list(THINGS)) & ((pan >> 16)>0)
+    return _bev(pts, _inscols(pan), big=big)
 '''
 INSTANCE_VIDEO = "def instance_video(cloud, scan_cloud, labels, scan_labels):" + _HELP + r'''
     cl=_pts(cloud); sca=_np(scan_cloud,np.uint16).ravel()
@@ -71,7 +78,10 @@ INSTANCE_VIDEO = "def instance_video(cloud, scan_cloud, labels, scan_labels):" +
     nscans=int(sca.max())+1 if len(sca) else 0; frames=[]
     for s in range(0,nscans,2):
         cpts=cl[sca==s]; lb=lab[scl==s][::S]; n=min(len(cpts),len(lb))
-        if n: frames.append(_bev(cpts[:n], _inscols(lb[:n])))
+        if not n: continue
+        cpts,lb=cpts[:n],lb[:n]
+        big=np.isin(lb & 0xFFFF,list(THINGS)) & ((lb >> 16)>0)
+        frames.append(_bev(cpts, _inscols(lb), big=big))
     return _gif(frames)
 '''
 ERROR_VIDEO = "def error_video(cloud, scan_cloud, gt, pred, scan_labels):" + _HELP + r'''
