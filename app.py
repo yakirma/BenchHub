@@ -6040,7 +6040,13 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
             return create_error_image((err or 'No result')[:50])
 
         # Execute visualization code (in-process: sandbox-disabled OR a trusted
-        # oversized viz routed here above).
+        # oversized viz routed here above). Registered-kind args are still
+        # RegisteredBlob carriers here — decode them via the kind's decode_code
+        # (registry dtype/shape) first, exactly as the sandbox harness + the
+        # metric path do. Without this the viz would re-frombuffer the raw bytes
+        # with a hardcoded dtype, neglecting the registered type.
+        from metric_engine import resolve_registered_kwargs
+        kwargs = resolve_registered_kwargs(kwargs)
         exec_globals = {
             'Image': Image,
             'PIL': __import__('PIL'),

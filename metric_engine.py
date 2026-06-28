@@ -102,6 +102,32 @@ def _resolve_registered_blob(rb):
     return rb.blob
 
 
+def resolve_registered_kwargs(kwargs):
+    """Decode any `RegisteredBlob` kwarg (and lists of them) to the kind's
+    registry-decoded object, in-process.
+
+    Both in-process eval paths call this — the metric path
+    (`evaluate_dynamic_metric`) and the in-process visualization path
+    (`app.execute_visualization` / `execute_dataset_visualization`) — so a
+    user-registered kind is always delivered as its `decode(blob, params)`
+    output (the kind's authoritative dtype/shape), never raw bytes. That
+    mirrors what the sandbox harness does in-container; without it the
+    in-process consumer would have to re-`frombuffer` the bytes with a
+    hardcoded dtype, neglecting the registered type."""
+    out = {}
+    for _k, _v in (kwargs or {}).items():
+        if isinstance(_v, RegisteredBlob):
+            out[_k] = _resolve_registered_blob(_v)
+        elif isinstance(_v, (list, tuple)) and any(isinstance(_x, RegisteredBlob) for _x in _v):
+            # Aggregated metric / multi-frame viz: a list of per-sample (per-scan)
+            # carriers — decode each so the consumer sees a list of arrays.
+            out[_k] = [_resolve_registered_blob(_x) if isinstance(_x, RegisteredBlob) else _x
+                       for _x in _v]
+        else:
+            out[_k] = _v
+    return out
+
+
 def _typed_for_cf(cf, value):
     """Wrap a CustomField's primitive value in its DataType class.
 
@@ -264,17 +290,11 @@ def evaluate_dynamic_metric(global_metric, context, arg_mappings_json):
         if not func:
             return None, "No callable function found in code."
 
-        # Registered-kind args arrive as RegisteredBlob carriers; run their
-        # decode() hook in-process (this path already exec()s metric code
-        # locally) so the metric sees the decoded object, not the bytes.
-        for _k, _v in list(call_kwargs.items()):
-            if isinstance(_v, RegisteredBlob):
-                call_kwargs[_k] = _resolve_registered_blob(_v)
-            elif isinstance(_v, (list, tuple)) and any(isinstance(_x, RegisteredBlob) for _x in _v):
-                # Aggregated metrics receive a list of per-sample RegisteredBlobs
-                # (one carrier per scan) — decode each so the metric sees arrays.
-                call_kwargs[_k] = [_resolve_registered_blob(_x) if isinstance(_x, RegisteredBlob) else _x
-                                   for _x in _v]
+        # Registered-kind args arrive as RegisteredBlob carriers; decode them
+        # in-process (this path already exec()s metric code locally) so the
+        # metric sees the kind's decoded object, not the bytes. Shared with the
+        # in-process viz path via resolve_registered_kwargs.
+        call_kwargs = resolve_registered_kwargs(call_kwargs)
 
         # Call it
         result = func(**call_kwargs)
