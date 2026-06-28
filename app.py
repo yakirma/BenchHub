@@ -5888,6 +5888,33 @@ def flow_legend():
     return resp
 
 
+def _viz_owner_trusted(gv):
+    """A visualization may run in-process (bypassing the docker sandbox) when it
+    is staff/system-authored — owner is None (created by an admin build script)
+    or an admin. Used to let trusted, oversized viz (the per-sub-sequence
+    panoptic VIDEO) run locally and emit an animated GIF."""
+    try:
+        owner_id = getattr(gv, 'owner_user_id', None)
+        if owner_id is None:
+            return True
+        return bool(is_admin(User.query.get(owner_id)))
+    except Exception:
+        return False
+
+
+def _viz_kwargs_bytes(kwargs):
+    """Approximate the byte size of a viz's resolved kwargs (registered-kind
+    blobs dominate). Large payloads can't fit a sandbox container."""
+    from metric_engine import RegisteredBlob
+    total = 0
+    for v in (kwargs or {}).values():
+        if isinstance(v, RegisteredBlob):
+            total += len(v.blob or b'')
+        elif isinstance(v, (bytes, bytearray)):
+            total += len(v)
+    return total
+
+
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>')
 @app.route('/visualization/<int:lv_id>/execute/<int:sample_id>/<int:submission_id>')
 def execute_visualization(lv_id, sample_id, submission_id=None):
@@ -5910,8 +5937,11 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
     cache_dir = app.config.get('VIZ_CACHE_DIR') or os.path.join(os.getcwd(), 'data', 'viz_cache')
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{cache_hash}.png")
-    
-    # Return cached image if exists
+    cache_gif = os.path.join(cache_dir, f"{cache_hash}.gif")
+
+    # Return cached image if exists (an animated-GIF viz caches a .gif).
+    if os.path.exists(cache_gif):
+        return send_file(cache_gif, mimetype='image/gif')
     if os.path.exists(cache_path):
         return send_file(cache_path, mimetype='image/png')
     
@@ -5985,38 +6015,55 @@ def execute_visualization(lv_id, sample_id, submission_id=None):
         match = re.search(r'def\s+(\w+)\s*\(', gv.python_code)
         func_name = match.group(1) if match else None
 
-        # Sandboxed path: render the viz in the hardened container.
+        # Sandboxed path: render the viz in the hardened container — EXCEPT
+        # trusted (admin/system) viz over large per-sample data, e.g. the
+        # per-sub-sequence panoptic VIDEO, which needs every scan's points and
+        # emits an animated GIF the PNG-only sandbox can't carry. Those run
+        # in-process below (mirrors the oversized-aggregated-metric escape hatch).
         from metric_engine import _sandbox_enabled
-        if _sandbox_enabled():
+        _run_inproc = _viz_owner_trusted(gv) and _viz_kwargs_bytes(kwargs) > 20_000_000
+        if _sandbox_enabled() and not _run_inproc:
             png, err = _render_viz_in_sandbox(
                 gv.python_code, kwargs, cache_path, function_name=func_name)
             if png and not err:
                 return send_file(io.BytesIO(png), mimetype='image/png')
             return create_error_image((err or 'No result')[:50])
 
-        # Execute visualization code (in-process fallback)
+        # Execute visualization code (in-process: sandbox-disabled OR a trusted
+        # oversized viz routed here above).
         exec_globals = {
             'Image': Image,
             'PIL': __import__('PIL'),
             'numpy': __import__('numpy'),
             'np': __import__('numpy'),
+            'io': io,
         }
         exec(gv.python_code, exec_globals)
 
         if func_name and func_name in exec_globals:
             viz_func = exec_globals[func_name]
             result_image = viz_func(**kwargs)
-            
+
+            # A video/animation viz returns raw encoded bytes (an animated GIF);
+            # cache + serve by sniffed magic so the browser plays it in an <img>.
+            if isinstance(result_image, (bytes, bytearray)):
+                data = bytes(result_image)
+                is_gif = data[:4] == b'GIF8'
+                cp = cache_gif if is_gif else cache_path
+                with open(cp, 'wb') as fh:
+                    fh.write(data)
+                return send_file(io.BytesIO(data),
+                                 mimetype='image/gif' if is_gif else 'image/png')
             if isinstance(result_image, Image.Image):
                 # Save to cache
                 result_image.save(cache_path, 'PNG')
-                
+
                 # Return image
                 img_io = io.BytesIO()
                 result_image.save(img_io, 'PNG')
                 img_io.seek(0)
                 return send_file(img_io, mimetype='image/png')
-        
+
         # Fallback: return placeholder
         return create_error_image("No result")
         
