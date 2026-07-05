@@ -69,6 +69,8 @@ BENCHMARK_QUEUE = [
     {'key': 'truthfulqa',    'builder': 'build_benchmark', 'ds': 'truthfulqa-mc1'},
     # NLP/Commonsense Reasoning — pairs with HellaSwag (forms a ranking)
     {'key': 'copa',          'builder': 'build_benchmark', 'ds': 'copa-validation'},
+    # NLP/Physical Reasoning — a NEW sub-category (widens coverage)
+    {'key': 'piqa',          'builder': 'build_benchmark', 'ds': 'piqa-validation'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [

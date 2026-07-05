@@ -156,6 +156,14 @@ def p_copa(df):
         yield stem, [str(d['choice1']), str(d['choice2'])], int(lab)
 
 
+def p_piqa(df):
+    for d in df.to_dict('records'):
+        lab = d.get('label')
+        if lab is None or int(lab) not in (0, 1):     # validation has visible 0/1 gold (test is -1)
+            continue
+        yield str(d['goal']), [str(d['sol1']), str(d['sol2'])], int(lab)
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -278,6 +286,19 @@ SPECS = {
         'instr': 'Choose the more plausible option. Respond with only the '
                  'letter (A or B).',
         'parse': p_copa},
+    # --- NLP/Physical Reasoning (new sub-category, widens coverage) ---
+    'piqa': {
+        'repo': 'lighteval/piqa', 'parquet': 'plain_text/validation-00000-of-00001.parquet',
+        'ds_name': 'PIQA-validation', 'stem': 'Goal',
+        'category': 'NLP/Physical Reasoning',
+        'source': 'https://huggingface.co/datasets/lighteval/piqa',
+        'desc': 'PIQA (Bisk et al., 2020) — physical-commonsense reasoning: pick '
+                'the solution that best achieves the goal, 2-option (validation, '
+                'visible gold). Pinned zero-shot prompt; scored by letter exact '
+                'match.',
+        'instr': 'Choose the solution that best achieves the goal. Respond with '
+                 'only the letter (A or B).',
+        'parse': p_piqa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
