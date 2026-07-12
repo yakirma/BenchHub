@@ -164,6 +164,15 @@ def p_piqa(df):
         yield str(d['goal']), [str(d['sol1']), str(d['sol2'])], int(lab)
 
 
+def p_siqa(df):
+    for d in df.to_dict('records'):
+        a = str(d['label']).strip()                   # gold is a 1-indexed '1'/'2'/'3' string
+        if a not in ('1', '2', '3'):
+            continue
+        stem = f"{d['context']}\n\nQuestion: {d['question']}"
+        yield stem, [str(d['answerA']), str(d['answerB']), str(d['answerC'])], int(a) - 1
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -299,6 +308,20 @@ SPECS = {
         'instr': 'Choose the solution that best achieves the goal. Respond with '
                  'only the letter (A or B).',
         'parse': p_piqa},
+    # --- NLP/Social Reasoning (new sub-category, widens coverage) ---
+    'siqa': {
+        'repo': 'lighteval/siqa',
+        'parquet': 'data/validation-00000-of-00001-90bb85eab85fcfa8.parquet',
+        'ds_name': 'SocialIQa-validation', 'stem': 'Context',
+        'category': 'NLP/Social Reasoning',
+        'source': 'https://huggingface.co/datasets/lighteval/siqa',
+        'desc': 'Social IQa (Sap et al., 2019) — social-commonsense reasoning '
+                'about people\'s actions and their social implications, 3-option '
+                '(validation, visible gold). Pinned zero-shot prompt; scored by '
+                'letter exact match.',
+        'instr': 'Read the context and answer the question about the social '
+                 'situation. Respond with only the letter (A, B, or C).',
+        'parse': p_siqa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 

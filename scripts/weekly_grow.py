@@ -71,6 +71,8 @@ BENCHMARK_QUEUE = [
     {'key': 'copa',          'builder': 'build_benchmark', 'ds': 'copa-validation'},
     # NLP/Physical Reasoning — a NEW sub-category (widens coverage)
     {'key': 'piqa',          'builder': 'build_benchmark', 'ds': 'piqa-validation'},
+    # NLP/Social Reasoning — a NEW sub-category (widens coverage)
+    {'key': 'siqa',          'builder': 'build_benchmark', 'ds': 'socialiqa-validation'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [
