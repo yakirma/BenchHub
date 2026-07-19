@@ -73,6 +73,8 @@ BENCHMARK_QUEUE = [
     {'key': 'piqa',          'builder': 'build_benchmark', 'ds': 'piqa-validation'},
     # NLP/Social Reasoning — a NEW sub-category (widens coverage)
     {'key': 'siqa',          'builder': 'build_benchmark', 'ds': 'socialiqa-validation'},
+    # NLP/Logical Reasoning — a NEW sub-category (widens coverage)
+    {'key': 'logiqa',        'builder': 'build_benchmark', 'ds': 'logiqa-test'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [

@@ -173,6 +173,37 @@ def p_siqa(df):
         yield stem, [str(d['answerA']), str(d['answerB']), str(d['answerC'])], int(a) - 1
 
 
+def p_logiqa(df):
+    import re
+    # AGIEval LogiQA-en: `choices` are labelled '(A)text'.. and `gold` is a
+    # POSITIONAL index into that list. Keep only rows whose choice at position j
+    # cleanly carries its own '(<letter j>)' prefix, so position == embedded
+    # label == gold index (a handful of rows have OCR-garbled or reordered
+    # prefixes — skip them rather than risk a mislabelled option).
+    prefix = re.compile(r'^\(([A-D])\)\s*(.*)$', re.S)
+    for d in df.to_dict('records'):
+        choices = [str(c) for c in list(d['choices'])]
+        gold = list(d['gold'])
+        if len(choices) != 4 or len(gold) != 1:
+            continue
+        gi = int(gold[0])
+        if not (0 <= gi < 4):
+            continue
+        cleaned, ok = [], True
+        for j, c in enumerate(choices):
+            m = prefix.match(c)
+            if not m or m.group(1) != 'ABCD'[j]:
+                ok = False
+                break
+            cleaned.append(m.group(2).strip())
+        if not ok or any(not t for t in cleaned):
+            continue
+        stem = str(d['query']).split('Answer Choices:')[0].strip()   # drop the baked-in choice list + answer cue
+        if not stem:
+            continue
+        yield stem, cleaned, gi
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -322,6 +353,19 @@ SPECS = {
         'instr': 'Read the context and answer the question about the social '
                  'situation. Respond with only the letter (A, B, or C).',
         'parse': p_siqa},
+    # --- NLP/Logical Reasoning (new sub-category, widens coverage) ---
+    'logiqa': {
+        'repo': 'hails/agieval-logiqa-en', 'parquet': 'data/test-00000-of-00001.parquet',
+        'ds_name': 'LogiQA-test', 'stem': 'Passage',
+        'category': 'NLP/Logical Reasoning',
+        'source': 'https://huggingface.co/datasets/hails/agieval-logiqa-en',
+        'desc': 'LogiQA (Liu et al., 2020; AGIEval English subset) — expert-'
+                'written logical-reasoning questions from civil-service exams, '
+                '4-option (test, visible gold). Pinned zero-shot prompt; scored '
+                'by letter exact match.',
+        'instr': 'Read the passage and answer the logical-reasoning question. '
+                 'Respond with only the letter (A, B, C, or D).',
+        'parse': p_logiqa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
