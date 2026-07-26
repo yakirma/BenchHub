@@ -75,6 +75,8 @@ BENCHMARK_QUEUE = [
     {'key': 'siqa',          'builder': 'build_benchmark', 'ds': 'socialiqa-validation'},
     # NLP/Logical Reasoning — a NEW sub-category (widens coverage)
     {'key': 'logiqa',        'builder': 'build_benchmark', 'ds': 'logiqa-test'},
+    # NLP/Logical Reasoning — pairs with LogiQA (forms a ranking)
+    {'key': 'lsat_lr',       'builder': 'build_benchmark', 'ds': 'lsat-lr-test'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [

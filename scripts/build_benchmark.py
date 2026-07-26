@@ -204,6 +204,38 @@ def p_logiqa(df):
         yield stem, cleaned, gi
 
 
+def p_lsat_lr(df):
+    import re
+    # AGIEval LSAT Logical Reasoning: same mirror format as LogiQA but 5-option.
+    # `choices` are labelled '(A)text'..'(E)text' and `gold` is a POSITIONAL
+    # index into that list. Keep only rows whose choice at position j cleanly
+    # carries its own '(<letter j>)' prefix, so position == embedded label ==
+    # gold index (skip any OCR-garbled or reordered-prefix rows rather than
+    # risk a mislabelled option).
+    prefix = re.compile(r'^\(([A-E])\)\s*(.*)$', re.S)
+    for d in df.to_dict('records'):
+        choices = [str(c) for c in list(d['choices'])]
+        gold = list(d['gold'])
+        if len(choices) != 5 or len(gold) != 1:
+            continue
+        gi = int(gold[0])
+        if not (0 <= gi < 5):
+            continue
+        cleaned, ok = [], True
+        for j, c in enumerate(choices):
+            m = prefix.match(c)
+            if not m or m.group(1) != 'ABCDE'[j]:
+                ok = False
+                break
+            cleaned.append(m.group(2).strip())
+        if not ok or any(not t for t in cleaned):
+            continue
+        stem = str(d['query']).split('Answer Choices:')[0].strip()   # drop the baked-in choice list + answer cue
+        if not stem:
+            continue
+        yield stem, cleaned, gi
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -366,6 +398,19 @@ SPECS = {
         'instr': 'Read the passage and answer the logical-reasoning question. '
                  'Respond with only the letter (A, B, C, or D).',
         'parse': p_logiqa},
+    # --- NLP/Logical Reasoning — pairs with LogiQA (forms a ranking) ---
+    'lsat_lr': {
+        'repo': 'hails/agieval-lsat-lr', 'parquet': 'data/test-00000-of-00001.parquet',
+        'ds_name': 'LSAT-LR-test', 'stem': 'Passage',
+        'category': 'NLP/Logical Reasoning',
+        'source': 'https://huggingface.co/datasets/hails/agieval-lsat-lr',
+        'desc': 'LSAT-LR (Zhong et al., 2023; AGIEval) — Law School Admission '
+                'Test Logical Reasoning questions: read an argument and pick the '
+                'assumption/inference/flaw, 5-option (test, visible gold). Pinned '
+                'zero-shot prompt; scored by letter exact match.',
+        'instr': 'Read the passage and answer the logical-reasoning question. '
+                 'Respond with only the letter (A, B, C, D, or E).',
+        'parse': p_lsat_lr},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
