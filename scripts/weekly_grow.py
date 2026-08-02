@@ -77,6 +77,8 @@ BENCHMARK_QUEUE = [
     {'key': 'logiqa',        'builder': 'build_benchmark', 'ds': 'logiqa-test'},
     # NLP/Logical Reasoning — pairs with LogiQA (forms a ranking)
     {'key': 'lsat_lr',       'builder': 'build_benchmark', 'ds': 'lsat-lr-test'},
+    # NLP/Natural Language Inference — a NEW sub-category (widens coverage)
+    {'key': 'anli',          'builder': 'build_benchmark', 'ds': 'anli-r1-test'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [

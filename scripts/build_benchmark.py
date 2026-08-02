@@ -236,6 +236,26 @@ def p_lsat_lr(df):
         yield stem, cleaned, gi
 
 
+def p_anli(df):
+    # ANLI (facebook/anli): a premise + hypothesis 3-way NLI decision. `label`
+    # is a ClassLabel int — 0=entailment, 1=neutral, 2=contradiction (verified
+    # against the dataset's ClassLabel names), so it maps directly to option
+    # index A/B/C. The three relations are fixed options, same for every row;
+    # the premise/hypothesis live in the stem. Hidden-gold rows are -1 — skip.
+    labels = ['Entailment', 'Neutral', 'Contradiction']
+    for d in df.to_dict('records'):
+        lab = d.get('label')
+        if lab is None or int(lab) not in (0, 1, 2):
+            continue
+        prem = str(d['premise']).strip()
+        hyp = str(d['hypothesis']).strip()
+        if not prem or not hyp:
+            continue
+        stem = (f"{prem}\n\nHypothesis: {hyp}\n\nDoes the premise entail, "
+                f"contradict, or leave undetermined the hypothesis?")
+        yield stem, labels, int(lab)
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -411,6 +431,21 @@ SPECS = {
         'instr': 'Read the passage and answer the logical-reasoning question. '
                  'Respond with only the letter (A, B, C, D, or E).',
         'parse': p_lsat_lr},
+    # --- NLP/Natural Language Inference (new sub-category, widens coverage) ---
+    'anli': {
+        'repo': 'facebook/anli',
+        'parquet': 'plain_text/test_r1-00000-of-00001.parquet',
+        'ds_name': 'ANLI-R1-test', 'stem': 'Premise',
+        'category': 'NLP/Natural Language Inference',
+        'source': 'https://huggingface.co/datasets/facebook/anli',
+        'desc': 'ANLI Round 1 (Nie et al., 2020) — Adversarial Natural Language '
+                'Inference: decide whether a hypothesis is entailed by, neutral '
+                'to, or contradicted by a premise, 3-option (R1 test, visible '
+                'gold). Pinned zero-shot prompt; scored by letter exact match.',
+        'instr': 'Read the premise and hypothesis and choose their logical '
+                 'relationship. Respond with only the letter (A for Entailment, '
+                 'B for Neutral, or C for Contradiction).',
+        'parse': p_anli},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 
