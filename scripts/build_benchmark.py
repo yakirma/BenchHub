@@ -256,6 +256,27 @@ def p_anli(df):
         yield stem, labels, int(lab)
 
 
+def p_snli(df):
+    # SNLI (stanfordnlp/snli): a premise + hypothesis 3-way NLI decision. `label`
+    # is a ClassLabel int — 0=entailment, 1=neutral, 2=contradiction (verified
+    # against the dataset's ClassLabel names — identical to ANLI's mapping), so
+    # it maps directly to option index A/B/C. The three relations are fixed
+    # options, same for every row; the premise/hypothesis live in the stem.
+    # No-consensus rows carry hidden gold (-1) — skip.
+    labels = ['Entailment', 'Neutral', 'Contradiction']
+    for d in df.to_dict('records'):
+        lab = d.get('label')
+        if lab is None or int(lab) not in (0, 1, 2):
+            continue
+        prem = str(d['premise']).strip()
+        hyp = str(d['hypothesis']).strip()
+        if not prem or not hyp:
+            continue
+        stem = (f"{prem}\n\nHypothesis: {hyp}\n\nDoes the premise entail, "
+                f"contradict, or leave undetermined the hypothesis?")
+        yield stem, labels, int(lab)
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -446,6 +467,22 @@ SPECS = {
                  'relationship. Respond with only the letter (A for Entailment, '
                  'B for Neutral, or C for Contradiction).',
         'parse': p_anli},
+    # --- NLP/Natural Language Inference — pairs with ANLI (forms a ranking) ---
+    'snli': {
+        'repo': 'stanfordnlp/snli',
+        'parquet': 'plain_text/validation-00000-of-00001.parquet',
+        'ds_name': 'SNLI-validation', 'stem': 'Premise',
+        'category': 'NLP/Natural Language Inference',
+        'source': 'https://huggingface.co/datasets/stanfordnlp/snli',
+        'desc': 'SNLI (Bowman et al., 2015) — the Stanford Natural Language '
+                'Inference corpus: decide whether a hypothesis is entailed by, '
+                'neutral to, or contradicted by a premise, 3-option (validation, '
+                'visible gold). Pinned zero-shot prompt; scored by letter exact '
+                'match.',
+        'instr': 'Read the premise and hypothesis and choose their logical '
+                 'relationship. Respond with only the letter (A for Entailment, '
+                 'B for Neutral, or C for Contradiction).',
+        'parse': p_snli},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 

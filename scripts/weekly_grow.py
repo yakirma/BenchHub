@@ -79,6 +79,8 @@ BENCHMARK_QUEUE = [
     {'key': 'lsat_lr',       'builder': 'build_benchmark', 'ds': 'lsat-lr-test'},
     # NLP/Natural Language Inference — a NEW sub-category (widens coverage)
     {'key': 'anli',          'builder': 'build_benchmark', 'ds': 'anli-r1-test'},
+    # NLP/Natural Language Inference — pairs with ANLI (forms a ranking)
+    {'key': 'snli',          'builder': 'build_benchmark', 'ds': 'snli-validation'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [
