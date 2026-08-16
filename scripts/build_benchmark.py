@@ -277,6 +277,32 @@ def p_snli(df):
         yield stem, labels, int(lab)
 
 
+def p_pubmedqa(df):
+    # PubMedQA (qiaojin/PubMedQA, pqa_labeled subset): a biomedical research
+    # question answered yes/no/maybe from its PubMed abstract. `final_decision`
+    # is a VISIBLE string label — yes/no/maybe map directly to option index
+    # A/B/C (verified against the labeled subset: 552 yes / 338 no / 110 maybe,
+    # no nulls). The abstract (context['contexts'], an array of section
+    # paragraphs) is joined into the stem so the question is answerable; the
+    # three decisions are the fixed options, same for every row. Skip any row
+    # missing a question, abstract, or a decision outside {yes,no,maybe}.
+    label = {'yes': 0, 'no': 1, 'maybe': 2}
+    for d in df.to_dict('records'):
+        dec = str(d.get('final_decision') or '').strip().lower()
+        if dec not in label:
+            continue
+        q = str(d.get('question') or '').strip()
+        ctx = d.get('context')
+        try:
+            abstract = '\n'.join(str(x) for x in list(ctx['contexts'])).strip()
+        except Exception:
+            continue
+        if not q or not abstract:
+            continue
+        stem = f"{abstract}\n\nQuestion: {q}"
+        yield stem, ['Yes', 'No', 'Maybe'], label[dec]
+
+
 SPECS = {
     'winogrande': {
         'repo': 'allenai/winogrande',
@@ -483,6 +509,20 @@ SPECS = {
                  'relationship. Respond with only the letter (A for Entailment, '
                  'B for Neutral, or C for Contradiction).',
         'parse': p_snli},
+    # --- NLP/Biomedical QA (new sub-category, widens coverage) ---
+    'pubmedqa': {
+        'repo': 'qiaojin/PubMedQA',
+        'parquet': 'pqa_labeled/train-00000-of-00001.parquet',
+        'ds_name': 'PubMedQA-labeled', 'stem': 'Abstract',
+        'category': 'NLP/Biomedical QA',
+        'source': 'https://huggingface.co/datasets/qiaojin/PubMedQA',
+        'desc': 'PubMedQA (Jin et al., 2019) — biomedical research QA: answer a '
+                'research question yes/no/maybe from its PubMed abstract, '
+                '3-option (expert-labeled subset, visible gold). Pinned '
+                'zero-shot prompt; scored by letter exact match.',
+        'instr': 'Read the abstract and answer the research question. Respond '
+                 'with only the letter (A for Yes, B for No, or C for Maybe).',
+        'parse': p_pubmedqa},
 }
 DEFAULT_CATEGORY = 'NLP/Reasoning & Knowledge'   # most boards join the combined LLM ranking
 

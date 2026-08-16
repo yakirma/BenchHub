@@ -81,6 +81,8 @@ BENCHMARK_QUEUE = [
     {'key': 'anli',          'builder': 'build_benchmark', 'ds': 'anli-r1-test'},
     # NLP/Natural Language Inference — pairs with ANLI (forms a ranking)
     {'key': 'snli',          'builder': 'build_benchmark', 'ds': 'snli-validation'},
+    # NLP/Biomedical QA — a NEW sub-category (widens coverage)
+    {'key': 'pubmedqa',      'builder': 'build_benchmark', 'ds': 'pubmedqa-labeled'},
 ]
 # Baselines seeded onto sparse/new boards (a rich initial ranking; all <=9B).
 BASELINE_MODELS = [
