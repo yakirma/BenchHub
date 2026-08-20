@@ -3844,7 +3844,7 @@ def privacy():
 @app.route('/releases')
 def releases():
     """Changelog for the `benchhub-client` PyPI package."""
-    from benchhub._release_notes import RELEASES
+    from release_notes import RELEASES
     return render_template('releases.html', releases=RELEASES)
 
 

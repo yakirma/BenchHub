@@ -1,9 +1,12 @@
 """Release notes for the `benchhub-client` PyPI package.
 
-The site renders this at /releases and the footer links to it. Keep it in sync
-with `__version__` in `benchhub/_version.py`: on a release, bump that string and
-prepend one entry here (newest first). `date` is an ISO string (kept static so
-the module has no import-time side effects).
+Server-side only — this module lives at the repo root (like app.py / tasks.py /
+metric_engine.py) so it is NOT bundled into the pip package (pyproject only ships
+`benchhub*`). The site renders it at /releases and the footer links there.
+
+Keep it in sync with `__version__` in `benchhub/_version.py`: on a release, bump
+that string and prepend one entry here (newest first). `date` is an ISO string
+(kept static so the module has no import-time side effects).
 """
 
 # Newest first. Each entry: {version, date (YYYY-MM-DD), highlights: [str, ...]}.
