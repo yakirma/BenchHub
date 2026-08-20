@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Release notes — benchhub-client{% endblock %}
+
+{% set meta_title = 'Release notes — benchhub-client' %}
+{% set meta_description = 'Version history and release notes for the benchhub-client Python package.' %}
+
+{% block content %}
+<div class="container py-4" style="max-width: 760px;">
+    <h1 class="h3 fw-bold mb-1">Release notes</h1>
+    <p class="text-body-secondary mb-3">
+        Version history for the <code>benchhub-client</code> Python package.
+    </p>
+
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-4">
+        <span class="badge text-bg-primary-subtle text-primary-emphasis border">
+            Latest: v{{ client_version }}
+        </span>
+        <a href="{{ pypi_url }}" target="_blank" rel="noopener"
+           class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-box-seam me-1"></i>View on PyPI
+        </a>
+        <code class="small text-body-secondary">pip install -U benchhub-client</code>
+    </div>
+
+    {% for r in releases %}
+    <section class="mb-4">
+        <div class="d-flex align-items-baseline gap-2 mb-1">
+            <h2 class="h5 fw-semibold mb-0">
+                v{{ r.version }}
+                {% if r.version == client_version %}
+                <span class="badge text-bg-success-subtle text-success-emphasis border align-middle small">current</span>
+                {% endif %}
+            </h2>
+            <a href="{{ pypi_url }}{{ r.version }}/" target="_blank" rel="noopener"
+               class="small link-secondary text-decoration-none">PyPI</a>
+            <span class="text-body-tertiary small ms-auto">{{ r.date }}</span>
+        </div>
+        <ul class="mb-0">
+            {% for h in r.highlights %}
+            <li class="mb-1">{{ h }}</li>
+            {% endfor %}
+        </ul>
+    </section>
+    {% endfor %}
+</div>
+{% endblock %}

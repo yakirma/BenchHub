@@ -1140,6 +1140,10 @@
                     <p class="mb-0 text-muted small">
                         BenchHub &copy; {{ now.year if now else '2026' }} ·
                         <span class="version-info fw-bold">v{{ version }}</span> ·
+                        {% if client_version %}
+                        <a href="{{ url_for('releases') }}" class="link-secondary text-decoration-none"
+                           title="benchhub-client release notes">client v{{ client_version }}</a> ·
+                        {% endif %}
                         <a href="{{ url_for('leaderboards') }}" class="link-secondary text-decoration-none">Leaderboards</a> ·
                         <a href="{{ url_for('terms') }}" class="link-secondary text-decoration-none">Terms</a> ·
                         <a href="{{ url_for('privacy') }}" class="link-secondary text-decoration-none">Privacy</a>

@@ -1566,7 +1566,11 @@ def inject_version():
         'avatar_url': url_for('serve_author_avatar', filename=p.avatar_filename) if p.avatar_filename else None,
         'merged_into': p.merged_into_username
     } for p in profiles}
-    return dict(version=__version__, author_profiles_json=json.dumps(mapping))
+    from benchhub import __version__ as client_version
+    return dict(version=__version__,
+                client_version=client_version,
+                pypi_url='https://pypi.org/project/benchhub-client/',
+                author_profiles_json=json.dumps(mapping))
 
 
 @app.context_processor
@@ -3835,6 +3839,13 @@ def terms():
 @app.route('/privacy')
 def privacy():
     return render_template('legal_privacy.html')
+
+
+@app.route('/releases')
+def releases():
+    """Changelog for the `benchhub-client` PyPI package."""
+    from benchhub._release_notes import RELEASES
+    return render_template('releases.html', releases=RELEASES)
 
 
 # ===================== Project routes =====================
@@ -11492,7 +11503,7 @@ every sample on the leaderboard, and uploads the predictions.
 
 Setup:
     pip install -U "benchhub-client>={_client_ver}"    # ships `bh.Client`, types, etc.
-    export BENCHHUB_API_TOKEN=<your token from BenchHub Settings>
+    export BENCHHUB_API_TOKEN=<token>   # create one at Settings -> API tokens (/settings/api_tokens)
 
 Then:
     python {lb.name.replace(' ', '_')}_submit.py
@@ -11508,7 +11519,7 @@ BASE_URL: str = {(_get_base_url() or 'https://runbenchhub.com')!r}
 if not os.environ.get('BENCHHUB_API_TOKEN'):
     raise SystemExit(
         "BENCHHUB_API_TOKEN is not set. Get a token from "
-        f"{{BASE_URL}}/settings and run: export BENCHHUB_API_TOKEN=<token>"
+        f"{{BASE_URL}}/settings/api_tokens and run: export BENCHHUB_API_TOKEN=<token>"
     )
 
 client: bh.Client = bh.Client(base_url=BASE_URL)
@@ -11634,7 +11645,7 @@ def _submission_notebook_source(lb, *, inline_token: str | None = None,
         "if _token is None:\n"
         "    import getpass\n"
         "    print('Inline token expired and no Colab Secret found.')\n"
-        "    print('Get a token from ' + _BASE_URL + '/settings/account, paste below.')\n"
+        "    print('Get a token from ' + _BASE_URL + '/settings/api_tokens, paste below.')\n"
         "    _token = getpass.getpass('BenchHub API token: ').strip()\n"
         "    if not _bh_validate_token(_token):\n"
         "        raise RuntimeError('Token rejected by ' + _BASE_URL + '/api/whoami.')\n"
@@ -12386,33 +12397,7 @@ def leaderboard_view(leaderboard_id):
         g.current_user and LeaderboardFollow.query.filter_by(
             user_id=g.current_user.id, leaderboard_id=leaderboard_id).first())
 
-    # Personalized badge prompt: the current user's OWN ranked submissions on
-    # this (public) board + their rank — same source as the badge endpoint, so
-    # a submitter is nudged to add a badge to their model card. Covers both a
-    # fresh submission and any existing ones (submissions are async — the board
-    # is where the author returns to see their rank).
-    my_ranked = []
-    if g.current_user and (leaderboard.visibility == 'public'
-                           or leaderboard.owner_user_id is None):
-        try:
-            from benchhub.hf_results_export import build_lb_standings
-            _payload = build_lb_standings(leaderboard, MetricResult=MetricResult)
-            _verified = _payload.get('verified') or []
-            _rankmap = {r['name']: r['rank'] for r in _verified}
-            _total = len(_verified)
-            _seen = set()
-            mine = [s for s in verified_submissions
-                    if s.owner_user_id == g.current_user.id and s.name in _rankmap]
-            for s in sorted(mine, key=lambda s: _rankmap[s.name]):
-                if s.name not in _seen:
-                    _seen.add(s.name)
-                    my_ranked.append({'name': s.name,
-                                      'rank': _rankmap[s.name], 'total': _total})
-        except Exception:
-            my_ranked = []
-
     return render_template('leaderboard.html',
-                           my_ranked=my_ranked,
                            leaderboard=leaderboard,
                            client_ref=_lb_client_ref(leaderboard),
                            is_following=is_following,
