@@ -11482,6 +11482,8 @@ def _submission_script_source(lb) -> str:
     construction — between the marked `# === fill in: ===` blocks."""
     pred_snippets = _pred_field_constructor_lines(lb)
 
+    from benchhub import __version__ as _client_ver   # pin the APIs this script uses
+
     return f'''#!/usr/bin/env python
 """Submission script for BenchHub leaderboard {lb.id} ({lb.name!r}).
 
@@ -11489,7 +11491,7 @@ Reads BENCHHUB_API_TOKEN from your environment, runs your model over
 every sample on the leaderboard, and uploads the predictions.
 
 Setup:
-    pip install benchhub-client    # ships `bh.Client`, types, etc.
+    pip install -U "benchhub-client>={_client_ver}"    # ships `bh.Client`, types, etc.
     export BENCHHUB_API_TOKEN=<your token from BenchHub Settings>
 
 Then:

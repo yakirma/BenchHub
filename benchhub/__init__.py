@@ -5,6 +5,7 @@ shipped to submitters as `benchhub-client`. Single source of truth for
 the strict-typed contract between predictions, GT, and metrics.
 """
 
+from benchhub._version import __version__
 from benchhub.types import (
     DataType,
     DTYPES,
@@ -34,6 +35,7 @@ from benchhub.client import (
 from benchhub import author
 
 __all__ = [
+    "__version__",
     "author",
     "DataType",
     "DTYPES",

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "benchhub-client"
-version = "0.1.10"
+dynamic = ["version"]
 description = "Python client + typed contract for the BenchHub benchmarking platform"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://runbenchhub.com"
+
+[tool.setuptools.dynamic]
+version = { attr = "benchhub._version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["benchhub*"]
