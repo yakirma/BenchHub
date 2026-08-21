@@ -1392,9 +1392,25 @@
             onWheel(e) {
                 e.preventDefault();
                 const rect = this.img.getBoundingClientRect();
-                const offsetX = e.clientX - rect.left;
-                const offsetY = e.clientY - rect.top;
-                const factor = e.deltaY < 0 ? 1.05 : 0.952; // Slower zoom: 5% per scroll instead of 10%
+                let offsetX, offsetY, factor;
+                if (e.ctrlKey) {
+                    // Trackpad / touchpad pinch: the browser delivers it as a
+                    // ctrl+wheel stream whose deltaY carries the pinch amount.
+                    // Anchor on the CENTRE of the current viewport (field of
+                    // view) rather than the pointer, and scale proportionally
+                    // to the pinch delta (clamped) so a gentle pinch nudges
+                    // instead of lurching.
+                    const pRect = this.parent.getBoundingClientRect();
+                    offsetX = (pRect.left + pRect.width / 2) - rect.left;
+                    offsetY = (pRect.top + pRect.height / 2) - rect.top;
+                    factor = Math.exp(-e.deltaY * ZoomHandler.PINCH_SENSITIVITY);
+                    factor = Math.min(1.10, Math.max(0.90, factor));
+                } else {
+                    // Mouse wheel: discrete notches, zoom toward the pointer.
+                    offsetX = e.clientX - rect.left;
+                    offsetY = e.clientY - rect.top;
+                    factor = e.deltaY < 0 ? 1.05 : 0.952; // 5% per notch
+                }
                 let newScale = this.scale * factor;
 
                 if (newScale < 1) {
@@ -1438,6 +1454,9 @@
                 this.updateCursor();
             }
         }
+        // Pinch zoom speed (per ctrl+wheel event: factor = exp(-deltaY * this),
+        // clamped to ±10%). Lower = calmer pinch. Tune here if it still feels off.
+        ZoomHandler.PINCH_SENSITIVITY = 0.01;
 
         // Append/replace a query param on a viz URL (relative or absolute).
         window.withVizView = function (url, view) {

@@ -4043,6 +4043,24 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
         onWheel(e) {
             if (!this.medias.length) return;
             e.preventDefault();
+            if (e.ctrlKey) {
+                // Trackpad pinch → anchor on the viewport centre (not the
+                // pointer) and zoom proportionally to the pinch delta (clamped
+                // ±10%), so it isn't hypersensitive. Mirrors ZoomHandler.
+                const cRect = this.container.getBoundingClientRect();
+                const rect = (this.medias[0] || this.container).getBoundingClientRect();
+                const ox = (cRect.left + cRect.width / 2) - rect.left;
+                const oy = (cRect.top + cRect.height / 2) - rect.top;
+                const factor = Math.min(1.10, Math.max(0.90, Math.exp(-e.deltaY * 0.01)));
+                let ns = this.scale * factor;
+                if (ns < 1) { this.reset(); return; }
+                if (ns > 12) ns = 12;
+                const ratio = ns / this.scale;
+                this.pointX = this.pointX + ox * (1 - ratio);
+                this.pointY = this.pointY + oy * (1 - ratio);
+                this.scale = ns; this.apply();
+                return;
+            }
             const rect = this._rectUnder(e);
             const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
             const factor = e.deltaY < 0 ? 1.08 : 0.926;
