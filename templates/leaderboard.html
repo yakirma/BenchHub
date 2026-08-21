@@ -1764,6 +1764,11 @@ background-color: transparent;
                                 {% set _can_delete_sub = current_user and (current_user_is_admin or _sub_owned or (leaderboard.visibility != 'public' and current_user.id == leaderboard.owner_user_id)) %}
                                 {% if _can_manage_sub or _can_delete_sub %}
                                 <div class="btn-group" role="group">
+                                    {% if _can_manage_sub and submission.is_archived %}
+                                    <button type="button" class="btn btn-sm btn-outline-success"
+                                        onclick="unarchiveSingleSubmission({{ submission.id }})"
+                                        title="Unarchive — restore to the board"><i class="bi bi-arrow-up-square"></i></button>
+                                    {% endif %}
                                     {% if _can_manage_sub %}
                                     <button type="button" class="btn btn-sm btn-outline-warning"
                                         id="recalc-btn-{{ submission.id }}"
@@ -2081,6 +2086,15 @@ print(sub.submit(
 
 <!-- Hidden Deletion Form -->
 <form id="single-delete-form" method="post" style="display:none;"></form>
+{# Per-row unarchive: archived rows are hidden by default, so the bulk
+   "select + Actions → Unarchive" flow is a catch-22. This one-click form
+   restores a single submission via the same batch_action endpoint. #}
+<form id="single-unarchive-form" method="post" action="{{ url_for('batch_action') }}" style="display:none;">
+    <input type="hidden" name="action" value="unarchive">
+    <input type="hidden" name="leaderboard_id" value="{{ leaderboard.id }}">
+    <input type="hidden" name="submission_ids" id="single-unarchive-sid">
+    <input type="hidden" name="show_archived" value="{{ 'true' if show_archived else 'false' }}">
+</form>
 
 {# Sharing — owner only, only when not fully public. #}
 {% if current_user and leaderboard.owner_user_id == current_user.id and leaderboard.visibility != 'public' %}
@@ -2292,6 +2306,11 @@ print(sub.submit(
             form.action = `/delete_submission/${submissionId}`;
             form.submit();
         });
+    }
+
+    function unarchiveSingleSubmission(submissionId) {
+        document.getElementById('single-unarchive-sid').value = submissionId;
+        document.getElementById('single-unarchive-form').submit();
     }
 
     // This function is used by the batch actions form to copy filter parameters

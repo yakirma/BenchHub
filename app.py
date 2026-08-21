@@ -11950,12 +11950,21 @@ def leaderboard_view(leaderboard_id):
     processed_submissions = [s for s in submissions if s.processing_status == 'Processed']
     selected_metrics = [m for m in leaderboard.summary_metrics.split(',') if m.strip()]
     
-    # Get all custom metrics from submissions
+    # Distinct custom-metric field NAMES across these submissions. One DISTINCT
+    # query, not a Python scan of sub.custom_fields — iterating the relationship
+    # hydrated *every* per-sample CustomField row (food101: 25k samples x 24
+    # subs = 2.4M ORM objects -> ~17s page load) just to collect a few names.
+    # The startswith('lm_') check runs in Python on the small distinct-name set
+    # to keep exact semantics (SQL LIKE 'lm_%' would treat '_' as a wildcard).
     custom_metrics = set()
-    for sub in processed_submissions:
-        for cf in sub.custom_fields:
-            if cf.data_type in ['metric', 'scalar'] and not cf.name.startswith('lm_'):
-                custom_metrics.add(cf.name)
+    _cf_sub_ids = [s.id for s in processed_submissions]
+    if _cf_sub_ids:
+        for (_cf_name,) in db.session.query(CustomField.name).filter(
+            CustomField.submission_id.in_(_cf_sub_ids),
+            CustomField.data_type.in_(['metric', 'scalar']),
+        ).distinct():
+            if _cf_name and not _cf_name.startswith('lm_'):
+                custom_metrics.add(_cf_name)
     
     # Map internal IDs to labels
     metric_labels = {}
