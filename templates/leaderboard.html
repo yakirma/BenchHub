@@ -1481,9 +1481,12 @@ background-color: transparent;
                     </div>
 
                     {# Delete sits separate — danger-styled, ghost-button
-                       version so it doesn't shout but stays distinct. Admin /
-                       board-owner only. #}
-                    {% if _can_manage_board %}
+                       version so it doesn't shout but stays distinct. Bulk
+                       delete is admin or a NON-public board's owner: a public
+                       board's owner can't erase others' work (they archive
+                       instead), and can still delete their OWN entries via the
+                       per-row × (mirrors _can_delete_submission). #}
+                    {% if current_user_is_admin or (leaderboard.visibility != 'public' and _can_manage_board) %}
                     <button type="submit" name="action" value="delete"
                         class="btn btn-outline-danger"
                         onclick="return confirm('Permanently delete the selected submissions?');">
@@ -1751,20 +1754,27 @@ background-color: transparent;
                             </td>
                             {% endfor %}
                             <td>
-                                {# Recalc/delete only for users who can perform them — admin,
-                                   the submission's owner, or the leaderboard owner — mirroring
-                                   _can_manage_submission so a button never 403s. #}
-                                {% if current_user and (current_user_is_admin
-                                        or submission.owner_user_id is none
-                                        or submission.owner_user_id == current_user.id
-                                        or current_user.id == leaderboard.owner_user_id) %}
+                                {# Recalc mirrors _can_manage_submission (admin / submission
+                                   owner / LB owner); permanent delete mirrors the stricter
+                                   _can_delete_submission (LB owner can't delete on a PUBLIC
+                                   board — archive instead). A NULL owner never grants a plain
+                                   user access. Kept in sync so a button never 403s. #}
+                                {% set _sub_owned = submission.owner_user_id is not none and submission.owner_user_id == current_user.id if current_user else false %}
+                                {% set _can_manage_sub = current_user and (current_user_is_admin or _sub_owned or current_user.id == leaderboard.owner_user_id) %}
+                                {% set _can_delete_sub = current_user and (current_user_is_admin or _sub_owned or (leaderboard.visibility != 'public' and current_user.id == leaderboard.owner_user_id)) %}
+                                {% if _can_manage_sub or _can_delete_sub %}
                                 <div class="btn-group" role="group">
+                                    {% if _can_manage_sub %}
                                     <button type="button" class="btn btn-sm btn-outline-warning"
                                         id="recalc-btn-{{ submission.id }}"
                                         onclick="recalculateAsync([{{ submission.id }}])"
                                         title="Recalculate Metrics">↻</button>
+                                    {% endif %}
+                                    {% if _can_delete_sub %}
                                     <button type="button" class="btn btn-sm btn-outline-danger"
-                                        onclick="deleteSingleSubmission({{ submission.id }})">×</button>
+                                        onclick="deleteSingleSubmission({{ submission.id }})"
+                                        title="Delete submission">×</button>
+                                    {% endif %}
                                 </div>
                                 {% endif %}
                             </td>

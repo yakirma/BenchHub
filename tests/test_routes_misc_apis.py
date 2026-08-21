@@ -26,7 +26,7 @@ from app import (
 
 
 @pytest.fixture
-def lb_with_subs(db_session, client):
+def lb_with_subs(db_session, client, logged_in_user):
     ds = Dataset(name="api_ds")
     db.session.add(ds)
     db.session.flush()
@@ -38,8 +38,11 @@ def lb_with_subs(db_session, client):
     db.session.add(lb)
     db.session.flush()
 
+    # Owned by the test caller so recalc/manage routes authorize via the owner
+    # path (NULL-owner rows are not manageable by an arbitrary user anymore).
     subs = [
-        Submission(name=f"sub{i}", leaderboard_id=lb.id, processing_status="Processed")
+        Submission(name=f"sub{i}", leaderboard_id=lb.id, processing_status="Processed",
+                   owner_user_id=logged_in_user.id)
         for i in range(2)
     ]
     db.session.add_all(subs)

@@ -2176,12 +2176,22 @@ background-color: hsl(120, 70%, {{ lightness | int }}%); color: #000;
                 // A clickable pill — works on click as well as Space/Enter. NOT a
                 // <button> (so a focused-button Space wouldn't double-toggle); we
                 // preventDefault on mousedown to keep focus off it.
-                hint.style.cssText = 'display:inline-block;margin:8px auto 0;padding:4px 14px;cursor:pointer;' +
-                    'border:1px solid #ccc;border-radius:16px;font-size:0.85rem;color:#444;background:#f6f6f6;user-select:none;';
+                // High-contrast pill so it reads over any frame; clickable.
+                hint.style.cssText = 'display:inline-block;padding:6px 16px;cursor:pointer;pointer-events:auto;' +
+                    'border:1px solid rgba(255,255,255,.28);border-radius:18px;font-size:0.9rem;color:#fff;' +
+                    'background:rgba(20,20,20,.72);box-shadow:0 2px 10px rgba(0,0,0,.4);user-select:none;';
                 hint.addEventListener('mousedown', function (e) { e.preventDefault(); });
                 hint.addEventListener('click', function (e) { e.preventDefault(); _modalGifToggle(); });
+                // Float it at the bottom-centre of the modal, over the media,
+                // so it's always visible — the old flow layout put it below a
+                // full-height temporal video, off-screen. .modal-content is
+                // position:relative and doesn't scroll, so the overlay stays put.
                 const mc = document.querySelector('#vis-modal .modal-content') || document.getElementById('vis-modal');
-                if (mc) { const wrap = document.createElement('div'); wrap.style.cssText = 'text-align:center;'; wrap.appendChild(hint); mc.appendChild(wrap); }
+                if (mc) {
+                    const wrap = document.createElement('div');
+                    wrap.style.cssText = 'position:absolute;bottom:18px;left:0;right:0;z-index:1090;text-align:center;pointer-events:none;';
+                    wrap.appendChild(hint); mc.appendChild(wrap);
+                }
             }
             if (hint.parentNode) hint.parentNode.style.display = 'block';
             const paused = imgs[0].dataset.gifPaused === '1';

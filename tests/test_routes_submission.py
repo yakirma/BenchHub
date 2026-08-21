@@ -42,11 +42,15 @@ def leaderboard_with_samples(db_session, project):
 
 
 @pytest.fixture
-def submissions(db_session, leaderboard_with_samples):
-    """Three submissions on the leaderboard for batch-action tests."""
+def submissions(db_session, leaderboard_with_samples, logged_in_user):
+    """Three submissions on the leaderboard for batch-action tests, owned by
+    the test caller so the mutating routes authorize via the owner path
+    (archive/delete/recalc). NULL-owner rows are no longer manageable by an
+    arbitrary user — see _can_manage_submission / _can_delete_submission."""
     subs = []
     for n in ["alpha", "beta", "gamma"]:
-        sub = Submission(name=n, leaderboard_id=leaderboard_with_samples.id, processing_status="Processed")
+        sub = Submission(name=n, leaderboard_id=leaderboard_with_samples.id,
+                         processing_status="Processed", owner_user_id=logged_in_user.id)
         db.session.add(sub)
         db.session.flush()
         subs.append(sub)

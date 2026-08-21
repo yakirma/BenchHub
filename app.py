@@ -15238,7 +15238,11 @@ def batch_action():
     elif action == 'unarchive':
         for sub in submissions: sub.is_archived = False
     elif action == 'delete':
+        # Permanent delete is stricter than manage: on a public board the LB
+        # owner can archive but not erase others' submissions.
         for sub in submissions:
+            if not _can_delete_submission(user, sub):
+                continue
             shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(sub.id)), ignore_errors=True)
             db.session.delete(sub)
     elif action == 'add_tags':
@@ -19019,27 +19023,50 @@ def delete_leaderboard(leaderboard_id):
     return redirect(url_for('datasets_list'))
 
 def _can_manage_submission(user, sub):
-    """Who may delete / archive / recalc a submission: an admin, the
-    submission's owner (or legacy NULL-owner rows), or the owner of the
-    leaderboard it lives on. Single source of truth for the routes below AND
-    the template button gating, so a button never shows for an action that
-    would 403."""
+    """Who may archive / unarchive / recalc / tag a submission: an admin, the
+    submission's owner, or the owner of the leaderboard it lives on. Single
+    source of truth for those routes AND the template button gating, so a
+    button never shows for an action that would 403. Permanent DELETE is
+    stricter — see _can_delete_submission.
+
+    A NULL owner_user_id (legacy / mirrored rows) does NOT grant management to
+    an arbitrary logged-in user — only admin or the leaderboard owner. (The old
+    `owner is None -> True` let any signed-in user archive/delete orphan rows.)"""
     if user is None or sub is None:
         return False
     if is_admin(user):
         return True
     owner = getattr(sub, 'owner_user_id', None)
-    if owner is None or owner == user.id:
+    if owner is not None and owner == user.id:
         return True
     lb = getattr(sub, 'leaderboard', None)
     return bool(lb is not None and lb.owner_user_id == user.id)
+
+
+def _can_delete_submission(user, sub):
+    """Who may PERMANENTLY delete a submission — stricter than managing it.
+    Admin or the submission's own owner always may. The leaderboard owner may
+    only when the board is NOT public: a public board is a shared record, so its
+    owner can hide entries (archive) but not erase other people's work. NULL-
+    owner rows are deletable only by an admin or a non-public LB's owner."""
+    if user is None or sub is None:
+        return False
+    if is_admin(user):
+        return True
+    owner = getattr(sub, 'owner_user_id', None)
+    if owner is not None and owner == user.id:
+        return True
+    lb = getattr(sub, 'leaderboard', None)
+    if lb is None or getattr(lb, 'visibility', None) == 'public':
+        return False
+    return lb.owner_user_id == user.id
 
 
 @app.route('/delete_submission/<int:submission_id>', methods=['POST'])
 @login_required
 def delete_submission(submission_id):
     submission = Submission.query.get_or_404(submission_id)
-    if not _can_manage_submission(g.current_user, submission):
+    if not _can_delete_submission(g.current_user, submission):
         abort(403)
     shutil.rmtree(os.path.join(app.config['UPLOAD_FOLDER'], 'submissions', str(submission.id)), ignore_errors=True)
     lb_id = submission.leaderboard_id
